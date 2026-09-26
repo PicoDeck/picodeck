@@ -15,6 +15,7 @@
 #include "screenshot.h"
 #include "text_input.h"
 #include "tz_picker.h"
+#include "ui.h"
 
 #include "lauxlib.h"
 #include "lua.h"
@@ -83,6 +84,7 @@ typedef enum {
   ITEM_WIFI_STATUS,
   ITEM_DEV_MODE,
   ITEM_WIFI_AUTO_DISCONNECT,
+  ITEM_BATTERY_PCT,
 } item_type_t;
 
 typedef struct {
@@ -150,6 +152,7 @@ static int build_items(flat_item_t *items, menu_page_t page, bool has_exit,
       items[count++] = (flat_item_t){ITEM_EXIT, 0};
   } else { // PAGE_SETTINGS
     items[count++] = (flat_item_t){ITEM_BRIGHTNESS, 0};
+    items[count++] = (flat_item_t){ITEM_BATTERY_PCT, 0};
     items[count++] = (flat_item_t){ITEM_TIMEZONE, 0};
     items[count++] = (flat_item_t){ITEM_WIFI_TOGGLE, 0};
     items[count++] = (flat_item_t){ITEM_WIFI_SETTINGS, 0};
@@ -341,6 +344,10 @@ static void draw_panel(const flat_item_t *items, int count, int sel, int px,
     case ITEM_WIFI_AUTO_DISCONNECT:
       snprintf(label, sizeof(label), "Auto Disconnect: %s",
                s_wifi_auto_disconnect ? "On" : "Off");
+      break;
+    case ITEM_BATTERY_PCT:
+      snprintf(label, sizeof(label), "Battery %%: %s",
+               ui_battery_pct_enabled() ? "On" : "Off");
       break;
     case ITEM_DEV_MODE:
       snprintf(label, sizeof(label), "Developer Mode: %s", s_dev_mode ? "On" : "Off");
@@ -588,6 +595,11 @@ static bool menu_loop(lua_State *L, int context) {
         crashlog_clear_running();
         reset_usb_boot(0, 0);
         break; /* unreachable */
+      case ITEM_BATTERY_PCT:
+        config_set("battery_pct", ui_battery_pct_enabled() ? "0" : "1");
+        config_save();
+        need_redraw = true;
+        break;
       case ITEM_WIFI_AUTO_DISCONNECT:
         s_wifi_auto_disconnect = !s_wifi_auto_disconnect;
         config_set("wifi_auto_disconnect", s_wifi_auto_disconnect ? "1" : "0");

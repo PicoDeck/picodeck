@@ -6,7 +6,7 @@ import numpy as np
 
 
 # Launcher list geometry (src/os/launcher.c).
-LIST_Y = 48
+LIST_Y = 42
 ITEM_H = 28
 ROW_PROBE_X = 6
 C_SEL_BG = ((40 >> 3) << 11) | ((80 >> 2) << 5) | (160 >> 3)   # RGB565(40, 80, 160)

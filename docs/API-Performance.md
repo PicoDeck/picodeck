@@ -60,8 +60,8 @@ local ms = picocalc.perf.getFrameTime()
 Convenience function to draw the FPS counter on screen. Color-coded: green ≥55 FPS, yellow ≥30, red <30.
 
 - **Parameters:**
-  - `x` (number, optional): X coordinate. Defaults to 250 (top-right).
-  - `y` (number, optional): Y coordinate. Defaults to 8.
+  - `x` (number, optional): X coordinate. Defaults to the top-right corner: the text ends 8px from the right edge.
+  - `y` (number, optional): Y coordinate. Defaults to 24, just below the standard header (`picocalc.ui.drawHeader`), so the counter never covers its status icons.
 - **Returns:** None
 
 ```lua

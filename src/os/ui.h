@@ -3,11 +3,19 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Draw standard OS header (titlebar) with battery/wifi/clock status indicators
-void ui_draw_header(const char *title);
+// Header bar height; ui_draw_header also draws a 1px border below it.
+#define UI_HEADER_H 20
+
+// Draw standard OS header (titlebar) with battery/wifi/clock status indicators.
+// Returns the rows it covers (UI_HEADER_H + 1): content starts at that y.
+int ui_draw_header(const char *title);
 
 // Check if the header needs redrawing (e.g. clock or wifi status changed)
 bool ui_needs_header_redraw(void);
+
+// The battery_pct system setting: the header shows the charge as digits
+// inside the battery icon instead of a fill bar.
+bool ui_battery_pct_enabled(void);
 
 // Draw standard OS footer with optional left and right alignment texts
 void ui_draw_footer(const char *left_text, const char *right_text);

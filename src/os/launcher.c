@@ -219,7 +219,7 @@ static void build_category_indices(void) {
 
 #define ITEM_H 28
 #define LIST_X 8
-#define LIST_Y 48          // below header (28) + tab bar (18) + border (1) + 1
+#define LIST_Y (TAB_BAR_Y + TAB_BAR_H + 1 + 2)  // tab bar, its border, 2px gap
 #define LIST_VISIBLE 9
 #define DESC_SCROLL_RESET_PAUSE 40
 #define ICON_SIZE   20     // app icon size in list view
@@ -258,13 +258,11 @@ void launcher_refresh_apps(void) {
 #define C_SEL_BG RGB565(40, 80, 160)
 #define C_TEXT COLOR_WHITE
 #define C_TEXT_DIM COLOR_GRAY
-#define C_BATTERY_OK COLOR_GREEN
-#define C_BATTERY_LO COLOR_RED
 #define C_BORDER RGB565(60, 60, 100)
 
 // ── Tab bar (horizontal category tabs) ──────────────────────────────────────
 
-#define TAB_BAR_Y    29    // below header border
+#define TAB_BAR_Y    (UI_HEADER_H + 1)  // below the header's border
 #define TAB_BAR_H    18
 #define TAB_DOT_W    14    // width of an unselected tab (colored dot)
 #define TAB_DOT_R    3     // dot radius

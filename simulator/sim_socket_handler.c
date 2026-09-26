@@ -66,6 +66,14 @@ static struct {
     const char *error_str;
 } s_wifi_error = {0};
 
+// set_wifi_state "connecting" / "failed" pin the status sim_wifi.c reports
+// (-1 = none), so tests can see those states; network access is unchanged.
+static int s_wifi_forced_status = -1;
+
+int sim_wifi_forced_status(void) {
+    return __atomic_load_n(&s_wifi_forced_status, __ATOMIC_RELAXED);
+}
+
 bool sim_wifi_is_available(void) {
     if (!s_wifi_error.enabled) return true;
     return s_wifi_error.mode != WIFI_DISCONNECTED &&
@@ -806,6 +814,8 @@ static char *h_get_wifi_state(const char *params) {
     const char *ssid = wifi_get_ssid();
     const char *ip = wifi_get_ip();
     const char *status_str = "disconnected";
+    int forced = sim_wifi_forced_status();
+    if (forced >= 0) st = (wifi_status_t)forced;
     if (st == WIFI_STATUS_ONLINE) status_str = "online";
     else if (st == WIFI_STATUS_CONNECTED) status_str = "connected";
     else if (st == WIFI_STATUS_CONNECTING) status_str = "connecting";
@@ -838,8 +848,16 @@ static char *h_set_wifi_state(const char *params) {
     json_get_str(params, "error_str", error_str, sizeof(error_str));
     json_get_int(params, "error_code", &error_code);
 
+    int forced = -1;
+    if (strcmp(status, "connecting") == 0) forced = WIFI_STATUS_CONNECTING;
+    else if (strcmp(status, "failed") == 0) forced = WIFI_STATUS_FAILED;
+    __atomic_store_n(&s_wifi_forced_status, forced, __ATOMIC_RELAXED);
+
     s_wifi_error.enabled = true;
-    if (strcmp(status, "connected") == 0 || strcmp(status, "online") == 0) {
+    if (forced >= 0) {
+        s_wifi_error.mode = WIFI_NORMAL;
+        s_wifi_error.enabled = false;
+    } else if (strcmp(status, "connected") == 0 || strcmp(status, "online") == 0) {
         s_wifi_error.mode = WIFI_NORMAL;
         s_wifi_error.enabled = false;
     } else if (strcmp(status, "disconnected") == 0) {
@@ -858,6 +876,18 @@ static char *h_set_wifi_state(const char *params) {
         s_wifi_error.error_str = errbuf;
     }
 
+    return strdup("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true}}");
+}
+
+// {percent, charging}: what kbd_get_battery_percent / kbd_is_charging report.
+extern void sim_kbd_set_battery(int percent, bool charging);
+
+static char *h_set_battery(const char *params) {
+    int percent = 100;
+    bool charging = false;
+    json_get_int(params, "percent", &percent);
+    json_get_bool(params, "charging", &charging);
+    sim_kbd_set_battery(percent, charging);
     return strdup("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true}}");
 }
 
@@ -1275,6 +1305,7 @@ static struct {
     { "get_audio_state",     h_get_audio_state },
     { "get_wifi_state",     h_get_wifi_state },
     { "set_wifi_state",     h_set_wifi_state },
+    { "set_battery",        h_set_battery },
     { "get_log_buffer",     h_get_log_buffer },
     { "set_time_multiplier",h_set_time_multiplier },
     { "step_time",          h_step_time },

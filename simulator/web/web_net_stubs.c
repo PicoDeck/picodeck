@@ -18,6 +18,7 @@
 
 bool sim_wifi_is_available(void) { return false; }
 bool sim_network_blocked(void) { return true; }
+int sim_wifi_forced_status(void) { return -1; }
 
 void sim_http_start(http_conn_t *c) { (void)c; }
 void sim_http_close_handle(http_conn_t *c) { (void)c; }

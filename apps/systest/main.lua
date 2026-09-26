@@ -766,15 +766,16 @@ end
 local function draw_tabs_demo()
     disp.clear(BG)
 
-    pc.ui.drawHeader("System Test Suite")
+    -- drawHeader returns the rows it covers (older firmware: nothing, 29)
+    local top = pc.ui.drawHeader("System Test Suite") or 29
 
     -- Draw tabs with customizable navigation keys
-    local new_tab, height = pc.ui.drawTabs(29, tab_labels, active_tab,
+    local new_tab, height = pc.ui.drawTabs(top, tab_labels, active_tab,
                                            nav_keys.prev, nav_keys.next)
     active_tab = new_tab
 
     -- Content area starts below tabs
-    local content_y = 29 + height + 10
+    local content_y = top + height + 10
 
     -- Draw content based on active tab
     if active_tab == 1 then

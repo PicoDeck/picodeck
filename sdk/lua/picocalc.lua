@@ -1364,6 +1364,7 @@ picocalc.ui = {}
 
 ---Draw a status bar at the top of the screen with a title and battery/WiFi/clock indicators.
 ---@param title string
+---@return integer rows the header covers (21); content starts at this y
 function picocalc.ui.drawHeader(title) end
 
 ---Draw a status bar at the bottom of the screen.
@@ -1421,8 +1422,8 @@ function picocalc.perf.getFPS() end
 function picocalc.perf.getFrameTime() end
 
 ---Draw a colour-coded FPS counter at (x, y).
----@param x? integer Default: top-left
----@param y? integer
+---@param x? integer Default: right-aligned 8px from the right edge
+---@param y? integer Default: 24, just below the standard header
 function picocalc.perf.drawFPS(x, y) end
 
 ---Set a target FPS cap (0 = uncapped).
