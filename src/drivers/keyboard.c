@@ -439,6 +439,8 @@ bool kbd_is_key_down(uint8_t keycode) {
 
 void kbd_flush_events(void) { kbd_evq_clear(&s_in.q); }
 
+static bool s_charging = false;  // bit 7 of the last good battery read
+
 int kbd_get_battery_percent(void) {
   static int s_cached_val = -1;
   static uint32_t s_last_ms = 0;
@@ -455,10 +457,13 @@ int kbd_get_battery_percent(void) {
       return s_cached_val;
     }
     s_cached_val = (int)(val[1] & 0x7F);
+    s_charging = (val[1] & 0x80) != 0;
     s_last_ms = now;
   }
   return s_cached_val;
 }
+
+bool kbd_is_charging(void) { return s_charging; }
 
 void kbd_set_backlight(uint8_t brightness) {
   i2c_write_reg(KBD_REG_BL, brightness);

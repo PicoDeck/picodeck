@@ -20,9 +20,12 @@
 //   "tz_offset"            — Timezone offset for the clock
 //   "dev_mode"             — "1" enables developer mode
 //   "wifi_auto_disconnect" — "0" keeps WiFi up after initial time sync
+//   "battery_pct"          — "1" shows the battery percentage in the header
 // =============================================================================
 
-#define CONFIG_MAX_ENTRIES  8
+// Every entry is static SRAM (CONFIG_KEY_MAX + CONFIG_VAL_MAX bytes), and the
+// SRAM heap is only ~3 KB: grow this with care.
+#define CONFIG_MAX_ENTRIES  10
 #define CONFIG_KEY_MAX      32
 #define CONFIG_VAL_MAX      128
 

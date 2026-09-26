@@ -50,14 +50,14 @@ if not second_run then
         T.ok(cfg.save(), "save")
     end)
 
-    T.case("sysconfig_nine_keys", function()
+    T.case("sysconfig_eleven_keys", function()
         local sc = T.ok(pc.sysconfig, "picocalc.sysconfig missing")
-        for i = 1, 9 do sc.set("e2e_s" .. i, "v" .. i) end
+        for i = 1, 11 do sc.set("e2e_s" .. i, "v" .. i) end
         local missing = {}
-        for i = 1, 9 do
+        for i = 1, 11 do
             if sc.get("e2e_s" .. i) ~= "v" .. i then missing[#missing + 1] = "e2e_s" .. i end
         end
-        for i = 1, 9 do sc.set("e2e_s" .. i, nil) end
+        for i = 1, 11 do sc.set("e2e_s" .. i, nil) end
         T.eq(#missing, 0, "dropped: " .. table.concat(missing, ","))
     end)
 

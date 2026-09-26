@@ -33,18 +33,20 @@ static void test_set_get_delete(void) {
 
 static void test_entry_limit(void) {
   reset();
-  char k[8];
+  char k[8], last[8], over[8];
   for (int i = 0; i < CONFIG_MAX_ENTRIES + 1; i++) {
     snprintf(k, sizeof(k), "k%d", i);
     config_set(k, "v");
   }
+  snprintf(last, sizeof(last), "k%d", CONFIG_MAX_ENTRIES - 1);
+  snprintf(over, sizeof(over), "k%d", CONFIG_MAX_ENTRIES);
   CHECK_STR(config_get("k0"), "v");
-  CHECK_STR(config_get("k7"), "v");
-  CHECK(config_get("k8") == NULL);  // 9th silently dropped
+  CHECK_STR(config_get(last), "v");
+  CHECK(config_get(over) == NULL);  // one past the cap is silently dropped
   // Deleting frees a slot.
   config_set("k0", NULL);
-  config_set("k8", "v");
-  CHECK_STR(config_get("k8"), "v");
+  config_set(over, "v");
+  CHECK_STR(config_get(over), "v");
 }
 
 static void test_length_limits(void) {
@@ -157,13 +159,20 @@ static void test_load_tolerates(void) {
   sdfake_put(PATH, "{\"a", 3);
   CHECK(config_load());
   CHECK(config_get("a") == NULL);
-  // More than 8 entries in the file: the first 8 load.
-  const char *nine = "{\"1\":\"a\",\"2\":\"a\",\"3\":\"a\",\"4\":\"a\",\"5\":\"a\","
-                     "\"6\":\"a\",\"7\":\"a\",\"8\":\"a\",\"9\":\"a\"}";
-  sdfake_put(PATH, nine, strlen(nine));
+  // More entries in the file than the store holds: the first
+  // CONFIG_MAX_ENTRIES load.
+  char many[256] = "{", e[16], last[8], over[8];
+  for (int i = 1; i <= CONFIG_MAX_ENTRIES + 1; i++) {
+    snprintf(e, sizeof(e), "%s\"%d\":\"a\"", i > 1 ? "," : "", i);
+    strcat(many, e);
+  }
+  strcat(many, "}");
+  sdfake_put(PATH, many, strlen(many));
   CHECK(config_load());
-  CHECK_STR(config_get("8"), "a");
-  CHECK(config_get("9") == NULL);
+  snprintf(last, sizeof(last), "%d", CONFIG_MAX_ENTRIES);
+  snprintf(over, sizeof(over), "%d", CONFIG_MAX_ENTRIES + 1);
+  CHECK_STR(config_get(last), "a");
+  CHECK(config_get(over) == NULL);
   // Missing file.
   sdfake_reset();
   CHECK(!config_load());

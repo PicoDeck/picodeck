@@ -5,6 +5,7 @@
 #include "../drivers/wifi.h"
 #include "../splash_logo.h"
 #include "clock.h"
+#include "config.h"
 #include "os.h"    // BTN_* constants
 #include "hardware/watchdog.h"
 #include "pico/stdlib.h"
@@ -15,19 +16,147 @@
 #define C_HEADER_BG RGB565(20, 20, 60)
 #define C_TEXT COLOR_WHITE
 #define C_TEXT_DIM COLOR_GRAY
-#define C_BATTERY_OK COLOR_GREEN
-#define C_BATTERY_LO COLOR_RED
 #define C_BORDER RGB565(60, 60, 100)
 
+// ── Header ──────────────────────────────────────────────────────────────────
+// A UI_HEADER_H bar shaded from top to bottom, then a 1px C_BORDER line.
+// Title on the left; clock, WiFi, charging bolt and battery on the right.
+// The icons carry the state, so the header stays grey and navy: colour only
+// flags a problem (low battery, WiFi failure).
+
+#define HDR_TOP_R 34
+#define HDR_TOP_G 36
+#define HDR_TOP_B 84
+#define HDR_BOT_R 16
+#define HDR_BOT_G 18
+#define HDR_BOT_B 48
+#define C_HDR_TEXT RGB565(230, 232, 240)
+#define C_HDR_CLOCK RGB565(150, 155, 175)
+#define C_ICON_DIM RGB565(100, 105, 135)
+#define C_ALERT RGB565(230, 110, 100)
+
+#define HDR_MARGIN 8      // left of the title, right of the battery
+#define HDR_ICON_GAP 8    // between clock, WiFi and battery
+#define BAT_LOW_PCT 15
+
+// Glyphs are rows of '#' (drawn) and '.' (left as background).
+static const char *const k_battery[] = {
+    "###############..",
+    "#.............#..",
+    "#.............#..",
+    "#.............###",
+    "#.............###",
+    "#.............###",
+    "#.............#..",
+    "#.............#..",
+    "###############..",
+};
+#define BAT_W 17
+#define BAT_H 9
+#define BAT_INNER_X 2     // fill bar / digits area: 11x5 at (2,2)
+#define BAT_INNER_Y 2
+#define BAT_INNER_W 11
+
+static const char *const k_bolt[] = {
+    "...#.", "..##.", ".##..", "####.", ".####", "..##.", ".##..", "##...", "#....",
+};
+#define BOLT_W 5
+#define BOLT_H 9
+#define BOLT_GAP 2        // bolt to battery
+
+static const char *const k_wifi[] = {
+    "..#######..",
+    ".#.......#.",
+    "#..#####..#",
+    "..#.....#..",
+    ".#..###..#.",
+    "...#...#...",
+    ".....#.....",
+    "....###....",
+};
+#define WIFI_W 11
+#define WIFI_H 8
+
+// 3x5 digits for the battery percentage (battery_pct setting).
+static const char *const k_digits[10][5] = {
+    {"###", "#.#", "#.#", "#.#", "###"}, {".#.", "##.", ".#.", ".#.", "###"},
+    {"###", "..#", "###", "#..", "###"}, {"###", "..#", ".##", "..#", "###"},
+    {"#.#", "#.#", "###", "..#", "..#"}, {"###", "#..", "###", "..#", "###"},
+    {"###", "#..", "###", "#.#", "###"}, {"###", "..#", "..#", ".#.", ".#."},
+    {"###", "#.#", "###", "#.#", "###"}, {"###", "#.#", "###", "..#", "###"},
+};
+
+static void draw_glyph(int x, int y, const char *const *rows, int h,
+                       uint16_t color) {
+  for (int r = 0; r < h; r++)
+    for (int c = 0; rows[r][c]; c++)
+      if (rows[r][c] == '#')
+        display_set_pixel(x + c, y + r, color);
+}
+
+bool ui_battery_pct_enabled(void) {
+  const char *v = config_get("battery_pct");
+  return v && strcmp(v, "1") == 0;
+}
+
+static void draw_battery(int x, int y, int pct, bool digits) {
+  if (pct > 100)
+    pct = 100;
+  uint16_t c = (pct <= BAT_LOW_PCT) ? C_ALERT : C_HDR_TEXT;
+  draw_glyph(x, y, k_battery, BAT_H, c);
+  int ix = x + BAT_INNER_X, iy = y + BAT_INNER_Y;
+  if (digits) {
+    char buf[4];
+    int n = snprintf(buf, sizeof(buf), "%d", pct);
+    int dx = ix + (BAT_INNER_W - (n * 4 - 1)) / 2;
+    for (int i = 0; i < n; i++)
+      draw_glyph(dx + i * 4, iy, k_digits[buf[i] - '0'], 5, c);
+  } else {
+    int fill = (pct * BAT_INNER_W + 99) / 100;  // any charge shows 1px
+    display_fill_rect(ix, iy, fill, 5, c);
+  }
+}
+
+// Online: bright. Connecting or no internet yet: dim. Failed: dim with a
+// slash. Disconnected (the idle state after the boot time sync) or no WiFi
+// hardware: nothing, and the function returns false.
+static bool draw_wifi(int x, int y, int status) {
+  switch (status) {
+  case WIFI_STATUS_ONLINE:
+    draw_glyph(x, y, k_wifi, WIFI_H, C_HDR_TEXT);
+    return true;
+  case WIFI_STATUS_CONNECTING:
+  case WIFI_STATUS_CONNECTED:
+    draw_glyph(x, y, k_wifi, WIFI_H, C_ICON_DIM);
+    return true;
+  case WIFI_STATUS_FAILED:
+    draw_glyph(x, y, k_wifi, WIFI_H, C_ICON_DIM);
+    for (int i = 0; i < WIFI_H; i++)   // bottom-left to top-right
+      display_set_pixel(x + 2 + i, y + WIFI_H - 1 - i, C_ALERT);
+    return true;
+  default:
+    return false;
+  }
+}
+
 static int s_last_bat = -999;
+static bool s_last_charging = false;
+static bool s_last_bat_pct = false;
 static int s_last_wifi_status = -1;
 static char s_last_clock[16] = "";
+
+static int header_wifi_status(void) {
+  return wifi_is_available() ? (int)wifi_get_status() : -1;
+}
 
 bool ui_needs_header_redraw(void) {
   if (kbd_get_battery_percent() != s_last_bat)
     return true;
-  int cur_wifi = wifi_is_available() ? (int)wifi_get_status() : -1;
-  if (cur_wifi != s_last_wifi_status)
+  if (kbd_is_charging() != s_last_charging)
+    return true;
+  if (ui_battery_pct_enabled() != s_last_bat_pct)
+    return true;
+  if (header_wifi_status() != s_last_wifi_status)
     return true;
 
   if (clock_is_set()) {
@@ -39,51 +168,53 @@ bool ui_needs_header_redraw(void) {
   return false;
 }
 
-void ui_draw_header(const char *title) {
-  display_fill_rect(0, 0, FB_WIDTH, 28, C_HEADER_BG);
-  display_draw_text(8, 8, title ? title : "", C_TEXT, C_HEADER_BG);
+int ui_draw_header(const char *title) {
+  const int span = UI_HEADER_H - 1;
+  for (int y = 0; y < UI_HEADER_H; y++) {
+    int r = HDR_TOP_R + (HDR_BOT_R - HDR_TOP_R) * y / span;
+    int g = HDR_TOP_G + (HDR_BOT_G - HDR_TOP_G) * y / span;
+    int b = HDR_TOP_B + (HDR_BOT_B - HDR_TOP_B) * y / span;
+    display_fill_rect(0, y, FB_WIDTH, 1, RGB565(r, g, b));
+  }
+  display_fill_rect(0, UI_HEADER_H, FB_WIDTH, 1, C_BORDER);
 
-  // Right-side status: lay out right-to-left
-  int x = FB_WIDTH - 8;
+  // Text cells carry a blank descender row, so centre on height - 1.
+  int text_y = (UI_HEADER_H - (display_get_font_height() - 1)) / 2;
+  display_draw_text_transparent(HDR_MARGIN, text_y, title ? title : "",
+                                C_HDR_TEXT);
 
-  // 1. Battery (rightmost)
+  // Right-side status, laid out right to left.
+  int x = FB_WIDTH - HDR_MARGIN;
+
   int bat = kbd_get_battery_percent();
+  bool charging = kbd_is_charging();
+  bool pct_mode = ui_battery_pct_enabled();
   s_last_bat = bat;
+  s_last_charging = charging;
+  s_last_bat_pct = pct_mode;
   if (bat >= 0) {
-    char bat_buf[16];
-    snprintf(bat_buf, sizeof(bat_buf), "Bat:%d%%", bat);
-    int bat_w = (int)strlen(bat_buf) * 6;
-    x -= bat_w;
-    uint16_t c = (bat > 20) ? C_BATTERY_OK : C_BATTERY_LO;
-    display_draw_text(x, 8, bat_buf, c, C_HEADER_BG);
-    x -= 12;
+    x -= BAT_W;
+    draw_battery(x, (UI_HEADER_H - BAT_H) / 2, bat, pct_mode);
+    if (charging) {
+      x -= BOLT_GAP + BOLT_W;
+      draw_glyph(x, (UI_HEADER_H - BOLT_H) / 2, k_bolt, BOLT_H, C_HDR_TEXT);
+    }
+    x -= HDR_ICON_GAP;
   }
 
-  // 2. WiFi
-  s_last_wifi_status = wifi_is_available() ? (int)wifi_get_status() : -1;
-  if (wifi_is_available()) {
-    wifi_status_t status = wifi_get_status();
-    bool connected = (status == WIFI_STATUS_CONNECTED || status == WIFI_STATUS_ONLINE);
-    const char *icon = connected ? "WiFi" : "WiFi!";
-    uint16_t c = connected ? C_BATTERY_OK : C_BATTERY_LO;
+  s_last_wifi_status = header_wifi_status();
+  if (draw_wifi(x - WIFI_W, (UI_HEADER_H - WIFI_H) / 2, s_last_wifi_status))
+    x -= WIFI_W + HDR_ICON_GAP;
 
-    int icon_w = (int)strlen(icon) * 6;
-    x -= icon_w;
-    display_draw_text(x, 8, icon, c, C_HEADER_BG);
-    x -= 12;
-  }
-
-  // 3. Clock
   if (clock_is_set()) {
     char clk_buf[16];
     clock_format(clk_buf, sizeof(clk_buf));
     strncpy(s_last_clock, clk_buf, sizeof(s_last_clock));
-    int clk_w = (int)strlen(clk_buf) * 6;
-    x -= clk_w;
-    display_draw_text(x, 8, clk_buf, C_TEXT, C_HEADER_BG);
+    x -= display_text_width(clk_buf);
+    display_draw_text_transparent(x, text_y, clk_buf, C_HDR_CLOCK);
   }
 
-  display_fill_rect(0, 28, FB_WIDTH, 1, C_BORDER);
+  return UI_HEADER_H + 1;
 }
 
 void ui_draw_footer(const char *left_text, const char *right_text) {

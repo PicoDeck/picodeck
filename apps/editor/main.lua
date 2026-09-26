@@ -732,6 +732,7 @@ local function main()
     term:setFont(FONT_NAMES[current_font])
     
     -- Setup terminal features
+    term:setRenderBounds(21, 302)  -- below ui.drawHeader's 21 rows, above the footer
     term:setLineNumbers(false)
     term:setLineNumberColors(LINE_NUM_FG, LINE_NUM_BG)
     term:setScrollbar(false)

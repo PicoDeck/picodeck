@@ -9,14 +9,18 @@ Standard UI components for consistent app appearance. These draw directly to the
 ### Functions
 
 #### `picocalc.ui.drawHeader(title)`
-Draws a standard header bar at the top of the screen with the given title.
+Draws the standard header bar at the top of the screen: a 20px bar and a 1px border line below it. The title is on the left (in the current font); on the right are the clock (once it is set), a WiFi icon and a battery icon.
+
+- WiFi icon: bright when online; dimmed while connecting or before internet access is confirmed; dimmed with a red slash when the connection failed; absent when WiFi is disconnected or the device has no WiFi.
+- Battery icon: shows the charge as a fill bar, or as a number inside the icon when the **Battery %** setting is on (system menu → Settings; the `battery_pct` key in [API Sysconfig](API-Sysconfig.md)). It turns red at 15% or below, and a lightning bolt appears beside it while charging.
 
 - **Parameters:**
   - `title` (string): Title text to display
-- **Returns:** None
+- **Returns:** (number) the rows the header covers (currently 21). Start your content at that y. Firmware before this return value was added returns nothing and draws a 29-row header, so `picocalc.ui.drawHeader(title) or 29` works on both.
 
 ```lua
-picocalc.ui.drawHeader("My App")
+local top = picocalc.ui.drawHeader("My App")
+picocalc.display.drawText(8, top + 4, "Content", picocalc.display.WHITE)
 ```
 
 ---
@@ -53,10 +57,10 @@ local active = 1
 while true do
     picocalc.input.update()
     picocalc.display.clear(picocalc.display.BLACK)
-    picocalc.ui.drawHeader("My App")
-    active, tab_h = picocalc.ui.drawTabs(20, tabs, active,
+    local top = picocalc.ui.drawHeader("My App")
+    active, tab_h = picocalc.ui.drawTabs(top, tabs, active,
         picocalc.input.BTN_LEFT, picocalc.input.BTN_RIGHT)
-    -- draw content for tabs[active] starting at y=20+tab_h
+    -- draw content for tabs[active] starting at y=top+tab_h
     picocalc.display.flush()
 end
 ```

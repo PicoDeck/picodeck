@@ -79,5 +79,6 @@ picocalc.sysconfig.save()
 | `"wifi_ssid"` | WiFi network name for auto-connect on boot |
 | `"wifi_pass"` | WiFi password |
 | `"brightness"` | Display brightness level |
-| `"timezone"` | Timezone string for clock display |
+| `"tz_offset"` | Clock offset from UTC in minutes (may be negative) |
 | `"dim_timeout_s"` | Idle screen-dim timeout in seconds; `"0"` disables dimming (default `60`) |
+| `"battery_pct"` | `"1"` shows the battery percentage inside the header's battery icon instead of a fill bar (system menu → Settings → Battery %) |
