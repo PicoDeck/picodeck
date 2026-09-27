@@ -3,9 +3,9 @@
 
 Runs the native simulator headless on a copy of the web demo's SD image (the
 apps picodeck.net/try runs) and saves a 320x320 PNG of the screen once the
-launcher is up. Not in --test-mode, which pins the header clock to a fixed
-date: like the web demo, the clock stays unset and isn't drawn. The mock WiFi
-is always up; the battery is set to full. capture-launcher.sh adds it to picodeck-web-sim.zip
+launcher is up, with the header as the web demo draws it: not in --test-mode,
+which pins the clock to a fixed date, so the clock stays unset and isn't drawn;
+WiFi disconnected, as the web build never connects (no icon); battery full. capture-launcher.sh adds it to picodeck-web-sim.zip
 as launcher.png.
 
 Usage: capture-launcher.py SIMULATOR_BINARY WEB_SD_DIR OUT_PNG
@@ -51,6 +51,7 @@ def main() -> int:
                     raise TimeoutError("the launcher did not appear within 30 s")
                 time.sleep(0.25)
             sim.call("set_battery", {"percent": 100, "charging": False})
+            sim.call("set_wifi_state", {"status": "disconnected"})
             time.sleep(1.5)  # a few frames for the header to redraw
             png = sim.screenshot()
         finally:
