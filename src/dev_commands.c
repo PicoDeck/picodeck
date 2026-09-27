@@ -12,6 +12,7 @@
 #include "os/os.h"
 #include "tusb.h"
 #include "pico/stdlib.h"
+#include "hardware/clocks.h"
 #include "hardware/watchdog.h"
 #include <string.h>
 #include <stdio.h>
@@ -504,6 +505,7 @@ static void dev_command_run(void *arg) {
         // The keyboard bus engine's counters (drivers/kbd_i2c.c): "reset"
         // zeroes them first, "fault" makes the next transaction go
         // unanswered so the recovery path runs (tests/e2e/test_kbd_hw.py).
+        // sys_khz is the clock right now: the clock-change test reads it.
         if (strcmp(s_cmd_buf, "kbdstat reset") == 0)
             kbd_i2c_reset_stats();
         else if (strcmp(s_cmd_buf, "kbdstat fault") == 0)
@@ -513,14 +515,14 @@ static void dev_command_run(void *arg) {
         printf("[DEV] Kbd: state=%s window_ms=%lu reads=%lu items=%lu "
                "dropped=%lu bat_reads=%lu bl_writes=%lu errors=%lu "
                "recoveries=%lu max_gap_us=%lu max_read_us=%lu isr_us=%lu "
-               "interval_us=%lu battery=%d\n",
+               "interval_us=%lu battery=%d sys_khz=%lu\n",
                k.state, (unsigned long)k.window_ms, (unsigned long)k.reads,
                (unsigned long)k.items, (unsigned long)k.dropped,
                (unsigned long)k.bat_reads, (unsigned long)k.bl_writes,
                (unsigned long)k.errors, (unsigned long)k.recoveries,
                (unsigned long)k.max_gap_us, (unsigned long)k.max_read_us,
                (unsigned long)k.isr_us, (unsigned long)k.interval_us,
-               k.battery);
+               k.battery, (unsigned long)(clock_get_hz(clk_sys) / 1000u));
     } else if (strncmp(s_cmd_buf, "keypress ", 9) == 0 ||
                strncmp(s_cmd_buf, "keydown ", 8) == 0 ||
                strncmp(s_cmd_buf, "keyup ", 6) == 0) {

@@ -1,7 +1,8 @@
 """The asynchronous keyboard bus on the device: the engine polls the STM32 in
 the background (cadence, key-to-ring latency bound, interrupt cost),
 input.update() no longer waits on the 10 kHz bus, a bus fault recovers, a
-clock change keeps the keyboard, idle dimming still drives the backlight.
+clock change keeps the keyboard, reads stop while nobody polls, idle dimming
+still drives the backlight.
 The simulator has no keyboard bus (simulator/stubs/keyboard_stub.c).
 
 KBD_SOAK_S=<seconds> runs the long soak; KBD_MANUAL=1 runs the keys-held
@@ -44,8 +45,9 @@ def test_engine_polls_in_background(target):
     assert s["state"] in ("wait", "busy"), s
     assert s["errors"] == 0, s
     assert s["reads"] >= 30 * s["window_ms"] // 1000, s
-    # From an empty answer to the next read's result: the bound on how long a
-    # key waits in the STM32 before it reaches the ring.
+    # From an empty answer to the next read's result (~16 ms: the 10 ms
+    # interval plus a ~6 ms read): with the rest of the read a key just
+    # missed, the bound on how long it waits in the STM32 (~22 ms).
     assert s["max_gap_us"] <= 25000, s
     assert s["max_read_us"] <= 8000, s
     assert s["isr_us"] * 100 <= s["window_ms"] * 1000, s  # < 1% of Core 0
@@ -102,18 +104,27 @@ T.done()
 """)
 
 
+# The app answers every dev command inside some input.update()'s service
+# pass (a 1-3 ms stall), so the harness's 0.5 s `status` polling would land
+# in the measurement window: nothing is sent until the fixture's 5 s are over.
 def test_input_update_does_not_wait_for_the_bus(target):
     target.stage_lua_app("kbd_cost", COST, id="com.test.kbd_cost")
     target.delete_file("/data/com.test.kbd_cost/cost.json")
-    run = target.run_lua_app("kbd_cost", timeout=60)
+    target.ensure_launcher()
+    kbdstat(target, "reset")
+    run = target.run_lua_app("kbd_cost", timeout=60, quiet_s=8.0)
     run.assert_clean_exit()
     run.assert_all_passed(["update_cost"])
     r = json.loads(target.read_file("/data/com.test.kbd_cost/cost.json"))
-    print("input.update:", r)
+    s = kbdstat(target)
+    print("input.update:", r, "\nengine:", s)
     assert r["p99_us"] <= 300, r
-    # P0: 20 stalls/s of 5-7 ms. A few can remain from harness commands that
-    # update()'s service pass runs.
-    assert r["stalls_ge2ms"] <= 10, r
+    # P0's blocking driver stalled update() 20 times a second for 5-7 ms:
+    # ~100 stalls in this window. With no harness command in it, the engine
+    # leaves none; 2 is room for a stray one (a bus recovery takes ~12 ms)
+    # that still fails anything like the old driver by a factor of 50.
+    assert r["stalls_ge2ms"] <= 2, r
+    assert s["errors"] == 0, s
 
 
 # Review Focus 4: a real abort (the next transaction goes to an address
@@ -148,7 +159,9 @@ T.done()
 
 
 # Review Focus 3: the launcher switches to the app's clock (pausing the
-# engine) and back to 200 MHz when it exits.
+# engine) and back to 200 MHz when it exits. The counters are reset once, at
+# the launcher, so each reading covers the switches before it: a transaction
+# a switch cut or broke shows as an error or a recovery.
 def test_clock_change_keeps_the_bus(target):
     manifest = {"id": "com.test.kbd_clock", "name": "kbd_clock",
                 "description": "E2E inline test app", "version": "1.0",
@@ -158,19 +171,63 @@ def test_clock_change_keeps_the_bus(target):
                          files={"app.json": json.dumps(manifest)})
     target.ensure_launcher()
     target.delete_file("/data/com.test.kbd_clock/test_results.json")
-    target.launch_app("kbd_clock")
-    time.sleep(2)
     kbdstat(target, "reset")
-    time.sleep(3)
-    during = kbdstat(target)
+    target.launch_app("kbd_clock")
+    time.sleep(4)
+    during = kbdstat(target)  # after the switch to 300 MHz
     target.wait_for_results("com.test.kbd_clock", timeout=30)
     target.ensure_launcher()
-    kbdstat(target, "reset")
     time.sleep(3)
-    after = kbdstat(target)
+    after = kbdstat(target)  # after the switch back to 200 MHz
     print("at 300 MHz:", during, "\nback at 200 MHz:", after)
-    for s in (during, after):
-        assert s["errors"] == 0 and s["reads"] >= 90, s
+    assert during["sys_khz"] == 300000, during
+    assert during["errors"] == 0 and during["recoveries"] == 0, during
+    assert during["reads"] >= 90, during
+    assert after["sys_khz"] == 200000, after
+    assert after["errors"] == 0 and after["recoveries"] == 0, after
+    assert after["reads"] >= during["reads"] + 90, (during, after)
+
+
+UNPOLLED = """
+local T = picocalc.sys.loadlib("picotest")
+T.case("busy_without_update", function()
+  -- Neither input.update() nor sys.sleep(): nothing polls the keyboard.
+  local t_end = picocalc.sys.getTimeMs() + 6000
+  local n = 0
+  while picocalc.sys.getTimeMs() < t_end do n = n + 1 end
+  T.ok(n > 0)
+end)
+T.done()
+"""
+
+
+# Important 1(b): with no kbd_poll() for a second the engine stops reading
+# the STM32 (a watchdog reset after Core 0 stalls then finds the bus idle),
+# and the next poll resumes it. The app never polls; the dev commands below
+# are answered by the Lua hook's service pass, which does not poll either.
+# It reuses the COST fixture's app: the launcher lists at most 64 apps
+# (MAX_APPS) and a well-used test device sits at that cap; the manifest is
+# the same, so restaging main.lua needs no reboot.
+def test_reads_stop_while_nobody_polls(target):
+    target.stage_lua_app("kbd_cost", UNPOLLED, id="com.test.kbd_cost")
+    target.ensure_launcher()
+    target.delete_file("/data/com.test.kbd_cost/test_results.json")
+    target.launch_app("kbd_cost")
+    time.sleep(2.0)  # the launcher's last poll was just before the launch
+    first = kbdstat(target)
+    time.sleep(2.0)
+    second = kbdstat(target)
+    doc = target.wait_for_results("com.test.kbd_cost", timeout=30)
+    target.ensure_launcher()
+    kbdstat(target, "reset")
+    time.sleep(2.0)
+    after = kbdstat(target)  # the launcher polls again
+    print("unpolled:", first, "\n2 s later:", second, "\nlauncher:", after)
+    assert [c["status"] for c in doc["cases"]] == ["PASS"], doc
+    assert first["state"] == "wait" and first["errors"] == 0, first
+    assert second["reads"] == first["reads"], (first, second)
+    assert second["bat_reads"] == first["bat_reads"], (first, second)
+    assert after["errors"] == 0 and after["reads"] >= 60, after
 
 
 def test_idle_dim_drives_the_backlight(target):
@@ -282,12 +339,16 @@ T.done()
 
 # The spec's acceptance: input.update() under 0.3 ms with keys held. Needs a
 # person: the app waits (up to 2 min) for the first key, then measures 8 s.
+# That window starts whenever the keys go down, so the harness cannot stay
+# out of it; polling `status` every 10 s lets at most one command (one
+# service-pass stall) land in it.
 @pytest.mark.skipif(not MANUAL, reason="set KBD_MANUAL=1 and hold keys")
 def test_input_update_cost_with_keys_held(target):
     target.stage_lua_app("kbd_held", HELD, id="com.test.kbd_held")
     target.delete_file("/data/com.test.kbd_held/held.json")
+    target.ensure_launcher()
     kbdstat(target, "reset")
-    run = target.run_lua_app("kbd_held", timeout=200)
+    run = target.run_lua_app("kbd_held", timeout=200, poll_s=10.0)
     run.assert_clean_exit()
     run.assert_all_passed(["held_cost"])
     r = json.loads(target.read_file("/data/com.test.kbd_held/held.json"))
@@ -295,5 +356,8 @@ def test_input_update_cost_with_keys_held(target):
     print("keys held:", r, "\nengine:", s)
     assert r["events"] >= 10, r  # keys really were held (downs + repeats)
     assert r["p99_us"] <= 300, r
-    assert r["stalls_ge2ms"] <= 10, r
+    # P0's blocking driver: ~160 stalls of 5-7 ms in 8 s. One can come from
+    # the harness's status poll, and 2 more are room for a stray one (as in
+    # the COST test).
+    assert r["stalls_ge2ms"] <= 3, r
     assert s["items"] >= 10 and s["errors"] == 0, s
