@@ -72,6 +72,7 @@ picodeck_unit_test(test_module_path SOURCES ${SRC}/os/module_path.c ${SRC}/os/fs
 # Clip-once rasterisers shared by the firmware display and the simulator.
 picodeck_unit_test(test_display_clip INCLUDES ${SRC}/drivers)
 target_link_libraries(test_display_clip PRIVATE m)
+target_compile_options(test_display_clip PRIVATE -ffp-contract=off)
 # Lua float formatting vs glibc (built without PICODECK_LUA_SPRINTF: no luaconf).
 picodeck_unit_test(test_numfmt SOURCES ${SRC}/os/lua_numfmt.c)
 target_link_libraries(test_numfmt PRIVATE m)
