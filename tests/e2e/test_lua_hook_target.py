@@ -36,8 +36,20 @@ end)
 coroutine.resume(co)
 coroutine.close(co)
 """
+# A failed coroutine.wrap runs its __close handlers (here a tight loop)
+# inside the coroutine, on the way out through the error (Minor #4).
+WRAP_CLOSE = """
+local f = coroutine.wrap(function()
+  local t <close> = setmetatable({}, { __close = function()
+    local x = 0 while true do x = x + 1 end
+  end })
+  error("boom")
+end)
+f()
+"""
 CASES = {"tight": TIGHT, "coro": CORO, "nested": NESTED,
-         "after_switches": AFTER_SWITCHES, "close": CLOSE}
+         "after_switches": AFTER_SWITCHES, "close": CLOSE,
+         "wrap_close": WRAP_CLOSE}
 
 
 @pytest.mark.parametrize("name", sorted(CASES))

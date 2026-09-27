@@ -565,6 +565,11 @@ static void test_tri_f_degenerate_and_huge(void) {
   disp_fill_tri_f(screen(s_got), CW, &c, 1, 1, 9, 9, 17, 17, 7);   // collinear
   disp_fill_tri_f(screen(s_got), CW, &c, NAN, 1, 9, 9, 1, 17, 7);
   disp_fill_tri_f(screen(s_got), CW, &c, 1, 1, INFINITY, 9, 1, 17, 7);
+  // A near-horizontal sliver with a huge x span: the edge slope overflows to
+  // inf and 0 * inf (yc exactly at the top vertex's y) yields NaN — the row
+  // must be skipped, not filled across the whole clip (Minor #3).
+  disp_fill_tri_f(screen(s_got), CW, &c, 300.0f, 0.5f, 310.0f,
+                  nextafterf(0.5f, 1.0f), 1e32f, nextafterf(0.5f, 1.0f), 7);
   CHECK(same("degenerate tri_f"));
   // Huge: covers the whole clip, finishes fast.
   reset(0);

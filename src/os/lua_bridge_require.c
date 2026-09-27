@@ -50,11 +50,16 @@ static int l_require(lua_State *L) {
     return luaL_error(L, "module '%s' not found:\n\tno file '%s'\n\tno file '%s'",
                       name, app_path, lib_path);
 
+  // Pushed before the read, not after: lua_pushfstring can itself raise a
+  // Lua memory error. If that happened while `src` (a plain umm buffer, not
+  // Lua-owned) was already allocated, the longjmp would skip the umm_free
+  // below and leak it. Pushing first means the only allocation that can fail
+  // here is one with nothing yet to leak.
+  lua_pushfstring(L, "@%s", path);                          // 3: chunk name
   char *src = NULL;
   int n = 0;
   if (size > 0 && !(src = sdcard_read_file(path, &n)))
     return luaL_error(L, "require: cannot read '%s'", path);
-  lua_pushfstring(L, "@%s", path);                          // 3: chunk name
   int st = luaL_loadbufferx(L, src ? src : "", src ? (size_t)n : 0,
                             lua_tostring(L, 3), "t");
   if (src) umm_free(src);

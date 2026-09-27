@@ -19,7 +19,8 @@ SCENE_DIR = GOLDEN_DIR.parent / "apps" / "gfx3d_scene"
 # P0: the same 804-triangle strip took 41 800 us of CPU in pure Lua with the
 # fastest runtime. gfx3d measured ~17.4 ms avg on this branch (2.4x); this is
 # a regression guard on the median (robust to harness-polling spikes), not
-# the design target — see the Phase 3 follow-up to optimise geometry/raster.
+# the design target — see the gfx3d Perf/Follow-ups note in src/os/CLAUDE.md
+# to optimise geometry/raster.
 CPU_US_MEDIAN_MAX_800 = 20000
 
 

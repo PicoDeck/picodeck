@@ -83,7 +83,7 @@ Places the camera at `e` looking at `t`. `u` is the up direction (default `0, 1,
 ---
 
 #### `picocalc.gfx3d.setLight(dx, dy, dz [, ambient])`
-Sets the direction **towards** the light and the ambient level (0–1, default 0.25). Each face is lit by `ambient + (1 − ambient) · max(0, n·l)`.
+Sets the direction **towards** the light and the ambient level (default 0.25). Each face is lit by `ambient + (1 − ambient) · max(0, n·l)`. `ambient` is clamped to 0–1; values outside that range are not an error.
 
 ---
 
@@ -137,6 +137,7 @@ Draws a camera-facing image centred at `(x, y, z)`, `size` world units tall, sor
 - `sx, sy, sw, sh` choose a source rectangle, such as a frame of a sheet.
 - The image's transparent colour is honoured.
 - The image stays alive until the next `beginScene()`.
+- Unlike `image:drawStretched`'s `{x, y, w, h}` table, the source rectangle here is four positional numbers, so a per-frame sprite call allocates nothing.
 
 ---
 
@@ -160,9 +161,21 @@ Fills the viewport (sky or clear colour) and draws everything, far to near, into
 | `clipped` | Triangles cut by the near plane |
 | `drawn` | Triangles rasterised |
 | `sprites` | Sprites rasterised |
-| `overflow` | Triangles and sprites dropped because the frame held more than 4096 |
+| `overflow` | Triangles and sprites dropped because the frame held more than 4096, or because a mesh's scratch memory could not be allocated |
 | `us_geom` | Microseconds spent in the `draw*` calls |
 | `us_raster` | Microseconds spent in `endScene` |
+
+`drawn` counts rasterised triangles; a triangle clipped by the near plane can turn into a quad and be rasterised as two triangles, both counted here.
+
+---
+
+### State timing
+Camera, projection, light, fog and viewport settings apply to the `draw*` calls made after they are set — changing one mid-frame affects only later calls in that same frame, not ones already made. The sky is the exception: it is filled once, at `endScene()`, from the camera as it is at that point, not as it was during the frame's `draw` calls.
+
+---
+
+### Errors
+`draw`, `drawBasis`, `drawBackground`, `drawSprite` and `endScene` raise when called outside `beginScene()`/`endScene()`. `setFog` raises unless `0 <= near < far`. `lookAt` raises when `eye` equals `target`, or when `up` is parallel to the view direction. `drawBasis` raises when `forward` or `up` is the zero vector, or when they are parallel.
 
 ---
 
@@ -188,6 +201,8 @@ Measured on the device (RP2350 at 200 MHz, a 320×240 viewport with sky and fog,
 | 1602 | 855 | 29171 µs | 15238 µs | 6346 µs |
 
 A full-screen `display.flush()` takes 17.4 ms of DMA (overlapped with the next frame's work), so 30 fps leaves about 33 ms of CPU per frame.
+
+The "CPU per frame" column is the whole timed loop — `lookAt`, `beginScene`, the Lua loop over `draw` calls, `endScene`, and any OS service work that lands inside the frame (for example serial polling by a test harness) — so it exceeds the sum of the `draw`-calls and `endScene` columns, which are gfx3d's own work.
 
 ### Example
 ```lua

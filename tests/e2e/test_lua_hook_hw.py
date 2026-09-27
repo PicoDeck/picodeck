@@ -39,13 +39,16 @@ end)
 T.done()
 """
 
-# P0 (specs/2026-09-27-p0-lua-perf-findings.md): 491 ns/iter with the
-# permanent count hook, 189 hook-free at -Os, 169 hook-free with the Lua core
-# at -O2. On this branch -Os measured 196 and -O2 170.5; 185 separates them.
-# The fixture times the loop 3x and keeps the fastest (best-of-3): harness
-# status polling during a run only ever adds time, never subtracts it, so
-# the minimum is the least-noisy estimate of the true per-iteration cost.
-EMPTY_LOOP_NS_MAX = 185.0
+# This guard's job is catching the per-instruction hook tax coming back:
+# P0 (specs/2026-09-27-p0-lua-perf-findings.md) measured 491 ns/iter with the
+# permanent count hook. Hook-free measures ~170-181 ns/iter (-O2) and drifts
+# a few % with firmware code layout/XIP cache effects, so the guard sits well
+# above that — nowhere near 491, where a regression would put it back. -O2
+# itself is pinned separately by tests/unit/test_build_flags.py. The fixture
+# times the loop 3x and keeps the fastest (best-of-3): harness status polling
+# during a run only ever adds time, never subtracts it, so the minimum is the
+# least-noisy estimate of the true per-iteration cost.
+EMPTY_LOOP_NS_MAX = 250.0
 
 
 def test_vm_runs_without_per_instruction_hook_cost(target):

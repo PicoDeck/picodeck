@@ -187,15 +187,18 @@ static int l_gfx3d_newMesh(lua_State *L) {
 // ── Camera, projection, light, fog, sky ─────────────────────────────────────
 
 static int l_gfx3d_setViewport(lua_State *L) {
-  int x = (int)lb_checkint(L, 1), y = (int)lb_checkint(L, 2);
-  int w = (int)lb_checkint(L, 3), h = (int)lb_checkint(L, 4);
+  // int64_t locals: x, y, w, h are each any 32-bit integer the app passes,
+  // so x + w / y + h (and the negative-origin fixups below) must not
+  // overflow a 32-bit int before the clamp brings them back into range.
+  int64_t x = lb_checkint(L, 1), y = lb_checkint(L, 2);
+  int64_t w = lb_checkint(L, 3), h = lb_checkint(L, 4);
   if (x < 0) { w += x; x = 0; }
   if (y < 0) { h += y; y = 0; }
   if (x + w > FB_WIDTH) w = FB_WIDTH - x;
   if (y + h > FB_HEIGHT) h = FB_HEIGHT - y;
   if (w < 1 || h < 1)
     return luaL_error(L, "gfx3d.setViewport: the viewport must overlap the screen");
-  gfx3d_set_viewport(ctx(L), x, y, w, h);
+  gfx3d_set_viewport(ctx(L), (int)x, (int)y, (int)w, (int)h);
   return 0;
 }
 
@@ -352,8 +355,13 @@ static int l_gfx3d_drawSprite(lua_State *L) {
   const float pos[3] = {lb_checkfloat(L, 2), lb_checkfloat(L, 3), lb_checkfloat(L, 4)};
   const float size = lb_checkfloat(L, 5);
   if (!(size > 0.0f)) return luaL_argerror(L, 5, "size must be positive");
-  int sx = (int)lb_optint(L, 6, 0), sy = (int)lb_optint(L, 7, 0);
-  int sw = (int)lb_optint(L, 8, img->w - sx), sh = (int)lb_optint(L, 9, img->h - sy);
+  // int64_t locals: sx/sy/sw/sh are each any 32-bit integer the app passes,
+  // so img->w - sx / img->h - sy (the default values and the clamps below)
+  // must not overflow a 32-bit int before gfx3d_draw_sprite's own range
+  // check narrows them.
+  int64_t sx = lb_optint(L, 6, 0), sy = lb_optint(L, 7, 0);
+  int64_t sw = lb_optint(L, 8, (lua_Integer)(img->w - sx));
+  int64_t sh = lb_optint(L, 9, (lua_Integer)(img->h - sy));
   const float bias = lb_optfloat(L, 10, 0.0f);
   if (sx < 0) { sw += sx; sx = 0; }
   if (sy < 0) { sh += sy; sy = 0; }
@@ -362,7 +370,8 @@ static int l_gfx3d_drawSprite(lua_State *L) {
   if (sw <= 0 || sh <= 0 || s_nsprites >= 0xFFFE) return 0;
   const int slot = s_nsprites + 1;
   const uint32_t t0 = now_us();
-  const bool kept = gfx3d_draw_sprite(s_g, slot, pos, size, sx, sy, sw, sh, bias);
+  const bool kept = gfx3d_draw_sprite(s_g, slot, pos, size, (int)sx, (int)sy,
+                                      (int)sw, (int)sh, bias);
   s_us_geom += now_us() - t0;
   if (kept) {
     lua_getfield(L, LUA_REGISTRYINDEX, SPRITES_KEY);

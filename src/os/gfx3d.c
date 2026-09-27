@@ -14,6 +14,8 @@
 #endif
 
 #define REC_END 0xFFFFu
+_Static_assert(GFX3D_CAPACITY < REC_END,
+               "record indices are uint16 with REC_END as the terminator");
 #define BG_BUCKET GFX3D_BUCKETS
 enum { REC_TRI = 0, REC_SPRITE = 1 };
 
@@ -503,6 +505,12 @@ static void process_mesh(gfx3d_t *g, const gfx3d_mesh_t *m,
   int n_one = 0;
   for (int t = 0; t < m->ntris; t++) {
     const float *pl = &m->plane[4 * t];
+    if (pl[0] == 0.0f && pl[1] == 0.0f && pl[2] == 0.0f) {
+      // Zero-area triangle (gfx3d_mesh_finish): never faces the eye, so it
+      // never draws, even DOUBLE_SIDED.
+      g->stats.culled++;
+      continue;
+    }
     const unsigned fl = m->flags[t];
     const bool front = dot3(pl, xf->eye) - pl[3] > 0.0f;
     if (!front && !(fl & GFX3D_DOUBLE_SIDED)) {

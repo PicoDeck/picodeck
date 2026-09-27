@@ -189,11 +189,15 @@ static lua_State *volatile s_running_L = NULL;
 
 void lua_bridge_set_running(lua_State *L) { s_running_L = L; }
 
-// Instructions between two count-hook calls. Each call is a few flag reads
-// unless the full service pass is due (see lua_service below). The count
-// adapts (menu_lua_hook) so the hook fires about every LUA_HOOK_TARGET_US of
-// wall time: up to LUA_HOOK_COUNT_MAX in compute-bound code (the old fixed
-// 256 cost ~10-25% of VM time), down to LUA_HOOK_COUNT_MIN in apps that spend
+// Instructions between two count-hook calls of the SYNCHRONOUS count hook
+// (the simulator, the web build, and firmware's rare "no alarm slot"
+// fallback — see lua_bridge_hook_start below). Firmware's normal timer-armed
+// hook always installs a count of 1 (the 1 ms timer re-arms it), so this
+// adaptive count never applies there. Each call is a few flag reads unless
+// the full service pass is due (see lua_service below). The count adapts
+// (menu_lua_hook) so the hook fires about every LUA_HOOK_TARGET_US of wall
+// time: up to LUA_HOOK_COUNT_MAX in compute-bound code (the old fixed 256
+// cost ~10-25% of VM time), down to LUA_HOOK_COUNT_MIN in apps that spend
 // their time in C calls (a draw loop runs a few instructions per frame, so a
 // large fixed count would delay exit_app and dev commands by seconds).
 #define LUA_HOOK_COUNT_MIN 128
@@ -206,9 +210,11 @@ void lua_bridge_set_running(lua_State *L) { s_running_L = L; }
 // Longest gap between two full service passes while the hook fires.
 #define LUA_SERVICE_PERIOD_US 5000u
 
-// Wall time of the last hook call, any thread (Core 0). The count itself is
-// per thread (lua_newthread copies it; lua_sethook sets only the running
-// thread's), so the hook reads it back with lua_gethookcount.
+// Wall time of the last hook call, any thread (Core 0). Only maintained by
+// the synchronous count hook's adaptive rescale below: firmware's normal
+// timer-armed hook never updates it. The count itself is per thread
+// (lua_newthread copies it; lua_sethook sets only the running thread's), so
+// the hook reads it back with lua_gethookcount.
 static uint32_t s_last_hook_us = 0;
 
 static void menu_lua_hook(lua_State *L, lua_Debug *ar);
@@ -272,13 +278,18 @@ void lua_bridge_raise_exit(lua_State *L) {
   // counts are per thread, so a raise from a coroutine that was created
   // before the first one (or never ran since) arms that thread too. The main
   // thread as well: a coroutine that raised is dead once resume returns, and
-  // the thread that resumed it has its own count.
-  if (lua_gethookcount(L) != 1)
+  // the thread that resumed it has its own count. Check the mask too, not
+  // just the count: a hook disarmed mid-way (count already 1, but mask 0 —
+  // e.g. the async timer's window between menu_lua_hook disarming it and the
+  // next 1 ms re-arm) must be re-armed immediately rather than waiting for
+  // the timer.
+  if (lua_gethookcount(L) != 1 || !(lua_gethookmask(L) & LUA_MASKCOUNT))
     lua_bridge_install_hook(L, 1);
   lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
   lua_State *main = lua_tothread(L, -1);
   lua_pop(L, 1);
-  if (main && main != L && lua_gethookcount(main) != 1)
+  if (main && main != L &&
+      (lua_gethookcount(main) != 1 || !(lua_gethookmask(main) & LUA_MASKCOUNT)))
     lua_bridge_install_hook(main, 1);
   lua_pushlightuserdata(L, &lua_bridge_exit_tag);
   lua_error(L);
@@ -300,14 +311,17 @@ void lua_bridge_exit_reset(lua_State *L) {
 }
 
 // ── Service pass (see lua_bridge.h) ─────────────────────────────────────────
-// The count hook fires every LUA_HOOK_COUNT instructions. It always does the
-// cheap part (watchdog, exit request, Sym press: flag reads) and runs the
-// full pass (HTTP/TCP slot scans, sound callbacks, the serial dev-command
-// poll, which takes the stdio mutex and TinyUSB on firmware, reboot flags,
-// screenshots, low-memory GC) only when work was flagged pending or
-// LUA_SERVICE_PERIOD_US has passed since the last full pass. The period is
-// the latency bound for anything that does not flag itself (HTTP/TCP
-// events, serial dev commands on firmware).
+// The count hook fires every LUA_HOOK_COUNT instructions on the synchronous
+// hook (simulator, web build, firmware's no-alarm-slot fallback); on
+// firmware's normal timer-armed hook it fires as a count-1 hook about once
+// every 1 ms instead (the arming timer, see lua_bridge_hook_start). Either
+// way, it always does the cheap part (watchdog, exit request, Sym press:
+// flag reads) and runs the full pass (HTTP/TCP slot scans, sound callbacks,
+// the serial dev-command poll, which takes the stdio mutex and TinyUSB on
+// firmware, reboot flags, screenshots, low-memory GC) only when work was
+// flagged pending or LUA_SERVICE_PERIOD_US has passed since the last full
+// pass. The period is the latency bound for anything that does not flag
+// itself (HTTP/TCP events, serial dev commands on firmware).
 volatile bool g_lua_service_pending = false;
 static uint32_t s_last_full_pass_us = 0;
 
@@ -401,8 +415,12 @@ void lua_bridge_service(lua_State *L) { lua_service(L, true); }
 
 void lua_bridge_service_poll(lua_State *L) { lua_service(L, false); }
 
-// Instruction-count hook: fires every LUA_HOOK_COUNT Lua opcodes (every
-// opcode once an exit was requested).
+// Instruction-count hook. On the synchronous hook (simulator, web build,
+// firmware's no-alarm-slot fallback) it fires every LUA_HOOK_COUNT Lua
+// opcodes, adaptively rescaled (every opcode once an exit was requested). On
+// firmware's normal timer-armed hook it always fires as a count-1 hook: the
+// 1 ms timer (lua_bridge_arm_cb) re-arms it, so it services once and disarms
+// until the next tick.
 static void menu_lua_hook(lua_State *L, lua_Debug *ar) {
   (void)ar;
 #if LUA_BRIDGE_ASYNC_HOOK

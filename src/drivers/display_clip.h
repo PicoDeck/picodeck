@@ -365,6 +365,9 @@ static inline void disp_fill_tri_f(uint16_t *fb, int stride,
     float xl = disp_edge_x(x0, y0, x2, y2, yc);
     float xr = yc < y1 ? disp_edge_x(x0, y0, x1, y1, yc)
                        : disp_edge_x(x1, y1, x2, y2, yc);
+    // A sub-triangle with zero height on this side (e.g. x1==x2 with
+    // y1==y2, dividing 0/0 in disp_edge_x) yields NaN: nothing to fill.
+    if (xl != xl || xr != xr) continue;
     if (xr < xl) {
       t = xl;
       xl = xr;

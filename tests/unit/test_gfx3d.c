@@ -313,6 +313,39 @@ static void test_near_clip_and_huge_ground(void) {
   gfx3d_free(g);
 }
 
+// A degenerate (collinear) triangle gets a zero plane normal from
+// gfx3d_mesh_finish; process_mesh must cull it before the backface test, so
+// DOUBLE_SIDED cannot make it draw.
+static void test_zero_area_culled_even_double_sided(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const float v[9] = {-1, 0, -5, 0, 0, -5, 1, 0, -5};  // collinear: zero area
+  gfx3d_mesh_t *m = tri_mesh(v, RED, GFX3D_DOUBLE_SIDED);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw(g, m, ID, ORIGIN, 1, 0, false);
+  render(g);
+  CHECK_EQ_INT((int)gfx3d_get_stats(g)->drawn, 0);
+  CHECK_EQ_INT((int)gfx3d_get_stats(g)->culled, 1);
+  gfx3d_mesh_free(m);
+  gfx3d_free(g);
+}
+
+// A vertex sitting exactly on the near plane (depth == znear) counts as
+// inside (clip_near's test is du >= 0.0f), so a triangle with one such
+// vertex and two vertices further in front needs no clipping and must still
+// draw without crashing.
+static void test_vertex_on_near_plane_draws(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const float v[9] = {0, 0.05f, -0.5f, -0.3f, -0.3f, -2, 0.3f, -0.3f, -2};
+  gfx3d_mesh_t *m = tri_mesh(v, GREEN, GFX3D_DOUBLE_SIDED | GFX3D_UNLIT);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw(g, m, ID, ORIGIN, 1, 0, false);
+  render(g);
+  CHECK(gfx3d_get_stats(g)->drawn >= 1);
+  CHECK_EQ_INT((int)gfx3d_get_stats(g)->clipped, 0);
+  gfx3d_mesh_free(m);
+  gfx3d_free(g);
+}
+
 static void test_frustum_cull_and_overflow(void) {
   gfx3d_t *g = gfx3d_new(W, H);
   gfx3d_mesh_t *sq = square(1, -5, RED, GFX3D_UNLIT);
@@ -529,6 +562,8 @@ int main(void) {
   test_painter_order_bias_and_stability();
   test_sort_as_one();
   test_near_clip_and_huge_ground();
+  test_zero_area_culled_even_double_sided();
+  test_vertex_on_near_plane_draws();
   test_frustum_cull_and_overflow();
   test_viewport_and_target_clip();
   test_grid_has_no_cracks();
