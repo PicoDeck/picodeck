@@ -76,15 +76,16 @@ uint32_t kbd_get_buttons_pressed(void);
 // Edge-detect: buttons that were released this frame
 uint32_t kbd_get_buttons_released(void);
 
-// Read battery percent from STM32 (0-100). Returns -1 on I2C error.
-// Bit 7 of the raw value is a charging flag — this function masks it off.
+// Battery percent (0-100), -1 until the first read. The bus engine reads it
+// every 5 s in the background; this never touches the bus.
 int kbd_get_battery_percent(void);
 
 // Charging flag from the most recent battery read (kbd_get_battery_percent
 // refreshes it at most every 5 s). False until the first successful read.
 bool kbd_is_charging(void);
 
-// Set LCD backlight brightness 0-255 via STM32
+// Queue a backlight level (0-255) for the bus engine; the latest wins and it
+// is written within ~10 ms. Never blocks.
 void kbd_set_backlight(uint8_t brightness);
 
 void kbd_apply_clock(void);
@@ -105,13 +106,23 @@ bool kbd_consume_screenshot_press(void);
 void kbd_clear_state(void);
 
 // Drop all queued input (the STM32 key FIFO, pending injected keys and
-// chars) and clear the state.  For consent dialogs: a key typed before the
+// chars) and clear the state. Non-blocking; items the STM32 queued before the
+// call never reach the app. For consent dialogs: a key typed before the
 // dialog appeared must not answer it.
 void kbd_discard_pending(void);
 
-// Force I2C bus recovery — useful after USB MSC mode or other bus-corrupting events.
-// Pulses SCL 9 times to clear stuck STM32 state and reinitializes I2C peripheral.
+// Force I2C bus recovery — useful after USB MSC mode or other bus-corrupting
+// events. Pulses SCL 9 times to clear stuck STM32 state and reinitializes the
+// I2C peripheral. Blocks ~12 ms; the bus engine is paused around it.
 void kbd_recover_i2c_bus(void);
+
+// Stop the keyboard bus engine at a transaction boundary (waits <= ~20 ms),
+// e.g. before a clock change; kbd_apply_clock() or kbd_resume_bus() restarts it.
+void kbd_pause_bus(void);
+void kbd_resume_bus(void);
+// FIFO re-read interval once it reads empty; 0 restores the default (10 ms).
+// USB storage mode slows it to 500 ms.
+void kbd_set_poll_interval_ms(uint32_t ms);
 
 // Inject a one-shot button press (BTN_* from os.h). The press is published by
 // the next kbd_poll() and then held for a minimum wall-clock duration

@@ -1,6 +1,7 @@
 #include "dev_commands.h"
 #include "dev_ops.h"
 #include "drivers/display.h"
+#include "drivers/kbd_i2c.h"
 #include "drivers/keyboard.h"
 #include "drivers/mp3_player.h"
 #include "drivers/pio_psram.h"
@@ -497,6 +498,29 @@ static void dev_command_run(void *arg) {
                d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9],
                d[1] ? (unsigned long)(d[10] / d[1]) : 0ul);
         mp3_player_reset_diag();
+    } else if (strcmp(s_cmd_buf, "kbdstat") == 0 ||
+               strcmp(s_cmd_buf, "kbdstat reset") == 0 ||
+               strcmp(s_cmd_buf, "kbdstat fault") == 0) {
+        // The keyboard bus engine's counters (drivers/kbd_i2c.c): "reset"
+        // zeroes them first, "fault" makes the next transaction go
+        // unanswered so the recovery path runs (tests/e2e/test_kbd_hw.py).
+        if (strcmp(s_cmd_buf, "kbdstat reset") == 0)
+            kbd_i2c_reset_stats();
+        else if (strcmp(s_cmd_buf, "kbdstat fault") == 0)
+            kbd_i2c_inject_fault();
+        kbd_i2c_stats_t k;
+        kbd_i2c_get_stats(&k);
+        printf("[DEV] Kbd: state=%s window_ms=%lu reads=%lu items=%lu "
+               "dropped=%lu bat_reads=%lu bl_writes=%lu errors=%lu "
+               "recoveries=%lu max_gap_us=%lu max_read_us=%lu isr_us=%lu "
+               "interval_us=%lu battery=%d\n",
+               k.state, (unsigned long)k.window_ms, (unsigned long)k.reads,
+               (unsigned long)k.items, (unsigned long)k.dropped,
+               (unsigned long)k.bat_reads, (unsigned long)k.bl_writes,
+               (unsigned long)k.errors, (unsigned long)k.recoveries,
+               (unsigned long)k.max_gap_us, (unsigned long)k.max_read_us,
+               (unsigned long)k.isr_us, (unsigned long)k.interval_us,
+               k.battery);
     } else if (strncmp(s_cmd_buf, "keypress ", 9) == 0 ||
                strncmp(s_cmd_buf, "keydown ", 8) == 0 ||
                strncmp(s_cmd_buf, "keyup ", 6) == 0) {
@@ -684,6 +708,7 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   ping           - Check device is responding\n");
         printf("[DEV]   ver            - Show firmware build date/time\n");
         printf("[DEV]   stack          - Main, app and OS-command stack peak use\n");
+        printf("[DEV]   kbdstat [reset|fault] - Keyboard bus engine counters\n");
         printf("[DEV]   exit           - Signal current app to exit (error if none)\n");
         printf("[DEV]   usb            - Enable USB storage mode\n");
         printf("[DEV]   reboot         - Reboot device\n");

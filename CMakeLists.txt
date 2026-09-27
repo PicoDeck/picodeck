@@ -324,6 +324,8 @@ add_executable(picodeck
     src/drivers/mp3_player.c
     src/drivers/video_player.cpp
     src/drivers/keyboard.c
+    src/drivers/kbd_bus.c
+    src/drivers/kbd_i2c.c
     src/drivers/sdcard.c
     src/drivers/wifi.c
     src/drivers/rng.c
