@@ -138,7 +138,8 @@ void usb_msc_enter_mode(void) {
   while (true) {
     uint32_t now = to_ms_since_boot(get_absolute_time());
 
-    // Check ESC key with rate limiting to avoid I2C bus congestion
+    // Check ESC every 50 ms. kbd_poll() does not touch the bus; the engine's
+    // 500 ms idle interval (above) is what limits STM32 traffic here.
     if (now - last_kbd_poll_ms >= KBD_POLL_INTERVAL_MS) {
       kbd_poll();
       last_kbd_poll_ms = now;

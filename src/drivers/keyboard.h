@@ -156,7 +156,8 @@ void kbd_release_buttons(uint32_t buttons);
 void kbd_inject_char(char c);
 
 // ── Event queue (picocalc.input.pollEvent / isKeyDown) ───────────────────────
-// kbd_poll() decodes every STM32 FIFO item, in order, into a small queue
+// kbd_poll() decodes the STM32 FIFO items, in order (up to 8 per poll; the
+// rest wait for the next), into a small queue
 // (KBD_EVENT_QUEUE_LEN in kbd_event_queue.h; the oldest event is dropped when
 // it is full). The queue is independent of kbd_get_char()/the button masks:
 // reading one does not consume the other.

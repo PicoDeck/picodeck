@@ -23,8 +23,9 @@ _Static_assert(KBD_BUS_FIFO_IDLE == KBD_FIFO_IDLE, "kbd_bus.h idle state");
 // after it runs through the bus engine, kbd_i2c.c). pelrun/uf2loader used
 // sleep_ms(16); 1ms is reliable and keeps the probe's ~5s budget short.
 #define KBD_REG_DELAY_MS 1
-#define KBD_I2C_TIMEOUT_US 5000  // 5ms — ample for 100kHz I2C; used only by
-                                 // kbd_init()'s boot probe (50ms once caused
+#define KBD_I2C_TIMEOUT_US 5000  // 5ms per probe transfer (a 1-2 byte
+                                 // transfer takes 2-3 ms at 10 kHz); used only
+                                 // by kbd_init()'s boot probe (50ms once caused
                                  // ~150ms stalls per probe step on failure)
 
 // At most this many FIFO items are decoded per poll, so one poll's worth of
