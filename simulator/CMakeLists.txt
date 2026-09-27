@@ -608,6 +608,8 @@ if(EMSCRIPTEN)
     set_target_properties(picodeck_simulator PROPERTIES
         SUFFIX ".html"
         LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html)
+    # The page glue shell.html loads (and picodeck.net/try/ loads from the zip).
+    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/web/shell.js ${CMAKE_BINARY_DIR}/shell.js COPYONLY)
     target_link_options(picodeck_simulator PRIVATE
         -O2
         -sASYNCIFY
