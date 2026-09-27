@@ -26,8 +26,8 @@ device's known traps (see the task-27 report and CLAUDE.md "Debug"):
     /data/<APP_ID>/test_results.json (picotest) and outcomes from `status`
     polls plus /system/error.log growth. The log is advisory only.
   - The launcher caches app.json at boot: push_app reboots when the pushed
-    manifest (id, name, requirements, min_psram_kb) differs from the one on
-    the card, or when `list` does not show the app.
+    manifest (id, name, requirements, min_psram_kb, system_clock_khz)
+    differs from the one on the card, or when `list` does not show the app.
   - Dev commands while an app runs (src/os/lua_bridge.c lua_bridge_service,
     src/main.c sys_poll, src/os/launcher.c): `reboot` and `reboot-flash`
     are HONOURED mid-app (Lua hook / sys.sleep pass, native sys->poll; a
@@ -443,10 +443,15 @@ class _CountingDeque(collections.deque):
 
 
 def _manifest_key(m: Optional[dict]):
+    """Fields the launcher caches at boot and uses to launch the app (so a
+    change in any of them means the on-device cache is stale and the device
+    must reboot before the new app.json takes effect): id, name,
+    requirements, min_psram_kb, system_clock_khz. Cosmetic-only fields
+    (description, author, version, category) are deliberately excluded."""
     if m is None:
         return None
     return (m.get("id"), m.get("name"), sorted(m.get("requirements") or []),
-            m.get("min_psram_kb"))
+            m.get("min_psram_kb"), m.get("system_clock_khz"))
 
 
 class HwTarget(Target):
