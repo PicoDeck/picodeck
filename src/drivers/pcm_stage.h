@@ -14,9 +14,9 @@
 // mixer, in Core 1's DMA refill ISR). The unread bytes are
 // buf[pos, pos + avail): the reader moves pos and avail forward and never
 // touches the tail, buf[pos + avail, size), so the writer copies into the
-// tail without the lock. compact() and commit() move pos or avail from the
-// writer's side and run under the owner's lock (mp3_player.c's s_stage_cs),
-// as does every other call that changes what the reader uses.
+// tail without the lock. Every call except the writer's copy into the tail
+// runs under the owner's lock (mp3_player.c's s_stage_cs). compact() and
+// commit() move pos or avail from the writer's side.
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -51,7 +51,7 @@ typedef struct {
 
 #define PCM_STAGE_INLINE static inline __attribute__((always_inline))
 
-// Empties the stage and silences it: the next start fades in.
+// Empties the stage and silences it: the next start fades in. (locked)
 PCM_STAGE_INLINE void pcm_stage_reset(pcm_stage_t *s) {
     s->pos = 0;
     s->avail = 0;
@@ -74,7 +74,7 @@ PCM_STAGE_INLINE void pcm_stage_init(pcm_stage_t *s, uint8_t *buf,
     pcm_stage_reset(s);
 }
 
-// The content's format. A zero rate plays at the mixer's rate.
+// The content's format. A zero rate plays at the mixer's rate. (locked)
 PCM_STAGE_INLINE void pcm_stage_set_format(pcm_stage_t *s, uint32_t rate,
                                            uint8_t channels) {
     s->rate = rate ? rate : s->out_rate;
@@ -99,7 +99,7 @@ PCM_STAGE_INLINE void pcm_stage_compact(pcm_stage_t *s) {
 }
 
 // Where the writer copies to, and how many bytes fit there (whole frames).
-// The tail stays put while the reader consumes.
+// The tail stays put while the reader consumes. (writer, locked, with compact)
 PCM_STAGE_INLINE uint8_t *pcm_stage_tail(const pcm_stage_t *s,
                                          uint32_t *space) {
     uint32_t end = s->pos + s->avail;
@@ -115,7 +115,7 @@ PCM_STAGE_INLINE void pcm_stage_commit(pcm_stage_t *s, uint32_t n) {
 
 // Ramps up from the current gain: from silence, or back up from partway
 // through a fade-out, so the gain never jumps. At full gain, or already
-// ramping up: no change.
+// ramping up: no change. (locked)
 PCM_STAGE_INLINE void pcm_stage_fade_in(pcm_stage_t *s) {
     if (s->fade == PCM_FADE_SILENT) {
         s->fade_pos = 0;
@@ -127,7 +127,7 @@ PCM_STAGE_INLINE void pcm_stage_fade_in(pcm_stage_t *s) {
 }
 
 // Ramps down to silence from the current gain. Silent, or already ramping
-// down: no change.
+// down: no change. (locked)
 PCM_STAGE_INLINE void pcm_stage_fade_out(pcm_stage_t *s) {
     if (s->fade == PCM_FADE_NONE) {
         s->fade_pos = 0;
@@ -153,8 +153,9 @@ PCM_STAGE_INLINE void pcm_stage_mix(pcm_stage_t *s, int32_t *l, int32_t *r,
     uint32_t fade_pos = s->fade_pos, played = s->frames_played;
     uint32_t under = s->underruns;
     for (int i = 0; i < frames; i++) {
+        bool starved = avail < fb;
         int32_t lv = 0, rv = 0;
-        if (avail < fb) {
+        if (starved) {
             if (!s->eof)
                 under++;
         } else {
@@ -179,7 +180,10 @@ PCM_STAGE_INLINE void pcm_stage_mix(pcm_stage_t *s, int32_t *l, int32_t *r,
         }
         lv = lv * vol / 256;
         rv = rv * vol / 256;
-        if (fade != PCM_FADE_NONE) {
+        // A fade-in waits for audio (ramping over silence would bring the
+        // first data in at full gain: a click); a fade-out goes on, so a
+        // stop or pause always completes.
+        if (fade == PCM_FADE_OUT || (fade == PCM_FADE_IN && !starved)) {
             uint32_t g = fade == PCM_FADE_IN ? fade_pos
                                              : PCM_STAGE_FADE_FRAMES - fade_pos;
             int32_t gain = (int32_t)(g * 256u / PCM_STAGE_FADE_FRAMES);

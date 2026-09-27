@@ -204,6 +204,27 @@ static void test_fade_reversal_never_jumps(void) {
   CHECK_EQ_INT(s_l[0], 1000 * 60 / 256);
 }
 
+static void test_fade_in_waits_for_audio(void) {
+  pcm_stage_t s;
+  fresh(&s, OUT, 1);
+  pcm_stage_fade_in(&s);
+  mix(&s, PCM_STAGE_FADE_FRAMES);        // starved for a whole ramp's length
+  CHECK(s.fade == PCM_FADE_IN);
+  put_const(&s, 1000, 10);
+  mix(&s, 2);
+  CHECK_EQ_INT(s_l[0], 0);               // the ramp starts with the audio
+  CHECK_EQ_INT(s_l[1], 1000 * 4 / 256);
+}
+
+static void test_fade_out_finishes_while_starved(void) {
+  pcm_stage_t s;
+  fresh(&s, OUT, 1);
+  full(&s);
+  pcm_stage_fade_out(&s);
+  mix(&s, PCM_STAGE_FADE_FRAMES);        // no data: must still reach silence
+  CHECK(s.fade == PCM_FADE_SILENT);
+}
+
 static void test_compact_and_commit_keep_the_order(void) {
   pcm_stage_t s;
   fresh(&s, OUT, 1);
@@ -265,6 +286,8 @@ int main(void) {
   test_fade_in_ramps_up_from_silence();
   test_fade_out_ends_silent_and_keeps_its_data();
   test_fade_reversal_never_jumps();
+  test_fade_in_waits_for_audio();
+  test_fade_out_finishes_while_starved();
   test_compact_and_commit_keep_the_order();
   test_tail_stays_put_while_the_reader_consumes();
   test_tail_space_is_whole_frames();
