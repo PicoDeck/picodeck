@@ -133,7 +133,7 @@ def test_bus_fault_recovers(target):
 
 CLOCK = """
 local T = picocalc.sys.loadlib("picotest")
-T.case("polls_at_250mhz", function()
+T.case("polls_at_300mhz", function()
   local t_end = picocalc.sys.getTimeMs() + 8000
   while picocalc.sys.getTimeMs() < t_end do
     picocalc.input.update()
@@ -151,7 +151,7 @@ def test_clock_change_keeps_the_bus(target):
     manifest = {"id": "com.test.kbd_clock", "name": "kbd_clock",
                 "description": "E2E inline test app", "version": "1.0",
                 "author": "PicoDeck E2E", "requirements": [],
-                "system_clock_khz": 250000}
+                "system_clock_khz": 300000}
     target.stage_lua_app("kbd_clock", CLOCK, id="com.test.kbd_clock",
                          files={"app.json": json.dumps(manifest)})
     target.ensure_launcher()
@@ -166,7 +166,7 @@ def test_clock_change_keeps_the_bus(target):
     kbdstat(target, "reset")
     time.sleep(3)
     after = kbdstat(target)
-    print("at 250 MHz:", during, "\nback at 200 MHz:", after)
+    print("at 300 MHz:", during, "\nback at 200 MHz:", after)
     for s in (during, after):
         assert s["errors"] == 0 and s["reads"] >= 90, s
 
