@@ -5,7 +5,9 @@ clock change keeps the keyboard, idle dimming still drives the backlight.
 The simulator has no keyboard bus (simulator/stubs/keyboard_stub.c).
 
 KBD_SOAK_S=<seconds> runs the long soak; KBD_MANUAL=1 runs the keys-held
-cost check, which needs a person holding keys on the device."""
+cost check, which needs a person holding keys on the device.
+KBD_REBOOT_STRESS=<cycles> runs the rapid-reboot stress test, which also
+needs a person present in case the controller stops answering."""
 import json
 import os
 import re
@@ -212,6 +214,26 @@ def test_bus_soak(target):
         assert s["bat_reads"] > last["bat_reads"], (last, s)
         last = s
     assert last["errors"] <= 10, last
+
+
+REBOOT_STRESS = int(os.environ.get("KBD_REBOOT_STRESS", "0"))
+
+
+# Deliberate resets pause the bus first (kbd_prepare_reset): back-to-back
+# reboots must leave the STM32 answering. A controller that stops answering
+# needs a physical power cycle — run this only with someone at the device.
+@pytest.mark.skipif(REBOOT_STRESS <= 0,
+                    reason="set KBD_REBOOT_STRESS=<cycles> (needs a person present)")
+@pytest.mark.timeout(max(900, REBOOT_STRESS * 90))
+def test_rapid_reboots_leave_the_controller_answering(target):
+    for cycle in range(REBOOT_STRESS):
+        target.ensure_launcher()
+        kbdstat(target, "reset")
+        time.sleep(2)
+        s = kbdstat(target)
+        print(f"reboot cycle {cycle}: {s}", flush=True)
+        assert s["errors"] == 0 and s["reads"] >= 60 and s["battery"] >= 0, s
+        target.reboot()
 
 
 HELD = ("""

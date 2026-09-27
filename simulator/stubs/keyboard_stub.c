@@ -220,6 +220,8 @@ void kbd_pause_bus(void) {}
 
 void kbd_resume_bus(void) {}
 
+void kbd_prepare_reset(void) {}
+
 void kbd_set_poll_interval_ms(uint32_t ms) { (void)ms; }
 
 bool kbd_consume_menu_press(void) {

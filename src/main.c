@@ -411,6 +411,9 @@ static void __attribute__((used)) hardfault_c(uint32_t *frame, uint32_t exc_retu
   // Reboot explicitly — watchdog scratch already has the crash data (saved
   // at the top of this function).  On next boot, crash_log_save() writes it
   // to /system/crashlog.txt.
+  // No kbd_prepare_reset() here: this is a fault handler, so the bus engine
+  // (or the fault itself) may already be mid-transaction and there is no
+  // safe way to wait it out.
   watchdog_reboot(0, 0, 0);
 
   // Fallback if reboot doesn't fire immediately.
@@ -624,6 +627,7 @@ static uint64_t sys_getTimeUs(void) {
 }
 static void sys_reboot(void) {
   crashlog_clear_running(); // intentional — not an unclean exit
+  kbd_prepare_reset();
   watchdog_enable(1, true);
   for (;;)
     tight_loop_contents();
@@ -688,6 +692,7 @@ static void sys_poll(void) {
     crashlog_clear_running(); // intentional — not an unclean exit
     stdio_flush();
     sleep_ms(100);
+    kbd_prepare_reset();
     watchdog_reboot(0, 0, 0);
   }
   if (dev_commands_wants_reboot_flash()) {
@@ -695,6 +700,7 @@ static void sys_poll(void) {
     crashlog_clear_running();
     stdio_flush();
     sleep_ms(100);
+    kbd_prepare_reset();
     reset_usb_boot(0, 0);
   }
   if (dev_commands_wants_reboot_ota()) {
@@ -2286,6 +2292,7 @@ int main(void) {
   printf("[MAIN] launcher_run returned, rebooting\n");
   crashlog_write("OS ERROR", "OS", "launcher", "launcher_run returned");
   stdio_flush();
+  kbd_prepare_reset();
   watchdog_reboot(0, 0, 0);
   while (true)
     tight_loop_contents();

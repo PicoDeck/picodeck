@@ -1046,6 +1046,7 @@ void launcher_run(void) {
       printf("[DEV] Rebooting...\n");
       stdio_flush();
       sleep_ms(100);
+      kbd_prepare_reset();
       watchdog_reboot(0, 0, 0);
     }
     if (dev_commands_wants_reboot_ota()) {
@@ -1064,6 +1065,7 @@ void launcher_run(void) {
       printf("[DEV] Rebooting to BOOTSEL mode...\n");
       stdio_flush();
       sleep_ms(100);
+      kbd_prepare_reset();
       reset_usb_boot(0, 0);
     }
     if (dev_commands_wants_usb()) {

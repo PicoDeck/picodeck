@@ -3,6 +3,7 @@
 #include "small_alloc.h"
 #include "launcher.h"
 #include "../drivers/display.h"
+#include "../drivers/keyboard.h"
 #include "umm_malloc.h"
 #include "umm_malloc_cfg.h"
 #include "hardware/watchdog.h"
@@ -96,6 +97,7 @@ static int l_panic(lua_State *L) {
     sleep_ms(100);
   }
   stdio_flush();
+  kbd_prepare_reset();
   watchdog_reboot(0, 0, 0);
   for (;;) tight_loop_contents();
   return 0;

@@ -586,6 +586,7 @@ static bool menu_loop(lua_State *L, int context) {
       case ITEM_REBOOT:
         save_brightness_if_changed(entry_brightness);
         crashlog_clear_running(); // intentional — not an unclean exit
+        kbd_prepare_reset();
         watchdog_enable(1, true);
         for (;;)
           tight_loop_contents();
@@ -593,6 +594,7 @@ static bool menu_loop(lua_State *L, int context) {
       case ITEM_REBOOT_FLASH:
         save_brightness_if_changed(entry_brightness);
         crashlog_clear_running();
+        kbd_prepare_reset();
         reset_usb_boot(0, 0);
         break; /* unreachable */
       case ITEM_BATTERY_PCT:

@@ -323,6 +323,8 @@ void kbd_pause_bus(void) { kbd_i2c_pause(); }
 
 void kbd_resume_bus(void) { kbd_i2c_resume(); }
 
+void kbd_prepare_reset(void) { kbd_i2c_pause(); }
+
 void kbd_set_poll_interval_ms(uint32_t ms) {
   kbd_i2c_set_interval_us(ms * 1000u);
 }

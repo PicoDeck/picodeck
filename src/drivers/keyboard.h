@@ -121,6 +121,11 @@ void kbd_recover_i2c_bus(void);
 // e.g. before a clock change; kbd_apply_clock() or kbd_resume_bus() restarts it.
 void kbd_pause_bus(void);
 void kbd_resume_bus(void);
+// Call right before a deliberate reset (reboot, BOOTSEL, OTA): stops the
+// keyboard bus engine at a transaction boundary (<= ~20 ms) so the reset
+// never cuts an STM32 transaction mid-byte, which can lock the STM32's I2C
+// slave until a power cycle. Task context, interrupts enabled.
+void kbd_prepare_reset(void);
 // FIFO re-read interval once it reads empty; 0 restores the default (10 ms).
 // USB storage mode slows it to 500 ms.
 void kbd_set_poll_interval_ms(uint32_t ms);

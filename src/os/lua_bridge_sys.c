@@ -7,6 +7,7 @@
 #include "version.h"
 #include "../dev_commands.h"
 #include "../hardware.h"
+#include "../drivers/keyboard.h"
 #include "../drivers/pio_psram.h"
 #include "perf.h"
 #include "hardware/gpio.h"
@@ -72,6 +73,7 @@ static int l_sys_sleep(lua_State *L) {
 static int l_sys_reboot(lua_State *L) {
   (void)L;
   crashlog_clear_running(); // intentional — not an unclean exit
+  kbd_prepare_reset();
   watchdog_enable(1, true);
   for (;;)
     tight_loop_contents();

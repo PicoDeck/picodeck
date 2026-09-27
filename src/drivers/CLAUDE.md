@@ -72,6 +72,7 @@ Subsystem notes for the firmware drivers. The root `CLAUDE.md` holds the cross-c
   - `kbd_discard_pending` is non-blocking: it empties the ring, and the engine drops items until a FIFO read begun after the call reads empty.
   - A failed transaction (NACK, timeout) stops the engine. The next `kbd_poll()` runs the ~12 ms bit-banged bus recovery in task context: at once for the first 10 failures in a row, then at most every 100 ms.
   - Clock changes pause it: `kbd_pause_bus` in `launcher_apply_clock`, resumed by `kbd_apply_clock`.
+  - Deliberate resets (dev `reboot`/`reboot-flash`, the system menu, `sys.reboot`, OTA, the out-of-memory reboot) call `kbd_prepare_reset()` first, so a reset never cuts an STM32 transaction mid-byte (an interrupted transaction can lock the STM32's I2C slave until a power cycle).
   - USB storage mode slows it to one read per 500 ms (`kbd_set_poll_interval_ms`).
   - It stays on Core 0, because `sys.pauseBackground` stops Core 1.
 - Dev command `kbdstat` (`reset` zeroes, `fault` NACKs the next transaction) prints the engine's counters. `tests/e2e/test_kbd_hw.py` checks cadence, cost, recovery, a clock change and idle dimming on the device.
