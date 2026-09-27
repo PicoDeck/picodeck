@@ -25,9 +25,8 @@
 static const uint32_t MAX_SELECT_FS64 = 125000000u;
 // tCPH: min CS-high 50 ns (datasheet 18 ns; 50 ns keeps SparkFun's margin).
 static const uint32_t MIN_DESELECT_FS = 50000000u;
-// APS6404L-3SQR is rated 109 MHz at 3.3 V; cap at 84 MHz for margin on this
-// board (the same chip already showed marginal behaviour at reset timings).
-static const uint32_t PSRAM_MAX_SCK_HZ = 84000000u;
+// The SCK divider itself (QMI_PSRAM_MAX_SCK_HZ, qmi_psram_clkdiv()) lives in
+// qmi_psram.h — pure and host-tested by tests/unit/test_qmi_psram_clkdiv.c.
 
 #define PSRAM_CMD_QUAD_END    0xF5
 #define PSRAM_CMD_QUAD_ENABLE 0x35
@@ -155,9 +154,7 @@ static size_t __no_inline_not_in_flash_func(read_psram_id)(void) {
 
 static void __no_inline_not_in_flash_func(apply_timing)(uint32_t rxdelay) {
   uint32_t sys_hz = clock_get_hz(clk_sys);
-  uint32_t divider = (sys_hz + PSRAM_MAX_SCK_HZ - 1) / PSRAM_MAX_SCK_HZ;
-  if (divider < 1)
-    divider = 1;
+  uint32_t divider = qmi_psram_clkdiv(sys_hz);
 
   uint32_t fs_per_cycle = (uint32_t)(SEC_TO_FS / sys_hz);
   uint32_t max_select = MAX_SELECT_FS64 / fs_per_cycle;
