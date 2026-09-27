@@ -130,7 +130,11 @@
 
 <script>
   var statusEl = document.getElementById('status');
+  // /try/?app=<id, name or folder> starts that app instead of the launcher
+  // (the simulator's --launch); picodeck.net's home page links here.
+  var launchApp = new URLSearchParams(location.search).get('app');
   var Module = {
+    arguments: launchApp && /^[\w .-]{1,64}$/.test(launchApp) ? ['--launch', launchApp] : [],
     canvas: document.getElementById('canvas'),
     // The dev-command stub polls stdin; Emscripten's default is window.prompt().
     stdin: function () { return null; },
