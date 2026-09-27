@@ -283,6 +283,10 @@ static bool lua_run_app(const app_entry_t *app) {
   fileplayer_reset();
   sound_init();
   mp3_player_reset();
+  // Every source is silent now: stop the output too, so the launcher runs
+  // without its refill interrupt and the next app starts it afresh (at its
+  // own clock).
+  audio_output_stop();
 
   return true;
 }

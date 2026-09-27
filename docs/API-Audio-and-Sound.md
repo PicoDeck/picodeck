@@ -6,7 +6,7 @@ Audio output, including simple tones and full sample/file playback.
 
 ## picocalc.audio
 
-Simple tone generation via PWM. Useful for beeps, alerts, and simple sound effects.
+Tones, the master volume and a raw PCM stream. One mixer sums everything that makes sound (tones, the stream, SamplePlayers, the FilePlayer and the MOD player) into a single 44.1 kHz output, so they all play at once.
 
 ### Functions
 
@@ -38,14 +38,14 @@ picocalc.audio.stopTone()
 ---
 
 #### `picocalc.audio.setVolume(volume)`
-Sets the audio output volume.
+Sets the master volume. It scales everything the mixer plays.
 
 - **Parameters:**
   - `volume` (number): Volume level (0–100, where 0 is muted and 100 is maximum; larger values clamp to 100)
 - **Returns:** None
 
 ```lua
-picocalc.audio.setVolume(128)  -- 50% volume
+picocalc.audio.setVolume(50)  -- half volume
 ```
 
 ---
@@ -53,7 +53,7 @@ picocalc.audio.setVolume(128)  -- 50% volume
 ### PCM Streaming
 
 #### `picocalc.audio.startStream(sampleRate)`
-Initialize PCM audio streaming at the specified sample rate.
+Starts (or restarts) the PCM stream at `sampleRate` and empties its buffer. Other sounds keep playing. The FilePlayer and the MOD player use this stream while they play.
 
 - **Parameters:**
   - `sampleRate` (number): Sample rate in Hz (e.g. `44100`)
@@ -66,7 +66,7 @@ picocalc.audio.startStream(44100)
 ---
 
 #### `picocalc.audio.stopStream()`
-Stop the active PCM audio stream.
+Stops the PCM stream and empties its buffer. Tones and samples keep playing.
 
 - **Parameters:** None
 - **Returns:** None

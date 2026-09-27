@@ -633,6 +633,10 @@ void launcher_apply_clock(uint32_t khz) {
   // 6. Update display PIO divider for new clk_sys frequency
   display_apply_clock();
 
+  // 6b. The audio output's PWM divider comes from clk_sys: re-derive it
+  // (it ran at the old rate for the few ms since step 4).
+  audio_apply_clock();
+
   // 7. Update keyboard I2C divider for new clk_sys frequency, and re-start
   // the bus engine paused in step 1b.
   kbd_apply_clock();

@@ -402,9 +402,8 @@ void sound_player_play(sound_player_t *player, uint8_t repeat_count) {
     player->playing = true;
     mix_unlock();
 
-    // Samples are mixed into the PCM stream by audio.c's DMA refill hook —
-    // the stream must be running. No PWM re-init, no playback timer.
-    audio_stream_ensure_running();
+    // Samples are mixed by audio_mix.c's render: the output must be running.
+    audio_output_ensure_running();
 }
 
 void sound_player_stop(sound_player_t *player) {

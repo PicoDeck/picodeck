@@ -146,11 +146,6 @@ alarm_pool_t *audio_get_core1_alarm_pool(void) {
     return NULL;
 }
 
-void audio_pwm_setup(uint32_t sample_rate) {
-    (void)sample_rate;
-    // No-op in simulator
-}
-
 void audio_play_tone(uint32_t freq_hz, uint32_t duration_ms) {
     if (freq_hz < 20) freq_hz = 20;
     if (freq_hz > 20000) freq_hz = 20000;
@@ -221,6 +216,15 @@ void audio_push_samples(const int16_t *samples, int count) {
     if (!s_stream_active || !samples || count <= 0) return;
     audio_ring_push(&s_ring, samples, count);  // drops what doesn't fit
 }
+
+// The output (drivers/audio.h). Here each source queues its own audio to
+// SDL, so there is no shared output: stopping it stops the stream.
+void audio_output_ensure_running(void) {}
+void audio_output_stop(void) { audio_stop_stream(); }
+bool audio_output_running(void) { return false; }
+uint32_t audio_output_isr_count(void) { return 0; }
+void audio_apply_clock(void) {}
+void audio_stream_reset_underruns(void) {}
 
 // The DMA stand-in (Core 1 thread, every tick): play out the frames the
 // output rate has consumed since the last call. Underrun frames are

@@ -115,6 +115,12 @@ picodeck_unit_test(test_sound SOURCES ${SRC}/drivers/sound.c ${SRC}/drivers/wav.
                 ${SD_FAKE} INCLUDES ${SD_INCLUDES})
 # The pico/critical_section.h stub leaves a parameter unused.
 target_compile_options(test_sound PRIVATE -Wno-unused-parameter)
+# The one mixer (audio_mix.c) over the real sample mixer, with the device
+# output faked in the test.
+picodeck_unit_test(test_audio_mix SOURCES ${SRC}/drivers/audio_mix.c
+                ${SRC}/drivers/sound.c ${SRC}/drivers/wav.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES})
+target_compile_options(test_audio_mix PRIVATE -Wno-unused-parameter)
 # The firmware WAV streamer (fileplayer.c, which the simulator also runs):
 # flow control against a model of the stream ring, per-player files, and
 # Core 0 stop vs Core 1 update on two threads.

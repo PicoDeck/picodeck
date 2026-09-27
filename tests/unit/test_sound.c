@@ -13,9 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-// audio.c is not linked: sound_player_play only needs the stream running.
+// audio.c is not linked: sound_player_play only needs the output running.
 static int s_stream_starts;
-void audio_stream_ensure_running(void) { s_stream_starts++; }
+void audio_output_ensure_running(void) { s_stream_starts++; }
 
 static int32_t s_l[64], s_r[64];
 

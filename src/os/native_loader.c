@@ -244,6 +244,7 @@ static bool native_run_app(const app_entry_t *app) {
   tcp_close_all();
   audio_stop_stream();
   audio_stop_tone();
+  audio_output_stop();
   return ok;
 }
 #else
@@ -850,6 +851,7 @@ out:
     printf("[NATIVE] Core 1 pause timeout (200ms) at cleanup\n");
   audio_stop_stream();
   audio_stop_tone();
+  audio_output_stop();
   // Core 1 is paused (or timed out) — safe to drop the watcher snapshot now.
   // g_code_watch_snap holds the uncached alias; umm_free wants the original.
   if (g_code_watch_snap) {

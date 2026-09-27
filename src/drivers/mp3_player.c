@@ -797,8 +797,9 @@ bool mp3_player_load(mp3_player_t *player, const char *path) {
 // Sets s_dma_start_pending so mp3_player_update() on Core 1 finishes the job,
 // ensuring the DMA ISR fires on Core 1 (not the game loop core).
 static void setup_playback_hw(void) {
-    // Stop any audio.c DMA streaming before we reconfigure the PWM slice
-    audio_stop_stream();
+    // The MP3 player drives the PWM slice with its own DMA: take it from
+    // the mixer's output while it plays.
+    audio_output_stop();
 
     // Configure PWM with fractional divider for accurate sample rate
     gpio_set_function(AUDIO_PIN_L, GPIO_FUNC_PWM);
