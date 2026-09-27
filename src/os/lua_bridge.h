@@ -49,6 +49,12 @@ bool lua_bridge_exit_requested(void);
 // dev exit flag) and restores the normal count hook, so __gc handlers run
 // during lua_close are not interrupted.
 void lua_bridge_exit_reset(lua_State *L);
+// Records the Lua thread now executing on Core 0 (lua_corolib.c calls it on
+// every resume, return and coroutine close). The firmware's service hook is
+// armed on this thread.
+void lua_bridge_set_running(lua_State *L);
+// The coroutine library (fork of lcorolib.c, src/os/lua_corolib.c).
+int luaopen_picodeck_coroutine(lua_State *L);
 static inline bool lua_bridge_is_exit_sentinel(lua_State *L, int idx) {
   return lua_islightuserdata(L, idx) &&
          lua_touserdata(L, idx) == &lua_bridge_exit_tag;

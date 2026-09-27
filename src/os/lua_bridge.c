@@ -171,6 +171,12 @@ void lb_register_type(lua_State *L, const char *mtname,
 // lua_bridge_exit_reset once the app's VM has returned.
 static bool s_exit_requested = false;
 
+// The Lua thread executing on Core 0: the main thread, or the coroutine that
+// lua_corolib.c resumed into. Written only by Core 0 thread code.
+static lua_State *volatile s_running_L = NULL;
+
+void lua_bridge_set_running(lua_State *L) { s_running_L = L; }
+
 // Instructions between two count-hook calls. Each call is a few flag reads
 // unless the full service pass is due (see lua_service below). The count
 // adapts (menu_lua_hook) so the hook fires about every LUA_HOOK_TARGET_US of
@@ -440,7 +446,7 @@ void lua_bridge_register(lua_State *L) {
 #endif
   lua_pop(L, 1);
   printf("[LUA] registering coroutine...\n");
-  luaL_requiref(L, LUA_COLIBNAME, luaopen_coroutine, 1);
+  luaL_requiref(L, LUA_COLIBNAME, luaopen_picodeck_coroutine, 1);
   lua_pop(L, 1);
   printf("[LUA] registering utf8...\n");
   luaL_requiref(L, LUA_UTF8LIBNAME, luaopen_utf8, 1);
@@ -503,6 +509,7 @@ void lua_bridge_register(lua_State *L) {
   // Set as global
   lua_setglobal(L, "picocalc");
 
+  s_running_L = L;
   // Install instruction-count hook for menu button interception.
   // Fires every LUA_HOOK_COUNT Lua opcodes to catch menu button presses
   // even during tight loops, without requiring apps to poll input.
