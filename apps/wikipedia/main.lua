@@ -258,13 +258,14 @@ end
 
 -- ── Drawing ───────────────────────────────────────────────────────────────────
 
+-- Returns the first row below the header, plus a 1px gap. drawHeader
+-- returns the rows it covers (older firmware returns nothing: 29 rows).
 local function draw_header(title)
-    pc.ui.drawHeader(title)
+    return (pc.ui.drawHeader(title) or 29) + 1
 end
 
 local function draw_home()
-    draw_header("WIKIPEDIA")
-    local content_y = 30  -- Start below header (header is 28px tall)
+    local content_y = draw_header("WIKIPEDIA")
     disp.drawText(2, content_y, "Featured Articles:", TITLE_FG, BG)
     
     for i, title in ipairs(featured_articles) do
@@ -282,8 +283,7 @@ local function draw_home()
 end
 
 local function draw_search_results()
-    draw_header("Search: " .. search_query)
-    local content_y = 30
+    local content_y = draw_header("Search: " .. search_query)
     
     for i, title in ipairs(search_results) do
         local y = content_y + CHAR_H * i
@@ -300,17 +300,14 @@ local function draw_search_results()
 end
 
 local function draw_search_input()
-    draw_header("SEARCH")
-    local content_y = 30
+    local content_y = draw_header("SEARCH")
     disp.drawText(2, content_y + CHAR_H * 2, "Enter query:", TITLE_FG, BG)
     disp.drawText(2, content_y + CHAR_H * 4, search_query .. "_", FG, BG)
     pc.ui.drawFooter("Enter: Search  Esc: Cancel", nil)
 end
 
 local function draw_article()
-    draw_header(article_title)
-    
-    local text_y = 30  -- Start below header
+    local text_y = draw_header(article_title)
     local visible_rows = math.floor((SCREEN_H - CHAR_H * 3) / LINE_SPACING)
     
     for i = 1, visible_rows do

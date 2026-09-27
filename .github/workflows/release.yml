@@ -166,6 +166,12 @@ jobs:
           submodules: recursive
       - name: Build and package the web simulator
         run: scripts/ci/build-web-sim.sh
+      # picodeck.net's home page shows this screenshot of the launcher (the
+      # web demo's apps), so device UI changes need no website change.
+      - name: Install simulator dependencies
+        run: scripts/ci/install-sim-deps.sh
+      - name: Capture the launcher into the web simulator zip
+        run: scripts/ci/capture-launcher.sh
       - name: Upload web simulator artifact
         uses: actions/upload-artifact@v4
         with:

@@ -190,8 +190,22 @@ void kbd_flush_events(void) {
     kbd_evq_clear(&s_in.q);
 }
 
+// Full and not charging unless a test sets them (set_battery RPC). Written
+// by the socket thread, read by Core 0.
+static int s_sim_battery = 100;
+static bool s_sim_charging = false;
+
+void sim_kbd_set_battery(int percent, bool charging) {
+    __atomic_store_n(&s_sim_battery, percent, __ATOMIC_RELAXED);
+    __atomic_store_n(&s_sim_charging, charging, __ATOMIC_RELAXED);
+}
+
 int kbd_get_battery_percent(void) {
-    return 100;  // Always full in simulator
+    return __atomic_load_n(&s_sim_battery, __ATOMIC_RELAXED);
+}
+
+bool kbd_is_charging(void) {
+    return __atomic_load_n(&s_sim_charging, __ATOMIC_RELAXED);
 }
 
 void kbd_set_backlight(uint8_t brightness) {

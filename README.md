@@ -294,6 +294,10 @@ SD:/
 └── system/   (created automatically)
 ```
 
+### Upgrading from v0.2.0 or earlier
+
+Flashing the firmware does not update the SD card. Follow "Upgrading a device" in the [v0.3.0 release notes](https://github.com/PicoDeck/picodeck/releases/tag/v0.3.0): replace `SD:/apps/` with this release's `apps/`, move each first-party app's `SD:/data/<old id>` folder to its new `net.picodeck.<app>` id, and rebuild the native apps (`make -C apps/c64`, `make -C apps/gbc`, and C-Dogs from `PicoDeck/cdogs`), because their data path is compiled in.
+
 ---
 
 ## Writing Apps

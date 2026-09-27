@@ -166,3 +166,20 @@ def test_refuses_to_overwrite_an_existing_target(repo):
     git(repo, "commit", "-qm", "clash")
     with pytest.raises(SystemExit, match="already exists"):
         rp.main(["--root", str(repo)])
+
+
+def test_check_flags_old_ids_compiled_into_binaries(repo, capsys):
+    # A native app bakes its /data path into the ELF; a text sweep cannot
+    # rewrite it, so --check must say the binary needs a rebuild.
+    rp.main(["--root", str(repo)])
+    (repo / "main.elf").write_bytes(b"\x7fELF\0\0\0/data/com.picos.c64/roms\0")
+    git(repo, "add", "-A")
+    assert rp.main(["--root", str(repo), "--check"]) == 1
+    assert "main.elf: binary contains an old id or host" in capsys.readouterr().out
+
+
+def test_check_ignores_brand_text_inside_binaries(repo):
+    # Binaries may say "PicOS" in comments/strings that nothing depends on;
+    # only ids and hosts (which break at run time) are flagged.
+    rp.main(["--root", str(repo)])
+    assert rp.main(["--root", str(repo), "--check"]) == 0   # logo.png holds "PicOS"

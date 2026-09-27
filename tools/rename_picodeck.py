@@ -65,6 +65,9 @@ RULES = [
 ]
 
 LEFTOVER = re.compile("[pP][iI][cC][oO][sS]" + NOT_SDK + r"|picocalc_os|jeffory\.dev")
+# Binaries are never rewritten, but an app id or host compiled into one (a
+# native app's /data path) breaks at run time: --check says rebuild it.
+BINARY_LEFTOVER = re.compile(rb"com\.picos\.|picos\.jeffory\.dev")
 
 
 def rename_text(text: str) -> str:
@@ -142,6 +145,9 @@ def check(root: Path, excludes: tuple[str, ...]) -> int:
             found += 1
         got = read_text(path)
         if got is None:
+            if BINARY_LEFTOVER.search(path.read_bytes()):
+                print(f"{rel}: binary contains an old id or host (rebuild it)")
+                found += 1
             continue
         for n, line in leftovers(got[0]):
             print(f"{rel}:{n}: {line.strip()[:160]}")

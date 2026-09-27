@@ -88,3 +88,4 @@ apps/**/*.su
 web-build.log
 /web-sim/
 /picodeck-web-sim.zip
+/launcher.png

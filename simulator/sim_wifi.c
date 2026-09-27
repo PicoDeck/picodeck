@@ -69,8 +69,11 @@ void wifi_disconnect(void) {
     printf("[WiFi] Mock disconnect\n");
 }
 
+extern int sim_wifi_forced_status(void);
+
 wifi_status_t wifi_get_status(void) {
-    return s_status;
+    int forced = sim_wifi_forced_status();
+    return forced >= 0 ? (wifi_status_t)forced : s_status;
 }
 
 const char *wifi_get_ip(void) {

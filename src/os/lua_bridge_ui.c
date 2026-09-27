@@ -10,8 +10,8 @@
 
 static int l_ui_drawHeader(lua_State *L) {
   const char *title = luaL_checkstring(L, 1);
-  ui_draw_header(title);
-  return 0;
+  lua_pushinteger(L, ui_draw_header(title));
+  return 1;
 }
 
 static int l_ui_drawFooter(lua_State *L) {

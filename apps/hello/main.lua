@@ -40,7 +40,7 @@ while true do
     pc.ui.drawHeader("Hello, PicoCalc!")
 
     -- FPS display (built-in, easy!)
-    perf.drawFPS()  -- defaults to top-right corner (250, 8)
+    perf.drawFPS()  -- defaults to the top-right corner, below the header
     -- Or customize: perf.drawFPS(10, 30)
     -- Or manual: local fps = perf.getFPS(); disp.drawText(x, y, "FPS: " .. fps, ...)
 

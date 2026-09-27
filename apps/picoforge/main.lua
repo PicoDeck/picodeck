@@ -77,15 +77,15 @@ local MemViewerMod   = load_module("mem_viewer")
 
 local SCREEN_W = 320
 local SCREEN_H = 320
-local HEADER_H = 28
+local HEADER_H = 21  -- rows pc.ui.drawHeader covers (its return value)
 local TAB_Y    = HEADER_H
 local TAB_H    = 12
-local CONTENT_Y = TAB_Y + TAB_H   -- 40
+local CONTENT_Y = TAB_Y + TAB_H   -- 33
 local FOOTER_Y  = 302
 local FOOTER_H  = 18
-local CONTENT_H = FOOTER_Y - CONTENT_Y  -- 262
+local CONTENT_H = FOOTER_Y - CONTENT_Y  -- 269
 
--- Terminal dimensions: 262px / 11px = 23 rows
+-- Terminal dimensions: 269px / 11px = 24 rows; 23 leaves a margin
 -- With line numbers (4 cols) and scrollbar (1 col): (320-24-6)/6 = 48 cols
 local TERM_COLS = 48
 local TERM_ROWS = 23

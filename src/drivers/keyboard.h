@@ -80,6 +80,10 @@ uint32_t kbd_get_buttons_released(void);
 // Bit 7 of the raw value is a charging flag — this function masks it off.
 int kbd_get_battery_percent(void);
 
+// Charging flag from the most recent battery read (kbd_get_battery_percent
+// refreshes it at most every 5 s). False until the first successful read.
+bool kbd_is_charging(void);
+
 // Set LCD backlight brightness 0-255 via STM32
 void kbd_set_backlight(uint8_t brightness);
 

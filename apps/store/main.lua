@@ -963,13 +963,20 @@ end
 
 -- ── Drawing helpers ────────────────────────────────────────────────────────
 
-local function draw_tab_bar()
+-- Header rows: drawHeader returns them (older firmware returns nothing: 29).
+local function draw_header(title)
+    return ui.drawHeader(title) or 29
+end
+
+-- Draws the tabs below a header of `top` rows; returns the first free row.
+local function draw_tab_bar(top)
     local tab_labels = {"Browse", "Updates", "Installed"}
     if #update_list > 0 or fw_info then
         local count = #update_list + (fw_info and 1 or 0)
         tab_labels[2] = "Updates(" .. count .. ")"
     end
-    ui.drawTabs(29, tab_labels, current_tab)
+    local _, tab_h = ui.drawTabs(top, tab_labels, current_tab)
+    return top + tab_h
 end
 
 local function get_app_status(app)
@@ -1039,10 +1046,7 @@ end
 
 local function draw_browse()
     display.clear(BLACK)
-    ui.drawHeader("App Store")
-    draw_tab_bar()
-
-    local tab_h = 38  -- height of header + tabs
+    local tab_h = draw_tab_bar(draw_header("App Store"))
 
     -- Category filter bar
     local cat_y = tab_h + 2
@@ -1087,10 +1091,7 @@ end
 
 local function draw_updates()
     display.clear(BLACK)
-    ui.drawHeader("App Store")
-    draw_tab_bar()
-
-    local list_y = 42
+    local list_y = draw_tab_bar(draw_header("App Store")) + 4
     local item_h = 30
     local visible_count = math.floor((H - list_y - 24) / item_h)
     local items = {}
@@ -1146,10 +1147,7 @@ end
 
 local function draw_installed()
     display.clear(BLACK)
-    ui.drawHeader("App Store")
-    draw_tab_bar()
-
-    local list_y = 42
+    local list_y = draw_tab_bar(draw_header("App Store")) + 4
     local item_h = 30
     local visible_count = math.floor((H - list_y - 24) / item_h)
 
@@ -1204,9 +1202,7 @@ local function draw_detail()
     local app = detail_app
 
     display.clear(BLACK)
-    ui.drawHeader(truncate(app.name or "?", W - 100))
-
-    local y = 36
+    local y = draw_header(truncate(app.name or "?", W - 100)) + 7
 
     -- App info
     display.drawText(8, y, "Author:", GRAY, BLACK)

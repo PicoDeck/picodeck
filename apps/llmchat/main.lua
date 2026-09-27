@@ -268,8 +268,10 @@ end
 
 -- ── Drawing ───────────────────────────────────────────────────────────────────
 
+-- Returns the rows the header covers (older firmware's drawHeader returns
+-- nothing: 29 rows).
 local function draw_header(title)
-    pc.ui.drawHeader(title)
+    return pc.ui.drawHeader(title) or 29
 end
 
 local function draw_wifi_wait()
@@ -278,9 +280,7 @@ local function draw_wifi_wait()
 end
 
 local function draw_menu()
-    draw_header("LLM CHAT")
-    
-    local content_y = 35
+    local content_y = draw_header("LLM CHAT") + 6
     
     for i, item in ipairs(menu_items) do
         local y = content_y + i * 14
@@ -298,9 +298,7 @@ local function draw_menu()
 end
 
 local function draw_settings()
-    draw_header("SETTINGS")
-    
-    local content_y = 35
+    local content_y = draw_header("SETTINGS") + 6
     
     local values = {
         provider_names[provider],
@@ -346,9 +344,7 @@ local function wrap_text(text, width)
 end
 
 local function draw_chat()
-    draw_header("Chat: " .. model)
-    
-    local content_y = 30
+    local content_y = draw_header("Chat: " .. model) + 1
     local line_height = 10
     
     local all_lines = {}
@@ -366,7 +362,7 @@ local function draw_chat()
         end
     end
     
-    local visible_rows = math.floor((SCREEN_H - 47) / line_height)
+    local visible_rows = math.floor((SCREEN_H - content_y - 17) / line_height)
     local max_scroll = math.max(0, #all_lines - visible_rows)
     scroll_y = math.min(max_scroll, scroll_y)
     

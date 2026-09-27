@@ -27,6 +27,7 @@
 #include "ui.h"
 #include "umm_malloc.h"
 
+#include <ctype.h>
 #include <stdatomic.h>
 
 #include "../dev_commands.h"
@@ -217,12 +218,15 @@ static void build_category_indices(void) {
 
 // ── Launcher rendering ──────────────────────────────────────────────────────
 
-#define ITEM_H 28
+#define ITEM_H 32          // row pitch; the selection bar is ITEM_H - 2
 #define LIST_X 8
-#define LIST_Y 48          // below header (28) + tab bar (18) + border (1) + 1
-#define LIST_VISIBLE 9
+#define LIST_Y (TAB_BAR_Y + TAB_BAR_H + 1 + 2)  // tab bar, its border, 2px gap
+#define LIST_VISIBLE 8
 #define DESC_SCROLL_RESET_PAUSE 40
-#define ICON_SIZE   20     // app icon size in list view
+#define ICON_SIZE   24     // app icon size in list view (icon.png is scaled to it)
+#define ICON_DY     ((ITEM_H - 2 - ICON_SIZE) / 2)  // icon centred in the bar
+#define NAME_DY     6      // name + description lines, centred on the icon
+#define DESC_DY     17
 
 #define TAB_COUNT   (CAT_COUNT + 1)  // "All" + 6 categories
 
@@ -258,13 +262,11 @@ void launcher_refresh_apps(void) {
 #define C_SEL_BG RGB565(40, 80, 160)
 #define C_TEXT COLOR_WHITE
 #define C_TEXT_DIM COLOR_GRAY
-#define C_BATTERY_OK COLOR_GREEN
-#define C_BATTERY_LO COLOR_RED
 #define C_BORDER RGB565(60, 60, 100)
 
 // ── Tab bar (horizontal category tabs) ──────────────────────────────────────
 
-#define TAB_BAR_Y    29    // below header border
+#define TAB_BAR_Y    (UI_HEADER_H + 1)  // below the header's border
 #define TAB_BAR_H    18
 #define TAB_DOT_W    14    // width of an unselected tab (colored dot)
 #define TAB_DOT_R    3     // dot radius
@@ -306,19 +308,87 @@ static void draw_tab_bar(void) {
   }
 }
 
-// ── Fallback app icon (colored square with first letter) ────────────────────
+// ── Fallback app icon: a cartridge in the category colour ──────────────────
+// Rows of the 24x24 icon: '.' the dark icon background (shared with the
+// shipped full-colour icons), 'c' the category colour, 'h' / 'l' / 'd' its
+// highlight, shade and dark tints, 'w' the label. The app's first letter
+// goes on the label at 2x, in the dark tint.
 
-static void draw_fallback_icon(int x, int y, int size, const char *name,
+#define C_ICON_BG    RGB565(12, 16, 48)
+#define C_CART_LABEL RGB565(239, 232, 212)
+#define CART_LETTER_X 7   // 2x glyph cell on the label
+#define CART_LETTER_Y 6
+
+_Static_assert(ICON_SIZE == 24, "k_cart is drawn for 24px icons");
+static const char *const k_cart[24] = {
+    "........................",
+    "...hhhhhhhhhhhhhhh......",
+    "...hcccccccccccccccc....",
+    "...hcclllllllllllccc....",
+    "...hccccccccccccccccc...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...hcwwwwwwwwwwwwwwwl...",
+    "...llllllllllllllllll...",
+    "........ddddddddd.......",
+};
+
+// Scale each RGB565 channel by num/den, clamped.
+static uint16_t tint565(uint16_t c, int num, int den) {
+  int r = ((c >> 11) & 0x1F) * num / den;
+  int g = ((c >> 5) & 0x3F) * num / den;
+  int b = (c & 0x1F) * num / den;
+  if (r > 31) r = 31;
+  if (g > 63) g = 63;
+  if (b > 31) b = 31;
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+static void draw_fallback_icon(int x, int y, const char *name,
                                const char *category) {
   category_t cat = parse_category(category);
-  uint16_t color = (cat < CAT_COUNT) ? s_cat_colors[cat] : COLOR_GRAY;
-  display_fill_rect(x, y, size, size, color);
-  if (name && name[0]) {
-    char letter[2] = {name[0], '\0'};
-    int tx = x + (size - 6) / 2;
-    int ty = y + (size - 8) / 2;
-    display_draw_text(tx, ty, letter, COLOR_WHITE, color);
+  uint16_t body = (cat < CAT_COUNT) ? s_cat_colors[cat] : COLOR_GRAY;
+  uint16_t dark = tint565(body, 9, 20);
+  for (int r = 0; r < 24; r++) {
+    for (int c = 0; c < 24; c++) {
+      uint16_t col;
+      switch (k_cart[r][c]) {
+      case 'c': col = body; break;
+      case 'h': col = tint565(body, 6, 5); break;
+      case 'l': col = tint565(body, 7, 10); break;
+      case 'd': col = dark; break;
+      case 'w': col = C_CART_LABEL; break;
+      default:  col = C_ICON_BG; break;
+      }
+      display_set_pixel(x + c, y + r, col);
+    }
   }
+
+  // The first letter from the built-in 6x8 font, each pixel as a 2x2 block.
+  const pc_font_t *f = font_registry_get(0);
+  unsigned char ch = (name && name[0]) ? (unsigned char)toupper((unsigned char)name[0]) : '?';
+  if (!f || ch < f->first || ch > f->last)
+    return;
+  const uint8_t *glyph = f->bitmaps + (ch - f->first) * f->height * f->stride;
+  for (int r = 0; r < f->height; r++)
+    for (int c = 0; c < f->max_width; c++)
+      if (glyph[r * f->stride] & (0x80 >> c))
+        display_fill_rect(x + CART_LETTER_X + 2 * c, y + CART_LETTER_Y + 2 * r,
+                          2, 2, dark);
 }
 
 // ── Draw app icon (image or fallback) ───────────────────────────────────────
@@ -327,7 +397,7 @@ static void draw_app_icon(int x, int y, int size, const app_entry_t *app) {
   if (app->icon) {
     image_draw_scaled((pc_image_t *)app->icon, x, y, size, size);
   } else {
-    draw_fallback_icon(x, y, size, app->name, app->category);
+    draw_fallback_icon(x, y, app->name, app->category);
   }
 }
 
@@ -375,15 +445,15 @@ static void draw_app_list(void) {
     display_fill_rect(LIST_X - 4, y, FB_WIDTH - LIST_X * 2 + 8, ITEM_H - 2, bg);
 
     // App icon
-    draw_app_icon(LIST_X, y + 4, ICON_SIZE, &s_apps[app_idx]);
+    draw_app_icon(LIST_X, y + ICON_DY, ICON_SIZE, &s_apps[app_idx]);
 
     // App name
-    display_draw_text(text_x, y + 4, s_apps[app_idx].name, C_TEXT, bg);
+    display_draw_text(text_x, y + NAME_DY, s_apps[app_idx].name, C_TEXT, bg);
 
     // Version (right-aligned)
     if (s_apps[app_idx].version[0]) {
       int vw = display_text_width(s_apps[app_idx].version);
-      display_draw_text(FB_WIDTH - 8 - vw, y + 4, s_apps[app_idx].version,
+      display_draw_text(FB_WIDTH - 8 - vw, y + NAME_DY, s_apps[app_idx].version,
                         C_TEXT_DIM, bg);
     }
 
@@ -400,9 +470,9 @@ static void draw_app_list(void) {
         if (out_len > 63) out_len = 63;
         strncpy(buf, p, out_len);
         buf[out_len] = '\0';
-        display_draw_text(text_x, y + 15, buf, C_TEXT_DIM, bg);
+        display_draw_text(text_x, y + DESC_DY, buf, C_TEXT_DIM, bg);
       } else {
-        display_draw_text(text_x, y + 15, s_apps[app_idx].description,
+        display_draw_text(text_x, y + DESC_DY, s_apps[app_idx].description,
                           C_TEXT_DIM, bg);
       }
     }

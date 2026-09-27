@@ -15,7 +15,7 @@ if grep -q 'function signature mismatch' web-build.log; then
 fi
 rm -rf web-sim picodeck-web-sim.zip
 mkdir web-sim
-cp build_web/picodeck_simulator.js build_web/picodeck_simulator.wasm build_web/picodeck_simulator.data web-sim/
+cp build_web/picodeck_simulator.js build_web/picodeck_simulator.wasm build_web/picodeck_simulator.data build_web/shell.js web-sim/
 cp build_web/picodeck_simulator.html web-sim/index.html
 (cd web-sim && zip -qr ../picodeck-web-sim.zip .)
 echo "picodeck-web-sim.zip: $(du -h picodeck-web-sim.zip | cut -f1)"

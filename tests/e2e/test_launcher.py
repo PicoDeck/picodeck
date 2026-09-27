@@ -1,13 +1,20 @@
 """Test basic launcher functionality."""
 
+import json
 import time
+from pathlib import Path
 
 import numpy as np
 
+from helpers import stage_lua_app
+
 
 # Launcher list geometry (src/os/launcher.c).
-LIST_Y = 48
-ITEM_H = 28
+LIST_Y = 42
+ITEM_H = 32            # row pitch; the selection bar is ITEM_H - 2
+BAR_H = ITEM_H - 2
+ICON = 24              # app icon size
+ICON_X = 8
 ROW_PROBE_X = 6
 C_SEL_BG = ((40 >> 3) << 11) | ((80 >> 2) << 5) | (160 >> 3)   # RGB565(40, 80, 160)
 
@@ -119,3 +126,61 @@ class TestLauncher:
 
         status = wait_for_app_running(simulator)
         assert status is not None, "App should be running after launch by dir name"
+
+
+def _selected_row(simulator):
+    """Screenshot (RGB array) once row 0 shows the selection bar."""
+    wait_for_launcher(simulator, timeout=8)
+    _wait_px(simulator, (ROW_PROBE_X, LIST_Y + 1), lambda p: p == C_SEL_BG)
+    return np.array(simulator.screenshot_pil().convert("RGB")).astype(int)
+
+
+def test_selection_bar_is_30px_on_a_32px_pitch(simulator):
+    arr = _selected_row(simulator)
+    sel = arr[LIST_Y + 1, ROW_PROBE_X]
+    col = [(arr[y, ROW_PROBE_X] == sel).all() for y in range(LIST_Y - 1, LIST_Y + ITEM_H + 1)]
+    rows = [LIST_Y - 1 + i for i, on in enumerate(col) if on]
+    assert rows == list(range(LIST_Y, LIST_Y + BAR_H)), \
+        f"selection bar covers rows {rows[:1]}..{rows[-1:]}, want {LIST_Y}..{LIST_Y + BAR_H - 1}"
+
+
+def test_app_icon_is_24px_and_centred_in_its_row(simulator):
+    arr = _selected_row(simulator)
+    sel = arr[LIST_Y + 1, ROW_PROBE_X]
+    bar = arr[LIST_Y:LIST_Y + BAR_H, ICON_X - 2:ICON_X + ICON + 2]
+    icon = ~np.all(bar == sel, axis=2)          # pixels that are not bar colour
+    ys, xs = np.nonzero(icon)
+    assert len(ys), "no icon drawn in the selected row"
+    h, w = ys.max() - ys.min() + 1, xs.max() - xs.min() + 1
+    assert (w, h) == (ICON, ICON), f"icon is {w}x{h}, want {ICON}x{ICON}"
+    above, below = ys.min(), BAR_H - 1 - ys.max()
+    assert above == below, f"icon has {above}px above and {below}px below it"
+
+
+def _rgb565(r, g, b):
+    return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+
+
+C_ICON_BG = _rgb565(12, 16, 48)          # background behind every generated icon
+C_CART_LABEL = _rgb565(239, 232, 212)
+C_NETWORK = _rgb565(50, 200, 150)
+
+
+def test_app_without_icon_gets_a_cartridge(sim_factory, test_sd_card):
+    """No icon.png: the launcher draws a cartridge in the app's category
+    colour on the dark icon background, with the first letter on its label."""
+    app = stage_lua_app(test_sd_card, "aardvark", "return\n")
+    manifest = json.loads((app / "app.json").read_text())
+    manifest.update(name="Aardvark", category="network")   # sorts first
+    (app / "app.json").write_text(json.dumps(manifest))
+    sim = sim_factory(test_sd_card)
+    wait_for_launcher(sim, timeout=8)
+    x0, y0 = ICON_X, LIST_Y + (BAR_H - ICON) // 2
+    assert _wait_px(sim, (x0, y0), lambda p: p == C_ICON_BG) == C_ICON_BG, \
+        "icon corner is not the dark icon background"
+    assert _px(sim, (x0 + 5, y0 + 5)) == C_CART_LABEL, "no cartridge label"
+    assert _px(sim, (x0 + 4, y0 + 12)) == C_NETWORK, "cartridge body is not the category colour"
+    # 'A' at 2x on the label: its top bar starts at label x 7 + 2
+    letter = _px(sim, (x0 + 9, y0 + 6))
+    assert letter not in (C_CART_LABEL, C_NETWORK, C_ICON_BG), "no letter on the label"
+    assert _px(sim, (x0 + 7, y0 + 6)) == C_CART_LABEL, "letter drawn left of its glyph"
