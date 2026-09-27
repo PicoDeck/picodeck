@@ -424,6 +424,11 @@ picocalc.sys = {}
 ---@return integer
 function picocalc.sys.getTimeMs() end
 
+---Microseconds since boot, wrapping modulo 2^32 (negative after ~35.8 min).
+---Subtract two readings as integers; exact for gaps under ~35 minutes.
+---@return integer
+function picocalc.sys.getTimeUs() end
+
 ---Return battery charge (0–100), or -1 if unknown / USB-powered.
 ---Result is cached for ~5 seconds to avoid slow I²C reads.
 ---@return integer
