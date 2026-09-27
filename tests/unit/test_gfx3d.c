@@ -404,6 +404,121 @@ static void test_grid_has_no_cracks(void) {
   gfx3d_free(g);
 }
 
+#define WHITE 0xFFFF
+#define YELLOW 0xFFE0
+#define MAGENTA 0xF81F
+
+static void set_sky3(gfx3d_t *g) {
+  const float ang[3] = {-1.0f, 0.0f, 0.3f};
+  const uint16_t col[3] = {GREEN, WHITE, BLUE};
+  CHECK(gfx3d_set_sky(g, ang, col, 3));
+}
+
+static void test_sky_level_rolled_and_vertical(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  set_sky3(g);
+  gfx3d_begin(g, false, 0);
+  render(g);
+  // Level: horizon at row 160; the 0.3 rad band edge is focal*tan(0.3) above.
+  CHECK(px(160, 10) == BLUE);
+  CHECK(px(160, 120) == WHITE);
+  CHECK(px(160, 200) == GREEN);
+  CHECK(px(5, 120) == WHITE && px(314, 120) == WHITE);  // level: rows are uniform
+
+  gfx3d_set_camera(g, ORIGIN, 0, 0, HALF_PI);  // banked 90 left: sky on the right
+  gfx3d_begin(g, false, 0);
+  render(g);
+  CHECK(px(315, 160) == BLUE);
+  CHECK(px(5, 160) == GREEN);
+
+  const float eye[3] = {0, 0, 0}, up_t[3] = {0, 10, 0}, zup[3] = {0, 0, -1};
+  CHECK(gfx3d_look_at(g, eye, up_t, zup));  // straight up: top band everywhere
+  gfx3d_begin(g, false, 0);
+  render(g);
+  CHECK(px(160, 160) == BLUE && px(0, 0) == BLUE && px(319, 319) == BLUE);
+
+  const float bad[2] = {0.5f, 0.2f};
+  const uint16_t bc[2] = {RED, RED};
+  CHECK(!gfx3d_set_sky(g, bad, bc, 2));  // must increase
+  gfx3d_free(g);
+}
+
+static void test_background_is_drawn_first_and_never_far_culled(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  CHECK(gfx3d_set_projection(g, 1.0471976f, 0.5f, 100.0f));
+  gfx3d_mesh_t *ring = square(2000, -900, RED, GFX3D_UNLIT);  // beyond zfar, fills the view
+  gfx3d_mesh_t *near_sq = square(1, -5, GREEN, GFX3D_UNLIT);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw(g, near_sq, ID, ORIGIN, 1, 0, false);  // submitted first...
+  gfx3d_draw_background(g, ring);                    // ...yet drawn under
+  render(g);
+  CHECK(px(160, 160) == GREEN);
+  CHECK(px(20, 20) == RED);
+  // Moving the camera does not move background scenery.
+  const float moved[3] = {50, 0, 0};
+  gfx3d_set_camera(g, moved, 0, 0, 0);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw_background(g, ring);
+  render(g);
+  CHECK(px(160, 160) == RED);
+  gfx3d_mesh_free(ring);
+  gfx3d_mesh_free(near_sq);
+  gfx3d_free(g);
+}
+
+static uint16_t s_img[16];
+static bool resolve(void *ud, int slot, const uint16_t **data, int *w, int *h,
+                    uint16_t *key) {
+  (void)ud;
+  if (slot != 7) return false;
+  *data = s_img;
+  *w = 4;
+  *h = 4;
+  *key = MAGENTA;
+  return true;
+}
+
+static void test_sprites(void) {
+  for (int i = 0; i < 16; i++) s_img[i] = YELLOW;
+  s_img[0] = MAGENTA;  // keyed corner
+  gfx3d_t *g = gfx3d_new(W, H);
+  gfx3d_target_t t = target();
+  t.sprite = resolve;
+  const float at[3] = {0, 0, -10}, behind[3] = {0, 0, 10};
+  gfx3d_begin(g, true, BG);
+  CHECK(gfx3d_draw_sprite(g, 7, at, 2.0f, 0, 0, 4, 4, 0));
+  CHECK(!gfx3d_draw_sprite(g, 7, behind, 2.0f, 0, 0, 4, 4, 0));
+  gfx3d_end(g, &t);
+  CHECK(px(160, 160) == YELLOW);
+  CHECK(gfx3d_get_stats(g)->sprites == 1);
+  CHECK(gfx3d_get_stats(g)->culled == 1);
+  // The keyed top-left source pixel shows the background.
+  const float focal = 160.0f / tanf(0.5f * 1.0471976f);
+  const int half = (int)(focal * 2.0f / 10.0f / 2.0f);
+  CHECK(px(160 - half + 1, 160 - half + 1) == BG);
+  // Depth-sorted with triangles: a nearer square hides it, a farther one not.
+  gfx3d_mesh_t *near_sq = square(1, -5, GREEN, GFX3D_UNLIT);
+  gfx3d_mesh_t *far_sq = square(8, -20, RED, GFX3D_UNLIT);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw_sprite(g, 7, at, 2.0f, 0, 0, 4, 4, 0);
+  gfx3d_draw(g, near_sq, ID, ORIGIN, 1, 0, false);
+  gfx3d_end(g, &t);
+  CHECK(px(160, 160) == GREEN);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw(g, far_sq, ID, ORIGIN, 1, 0, false);
+  gfx3d_draw_sprite(g, 7, at, 2.0f, 0, 0, 4, 4, 0);
+  gfx3d_end(g, &t);
+  CHECK(px(160, 160) == YELLOW);
+  // A slot the resolver refuses is skipped.
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw_sprite(g, 3, at, 2.0f, 0, 0, 4, 4, 0);
+  gfx3d_end(g, &t);
+  CHECK(px(160, 160) == BG);
+  gfx3d_mesh_free(near_sq);
+  gfx3d_mesh_free(far_sq);
+  gfx3d_free(g);
+}
+
 int main(void) {
   test_euler_conventions();
   test_basis();
@@ -417,5 +532,8 @@ int main(void) {
   test_frustum_cull_and_overflow();
   test_viewport_and_target_clip();
   test_grid_has_no_cracks();
+  test_sky_level_rolled_and_vertical();
+  test_background_is_drawn_first_and_never_far_culled();
+  test_sprites();
   return check_report("test_gfx3d");
 }

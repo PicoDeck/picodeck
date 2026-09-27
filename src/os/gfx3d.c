@@ -600,6 +600,62 @@ void gfx3d_draw(gfx3d_t *g, const gfx3d_mesh_t *m, const float rot[9],
   process_mesh(g, m, &xf, false, bias, sort_as_one, -xf.t[2]);
 }
 
+void gfx3d_draw_background(gfx3d_t *g, const gfx3d_mesh_t *m) {
+  g->stats.tris_in += (uint32_t)m->ntris;
+  gfx3d_xform_t xf;
+  memcpy(xf.A, g->V, sizeof xf.A);
+  xf.t[0] = xf.t[1] = xf.t[2] = 0.0f;
+  xf.eye[0] = xf.eye[1] = xf.eye[2] = 0.0f;  // the camera sits at the origin
+  memcpy(xf.light, g->light, sizeof xf.light);
+  float c[3];
+  mat_vec(c, xf.A, m->center);
+  if (sphere_outside(g, c, m->radius, true)) {
+    g->stats.culled += (uint32_t)m->ntris;
+    return;
+  }
+  process_mesh(g, m, &xf, true, 0.0f, false, 0.0f);
+}
+
+bool gfx3d_draw_sprite(gfx3d_t *g, int slot, const float pos[3], float size,
+                       int sx, int sy, int sw, int sh, float bias) {
+  if (slot < 0 || slot > 0xFFFE || sw <= 0 || sh <= 0 || sx < 0 || sy < 0 ||
+      sx > 0x7FFF || sy > 0x7FFF || sw > 0x7FFF || sh > 0x7FFF || !(size > 0.0f))
+    return false;
+  const float d[3] = {pos[0] - g->cam[0], pos[1] - g->cam[1], pos[2] - g->cam[2]};
+  float v[3];
+  mat_vec(v, g->V, d);
+  const float depth = -v[2];
+  const float k = g->focal / depth;
+  const float h = size * k, w = h * (float)sw / (float)sh;
+  if (!(depth >= g->znear) || depth > g->zfar || h > 4096.0f || w > 4096.0f) {
+    g->stats.culled++;
+    return false;
+  }
+  const int iw = (int)(w + 0.5f), ih = (int)(h + 0.5f);
+  const int ix = (int)floorf(g->cxs + v[0] * k - 0.5f * w + 0.5f);
+  const int iy = (int)floorf(g->cys - v[1] * k - 0.5f * h + 0.5f);
+  if (iw < 1 || ih < 1 || ix >= g->vx + g->vw || iy >= g->vy + g->vh ||
+      ix + iw <= g->vx || iy + ih <= g->vy) {
+    g->stats.culled++;
+    return false;
+  }
+  const int ri = new_rec(g);
+  if (ri < 0) return false;
+  gfx3d_rec_t *r = &g->rec[ri];
+  r->kind = REC_SPRITE;
+  r->u.spr.x = (int16_t)ix;
+  r->u.spr.y = (int16_t)iy;
+  r->u.spr.w = (int16_t)iw;
+  r->u.spr.h = (int16_t)ih;
+  r->u.spr.sx = (int16_t)sx;
+  r->u.spr.sy = (int16_t)sy;
+  r->u.spr.sw = (int16_t)sw;
+  r->u.spr.sh = (int16_t)sh;
+  r->u.spr.slot = (uint16_t)slot;
+  link_rec(g, bucket_of(g, depth + bias), ri);
+  return true;
+}
+
 // ── Rasterisation ───────────────────────────────────────────────────────────
 
 static void fill_rect(const gfx3d_target_t *t, const disp_clip_t *c, uint16_t v) {
@@ -607,15 +663,83 @@ static void fill_rect(const gfx3d_target_t *t, const disp_clip_t *c, uint16_t v)
     disp_span16(t->fb + (size_t)y * t->stride, c->x0, c->x1, v);
 }
 
+// Smallest integer >= v (strict: > v), clamped to [lo, hi].
+static int first_px(float v, bool strict, int lo, int hi) {
+  if (!(v > (float)lo - 1.0f)) return lo;
+  if (v >= (float)hi) return hi;
+  int p = (int)ceilf(v);
+  if (strict && (float)p == v) p++;
+  return p < lo ? lo : p > hi ? hi : p;
+}
+
+// Colour bands parallel to the horizon. h(X, Y) = A*X + B*Y + C is the signed
+// pixel distance of the pixel centre (X, Y) from the horizon line (positive
+// towards the sky); band i begins where h >= focal * tan(angle[i]). Exact at
+// the horizon, an approximation for other angles away from the centre.
+static void fill_sky(const gfx3d_t *g, const gfx3d_target_t *t,
+                     const disp_clip_t *c) {
+  const int n = g->nsky;
+  uint16_t col[GFX3D_MAX_SKY_BANDS];
+  float th[GFX3D_MAX_SKY_BANDS];
+  for (int i = 0; i < n; i++) {
+    col[i] = disp_px(g->sky_color[i], t->swap);
+    th[i] = g->focal * tanf(g->sky_angle[i]);
+  }
+  const float ux = g->V[1], uy = g->V[4], uz = g->V[7];  // world up, view space
+  const float nrm = sqrtf(ux * ux + uy * uy);
+  if (nrm < 1e-6f) {  // looking straight up or down: one band everywhere
+    fill_rect(t, c, col[uz < 0.0f ? n - 1 : 0]);
+    return;
+  }
+  const float A = ux / nrm, B = -uy / nrm;
+  const float C = (-ux * g->cxs + uy * g->cys - uz * g->focal) / nrm;
+  for (int y = c->y0; y <= c->y1; y++) {
+    uint16_t *row = t->fb + (size_t)y * t->stride;
+    const float h0 = B * ((float)y + 0.5f) + C;  // h = A*(px + 0.5) + h0
+    int x = c->x0, b = 0;
+    const float hx = A * ((float)x + 0.5f) + h0;
+    while (b + 1 < n && hx >= th[b + 1]) b++;
+    while (x <= c->x1) {
+      int end = c->x1 + 1, nb = b;
+      if (A > 0.0f && b + 1 < n) {  // h rises: band b+1 from h >= th[b+1]
+        end = first_px((th[b + 1] - h0) / A - 0.5f, false, x, c->x1 + 1);
+        nb = b + 1;
+      } else if (A < 0.0f && b > 0) {  // h falls: band b-1 once h < th[b]
+        end = first_px((th[b] - h0) / A - 0.5f, true, x, c->x1 + 1);
+        nb = b - 1;
+      }
+      if (end > x) {
+        disp_span16(row, x, end - 1, col[b]);
+        x = end;
+      }
+      if (nb == b) break;
+      b = nb;
+    }
+  }
+}
+
 static void raster_bucket(gfx3d_t *g, const gfx3d_target_t *t,
                           const disp_clip_t *c, int b) {
   for (uint16_t i = g->head[b]; i != REC_END; i = g->rec[i].next) {
     const gfx3d_rec_t *r = &g->rec[i];
-    if (r->kind != REC_TRI) continue;
-    disp_fill_tri_f(t->fb, t->stride, c, r->u.tri.x[0], r->u.tri.y[0],
-                    r->u.tri.x[1], r->u.tri.y[1], r->u.tri.x[2], r->u.tri.y[2],
-                    disp_px(r->u.tri.color, t->swap));
-    g->stats.drawn++;
+    if (r->kind == REC_TRI) {
+      disp_fill_tri_f(t->fb, t->stride, c, r->u.tri.x[0], r->u.tri.y[0],
+                      r->u.tri.x[1], r->u.tri.y[1], r->u.tri.x[2],
+                      r->u.tri.y[2], disp_px(r->u.tri.color, t->swap));
+      g->stats.drawn++;
+      continue;
+    }
+    const uint16_t *data;
+    int iw, ih;
+    uint16_t key;
+    if (!t->sprite || !t->sprite(t->ud, r->u.spr.slot, &data, &iw, &ih, &key))
+      continue;
+    if (r->u.spr.sx + r->u.spr.sw > iw || r->u.spr.sy + r->u.spr.sh > ih)
+      continue;  // the image is smaller than when it was queued
+    disp_blit_scaled_rect(t->fb, t->stride, c, r->u.spr.x, r->u.spr.y, data, iw,
+                          r->u.spr.sx, r->u.spr.sy, r->u.spr.sw, r->u.spr.sh,
+                          r->u.spr.w, r->u.spr.h, key, t->swap);
+    g->stats.sprites++;
   }
 }
 
@@ -625,7 +749,10 @@ void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t) {
                    t->clip_x1 < g->vx + g->vw - 1 ? t->clip_x1 : g->vx + g->vw - 1,
                    t->clip_y1 < g->vy + g->vh - 1 ? t->clip_y1 : g->vy + g->vh - 1};
   if (c.x1 < c.x0 || c.y1 < c.y0) return;
-  if (g->clear) fill_rect(t, &c, disp_px(g->clear_color, t->swap));
+  if (g->nsky > 0)
+    fill_sky(g, t, &c);
+  else if (g->clear)
+    fill_rect(t, &c, disp_px(g->clear_color, t->swap));
   raster_bucket(g, t, &c, BG_BUCKET);
   for (int b = GFX3D_BUCKETS - 1; b >= 0; b--) raster_bucket(g, t, &c, b);
 }
