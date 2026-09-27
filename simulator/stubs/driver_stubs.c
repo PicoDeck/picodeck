@@ -489,6 +489,20 @@ void display_draw_image_scaled_nn(int x, int y, const uint16_t *data,
                      src_h, dst_w, dst_h, transparent_color, false);
 }
 
+void display_draw_image_stretched(int x, int y, int dst_w, int dst_h,
+                                  const uint16_t *data, int img_w, int img_h,
+                                  int sx, int sy, int sw, int sh,
+                                  uint16_t transparent_color) {
+    if (sx < 0) { sw += sx; sx = 0; }
+    if (sy < 0) { sh += sy; sy = 0; }
+    if (sw > img_w - sx) sw = img_w - sx;
+    if (sh > img_h - sy) sh = img_h - sy;
+    if (sw <= 0 || sh <= 0) return;
+    disp_clip_t c = cur_clip();
+    disp_blit_scaled_rect(display_get_back_buffer(), 320, &c, x, y, data, img_w,
+                          sx, sy, sw, sh, dst_w, dst_h, transparent_color, false);
+}
+
 void display_draw_image_scaled(int x, int y, int img_w, int img_h,
                                const uint16_t *data, float scale, float angle,
                                uint16_t transparent_color) {

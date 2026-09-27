@@ -419,31 +419,33 @@ DISP_HOT static inline void disp_blit(uint16_t *fb, int stride, const disp_clip_
   }
 }
 
-// Nearest-neighbour scale of a whole src_w x src_h image to dst_w x dst_h at
-// (x, y), skipping `key` pixels (0 = opaque). Destination pixel (dx, dy) of
-// the unclipped rect samples source (dx*src_w/dst_w, dy*src_h/dst_h) — exact
-// integer division, stepped with a remainder DDA across each row.
-DISP_HOT static inline void disp_blit_scaled(uint16_t *fb, int stride,
-                                    const disp_clip_t *c, int x, int y,
-                                    const uint16_t *data, int src_w, int src_h,
-                                    int dst_w, int dst_h, uint16_t key,
-                                    bool swap) {
-  if (!data || src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0) return;
+// Nearest-neighbour stretch of the source rect (sx, sy, sw, sh) of an
+// img_w-wide image to dst_w x dst_h at (x, y), skipping `key` pixels (0 =
+// opaque). Destination pixel (dx, dy) of the unclipped rect samples source
+// (sx + dx*sw/dst_w, sy + dy*sh/dst_h) — exact integer division, stepped with
+// a remainder DDA across each row. The source rect must lie inside the image
+// (callers clamp).
+DISP_HOT static inline void disp_blit_scaled_rect(
+    uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
+    const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,
+    int dst_w, int dst_h, uint16_t key, bool swap) {
+  if (!data || img_w <= 0 || sw <= 0 || sh <= 0 || dst_w <= 0 || dst_h <= 0)
+    return;
   disp_span_t s;
   if (!disp_clip_rect(c, x, y, dst_w, dst_h, &s)) return;
-  const int64_t q = src_w / dst_w, rm = src_w % dst_w;
-  const int64_t col_start = s.skip_x * src_w / dst_w;
-  const int64_t acc_start = s.skip_x * src_w % dst_w;
+  const int64_t q = sw / dst_w, rm = sw % dst_w;
+  const int64_t col_start = s.skip_x * sw / dst_w;
+  const int64_t acc_start = s.skip_x * sw % dst_w;
   uint16_t *row = fb + (size_t)s.y * stride + s.x;
   int64_t prev = -1;
   for (int r = 0; r < s.h; r++, row += stride) {
-    const int64_t src_row = (s.skip_y + r) * src_h / dst_h;
+    const int64_t src_row = (s.skip_y + r) * sh / dst_h;
     if (!key && src_row == prev) {  // opaque: an upscaled row repeats
       memcpy(row, row - stride, (size_t)s.w * sizeof(uint16_t));
       continue;
     }
     prev = src_row;
-    const uint16_t *sp = data + (size_t)src_row * src_w;
+    const uint16_t *sp = data + (size_t)(sy + src_row) * img_w + sx;
     int64_t col = col_start, acc = acc_start;
     for (int i = 0; i < s.w; i++) {
       uint16_t v = sp[col];
@@ -453,6 +455,17 @@ DISP_HOT static inline void disp_blit_scaled(uint16_t *fb, int stride,
       if (acc >= dst_w) { acc -= dst_w; col++; }
     }
   }
+}
+
+// Nearest-neighbour scale of a whole src_w x src_h image (see above).
+DISP_HOT static inline void disp_blit_scaled(uint16_t *fb, int stride,
+                                    const disp_clip_t *c, int x, int y,
+                                    const uint16_t *data, int src_w, int src_h,
+                                    int dst_w, int dst_h, uint16_t key,
+                                    bool swap) {
+  if (src_h <= 0) return;
+  disp_blit_scaled_rect(fb, stride, c, x, y, data, src_w, 0, 0, src_w, src_h,
+                        dst_w, dst_h, key, swap);
 }
 
 #endif  // DISPLAY_CLIP_H

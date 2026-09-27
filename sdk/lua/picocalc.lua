@@ -1666,6 +1666,14 @@ function PicoDeckImage:drawScaled(x, y, dst_w, dst_h) end
 ---@param dst_h integer
 function PicoDeckImage:drawScaledNN(x, y, dst_w, dst_h) end
 
+---Stretch the image (or srcRect of it) to exactly w x h, nearest-neighbour.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param h integer
+---@param srcRect? {x?: integer, y?: integer, w?: integer, h?: integer}
+function PicoDeckImage:drawStretched(x, y, w, h, srcRect) end
+
 ---Set a transparent colour for this image (overrides global setting).
 ---@param color integer|nil RGB565, or `nil` to clear
 function PicoDeckImage:setTransparentColor(color) end

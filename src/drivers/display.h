@@ -125,6 +125,15 @@ void display_draw_image_scaled_nn(int x, int y, const uint16_t *data,
                                   int src_w, int src_h, int dst_w, int dst_h,
                                   uint16_t transparent_color);
 
+// Nearest-neighbour stretch of the source rect (sx, sy, sw, sh) of an
+// img_w x img_h image to dst_w x dst_h at (x, y). The source rect is clamped
+// to the image; nothing is drawn if it (or the destination) is empty.
+// transparent_color 0 falls back to the global key, as the other blits do.
+void display_draw_image_stretched(int x, int y, int dst_w, int dst_h,
+                                  const uint16_t *data, int img_w, int img_h,
+                                  int sx, int sy, int sw, int sh,
+                                  uint16_t transparent_color);
+
 // Draw an integer-scaled image using nearest-neighbor, optimised for speed.
 // No transparency, no bounds check per pixel (pre-clamped).
 // Ideal for emulator framebuffer blits (e.g. 160x144 @ 2x).

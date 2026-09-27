@@ -434,6 +434,36 @@ static void test_blit_scaled(void) {
   CHECK_EQ_INT(bad, 0);
 }
 
+// Sub-rect stretch: destination (dx, dy) of the unclipped rect samples source
+// (sx + dx*sw/dw, sy + dy*sh/dh) of an img_w-wide image.
+static void test_blit_scaled_rect_matches_reference(void) {
+  enum { IW = 23, IH = 17 };
+  uint16_t img[IW * IH];
+  for (int i = 0; i < IW * IH; i++) img[i] = (uint16_t)(1 + (i * 37) % 997);
+  int bad = 0;
+  for (int i = 0; i < 4000; i++) {
+    disp_clip_t c = random_clip();
+    int sx = rnd(0, IW - 1), sy = rnd(0, IH - 1);
+    int sw = rnd(1, IW - sx), sh = rnd(1, IH - sy);
+    int dw = rnd(1, 90), dh = rnd(1, 90), x = rnd(-60, 60), y = rnd(-60, 60);
+    uint16_t key = (i % 3 == 0) ? img[(sy * IW) + sx] : 0;
+    reset(0);
+    disp_blit_scaled_rect(screen(s_got), CW, &c, x, y, img, IW, sx, sy, sw, sh,
+                          dw, dh, key, false);
+    uint16_t *w = screen(s_want);
+    for (int dy = 0; dy < dh; dy++)
+      for (int dx = 0; dx < dw; dx++) {
+        int px = x + dx, py = y + dy;
+        if (px < c.x0 || px > c.x1 || py < c.y0 || py > c.y1) continue;
+        uint16_t v = img[(sy + dy * sh / dh) * IW + sx + dx * sw / dw];
+        if (!key || v != key) w[py * CW + px] = v;
+      }
+    if (!same("scaled rect") && bad++ < 5)
+      printf("  rect src %d,%d %dx%d dst %d,%d %dx%d\n", sx, sy, sw, sh, x, y, dw, dh);
+  }
+  CHECK_EQ_INT(bad, 0);
+}
+
 int main(void) {
   test_clip_rect();
   test_lines_match_reference();
@@ -446,5 +476,6 @@ int main(void) {
   test_blit_partial();
   test_copy_row_alignments();
   test_blit_scaled();
+  test_blit_scaled_rect_matches_reference();
   return check_report("test_display_clip");
 }
