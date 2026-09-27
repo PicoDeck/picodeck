@@ -26,6 +26,7 @@ typedef struct {
 
 static gfx3d_t *s_g;  // this app's context, NULL until first use
 static bool s_in_scene;
+static bool s_closing;  // the live context was just freed (lua_close order)
 static int s_nsprites;
 static uint32_t s_us_geom, s_us_raster;
 
@@ -38,14 +39,22 @@ static uint32_t now_us(void) {
 static int l_ctx_gc(lua_State *L) {
   ctx_ud_t *u = (ctx_ud_t *)luaL_checkudata(L, 1, CTX_MT);
   if (u->g) {
+    if (u->g == s_g) {  // the app's live context: the VM is closing
+      s_g = NULL;
+      s_in_scene = false;
+      s_closing = true;
+    }
     gfx3d_free(u->g);
     u->g = NULL;
   }
-  s_g = NULL;
   return 0;
 }
 
 static gfx3d_t *ctx(lua_State *L) {
+  if (s_closing) {
+    luaL_error(L, "gfx3d: the app is closing");
+    return NULL;
+  }
   if (s_g) return s_g;
   ctx_ud_t *u = (ctx_ud_t *)lua_newuserdatauv(L, sizeof *u, 0);
   u->g = NULL;
@@ -448,6 +457,7 @@ static const luaL_Reg l_gfx3d_lib[] = {
 void lua_bridge_gfx3d_init(lua_State *L) {
   s_g = NULL;
   s_in_scene = false;
+  s_closing = false;
   s_nsprites = 0;
   s_us_geom = s_us_raster = 0;
   lb_register_type(L, MESH_MT, l_mesh_methods, l_mesh_meta);
