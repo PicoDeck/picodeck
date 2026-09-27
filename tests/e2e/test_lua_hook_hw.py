@@ -36,8 +36,9 @@ T.done()
 """
 
 # P0 (specs/2026-09-27-p0-lua-perf-findings.md): 491 ns/iter with the
-# permanent count hook, 189 with the timer-armed hook at -Os.
-EMPTY_LOOP_NS_MAX = 260.0
+# permanent count hook, 189 hook-free at -Os, 169 hook-free with the Lua core
+# at -O2.
+EMPTY_LOOP_NS_MAX = 205.0
 
 
 def test_vm_runs_without_per_instruction_hook_cost(target):

@@ -107,8 +107,9 @@ include(${CMAKE_SOURCE_DIR}/cmake/picodeck_lua.cmake)
 picodeck_patch_luaconf(${LUA_DIR})
 target_compile_definitions(lua PUBLIC ${PICODECK_LUA_DEFINITIONS})
 target_sources(lua PRIVATE ${PICODECK_LUA_SOURCES})  # picodeck_lua_sprintf (float formatting)
-# No signals, no OS-level stuff
-target_compile_options(lua PRIVATE -Os)
+# -O2, not -Os: hook-free, the VM gains ~10% on bytecode and 20-45% on C-call
+# paths at -O2 for +23 KB of flash (P0, specs/2026-09-27-p0-lua-perf-findings.md).
+target_compile_options(lua PRIVATE -O2)
 
 # ── FatFS ─────────────────────────────────────────────────────────────────────
 # Option A: Use pico-extras (recommended):
