@@ -576,6 +576,11 @@ void launcher_apply_clock(uint32_t khz) {
     return;
   }
 
+  // 1b. Stop the keyboard bus engine at a transaction boundary: from the
+  // clock switch until kbd_apply_clock() (step 7, which restarts it) the I2C
+  // divider is wrong for clk_sys.
+  kbd_pause_bus();
+
   // 2. Up-clocking: Raise voltage BEFORE increasing frequency
   if (khz > current_khz) {
     enum vreg_voltage v = VREG_VOLTAGE_DEFAULT;  // 1.10V, good to ~200 MHz
@@ -608,6 +613,7 @@ void launcher_apply_clock(uint32_t khz) {
            (unsigned long)(khz / 1000));
     psram_qmi_apply_timing(current_khz);
     pio_psram_set_sysclk(current_khz);
+    kbd_resume_bus();  // The clock did not change, so the old divider is still right.
     g_core1_pause = false;
     return;
   }
@@ -627,7 +633,8 @@ void launcher_apply_clock(uint32_t khz) {
   // 6. Update display PIO divider for new clk_sys frequency
   display_apply_clock();
 
-  // 7. Update keyboard I2C divider for new clk_peri frequency
+  // 7. Update keyboard I2C divider for new clk_sys frequency, and re-start
+  // the bus engine paused in step 1b.
   kbd_apply_clock();
 
   // 7b. Re-set SD SPI baud rate (derived from clk_peri)

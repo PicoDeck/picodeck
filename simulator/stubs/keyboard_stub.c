@@ -216,6 +216,12 @@ void kbd_apply_clock(void) {
     // No-op in simulator
 }
 
+void kbd_pause_bus(void) {}
+
+void kbd_resume_bus(void) {}
+
+void kbd_set_poll_interval_ms(uint32_t ms) { (void)ms; }
+
 bool kbd_consume_menu_press(void) {
     if (s_menu_pressed) {
         s_menu_pressed = false;

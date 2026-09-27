@@ -9,7 +9,7 @@ Keyboard and button input functions.
 ### Functions
 
 #### `picocalc.input.update()`
-Polls the keyboard for new input events. **Call once per frame** before reading button or character state.
+Takes the keyboard events that arrived since the last call. **Call once per frame** before reading button or character state. The keyboard controller is read in the background (every 10 ms, or back to back while keys are coming), so `update()` never waits on it and a key reaches it within ~20 ms.
 
 `update()` also services HTTP/TCP/sound callbacks, the system menu and dev commands.
 
