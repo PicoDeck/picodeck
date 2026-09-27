@@ -52,6 +52,7 @@ for _, nseg in ipairs({ 34, 67, 134, 267 }) do
     local chunks = build(nseg)
     local frames, warm = 60, 5
     local cpu, cpu_max, geom, raster, drawn, culled, tris = 0, 0, 0, 0, 0, 0, 0
+    local dts = {}
     for f = 1, frames + warm do
         local z = -(f % 30) * 0.2
         local t0 = now()
@@ -65,6 +66,7 @@ for _, nseg in ipairs({ 34, 67, 134, 267 }) do
             local s = g3.getStats()
             cpu = cpu + dt
             if dt > cpu_max then cpu_max = dt end
+            dts[#dts + 1] = dt
             geom = geom + s.us_geom
             raster = raster + s.us_raster
             drawn = drawn + s.drawn
@@ -72,9 +74,11 @@ for _, nseg in ipairs({ 34, 67, 134, 267 }) do
             tris = s.tris_in
         end
     end
+    table.sort(dts)
+    local cpu_median = dts[math.ceil(#dts / 2)]
     results[#results + 1] = string.format(
-        '{"tris":%d,"cpu_us_avg":%d,"cpu_us_max":%d,"geom_us_avg":%d,"raster_us_avg":%d,"drawn_avg":%d,"culled_avg":%d}',
-        tris, cpu // frames, cpu_max, geom // frames, raster // frames, drawn // frames, culled // frames)
+        '{"tris":%d,"cpu_us_avg":%d,"cpu_us_median":%d,"cpu_us_max":%d,"geom_us_avg":%d,"raster_us_avg":%d,"drawn_avg":%d,"culled_avg":%d}',
+        tris, cpu // frames, cpu_median, cpu_max, geom // frames, raster // frames, drawn // frames, culled // frames)
     T.case("bench_" .. nseg, function() T.ok(tris > 0) end)
 end
 local f = pc.fs.open("/data/" .. APP_ID .. "/bench.json", "w")

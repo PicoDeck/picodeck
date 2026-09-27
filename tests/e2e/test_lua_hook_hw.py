@@ -11,11 +11,15 @@ SPEED = """
 local T = picocalc.sys.loadlib("picotest")
 T.case("empty_loop_ns", function()
   local n = 2000000
-  local t0 = picocalc.sys.getTimeMs()
-  for _ = 1, n do end
-  local ms = picocalc.sys.getTimeMs() - t0
+  local best_ms = nil
+  for _ = 1, 3 do
+    local t0 = picocalc.sys.getTimeMs()
+    for _ = 1, n do end
+    local ms = picocalc.sys.getTimeMs() - t0
+    if best_ms == nil or ms < best_ms then best_ms = ms end
+  end
   local f = picocalc.fs.open(picocalc.fs.appPath("ns.txt"), "w")
-  picocalc.fs.write(f, string.format("%.1f", ms * 1e6 / n))
+  picocalc.fs.write(f, string.format("%.1f", best_ms * 1e6 / n))
   picocalc.fs.close(f)
 end)
 T.done()
@@ -38,6 +42,9 @@ T.done()
 # P0 (specs/2026-09-27-p0-lua-perf-findings.md): 491 ns/iter with the
 # permanent count hook, 189 hook-free at -Os, 169 hook-free with the Lua core
 # at -O2. On this branch -Os measured 196 and -O2 170.5; 185 separates them.
+# The fixture times the loop 3x and keeps the fastest (best-of-3): harness
+# status polling during a run only ever adds time, never subtracts it, so
+# the minimum is the least-noisy estimate of the true per-iteration cost.
 EMPTY_LOOP_NS_MAX = 185.0
 
 
