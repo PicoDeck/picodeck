@@ -556,7 +556,7 @@ if(EMSCRIPTEN)
     # "<dir under /apps>|<zip URL>|<SHA-256>". Downloaded at configure time
     # into web_downloads/ and reused while the hash still matches.
     set(PICODECK_WEB_STORE_APPS
-        "blockexe|https://github.com/PicoDeck/blockexe/releases/download/v1.0.2/picodeck-blockexe-v1.0.2.zip|439ee29fb3022f213202a824b255274582ff9b76a024a8d1fcf8c0bd42dd8635"
+        "blockexe|https://github.com/PicoDeck/blockexe/releases/download/v1.0.3/picodeck-blockexe-v1.0.3.zip|66cc0c9ebc251e704a78ecf540b94ca6bab2055bf66f96ea550319e9a8dbcac7"
         CACHE STRING "Store app release ZIPs to bundle into the web demo SD image")
 
     set(WEB_SD_DIR ${CMAKE_BINARY_DIR}/web_sd)
