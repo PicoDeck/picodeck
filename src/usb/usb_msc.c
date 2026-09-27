@@ -66,6 +66,9 @@ void usb_msc_enter_mode(void) {
   if (!g_core1_paused)
     printf("[USB_MSC] Core 1 pause timeout (500ms)\n");
   printf("[USB MSC] Core 1 paused (WiFi/HTTP/audio halted)\n");
+  // Keep STM32 traffic to one keyboard read per 500 ms while USB is active
+  // (see the ESC loop below); the bus engine keeps running from interrupts.
+  kbd_set_poll_interval_ms(500);
   // f_getfree below scans the FAT (~3 s on a 256 GB card, longer on slow
   // cards) with no watchdog kick; the heartbeat lets paused Core 1 relay
   // the watchdog through it.
@@ -119,30 +122,26 @@ void usb_msc_enter_mode(void) {
   //    direct call share no mutual exclusion around the processing callbacks,
   //    so both could call disk_read() simultaneously, corrupting SPI0 state
   //    and hanging the device (which manifests as the keyboard locking up).
-  // CRITICAL: I2C keyboard polling is limited to 500ms intervals during USB MSC.
-  // uf2loader-main reference shows that frequent I2C access during active USB
-  // causes STM32 lockup due to electrical interference/noise. This slower rate
-  // balances usability (ESC key still works) with stability (prevents crashes).
-  // The "Hold escape" message cues users to keep the key pressed longer.
+  // CRITICAL: the keyboard bus engine is limited to one STM32 read per
+  // 500ms during USB MSC (kbd_set_poll_interval_ms above). uf2loader-main
+  // reference shows that frequent I2C access during active USB causes
+  // STM32 lockup due to electrical interference/noise. The "Hold escape"
+  // message cues users to keep the key pressed longer.
   // See: reference/uf2loader-main/ui/text_directory_ui.c (no I2C during USB)
   printf("[USB MSC] Waiting for host or ESC key (hold to exit)...\n");
 
   uint32_t last_kbd_poll_ms = 0;
   uint32_t loop_start_ms = to_ms_since_boot(get_absolute_time());
-  const uint32_t KBD_POLL_INTERVAL_MS = 500;  // Poll keyboard every 500ms (was 10ms)
+  const uint32_t KBD_POLL_INTERVAL_MS = 50;  // kbd_poll() only drains what the engine read: cheap
   const uint32_t HOST_TIMEOUT_MS = 10000;     // 10s timeout (accounts for re-enumeration)
 
   while (true) {
     uint32_t now = to_ms_since_boot(get_absolute_time());
 
-    // Check ESC key with rate limiting to avoid I2C bus congestion
+    // Check ESC every 50 ms. kbd_poll() does not touch the bus; the engine's
+    // 500 ms idle interval (above) is what limits STM32 traffic here.
     if (now - last_kbd_poll_ms >= KBD_POLL_INTERVAL_MS) {
-      // Disable USB IRQ during I2C keyboard poll — USB MSC callbacks
-      // (read10/write10) run in USBCTRL_IRQ and do multi-ms SPI transfers
-      // that preempt the I2C transaction past its 5ms timeout.
-      irq_set_enabled(USBCTRL_IRQ, false);
       kbd_poll();
-      irq_set_enabled(USBCTRL_IRQ, true);
       last_kbd_poll_ms = now;
       if (kbd_get_buttons_pressed() & BTN_ESC) {
         printf("[USB MSC] ESC key pressed, exiting\n");
@@ -216,6 +215,7 @@ void usb_msc_enter_mode(void) {
 
   // Recover I2C bus - STM32 may need re-initialization after USB activity
   printf("[USB MSC] Recovering I2C bus...\n");
+  kbd_set_poll_interval_ms(0);  // back to the normal cadence
   kbd_recover_i2c_bus();
   kbd_apply_clock();
   kbd_clear_state();

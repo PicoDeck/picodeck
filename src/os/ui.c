@@ -458,10 +458,11 @@ bool ui_text_input(const char *prompt, const char *default_val,
 
 bool ui_confirm(const char *message) {
   // Only input typed at THIS dialog may answer it.  Keys queued while the
-  // app was not polling (still in the STM32 FIFO, or decoded by sys.sleep's
-  // background polls) or injected earlier are discarded, input during a short grace
-  // period is ignored, and Enter must be a fresh press edge after it — so
-  // an app cannot pre-load a "yes" (sys.applyUpdate relies on this).
+  // app was not polling (still in the STM32 FIFO, in the keyboard bus
+  // engine's ring, or decoded by sys.sleep's background polls) or injected
+  // earlier are discarded, input during a short grace period is ignored, and
+  // Enter must be a fresh press edge after it — so an app cannot pre-load a
+  // "yes" (sys.applyUpdate relies on this).
   kbd_discard_pending();
   // Measure how many lines the message needs (up to 2)
   const int COLS = (DLG_W - 20) / 6;

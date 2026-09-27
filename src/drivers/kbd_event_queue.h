@@ -9,10 +9,11 @@
 // (tests/unit/test_kbd_event_queue.c). Only one driver is linked per build, so
 // the state (kbd_input_t) is a static in whichever driver includes this.
 //
-// What it fixes: kbd_poll() reads the STM32 FIFO every 50 ms and used to keep
+// What it fixes: kbd_poll() used to read the STM32 FIFO directly and keep
 // only the net button state and the last char, so a tap shorter than a poll
-// produced no edge and two chars in one poll became one. Now every FIFO item
-// is decoded in order into
+// produced no edge and two chars in one poll became one. Now the bus engine
+// (kbd_i2c.c) reads the FIFO in the background and kbd_poll() decodes what
+// it read, in order (up to 8 items per poll; the rest wait for the next), into
 //   - a small event queue   (down / up / char, drained by input.pollEvent)
 //   - a char backlog        (getChar still returns one char per poll, but a
 //                            second char in the same poll arrives next poll)

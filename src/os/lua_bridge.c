@@ -359,6 +359,7 @@ static void lua_service_full(lua_State *L) {
     crashlog_clear_running(); // intentional — not an unclean exit
     stdio_flush();
     sleep_ms(100);
+    kbd_prepare_reset();
     watchdog_reboot(0, 0, 0);
   }
   if (dev_commands_wants_reboot_flash()) {
@@ -366,6 +367,7 @@ static void lua_service_full(lua_State *L) {
     crashlog_clear_running();
     stdio_flush();
     sleep_ms(100);
+    kbd_prepare_reset();
     reset_usb_boot(0, 0);
   }
   if (dev_commands_wants_reboot_ota()) {

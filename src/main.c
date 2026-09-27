@@ -28,6 +28,9 @@ void display_flush(void);
 const char* launcher_get_running_app_name(void);
 uint32_t    launcher_get_app_uptime_ms(void);
 
+// kbd_i2c_halt(): hardfault_c stops the keyboard bus engine before resetting.
+#include "drivers/kbd_i2c.h"
+
 // Linker symbols for the main stack limits (see boot2/memmap_*.ld)
 extern uint32_t __StackTop;    // initial SP (stack grows DOWN from here)
 extern uint32_t __StackBottom; // lowest valid address (4KB below StackTop)
@@ -120,6 +123,10 @@ static uint32_t native_addr_to_elf_vaddr(uint32_t addr) {
 #define BOOT_MAX_RETRIES 3
 
 static void __attribute__((used)) hardfault_c(uint32_t *frame, uint32_t exc_return) {
+  // First, so Core 0's keyboard bus engine is off the bus well before the
+  // reset below (see the comment there).
+  kbd_i2c_halt();
+
   // ARM exception frame layout (8 words pushed by hardware on entry):
   //   frame[0]=R0, [1]=R1, [2]=R2, [3]=R3,
   //   [4]=R12, [5]=LR(EXC), [6]=PC(fault), [7]=xPSR
@@ -411,6 +418,13 @@ static void __attribute__((used)) hardfault_c(uint32_t *frame, uint32_t exc_retu
   // Reboot explicitly — watchdog scratch already has the crash data (saved
   // at the top of this function).  On next boot, crash_log_save() writes it
   // to /system/crashlog.txt.
+  // The keyboard bus (an STM32 transaction cut mid-byte can lock its I2C
+  // slave until a power cycle): kbd_prepare_reset() cannot run here (it
+  // waits on the engine's interrupts), and need not. A Core 0 fault freezes
+  // the engine, whose interrupts cannot preempt HardFault; the 3 s wait
+  // above lets a transfer already queued in the I2C block finish on its own.
+  // A Core 1 fault leaves Core 0 running the engine: kbd_i2c_halt() at the
+  // top let it finish the transaction in flight (~6 ms) and start no other.
   watchdog_reboot(0, 0, 0);
 
   // Fallback if reboot doesn't fire immediately.
@@ -624,6 +638,7 @@ static uint64_t sys_getTimeUs(void) {
 }
 static void sys_reboot(void) {
   crashlog_clear_running(); // intentional — not an unclean exit
+  kbd_prepare_reset();
   watchdog_enable(1, true);
   for (;;)
     tight_loop_contents();
@@ -688,6 +703,7 @@ static void sys_poll(void) {
     crashlog_clear_running(); // intentional — not an unclean exit
     stdio_flush();
     sleep_ms(100);
+    kbd_prepare_reset();
     watchdog_reboot(0, 0, 0);
   }
   if (dev_commands_wants_reboot_flash()) {
@@ -695,6 +711,7 @@ static void sys_poll(void) {
     crashlog_clear_running();
     stdio_flush();
     sleep_ms(100);
+    kbd_prepare_reset();
     reset_usb_boot(0, 0);
   }
   if (dev_commands_wants_reboot_ota()) {
@@ -2286,6 +2303,7 @@ int main(void) {
   printf("[MAIN] launcher_run returned, rebooting\n");
   crashlog_write("OS ERROR", "OS", "launcher", "launcher_run returned");
   stdio_flush();
+  kbd_prepare_reset();
   watchdog_reboot(0, 0, 0);
   while (true)
     tight_loop_contents();
