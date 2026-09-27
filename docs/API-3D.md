@@ -178,6 +178,17 @@ Fills the viewport (sky or clear colour) and draws everything, far to near, into
 - **Each `draw` costs one Lua→C call, plus work per vertex and per visible triangle.** Group static scenery into a few meshes rather than many tiny ones.
 - **Allocate meshes once, not every frame.** For smooth frame times, create tables up front and consider `collectgarbage("generational")`.
 
+Measured on the device (RP2350 at 200 MHz, a 320×240 viewport with sky and fog, a track strip in 8-segment chunks):
+
+| Triangles submitted | Drawn (avg) | CPU per frame (avg) | of which `draw` calls | of which `endScene` |
+|---|---|---|---|---|
+| 204 | 135 | 7340 µs | 2291 µs | 3519 µs |
+| 402 | 219 | 10379 µs | 4129 µs | 3928 µs |
+| 804 | 449 | 17406 µs | 7997 µs | 4836 µs |
+| 1602 | 855 | 29171 µs | 15238 µs | 6346 µs |
+
+A full-screen `display.flush()` takes 17.4 ms of DMA (overlapped with the next frame's work), so 30 fps leaves about 33 ms of CPU per frame.
+
 ### Example
 ```lua
 local g3, disp = picocalc.gfx3d, picocalc.display
