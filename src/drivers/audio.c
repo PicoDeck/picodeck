@@ -216,7 +216,7 @@ static void __time_critical_func(audio_fill_dma_buffer)(uint32_t *buf, int count
 }
 
 // DMA completion ISR: swap ping-pong buffers and refill
-static void __time_critical_func(audio_stream_dma_isr)(void) {
+static inline __attribute__((always_inline)) void stream_dma_isr_body(void) {
   s_stream_dma_isr_count++;
   dma_hw->ints0 = 1u << s_stream_dma_chan;
 
@@ -234,6 +234,36 @@ static void __time_critical_func(audio_stream_dma_isr)(void) {
   // Refill the buffer that just finished playing
   audio_fill_dma_buffer(s_stream_dma_buf[s_stream_dma_active_buf], STREAM_DMA_SAMPLES);
   s_stream_dma_active_buf = next;
+}
+
+// Times stream_dma_isr_body for the `audiostat` dev command.
+static volatile uint32_t s_isr_window, s_isr_us, s_isr_max_us;
+
+static void __time_critical_func(audio_stream_dma_isr)(void) {
+  uint32_t t0 = time_us_32();
+  stream_dma_isr_body();
+  uint32_t dt = time_us_32() - t0;
+  s_isr_window++;
+  s_isr_us += dt;
+  if (dt > s_isr_max_us)
+    s_isr_max_us = dt;
+}
+
+void audio_output_get_stats(audio_output_stats_t *out) {
+  out->running = s_streaming;
+  out->isr_count = s_isr_window;
+  out->isr_us = s_isr_us;
+  out->isr_max_us = s_isr_max_us;
+}
+
+void audio_output_reset_stats(void) {
+  s_isr_window = 0;
+  s_isr_us = 0;
+  s_isr_max_us = 0;
+}
+
+void audio_stream_reset_underruns(void) {
+  s_stream_underrun_count = 0;
 }
 
 void audio_start_stream(uint32_t sample_rate) {

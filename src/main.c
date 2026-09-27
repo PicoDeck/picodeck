@@ -499,6 +499,7 @@ void __attribute__((naked)) isr_hardfault(void) {
 #include "drivers/wifi.h"
 #include "drivers/rng.h"
 #include "fonts/font_registry.h"
+#include "core1_stats.h"
 #include "hardware.h"
 #include "os/app_identity.h"
 #include "os/appconfig.h"
@@ -1595,10 +1596,30 @@ _Atomic(void (*)(void)) g_native_audio_callback = NULL;
 static repeating_timer_t s_core1_timer;
 static volatile bool s_core1_tick_pending = false;
 
+// core1_stats.h. Core 1 writes these (Core 0 only asks for a reset, which
+// Core 1 carries out at its next tick); Core 0 reads them unlocked.
+static volatile uint32_t s_tick_count, s_tick_over, s_tick_missed, s_tick_max_us;
+static volatile uint64_t s_tick_window_t0_us;
+static volatile bool s_tick_reset_req;
+
 static bool core1_timer_callback(repeating_timer_t *rt) {
   (void)rt;
+  if (s_core1_tick_pending)
+    s_tick_missed++;  // the previous tick has not started: this one merges into it
   s_core1_tick_pending = true;
   return true;
+}
+
+void core1_get_tick_stats(core1_tick_stats_t *out) {
+  out->window_ms = (uint32_t)((time_us_64() - s_tick_window_t0_us) / 1000);
+  out->ticks = s_tick_count;
+  out->over = s_tick_over;
+  out->missed = s_tick_missed;
+  out->max_us = s_tick_max_us;
+}
+
+void core1_reset_tick_stats(void) {
+  s_tick_reset_req = true;
 }
 
 // Doorbell ISR: Core 0 rings WIFI_IPC_DOORBELL after pushing to the IPC
@@ -1674,6 +1695,12 @@ static void core1_entry(void) {
 
     if (s_core1_tick_pending) {
       s_core1_tick_pending = false;
+      if (s_tick_reset_req) {
+        s_tick_count = s_tick_over = s_tick_missed = s_tick_max_us = 0;
+        s_tick_window_t0_us = time_us_64();
+        s_tick_reset_req = false;
+      }
+      uint32_t tick_t0 = time_us_32();
 
       core1_relay_watchdog();
 
@@ -1786,6 +1813,13 @@ static void core1_entry(void) {
                  (unsigned long)ring_used);
         }
       }
+
+      uint32_t tick_us = time_us_32() - tick_t0;
+      s_tick_count++;
+      if (tick_us > 1000)
+        s_tick_over++;
+      if (tick_us > s_tick_max_us)
+        s_tick_max_us = tick_us;
     }
 
     __wfi();

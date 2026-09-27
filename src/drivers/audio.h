@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "pico/time.h"
 #include "../os/os.h"
@@ -50,3 +51,16 @@ void audio_stream_debug(uint32_t *isr_count, uint32_t *underruns, uint32_t *ring
 // Callers should check this before rendering audio to avoid overflow
 // (overflow drops samples, causing severe audio corruption).
 uint32_t audio_ring_free(void);
+
+// The output's DMA refill interrupt, for the `audiostat` dev command.
+typedef struct {
+    bool running;         // the output is started
+    uint32_t isr_count;   // refills since the last reset
+    uint32_t isr_us;      // time spent in them since the last reset
+    uint32_t isr_max_us;  // the longest one since the last reset
+} audio_output_stats_t;
+
+void audio_output_get_stats(audio_output_stats_t *out);
+void audio_output_reset_stats(void);
+// Zeroes the stream underrun count that audio_stream_debug reports.
+void audio_stream_reset_underruns(void);
