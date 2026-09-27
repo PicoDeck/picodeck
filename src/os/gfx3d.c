@@ -335,3 +335,297 @@ void gfx3d_begin(gfx3d_t *g, bool clear, uint16_t clear_color) {
   memset(g->tail, 0xFF, sizeof g->tail);
   memset(&g->stats, 0, sizeof g->stats);
 }
+
+// ── Scene building ──────────────────────────────────────────────────────────
+
+static int bucket_of(const gfx3d_t *g, float depth) {
+  const float t = (depth - g->znear) / (g->zfar - g->znear);
+  if (!(t > 0.0f)) return 0;
+  if (t >= 1.0f) return GFX3D_BUCKETS - 1;
+  return (int)(sqrtf(t) * (float)(GFX3D_BUCKETS - 1));
+}
+
+// Appends record i to bucket b (submission order is kept within a bucket).
+static void link_rec(gfx3d_t *g, int b, int i) {
+  g->rec[i].next = REC_END;
+  if (g->head[b] == REC_END)
+    g->head[b] = (uint16_t)i;
+  else
+    g->rec[g->tail[b]].next = (uint16_t)i;
+  g->tail[b] = (uint16_t)i;
+}
+
+static int new_rec(gfx3d_t *g) {
+  if (g->nrec >= GFX3D_CAPACITY) {
+    g->stats.overflow++;
+    return -1;
+  }
+  return g->nrec++;
+}
+
+static uint16_t rgb565f(float r, float gch, float b) {
+  int ri = (int)(r + 0.5f), gi = (int)(gch + 0.5f), bi = (int)(b + 0.5f);
+  ri = ri < 0 ? 0 : ri > 31 ? 31 : ri;
+  gi = gi < 0 ? 0 : gi > 63 ? 63 : gi;
+  bi = bi < 0 ? 0 : bi > 31 ? 31 : bi;
+  return (uint16_t)((ri << 11) | (gi << 5) | bi);
+}
+
+static uint16_t shade(uint16_t c, float k) {
+  return rgb565f((float)((c >> 11) & 31) * k, (float)((c >> 5) & 63) * k,
+                 (float)(c & 31) * k);
+}
+
+static uint16_t fog_mix(const gfx3d_t *g, uint16_t c, float depth) {
+  float t = (depth - g->fog_near) / (g->fog_far - g->fog_near);
+  if (!(t > 0.0f)) return c;
+  if (t > 1.0f) t = 1.0f;
+  const uint16_t f = g->fog_color;
+  const float r = (float)((c >> 11) & 31), gg = (float)((c >> 5) & 63);
+  const float b = (float)(c & 31);
+  return rgb565f(r + ((float)((f >> 11) & 31) - r) * t,
+                 gg + ((float)((f >> 5) & 63) - gg) * t,
+                 b + ((float)(f & 31) - b) * t);
+}
+
+// True when the sphere (view space) is entirely outside the frustum.
+static bool sphere_outside(const gfx3d_t *g, const float c[3], float r,
+                           bool background) {
+  const float depth = -c[2];
+  if (depth + r < g->znear) return true;
+  if (!background && depth - r > g->zfar) return true;
+  if ((c[0] - depth * g->tan_x) * g->inv_x > r) return true;
+  if ((-c[0] - depth * g->tan_x) * g->inv_x > r) return true;
+  if ((c[1] - depth * g->tan_y) * g->inv_y > r) return true;
+  if ((-c[1] - depth * g->tan_y) * g->inv_y > r) return true;
+  return false;
+}
+
+static bool ensure_scratch(gfx3d_t *g, int nverts, int norder) {
+  if (nverts > g->vcap) {
+    float *vv = (float *)GFX3D_MALLOC(sizeof(float) * 3u * (size_t)nverts);
+    float *sv = (float *)GFX3D_MALLOC(sizeof(float) * 2u * (size_t)nverts);
+    if (!vv || !sv) {
+      if (vv) GFX3D_FREE(vv);
+      if (sv) GFX3D_FREE(sv);
+      return false;
+    }
+    if (g->vv) GFX3D_FREE(g->vv);
+    if (g->sv) GFX3D_FREE(g->sv);
+    g->vv = vv;
+    g->sv = sv;
+    g->vcap = nverts;
+  }
+  if (norder > g->ocap) {
+    gfx3d_order_t *o =
+        (gfx3d_order_t *)GFX3D_MALLOC(sizeof(gfx3d_order_t) * (size_t)norder);
+    if (!o) return false;
+    if (g->order) GFX3D_FREE(g->order);
+    g->order = o;
+    g->ocap = norder;
+  }
+  return true;
+}
+
+// Clips the view-space triangle (a, b, c) against the near plane and
+// projects the result (3 or 4 vertices) into ox/oy. Each crossing is
+// interpolated from its inside end, so two triangles sharing the edge get
+// the same point.
+static int clip_near(const gfx3d_t *g, const float *a, const float *b,
+                     const float *c, float *ox, float *oy) {
+  const float *in[3] = {a, b, c};
+  float p[4][3];
+  int n = 0;
+  for (int i = 0; i < 3; i++) {
+    const float *u = in[i], *w = in[(i + 1) % 3];
+    const float du = -u[2] - g->znear, dw = -w[2] - g->znear;  // >= 0: inside
+    if (du >= 0.0f) {
+      memcpy(p[n], u, sizeof p[0]);
+      n++;
+    }
+    if ((du >= 0.0f) != (dw >= 0.0f)) {
+      const float *s = du >= 0.0f ? u : w, *o = du >= 0.0f ? w : u;
+      const float ds = du >= 0.0f ? du : dw, dd = du >= 0.0f ? dw : du;
+      const float t = ds / (ds - dd);
+      for (int k = 0; k < 3; k++) p[n][k] = s[k] + (o[k] - s[k]) * t;
+      n++;
+    }
+  }
+  for (int i = 0; i < n; i++) {
+    const float k = g->focal / fmaxf(-p[i][2], g->znear);
+    ox[i] = g->cxs + p[i][0] * k;
+    oy[i] = g->cys - p[i][1] * k;
+  }
+  return n;
+}
+
+static bool offscreen(const gfx3d_t *g, const float *x, const float *y, int n) {
+  const float x0 = (float)g->vx, x1 = (float)(g->vx + g->vw);
+  const float y0 = (float)g->vy, y1 = (float)(g->vy + g->vh);
+  bool left = true, right = true, top = true, bottom = true;
+  for (int i = 0; i < n; i++) {
+    if (x[i] >= x0) left = false;
+    if (x[i] <= x1) right = false;
+    if (y[i] >= y0) top = false;
+    if (y[i] <= y1) bottom = false;
+  }
+  return left || right || top || bottom;
+}
+
+static int order_cmp(const void *pa, const void *pb) {
+  const gfx3d_order_t *a = (const gfx3d_order_t *)pa, *b = (const gfx3d_order_t *)pb;
+  if (a->depth > b->depth) return -1;  // far first
+  if (a->depth < b->depth) return 1;
+  return (int)a->rec - (int)b->rec;    // then submission order
+}
+
+static void process_mesh(gfx3d_t *g, const gfx3d_mesh_t *m,
+                         const gfx3d_xform_t *xf, bool bg, float bias, bool one,
+                         float inst_depth) {
+  if (!ensure_scratch(g, m->nverts, one ? 2 * m->ntris : 0)) {
+    g->stats.overflow += (uint32_t)m->ntris;
+    return;
+  }
+  const float zn = g->znear, zf = g->zfar;
+  for (int i = 0; i < m->nverts; i++) {
+    float *v = &g->vv[3 * i];
+    mat_vec(v, xf->A, &m->xyz[3 * i]);
+    v[0] += xf->t[0];
+    v[1] += xf->t[1];
+    v[2] += xf->t[2];
+    const float depth = -v[2];
+    if (depth >= zn) {
+      const float k = g->focal / depth;
+      g->sv[2 * i] = g->cxs + v[0] * k;
+      g->sv[2 * i + 1] = g->cys - v[1] * k;
+    }
+  }
+  int n_one = 0;
+  for (int t = 0; t < m->ntris; t++) {
+    const float *pl = &m->plane[4 * t];
+    const unsigned fl = m->flags[t];
+    const bool front = dot3(pl, xf->eye) - pl[3] > 0.0f;
+    if (!front && !(fl & GFX3D_DOUBLE_SIDED)) {
+      g->stats.culled++;
+      continue;
+    }
+    const int ia = m->idx[3 * t], ib = m->idx[3 * t + 1], ic = m->idx[3 * t + 2];
+    const float da = -g->vv[3 * ia + 2], db = -g->vv[3 * ib + 2];
+    const float dc = -g->vv[3 * ic + 2];
+    if (da < zn && db < zn && dc < zn) {
+      g->stats.culled++;
+      continue;
+    }
+    if (!bg && da > zf && db > zf && dc > zf) {
+      g->stats.culled++;
+      continue;
+    }
+    uint16_t col = m->color[t];
+    if (!(fl & GFX3D_UNLIT)) {
+      float nl = dot3(pl, xf->light);
+      if (!front) nl = -nl;
+      col = shade(col, g->ambient + (1.0f - g->ambient) * (nl > 0.0f ? nl : 0.0f));
+    }
+    const float depth = (fmaxf(da, zn) + fmaxf(db, zn) + fmaxf(dc, zn)) * (1.0f / 3.0f);
+    if (!bg && g->fog_on && !(fl & GFX3D_NO_FOG)) col = fog_mix(g, col, depth);
+    float tx[4], ty[4];
+    int nv;
+    if (da >= zn && db >= zn && dc >= zn) {
+      tx[0] = g->sv[2 * ia];
+      ty[0] = g->sv[2 * ia + 1];
+      tx[1] = g->sv[2 * ib];
+      ty[1] = g->sv[2 * ib + 1];
+      tx[2] = g->sv[2 * ic];
+      ty[2] = g->sv[2 * ic + 1];
+      nv = 3;
+    } else {
+      nv = clip_near(g, &g->vv[3 * ia], &g->vv[3 * ib], &g->vv[3 * ic], tx, ty);
+      g->stats.clipped++;
+    }
+    if (offscreen(g, tx, ty, nv)) {
+      g->stats.culled++;
+      continue;
+    }
+    const int bucket = bg ? BG_BUCKET : bucket_of(g, depth + bias);
+    for (int k = 1; k + 1 < nv; k++) {
+      const int ri = new_rec(g);
+      if (ri < 0) break;
+      gfx3d_rec_t *r = &g->rec[ri];
+      r->kind = REC_TRI;
+      r->u.tri.x[0] = tx[0];
+      r->u.tri.y[0] = ty[0];
+      r->u.tri.x[1] = tx[k];
+      r->u.tri.y[1] = ty[k];
+      r->u.tri.x[2] = tx[k + 1];
+      r->u.tri.y[2] = ty[k + 1];
+      r->u.tri.color = col;
+      if (one) {
+        g->order[n_one].depth = depth;
+        g->order[n_one].rec = (uint16_t)ri;
+        n_one++;
+      } else {
+        link_rec(g, bucket, ri);
+      }
+    }
+  }
+  if (one && n_one > 0) {
+    qsort(g->order, (size_t)n_one, sizeof *g->order, order_cmp);
+    const int b = bucket_of(g, inst_depth + bias);
+    for (int i = 0; i < n_one; i++) link_rec(g, b, g->order[i].rec);
+  }
+}
+
+void gfx3d_draw(gfx3d_t *g, const gfx3d_mesh_t *m, const float rot[9],
+                const float pos[3], float scale, float bias, bool sort_as_one) {
+  g->stats.tris_in += (uint32_t)m->ntris;
+  gfx3d_xform_t xf;
+  float vr[9], rt[9];
+  const float d[3] = {pos[0] - g->cam[0], pos[1] - g->cam[1], pos[2] - g->cam[2]};
+  mat_mul(vr, g->V, rot);
+  for (int i = 0; i < 9; i++) xf.A[i] = vr[i] * scale;
+  mat_vec(xf.t, g->V, d);
+  mat_t(rt, rot);
+  const float back[3] = {-d[0] / scale, -d[1] / scale, -d[2] / scale};
+  mat_vec(xf.eye, rt, back);
+  mat_vec(xf.light, rt, g->light);
+  float c[3];
+  mat_vec(c, xf.A, m->center);
+  c[0] += xf.t[0];
+  c[1] += xf.t[1];
+  c[2] += xf.t[2];
+  if (sphere_outside(g, c, m->radius * scale, false)) {
+    g->stats.culled += (uint32_t)m->ntris;
+    return;
+  }
+  process_mesh(g, m, &xf, false, bias, sort_as_one, -xf.t[2]);
+}
+
+// ── Rasterisation ───────────────────────────────────────────────────────────
+
+static void fill_rect(const gfx3d_target_t *t, const disp_clip_t *c, uint16_t v) {
+  for (int y = c->y0; y <= c->y1; y++)
+    disp_span16(t->fb + (size_t)y * t->stride, c->x0, c->x1, v);
+}
+
+static void raster_bucket(gfx3d_t *g, const gfx3d_target_t *t,
+                          const disp_clip_t *c, int b) {
+  for (uint16_t i = g->head[b]; i != REC_END; i = g->rec[i].next) {
+    const gfx3d_rec_t *r = &g->rec[i];
+    if (r->kind != REC_TRI) continue;
+    disp_fill_tri_f(t->fb, t->stride, c, r->u.tri.x[0], r->u.tri.y[0],
+                    r->u.tri.x[1], r->u.tri.y[1], r->u.tri.x[2], r->u.tri.y[2],
+                    disp_px(r->u.tri.color, t->swap));
+    g->stats.drawn++;
+  }
+}
+
+void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t) {
+  disp_clip_t c = {t->clip_x0 > g->vx ? t->clip_x0 : g->vx,
+                   t->clip_y0 > g->vy ? t->clip_y0 : g->vy,
+                   t->clip_x1 < g->vx + g->vw - 1 ? t->clip_x1 : g->vx + g->vw - 1,
+                   t->clip_y1 < g->vy + g->vh - 1 ? t->clip_y1 : g->vy + g->vh - 1};
+  if (c.x1 < c.x0 || c.y1 < c.y0) return;
+  if (g->clear) fill_rect(t, &c, disp_px(g->clear_color, t->swap));
+  raster_bucket(g, t, &c, BG_BUCKET);
+  for (int b = GFX3D_BUCKETS - 1; b >= 0; b--) raster_bucket(g, t, &c, b);
+}
