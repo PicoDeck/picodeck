@@ -78,7 +78,10 @@ FIXTURE = r'''
 local T = picocalc.sys.loadlib("picotest")
 local sys, sound, fs, input = picocalc.sys, picocalc.sound, picocalc.fs, picocalc.input
 local audio, disp = picocalc.audio, picocalc.display
-local MODE, SECONDS = fs.readFile(fs.appPath("run.txt")):match("(%a+) (%d+)")
+-- %S+ (not %a+): "mp3" has a digit in it, which %a+ (letters only) can't
+-- match, so MODE/SECONDS both came back nil and every "mp3" run failed
+-- immediately on the arithmetic below.
+local MODE, SECONDS = fs.readFile(fs.appPath("run.txt")):match("(%S+) (%d+)")
 SECONDS = tonumber(SECONDS)
 
 local function write(name, text)
@@ -222,11 +225,25 @@ def mix_app(target):
     if not FFMPEG:
         pytest.skip("ffmpeg makes the music")
     if APP not in _staged:
+        # push_app's on-device extraction timeout assumes ~64 KB/s; SD
+        # writes on this device run closer to 12 KB/s (project memory:
+        # ref_hw_v2_findings), so the ~420 KB of music + eight blips in
+        # one zip regularly outran the local timeout even though the
+        # on-device extraction went on to finish (confirmed with `ls`
+        # after a "did not complete" error). Stage the music with the
+        # app, then the blips in a second push: `stage_lua_app` writes
+        # the same app.json both times (no extra reboot), and unzip
+        # merges into the existing /apps/audio_mix directory rather than
+        # clearing it, so each push's own payload stays comfortably
+        # under the timeout on its own.
         with tempfile.TemporaryDirectory() as tmp:
-            files = {}
             music = Path(tmp) / "music.mp3"
             music_mp3(music)
-            files["music.mp3"] = music.read_bytes()
+            target.stage_lua_app(APP, FIXTURE, requirements=("audio",),
+                                 id=APP_ID,
+                                 files={"music.mp3": music.read_bytes()})
+        with tempfile.TemporaryDirectory() as tmp:
+            files = {}
             for i, hz in enumerate(SFX_HZ, 1):
                 p = Path(tmp) / f"sfx{i}.wav"
                 sfx_wav(p, hz)
