@@ -56,7 +56,7 @@ picocalc.sys.sleep(100)  -- Sleep for 100ms
 ---
 
 #### `picocalc.sys.getBattery()`
-Returns the battery charge level. The level is read from the keyboard controller in the background every 5 seconds; this returns the latest reading without waiting.
+Returns the battery charge level. The level is read from the keyboard controller in the background every 5 seconds (paused while the app goes a second without `input.update()` or `sys.sleep()`); this returns the latest reading without waiting.
 
 - **Parameters:** None
 - **Returns:** (number) Battery percentage (0-100), or -1 if unknown/USB powered

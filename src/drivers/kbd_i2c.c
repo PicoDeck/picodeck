@@ -10,6 +10,10 @@
 // Engine steps run with Core 0 interrupts disabled (a few us each) and task
 // calls touch the shared state under the same mask, so the I2C handler, the
 // alarm callback and the caller never interleave whatever the priorities.
+// Reads stop when kbd_poll() has not run for a second (KBD_BUS_UNPOLLED_US)
+// and resume at its next call, so a watchdog reset after Core 0 stalls finds
+// the bus idle; kbd_i2c_halt() (the HardFault handler) stops the engine at
+// the next job boundary for good.
 // Exactly one alarm is outstanding while the engine runs, tagged with s_seq
 // so a stale one (cancelled too late) is ignored. The next alarm is always
 // armed last in a step. A failed transaction stops the engine
@@ -57,6 +61,7 @@ typedef enum {
 static kbd_bus_t s_bus;
 static volatile ki_state_t s_state = KI_OFF;
 static volatile bool s_pause_req;
+static volatile bool s_halted;  // kbd_i2c_halt(): set once, never cleared
 static bool s_started;
 static bool s_need_recover;
 static bool s_fault_once;
@@ -65,13 +70,15 @@ static uint8_t s_job_value;
 static uint32_t s_job_start_us;
 static uint32_t s_seq;
 static alarm_id_t s_alarm;
-static uint32_t s_isr_us, s_max_read_us, s_recoveries, s_stats_at_us;
+static uint32_t s_isr_us, s_max_read_us, s_recoveries;
+static uint64_t s_stats_at_us;  // 64-bit: the soak's window must not wrap
 static uint32_t s_warned_streak;
 
 static inline i2c_hw_t *ki_hw(void) { return i2c_get_hw(KBD_I2C_PORT); }
 
 static int64_t ki_alarm_cb(alarm_id_t id, void *user);
 static void ki_fail(void);
+static void ki_stop_locked(void);
 
 // Arm the one outstanding alarm. Always the last action of a step: with
 // fire_if_past, add_alarm_in_us forces the alarm IRQ pending rather than
@@ -103,6 +110,10 @@ static void ki_fail(void) {
 
 // The bus is free: start the next job, or wait.
 static void ki_next(void) {
+  if (s_halted) {  // a fault handler is about to reset: stay off the bus
+    ki_stop_locked();
+    return;
+  }
   if (s_pause_req) {
     s_state = KI_OFF;  // kbd_i2c_pause() finishes the stop
     return;
@@ -250,7 +261,7 @@ void kbd_i2c_pause(void) {
 }
 
 void kbd_i2c_resume(void) {
-  if (!s_started)
+  if (!s_started || s_halted)
     return;
   uint32_t irq = save_and_disable_interrupts();
   if (s_state == KI_OFF) {
@@ -279,7 +290,7 @@ void kbd_i2c_start(void) {
   if (s_started)
     return;
   kbd_bus_init(&s_bus, time_us_32());
-  s_stats_at_us = time_us_32();
+  s_stats_at_us = time_us_64();
   irq_set_exclusive_handler(KBD_I2C_IRQ, ki_irq);
   s_started = true;
   kbd_i2c_resume();
@@ -376,12 +387,16 @@ void kbd_i2c_apply_clock(void) {
 }
 
 void kbd_i2c_service(void) {
-  if (!s_started)
+  if (!s_started || s_halted)
     return;
   uint32_t irq = save_and_disable_interrupts();
+  uint32_t now = time_us_32();
+  // After an unpolled stretch the FIFO is read now, not at the next idle
+  // alarm (500 ms away in USB storage mode).
+  if (kbd_bus_note_poll(&s_bus, now) && s_state == KI_WAIT)
+    ki_arm(KBD_BUS_MIN_WAIT_US);
   uint32_t streak = s_bus.fail_streak;
-  bool recover = s_state == KI_ERROR &&
-                 kbd_bus_recover_due(&s_bus, time_us_32());
+  bool recover = s_state == KI_ERROR && kbd_bus_recover_due(&s_bus, now);
   restore_interrupts(irq);
   if (streak >= 5 && !s_warned_streak) {
     printf("[KBD] warning: %lu consecutive I2C failures (wifi=%d)\n",
@@ -438,7 +453,7 @@ void kbd_i2c_get_stats(kbd_i2c_stats_t *out) {
   uint32_t irq = save_and_disable_interrupts();
   kbd_bus_stats_t st = s_bus.stats;
   out->state = k_names[s_state];
-  out->window_ms = (time_us_32() - s_stats_at_us) / 1000u;
+  out->window_ms = (uint32_t)((time_us_64() - s_stats_at_us) / 1000u);
   out->recoveries = s_recoveries;
   out->max_read_us = s_max_read_us;
   out->isr_us = s_isr_us;
@@ -460,9 +475,11 @@ void kbd_i2c_reset_stats(void) {
   s_isr_us = 0;
   s_max_read_us = 0;
   s_recoveries = 0;
-  s_stats_at_us = time_us_32();
+  s_stats_at_us = time_us_64();
   restore_interrupts(irq);
 }
+
+void kbd_i2c_halt(void) { s_halted = true; }
 
 void kbd_i2c_inject_fault(void) {
   uint32_t irq = save_and_disable_interrupts();

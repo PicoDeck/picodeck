@@ -22,6 +22,11 @@
 #define KBD_BUS_BATTERY_RETRY_US 2000000u  // after a failed battery read
 #define KBD_BUS_FAST_RECOVERIES 10u  // failures in a row recovered at once,
 #define KBD_BUS_BACKOFF_US 100000u   // then at most one recovery per 100 ms
+// No kbd_poll() for this long: stop the FIFO and battery reads (backlight
+// writes still go) until the next poll. The STM32 keeps the items, as with a
+// full ring, and a reset nobody prepared for (the watchdog after Core 0
+// stalls) finds the bus idle.
+#define KBD_BUS_UNPOLLED_US 1000000u
 
 typedef enum {
   KBD_JOB_NONE = 0,  // nothing due: wait *wait_us, then ask again
@@ -53,6 +58,7 @@ typedef struct {
   bool fifo_now;            // read the FIFO at the next chance
   bool idle_valid;          // fifo_at_us is an empty answer to time the next read from
   bool charging;
+  bool unpolled;            // reads stopped: no poll for KBD_BUS_UNPOLLED_US
   int16_t backlight_req;    // level waiting to be written, -1 = none
   int16_t battery;          // percent, -1 until the first good read
   uint32_t idle_us;         // FIFO re-read interval once it reads empty
@@ -60,18 +66,25 @@ typedef struct {
   uint32_t battery_at_us;   // last battery attempt
   uint32_t battery_wait_us; // next attempt due this long after it (0 = now)
   uint32_t recover_at_us;   // last bus recovery
+  uint32_t polled_at_us;    // last kbd_bus_note_poll() (or kbd_bus_init)
   uint32_t fail_streak;     // failed transactions in a row
   kbd_bus_stats_t stats;
 } kbd_bus_t;
 
+// Counts as a poll (kbd_bus_note_poll).
 void kbd_bus_init(kbd_bus_t *b, uint32_t now_us);
 
-// The next transaction, in priority order: a pending backlight level, a due
-// battery read, a FIFO read (while items keep coming, or once the idle
-// interval has passed, and only while the ring has room). KBD_JOB_NONE sets
-// *wait_us instead. A FIFO job records the discard generation it began in.
+// The next transaction, in priority order: a pending backlight level, a FIFO
+// read (while items keep coming, or once the idle interval has passed, and
+// only while the ring has room), a due battery read. Only the backlight goes
+// while unpolled (KBD_BUS_UNPOLLED_US). KBD_JOB_NONE sets *wait_us instead.
+// A FIFO job records the discard generation it began in.
 kbd_job_t kbd_bus_next_job(kbd_bus_t *b, uint32_t now_us, uint8_t *value,
                            uint32_t *wait_us);
+
+// kbd_poll() ran. Returns true when that ends an unpolled stretch: the FIFO
+// is then read at the next chance, and the stretch is not timed as a gap.
+bool kbd_bus_note_poll(kbd_bus_t *b, uint32_t now_us);
 
 // Transaction outcomes. Any success ends a failure streak.
 void kbd_bus_fifo_result(kbd_bus_t *b, uint8_t state, uint8_t key,
@@ -83,7 +96,8 @@ void kbd_bus_backlight_done(kbd_bus_t *b);
 void kbd_bus_job_failed(kbd_bus_t *b, kbd_job_t job, uint8_t value);
 
 // Bus recovery policy: at once for the first KBD_BUS_FAST_RECOVERIES
-// failures in a row, then at most every KBD_BUS_BACKOFF_US.
+// failures in a row (fail_streak 1 to KBD_BUS_FAST_RECOVERIES), then at most
+// every KBD_BUS_BACKOFF_US.
 bool kbd_bus_recover_due(const kbd_bus_t *b, uint32_t now_us);
 void kbd_bus_recovered(kbd_bus_t *b, uint32_t now_us);
 

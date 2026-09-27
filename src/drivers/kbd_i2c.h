@@ -2,7 +2,9 @@
 #define KBD_I2C_H
 
 // The asynchronous STM32 keyboard bus engine (Core 0). See kbd_i2c.c.
-// Every function here is task context (not for IRQ handlers).
+// Every function here except kbd_i2c_halt() is task context (not for IRQ
+// handlers). Requests made before kbd_i2c_start() (backlight, interval,
+// discard) are dropped: its kbd_bus_init() clears them. No caller does that.
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -13,7 +15,9 @@ typedef struct {
   uint32_t reads, items, dropped, bat_reads, bl_writes, errors, recoveries;
   uint32_t max_gap_us;   // empty FIFO answer -> next FIFO read done
   uint32_t max_read_us;  // longest FIFO read, first byte to result
-  uint32_t isr_us;       // time spent in the engine's interrupt handlers
+  uint32_t isr_us;       // time spent in the engine's interrupt handlers;
+                         // excludes the alarm pool's own dispatch (a few
+                         // timer IRQ entries per read), so it undercounts
   uint32_t interval_us;  // current FIFO re-read interval
   int battery;
 } kbd_i2c_stats_t;
@@ -23,7 +27,13 @@ void kbd_i2c_pause(void);        // stop at a transaction boundary (<= ~20 ms)
 void kbd_i2c_resume(void);       // restart after kbd_i2c_pause()
 void kbd_i2c_recover(void);      // pause, bit-banged bus clear + re-init, resume
 void kbd_i2c_apply_clock(void);  // pause, re-init the divider for clk_sys, resume
-void kbd_i2c_service(void);      // from kbd_poll(): runs a due recovery
+void kbd_i2c_service(void);      // from kbd_poll(): notes the poll (reads
+                                 // stop after 1 s without one) and runs a
+                                 // due recovery
+// Stop for good at the next transaction boundary, for a reset nobody
+// prepared (the HardFault handler, either core): one store, no locks, no SDK
+// calls. Never cleared; kbd_i2c_resume() and the recovery stay off after it.
+void kbd_i2c_halt(void);
 bool kbd_i2c_pop(uint8_t *state, uint8_t *keycode);
 void kbd_i2c_discard(void);
 void kbd_i2c_set_backlight(uint8_t level);

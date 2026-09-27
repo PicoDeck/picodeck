@@ -17,8 +17,9 @@ void kbd_bus_init(kbd_bus_t *b, uint32_t now_us) {
   b->idle_us = KBD_BUS_IDLE_US;
   b->fifo_now = true;
   b->fifo_at_us = now_us;
-  b->battery_at_us = now_us;  // battery_wait_us 0: read it first
+  b->battery_at_us = now_us;  // battery_wait_us 0: read it after the FIFO
   b->recover_at_us = now_us;
+  b->polled_at_us = now_us;
 }
 
 kbd_job_t kbd_bus_next_job(kbd_bus_t *b, uint32_t now_us, uint8_t *value,
@@ -28,23 +29,46 @@ kbd_job_t kbd_bus_next_job(kbd_bus_t *b, uint32_t now_us, uint8_t *value,
     b->backlight_req = -1;
     return KBD_JOB_BACKLIGHT;
   }
-  if (elapsed(now_us, b->battery_at_us) >= b->battery_wait_us) {
-    b->battery_at_us = now_us;
-    b->battery_wait_us = KBD_BUS_BATTERY_US;
-    return KBD_JOB_BATTERY;
-  }
+  // Nobody has polled for a second: leave the STM32 alone (it keeps the
+  // items) until kbd_bus_note_poll(). The flag is sticky so a stretch longer
+  // than the 71.6 min wrap cannot look fresh again.
+  if (!b->unpolled &&
+      elapsed(now_us, b->polled_at_us) >= KBD_BUS_UNPOLLED_US)
+    b->unpolled = true;
   bool room = queued(b) < KBD_BUS_RING_LEN;
   uint32_t since = elapsed(now_us, b->fifo_at_us);
-  if (room && (b->fifo_now || since >= b->idle_us)) {
+  if (!b->unpolled && room && (b->fifo_now || since >= b->idle_us)) {
     b->fifo_now = false;
     b->read_gen = b->discard_gen;
     return KBD_JOB_FIFO;
   }
+  // After a due FIFO read, never before it: a battery read that fell due
+  // during the idle wait must not add its ~6 ms to a key's latency.
+  if (!b->unpolled &&
+      elapsed(now_us, b->battery_at_us) >= b->battery_wait_us) {
+    b->battery_at_us = now_us;
+    b->battery_wait_us = KBD_BUS_BATTERY_US;
+    return KBD_JOB_BATTERY;
+  }
   // A full ring waits a whole interval for kbd_poll() to drain it; the STM32
-  // keeps what does not fit.
-  uint32_t w = (room && since < b->idle_us) ? b->idle_us - since : b->idle_us;
+  // keeps what does not fit. Unpolled, the engine only looks for backlight
+  // requests, once an interval.
+  uint32_t w = (!b->unpolled && room && since < b->idle_us) ? b->idle_us - since
+                                                            : b->idle_us;
   *wait_us = w < KBD_BUS_MIN_WAIT_US ? KBD_BUS_MIN_WAIT_US : w;
   return KBD_JOB_NONE;
+}
+
+bool kbd_bus_note_poll(kbd_bus_t *b, uint32_t now_us) {
+  bool resumed = b->unpolled ||
+                 elapsed(now_us, b->polled_at_us) >= KBD_BUS_UNPOLLED_US;
+  b->polled_at_us = now_us;
+  b->unpolled = false;
+  if (resumed) {
+    b->fifo_now = true;
+    b->idle_valid = false;
+  }
+  return resumed;
 }
 
 void kbd_bus_fifo_result(kbd_bus_t *b, uint8_t state, uint8_t key,
@@ -101,7 +125,7 @@ void kbd_bus_job_failed(kbd_bus_t *b, kbd_job_t job, uint8_t value) {
 }
 
 bool kbd_bus_recover_due(const kbd_bus_t *b, uint32_t now_us) {
-  return b->fail_streak < KBD_BUS_FAST_RECOVERIES ||
+  return b->fail_streak <= KBD_BUS_FAST_RECOVERIES ||
          elapsed(now_us, b->recover_at_us) >= KBD_BUS_BACKOFF_US;
 }
 

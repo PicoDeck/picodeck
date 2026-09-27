@@ -28,6 +28,9 @@ void display_flush(void);
 const char* launcher_get_running_app_name(void);
 uint32_t    launcher_get_app_uptime_ms(void);
 
+// kbd_i2c_halt(): hardfault_c stops the keyboard bus engine before resetting.
+#include "drivers/kbd_i2c.h"
+
 // Linker symbols for the main stack limits (see boot2/memmap_*.ld)
 extern uint32_t __StackTop;    // initial SP (stack grows DOWN from here)
 extern uint32_t __StackBottom; // lowest valid address (4KB below StackTop)
@@ -120,6 +123,10 @@ static uint32_t native_addr_to_elf_vaddr(uint32_t addr) {
 #define BOOT_MAX_RETRIES 3
 
 static void __attribute__((used)) hardfault_c(uint32_t *frame, uint32_t exc_return) {
+  // First, so Core 0's keyboard bus engine is off the bus well before the
+  // reset below (see the comment there).
+  kbd_i2c_halt();
+
   // ARM exception frame layout (8 words pushed by hardware on entry):
   //   frame[0]=R0, [1]=R1, [2]=R2, [3]=R3,
   //   [4]=R12, [5]=LR(EXC), [6]=PC(fault), [7]=xPSR
@@ -411,9 +418,13 @@ static void __attribute__((used)) hardfault_c(uint32_t *frame, uint32_t exc_retu
   // Reboot explicitly — watchdog scratch already has the crash data (saved
   // at the top of this function).  On next boot, crash_log_save() writes it
   // to /system/crashlog.txt.
-  // No kbd_prepare_reset() here: this is a fault handler, so the bus engine
-  // (or the fault itself) may already be mid-transaction and there is no
-  // safe way to wait it out.
+  // The keyboard bus (an STM32 transaction cut mid-byte can lock its I2C
+  // slave until a power cycle): kbd_prepare_reset() cannot run here (it
+  // waits on the engine's interrupts), and need not. A Core 0 fault freezes
+  // the engine, whose interrupts cannot preempt HardFault; the 3 s wait
+  // above lets a transfer already queued in the I2C block finish on its own.
+  // A Core 1 fault leaves Core 0 running the engine: kbd_i2c_halt() at the
+  // top let it finish the transaction in flight (~6 ms) and start no other.
   watchdog_reboot(0, 0, 0);
 
   // Fallback if reboot doesn't fire immediately.
