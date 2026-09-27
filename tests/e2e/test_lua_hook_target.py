@@ -52,7 +52,13 @@ def test_exit_reaches_hook_free_loop(target, name):
     out = target.wait_for_exit(timeout=15)
     elapsed = time.monotonic() - t0
     assert out["result"] == "exit_sentinel", out
-    assert elapsed < 3.0, f"{name}: exit took {elapsed:.2f}s"
+    # A hook that never reaches the loop hangs until the watchdog resets the
+    # device (out["result"] would be "device_rebooted", not "exit_sentinel"),
+    # so this bound only needs to separate "exited" from "hung" — it is not a
+    # hook-latency budget. On hardware, wait_for_exit's elapsed time includes
+    # the launcher's post-exit app rescan and the error.log download, which
+    # scale with device state (app count, log size), not the hook.
+    assert elapsed < 10.0, f"{name}: exit took {elapsed:.2f}s"
 
 
 def test_status_answers_during_tight_loop(target):

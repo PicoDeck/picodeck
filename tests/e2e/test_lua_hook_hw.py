@@ -14,7 +14,7 @@ T.case("empty_loop_ns", function()
   local t0 = picocalc.sys.getTimeMs()
   for _ = 1, n do end
   local ms = picocalc.sys.getTimeMs() - t0
-  local f = picocalc.fs.open("/data/" .. APP_ID .. "/ns.txt", "w")
+  local f = picocalc.fs.open(picocalc.fs.appPath("ns.txt"), "w")
   picocalc.fs.write(f, string.format("%.1f", ms * 1e6 / n))
   picocalc.fs.close(f)
 end)
@@ -42,8 +42,11 @@ EMPTY_LOOP_NS_MAX = 260.0
 
 def test_vm_runs_without_per_instruction_hook_cost(target):
     target.stage_lua_app("hook_speed", SPEED, id="com.test.hook_speed")
+    # A stale ns.txt from an earlier run would otherwise be read as a pass.
+    target.delete_file("/data/com.test.hook_speed/ns.txt")
     run = target.run_lua_app("hook_speed", timeout=60)
     run.assert_clean_exit()
+    run.assert_all_passed(["empty_loop_ns"])
     ns = float(target.read_file("/data/com.test.hook_speed/ns.txt"))
     assert ns < EMPTY_LOOP_NS_MAX, f"empty loop {ns} ns/iter"
 
