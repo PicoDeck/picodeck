@@ -39,6 +39,10 @@ pc.sys.sleep(16)
 end
 ```
 
+### Add an icon (optional)
+
+Put an `icon.png` (or `icon.bmp`) next to `app.json`. The launcher draws it at 24×24 pixels beside the app's name. Other sizes are scaled to fit with nearest-neighbour sampling, so draw at 24×24, or at an exact multiple such as 48×48, to keep the pixels crisp. Icons are drawn opaque: transparent PNG pixels come out black, so fill the whole square. The built-in icons use a dark navy background (RGB 12, 16, 48) behind their artwork. Without an icon, the launcher draws a game cartridge in the app's category colour, with the first letter of the app's name on its label.
+
 ### Prefer C or C++?
 
 If you want to build high-performance apps or prefer working in C/C++, check out our guide on [Native App Development](Native-Loading.md).
