@@ -48,6 +48,7 @@ static int s_clip_x1 = 319, s_clip_y1 = 319;
 // The clip-once rasterisers are shared with the firmware driver; this
 // framebuffer is host order, so they run with swap = false.
 #include "../../src/drivers/display_clip.h"
+#include "../../src/drivers/display_raster.h"
 static inline disp_clip_t cur_clip(void) {
     return (disp_clip_t){s_clip_x0, s_clip_y0, s_clip_x1, s_clip_y1};
 }
@@ -289,6 +290,16 @@ void display_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2, uint1
     disp_clip_t c = cur_clip();
     disp_fill_triangle(display_get_back_buffer(), 320, &c, x0, y0, x1, y1, x2,
                        y2, color);
+}
+
+void display_get_raster_target(display_raster_target_t *t) {
+    t->fb = display_get_back_buffer();
+    t->stride = 320;
+    t->clip_x0 = s_clip_x0;
+    t->clip_y0 = s_clip_y0;
+    t->clip_x1 = s_clip_x1;
+    t->clip_y1 = s_clip_y1;
+    t->swap = false;
 }
 
 void display_draw_textured_column(int x, int y0, int y1,

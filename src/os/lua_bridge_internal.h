@@ -73,6 +73,9 @@ lua_Integer lb_optint(lua_State *L, int idx, lua_Integer def);
 lua_Integer lb_checkint_at(lua_State *L, int idx, int arg, const char *what);
 lua_Integer lb_optint_at(lua_State *L, int idx, int arg, const char *what,
                          lua_Integer def);
+float lb_checkfloat(lua_State *L, int idx);
+float lb_optfloat(lua_State *L, int idx, float def);
+void lua_bridge_gfx3d_init(lua_State *L);
 // Clamps v to [lo, hi]. The +-2^24 bound above does not protect sinks
 // narrower than that: uint8_t volumes/colour channels and unsigned
 // positions clamp instead of wrapping.

@@ -261,6 +261,8 @@ add_executable(picodeck
     src/os/perf.c
     src/os/lua_bridge_graphics.c
     src/os/lua_bridge_3d.c
+    src/os/gfx3d.c
+    src/os/lua_bridge_gfx3d.c
     src/os/module_path.c
     src/os/lua_bridge_require.c
     src/os/lua_corolib.c
@@ -405,6 +407,11 @@ set_source_files_properties(
     PROPERTIES COMPILE_FLAGS
     "-DMINIZ_NO_STDIO -DMINIZ_NO_ARCHIVE_WRITING_APIS -DMINIZ_NO_ZLIB_COMPATIBLE_NAMES -include ${CMAKE_SOURCE_DIR}/third_party/miniz_picodeck.h"
 )
+
+# gfx3d: -O2 like the display blitters (DISP_HOT), and no FMA contraction so a
+# triangle edge shared by two triangles evaluates bit-identically in both.
+set_source_files_properties(src/os/gfx3d.c PROPERTIES
+    COMPILE_OPTIONS "-O2;-ffp-contract=off;-Wdouble-promotion")
 
 # ── PIO PSRAM Bulk Transfer (improved driver with 16-bit counters) ─────────────
 # Supports up to 8187 bytes per transaction (vs 27 bytes in polpo library).

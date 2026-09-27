@@ -1012,6 +1012,7 @@ local faces = {1,2,3, 1,3,4,  5,6,7, 5,7,8}  -- two quads as triangles
 draw3DWireframeEx(verts, edges, angle, angle*0.7, 0,
     160, 160, 300, picocalc.display.WHITE, picocalc.display.BLUE, 2, 3, faces)
 ```
+For scenes (a camera, many objects, clipping and depth order), use [picocalc.gfx3d](API-3D.md).
 
 ---
 

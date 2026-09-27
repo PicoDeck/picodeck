@@ -122,6 +122,18 @@ lua_Integer lb_optint_at(lua_State *L, int idx, int arg, const char *what,
   return lua_isnoneornil(L, idx) ? def : lb_toint(L, idx, arg, what);
 }
 
+// Real-valued arguments (world coordinates, angles, scales): any finite
+// number; NaN and infinities are argument errors.
+float lb_checkfloat(lua_State *L, int idx) {
+  lua_Number n = luaL_checknumber(L, idx);
+  if (!isfinite(n)) lb_argfail(L, idx, NULL, "number is NaN or infinite");
+  return (float)n;
+}
+
+float lb_optfloat(lua_State *L, int idx, float def) {
+  return lua_isnoneornil(L, idx) ? def : lb_checkfloat(L, idx);
+}
+
 // ── Registration
 // ──────────────────────────────────────────────────────────────
 
@@ -537,6 +549,8 @@ void lua_bridge_register(lua_State *L) {
   lua_bridge_graphics_init(L);
   printf("[LUA] registering 3D extensions...\n");
   lua_bridge_register_3d(L);
+  printf("[LUA] registering gfx3d...\n");
+  lua_bridge_gfx3d_init(L);
   printf("[LUA] registering ui...\n");
   lua_bridge_ui_init(L);
   printf("[LUA] registering audio...\n");

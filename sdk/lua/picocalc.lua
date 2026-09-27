@@ -2288,6 +2288,45 @@ function PicoDeckFont:getTextWidth(text) end
 function PicoDeckFont:getName() end
 
 -- =============================================================================
+-- picocalc.gfx3d
+-- =============================================================================
+
+---@class PicoDeckMesh : userdata
+local PicoDeckMesh = {}
+---@return integer nverts, integer ntris, number cx, number cy, number cz, number radius
+function PicoDeckMesh:getInfo() end
+
+---@class picocalc.gfx3d
+---@field DOUBLE_SIDED integer
+---@field UNLIT integer
+---@field NO_FOG integer
+picocalc.gfx3d = {}
+---@param verts number[] flat x, y, z list
+---@param tris integer[] flat 1-based index list, 3 per triangle, CCW = front
+---@param colors integer|integer[] one RGB565 colour, or one per triangle
+---@param flags? integer|integer[] DOUBLE_SIDED | UNLIT | NO_FOG
+---@return PicoDeckMesh
+function picocalc.gfx3d.newMesh(verts, tris, colors, flags) end
+function picocalc.gfx3d.setViewport(x, y, w, h) end
+function picocalc.gfx3d.setProjection(fovY, near, far) end
+function picocalc.gfx3d.setCamera(x, y, z, yaw, pitch, roll) end
+function picocalc.gfx3d.lookAt(ex, ey, ez, tx, ty, tz, ux, uy, uz) end
+function picocalc.gfx3d.setLight(dx, dy, dz, ambient) end
+function picocalc.gfx3d.setFog(near, far, color) end
+---@param bands {[1]: number, [2]: integer}[]|nil
+function picocalc.gfx3d.setSky(bands) end
+function picocalc.gfx3d.beginScene(clearColor) end
+function picocalc.gfx3d.draw(mesh, x, y, z, yaw, pitch, roll, scale, bias, sortAsOne) end
+function picocalc.gfx3d.drawBasis(mesh, x, y, z, fx, fy, fz, ux, uy, uz, scale, bias, sortAsOne) end
+function picocalc.gfx3d.drawBackground(mesh) end
+function picocalc.gfx3d.drawSprite(image, x, y, z, size, sx, sy, sw, sh, bias) end
+function picocalc.gfx3d.endScene() end
+---@return number|nil sx, number sy, number depth
+function picocalc.gfx3d.project(x, y, z) end
+---@return {tris_in: integer, culled: integer, clipped: integer, drawn: integer, sprites: integer, overflow: integer, us_geom: integer, us_raster: integer}
+function picocalc.gfx3d.getStats() end
+
+-- =============================================================================
 -- picocalc.video  (MJPEG AVI playback)
 -- =============================================================================
 

@@ -26,6 +26,7 @@
 // 16 KB XIP cache.
 #define DISP_HOT __attribute__((optimize("O2")))
 #include "display_clip.h"
+#include "display_raster.h"
 
 // ── Framebuffer ──────────────────────────────────────────────────────────────
 // Placed in internal SRAM smoothly now that the Lua heap has been relocated
@@ -566,6 +567,16 @@ void display_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2,
   disp_clip_t c = cur_clip();
   disp_fill_triangle(s_framebuffer, FB_WIDTH, &c, x0, y0, x1, y1, x2, y2,
                      fb_color(color));
+}
+
+void display_get_raster_target(display_raster_target_t *t) {
+  t->fb = s_framebuffer;
+  t->stride = FB_WIDTH;
+  t->clip_x0 = s_clip_x0;
+  t->clip_y0 = s_clip_y0;
+  t->clip_x1 = s_clip_x1;
+  t->clip_y1 = s_clip_y1;
+  t->swap = true;
 }
 
 // Text goes through the shared renderer in src/fonts/font.c. The hardware

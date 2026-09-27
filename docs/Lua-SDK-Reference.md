@@ -7,6 +7,7 @@ This document provides a complete reference for all Lua APIs available to PicoDe
 ## API Sections
 
 - [Global Variables and Permissions](Global-Variables-and-Permissions.md)
+- [API 3D](API-3D.md) — Flat-shaded 3D meshes, camera, light, fog, sky and sprites (`picocalc.gfx3d`)
 - [API Audio and Sound](API-Audio-and-Sound.md) — Audio Playback (WAV, MP3) & Tones
 - [API Crypto](API-Crypto.md) — Cryptographic Primitives
 - [API Display and Graphics](API-Display-and-Graphics.md) — Graphics & Display
