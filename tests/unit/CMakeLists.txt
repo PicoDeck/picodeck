@@ -63,6 +63,8 @@ picodeck_unit_test(test_fs_path SOURCES ${SRC}/os/fs_path.c)
 picodeck_unit_test(test_app_manifest SOURCES ${SRC}/os/app_manifest.c)
 picodeck_unit_test(test_wav SOURCES ${SRC}/drivers/wav.c INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_audio_ring INCLUDES ${SRC}/drivers)
+# The MP3 staging buffer as a mixer source (header-only, like audio_ring.h).
+picodeck_unit_test(test_pcm_stage INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_event_queue INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_bus SOURCES ${SRC}/drivers/kbd_bus.c INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_pio_psram_range INCLUDES ${SRC}/drivers)
