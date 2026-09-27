@@ -80,12 +80,13 @@ uint32_t kbd_get_buttons_released(void);
 // every 5 s in the background; this never touches the bus.
 int kbd_get_battery_percent(void);
 
-// Charging flag from the most recent battery read (kbd_get_battery_percent
-// refreshes it at most every 5 s). False until the first successful read.
+// Charging flag from the most recent battery read (the bus engine refreshes
+// it at most every 5 s). False until the first successful read.
 bool kbd_is_charging(void);
 
 // Queue a backlight level (0-255) for the bus engine; the latest wins and it
-// is written within ~10 ms. Never blocks.
+// is written within one FIFO re-read interval (10 ms normally, up to 500 ms
+// in USB storage mode — see kbd_set_poll_interval_ms). Never blocks.
 void kbd_set_backlight(uint8_t brightness);
 
 void kbd_apply_clock(void);

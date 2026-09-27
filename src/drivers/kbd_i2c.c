@@ -74,7 +74,10 @@ static int64_t ki_alarm_cb(alarm_id_t id, void *user);
 static void ki_fail(void);
 
 // Arm the one outstanding alarm. Always the last action of a step: with
-// fire_if_past the SDK may run the callback from inside this call.
+// fire_if_past, add_alarm_in_us forces the alarm IRQ pending rather than
+// running the callback inline, and that IRQ can be served the instant
+// interrupts are re-enabled (e.g. by our own caller's restore_interrupts) —
+// arming last keeps the step's state consistent for every path.
 static void ki_arm(uint32_t us) {
   if (s_alarm > 0)
     cancel_alarm(s_alarm);
@@ -362,7 +365,7 @@ void kbd_i2c_recover(void) {
 }
 
 void kbd_i2c_apply_clock(void) {
-  // i2c_init() derives the divider from clk_peri.
+  // i2c_init() derives the divider from clk_sys (i2c_set_baudrate).
   kbd_i2c_pause();
   i2c_init(KBD_I2C_PORT, KBD_I2C_BAUD);
   gpio_set_function(KBD_PIN_SDA, GPIO_FUNC_I2C);

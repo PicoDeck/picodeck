@@ -19,10 +19,20 @@ _Static_assert(KBD_BUS_FIFO_IDLE == KBD_FIFO_IDLE, "kbd_bus.h idle state");
 //   1. Write register address as a complete transaction (nostop=false)
 //   2. Wait for the STM32 to prepare its response
 //   3. Read in a separate transaction
-// pelrun/uf2loader used sleep_ms(16), but that's too slow for 60fps apps.
-// Testing shows 1ms is reliable and gives us ~60 FPS.
+// Only kbd_init()'s boot probe still does this blocking dance (everything
+// after it runs through the bus engine, kbd_i2c.c). pelrun/uf2loader used
+// sleep_ms(16); 1ms is reliable and keeps the probe's ~5s budget short.
 #define KBD_REG_DELAY_MS 1
-#define KBD_I2C_TIMEOUT_US 5000  // 5ms — ample for 100kHz I2C; 50ms was causing ~150ms stalls per frame on failure
+#define KBD_I2C_TIMEOUT_US 5000  // 5ms — ample for 100kHz I2C; used only by
+                                 // kbd_init()'s boot probe (50ms once caused
+                                 // ~150ms stalls per probe step on failure)
+
+// At most this many FIFO items are decoded per poll, so one poll's worth of
+// events always fits the event queue (see kbd_poll_impl); the rest wait in
+// the bus engine's ring, and once that fills, in the STM32 FIFO itself.
+#define KBD_POLL_MAX_ITEMS 8
+_Static_assert(KBD_POLL_MAX_ITEMS * 2 <= KBD_EVENT_QUEUE_LEN,
+              "one poll's events must fit the queue");
 
 // Minimum wall-clock duration an injected one-shot button stays "active"
 // before kbd_poll() auto-releases it. Some apps call kbd_poll() more than
@@ -69,9 +79,6 @@ static kbd_inject_t s_inj;
 
 // ── Public API
 // ────────────────────────────────────────────────────────────────
-
-// ── I2C helpers
-// ───────────────────────────────────────────────────────────────
 
 // Clear a stuck bus (9 clocks + STOP) and re-init I2C1 at KBD_I2C_BAUD; the
 // bus engine is paused around it (kbd_i2c_recover). Safe during kbd_init().
@@ -196,15 +203,18 @@ static void kbd_poll_impl(bool bg) {
   // re-injected key reads released (kbd_inject_poll).
   kbd_inject_poll(&s_inj, &s_btn, &s_in, bg, now_ms, KBD_INJECT_HOLD_MS);
 
-  // Decode every raw FIFO item the bus engine (kbd_i2c.c) has read since the
-  // last poll, in FIFO order (kbd_fifo_apply): nothing between two polls is
-  // lost to "net state". A key pressed and released inside one poll reads as
-  // held for this poll; a HOLD is a repeat, never a new press. The engine
-  // reads the STM32 from interrupts, so this never waits on the 10 kHz bus;
-  // the service pass first runs a bus recovery if a transaction failed.
+  // Decode up to KBD_POLL_MAX_ITEMS raw FIFO items the bus engine (kbd_i2c.c)
+  // has read since the last poll, in FIFO order (kbd_fifo_apply): nothing
+  // between two polls is lost to "net state". A key pressed and released
+  // inside one poll reads as held for this poll; a HOLD is a repeat, never a
+  // new press. The engine reads the STM32 from interrupts, so this never
+  // waits on the 10 kHz bus; the service pass first runs a bus recovery if a
+  // transaction failed. Anything past the cap stays in the ring (and, once
+  // that fills, in the STM32) for the next poll.
   kbd_i2c_service();
   uint8_t state, keycode;
-  while (kbd_i2c_pop(&state, &keycode)) {
+  for (int i = 0; i < KBD_POLL_MAX_ITEMS && kbd_i2c_pop(&state, &keycode);
+       i++) {
 #ifdef KBD_DEBUG
     const char *state_str = state == KBD_FIFO_PRESSED    ? "PRESS"
                             : state == KBD_FIFO_HOLD     ? "HOLD"

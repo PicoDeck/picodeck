@@ -22,7 +22,7 @@ void kbd_i2c_start(void);        // after kbd_init()'s probe; idempotent
 void kbd_i2c_pause(void);        // stop at a transaction boundary (<= ~20 ms)
 void kbd_i2c_resume(void);       // restart after kbd_i2c_pause()
 void kbd_i2c_recover(void);      // pause, bit-banged bus clear + re-init, resume
-void kbd_i2c_apply_clock(void);  // pause, re-init the divider for clk_peri, resume
+void kbd_i2c_apply_clock(void);  // pause, re-init the divider for clk_sys, resume
 void kbd_i2c_service(void);      // from kbd_poll(): runs a due recovery
 bool kbd_i2c_pop(uint8_t *state, uint8_t *keycode);
 void kbd_i2c_discard(void);
