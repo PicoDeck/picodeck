@@ -345,6 +345,8 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/perf.c
     ${PICODECK_ROOT}/src/os/lua_bridge_graphics.c
     ${PICODECK_ROOT}/src/os/lua_bridge_3d.c
+    ${PICODECK_ROOT}/src/os/module_path.c
+    ${PICODECK_ROOT}/src/os/lua_bridge_require.c
     ${PICODECK_ROOT}/src/os/lua_corolib.c
     ${PICODECK_ROOT}/src/os/lua_bridge_ui.c
     ${PICODECK_ROOT}/src/os/toast.c

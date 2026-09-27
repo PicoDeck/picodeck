@@ -261,6 +261,8 @@ add_executable(picodeck
     src/os/perf.c
     src/os/lua_bridge_graphics.c
     src/os/lua_bridge_3d.c
+    src/os/module_path.c
+    src/os/lua_bridge_require.c
     src/os/lua_corolib.c
     src/os/lua_bridge_ui.c
     src/os/ui_widgets.c

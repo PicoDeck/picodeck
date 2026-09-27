@@ -482,6 +482,7 @@ void lua_bridge_register(lua_State *L) {
   lua_setglobal(L, "dofile");
   lua_pushnil(L);
   lua_setglobal(L, "loadfile");
+  lua_bridge_require_init(L);
   printf("[LUA] registering table...\n");
   luaL_requiref(L, "table", luaopen_table, 1);
   lua_pop(L, 1);

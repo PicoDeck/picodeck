@@ -68,6 +68,7 @@ picodeck_unit_test(test_pio_psram_range INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_pio_psram_xip INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_zip_name SOURCES ${SRC}/os/zip_name.c)
 picodeck_unit_test(test_text_wrap SOURCES ${SRC}/os/text_wrap.c)
+picodeck_unit_test(test_module_path SOURCES ${SRC}/os/module_path.c ${SRC}/os/fs_path.c)
 # Clip-once rasterisers shared by the firmware display and the simulator.
 picodeck_unit_test(test_display_clip INCLUDES ${SRC}/drivers)
 target_link_libraries(test_display_clip PRIVATE m)
