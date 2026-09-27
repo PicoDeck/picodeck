@@ -78,7 +78,7 @@ picocalc.audio.stopStream()
 ---
 
 #### `picocalc.audio.pushSamples(samples)`
-Push audio samples to the streaming buffer. Samples are interleaved stereo pairs (left, right, left, right...).
+Push audio samples to the streaming buffer. Samples are interleaved stereo pairs (left, right, left, right...). Only while a stream is started (`startStream`): pushes before it, or after `stopStream`, are dropped.
 
 - **Parameters:**
   - `samples` (table): Array of int16 sample values (max 512 values = 256 stereo pairs)
@@ -95,7 +95,7 @@ picocalc.audio.pushSamples(samples)
 ---
 
 #### `picocalc.audio.ringFree()`
-Get the number of free slots available in the audio ring buffer. Use this to avoid pushing more samples than the buffer can hold.
+Get the number of free slots available in the audio ring buffer. Use this to avoid pushing more samples than the buffer can hold. While no stream is started it reports the whole (empty) buffer.
 
 - **Parameters:** None
 - **Returns:** (number) Free buffer slots

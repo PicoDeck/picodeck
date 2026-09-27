@@ -139,6 +139,17 @@ static void test_a_tone_lasts_its_duration(void) {
   CHECK_EQ_INT(left(0), 0);
 }
 
+static void test_a_timed_tone_replaces_an_untimed_one(void) {
+  reset_all();
+  audio_play_tone(500, 0);             // until stopped
+  render(100);
+  audio_play_tone(1000, 10);           // 441 frames from now
+  render(440);
+  CHECK(audio_tone_playing());
+  render(1);
+  CHECK(!audio_tone_playing());
+}
+
 static void test_underruns_count_only_while_streaming(void) {
   reset_all();
   uint32_t under = 1;
@@ -186,6 +197,7 @@ int main(void) {
   test_master_volume_scales_the_sum();
   test_the_sum_clips();
   test_a_tone_lasts_its_duration();
+  test_a_timed_tone_replaces_an_untimed_one();
   test_underruns_count_only_while_streaming();
   test_half_rate_stream_repeats_each_frame();
   test_zero_rate_streams_at_the_output_rate();

@@ -5,28 +5,31 @@
 #include "pico/platform.h"
 #include "pico/critical_section.h"
 
+// ── audio_mix.c's own sources: the stream and the tone ──────────────────────
+// s_src_cs guards audio_mix.c's own sources: the stream (starting/stopping
+// it: the ring clear, the rate, s_stream_on) and the tone (all of its
+// state), against the render, which holds it for one chunk. Pushes stay
+// lock-free: audio_ring.h is single-producer single-consumer, and each
+// producer starts and stops its own stream (fileplayer and MOD under their
+// own locks, the stream API on Core 0).
+static critical_section_t s_src_cs;
+static bool s_src_cs_ready;
+
+static inline void src_lock(void) {
+  if (s_src_cs_ready)
+    critical_section_enter_blocking(&s_src_cs);
+}
+
+static inline void src_unlock(void) {
+  if (s_src_cs_ready)
+    critical_section_exit(&s_src_cs);
+}
+
 // ── The PCM stream ──────────────────────────────────────────────────────────
-// s_stream_cs guards starting and stopping it (emptying the ring, its rate,
-// s_stream_on) against the render's pops, which hold it for one chunk.
-// Pushes stay lock-free: audio_ring.h is single-producer single-consumer,
-// and each producer starts and stops its own stream (fileplayer and MOD
-// under their own locks, the stream API on Core 0).
 static audio_ring_t s_ring;
 static uint32_t s_stream_rate = AUDIO_OUT_RATE;
 static volatile bool s_stream_on;
 static volatile uint32_t s_stream_underruns;
-static critical_section_t s_stream_cs;
-static bool s_stream_cs_ready;
-
-static inline void stream_lock(void) {
-  if (s_stream_cs_ready)
-    critical_section_enter_blocking(&s_stream_cs);
-}
-
-static inline void stream_unlock(void) {
-  if (s_stream_cs_ready)
-    critical_section_exit(&s_stream_cs);
-}
 
 // ── The tone: a square wave, timed in mixed frames ──────────────────────────
 #define TONE_MIN_HZ 20
@@ -65,10 +68,10 @@ static int32_t s_mix_l[MIX_CHUNK];
 static int32_t s_mix_r[MIX_CHUNK];
 
 void audio_mix_init(void) {
-  if (!s_stream_cs_ready) {
-    critical_section_init_with_lock_num(&s_stream_cs,
+  if (!s_src_cs_ready) {
+    critical_section_init_with_lock_num(&s_src_cs,
                                         next_striped_spin_lock_num());
-    s_stream_cs_ready = true;
+    s_src_cs_ready = true;
   }
 }
 
@@ -80,8 +83,10 @@ void __time_critical_func(audio_mix_render)(int16_t *lr, int frames) {
     // The sample players write the chunk (zeros when none plays).
     sound_mixer_process(s_mix_l, s_mix_r, n);
 
-    // + the PCM stream
-    stream_lock();
+    // + the PCM stream, + the tone: both audio_mix.c's own sources, held
+    // under the same lock for the whole chunk so a play/stop/volume call
+    // on Core 0 never lands between reading and writing either one's state.
+    src_lock();
     if (s_stream_on) {
       for (int i = 0; i < n; i++) {
         int32_t sl, sr;
@@ -91,9 +96,6 @@ void __time_critical_func(audio_mix_render)(int16_t *lr, int frames) {
         s_mix_r[i] += sr;
       }
     }
-    stream_unlock();
-
-    // + the tone
     if (s_tone_on) {
       uint32_t phase = s_tone_phase, hz = s_tone_hz;
       int32_t level = s_tone_level;
@@ -106,7 +108,9 @@ void __time_critical_func(audio_mix_render)(int16_t *lr, int frames) {
         int32_t t = phase < AUDIO_OUT_RATE / 2 ? level : -level;
         s_mix_l[i] += t * 128;
         s_mix_r[i] += t * 128;
-        if (timed && --left == 0) {
+        // left == 0 first: a duration that already rounded to 0 frames
+        // must stop here, never decrement-and-wrap past it.
+        if (timed && (left == 0 || --left == 0)) {
           s_tone_on = false;
           break;
         }
@@ -114,6 +118,7 @@ void __time_critical_func(audio_mix_render)(int16_t *lr, int frames) {
       s_tone_phase = phase;
       s_tone_frames_left = left;
     }
+    src_unlock();
 
     // Clip, then the master volume, which scales the signed mix (about
     // zero: scaling the PWM level pulled silence toward 0, a pop on every
@@ -135,6 +140,7 @@ void audio_play_tone(uint32_t freq_hz, uint32_t duration_ms) {
     freq_hz = TONE_MIN_HZ;
   if (freq_hz > TONE_MAX_HZ)
     freq_hz = TONE_MAX_HZ;
+  src_lock();
   s_tone_on = false;
   s_tone_hz = freq_hz;
   s_tone_phase = 0;
@@ -143,12 +149,17 @@ void audio_play_tone(uint32_t freq_hz, uint32_t duration_ms) {
   s_tone_timed = duration_ms > 0;
   s_tone_level = s_log_volume_lut[s_volume];
   s_tone_on = true;
+  src_unlock();
+  // Never called while holding the lock: it may end up calling back into
+  // audio.c, which must not block on a lock the render also takes.
   audio_output_ensure_running();
 }
 
 void audio_stop_tone(void) {
+  src_lock();
   s_tone_on = false;
   s_tone_frames_left = 0;
+  src_unlock();
 }
 
 bool audio_tone_playing(void) {
@@ -160,26 +171,29 @@ void audio_set_volume(uint8_t volume) {
     volume = 100;
   s_volume = volume;
   s_volume_scale = (uint32_t)volume * 256 / 100;
+  src_lock();
   s_tone_level = s_log_volume_lut[volume];
+  src_unlock();
 }
 
 // ── The PCM stream ──────────────────────────────────────────────────────────
 
 void audio_start_stream(uint32_t sample_rate) {
-  stream_lock();
+  src_lock();
   audio_ring_clear(&s_ring);
   s_ring.phase = 0;
   s_stream_rate = sample_rate ? sample_rate : AUDIO_OUT_RATE;
   s_stream_on = true;
-  stream_unlock();
+  src_unlock();
+  // Never called while holding the lock: see audio_play_tone.
   audio_output_ensure_running();
 }
 
 void audio_stop_stream(void) {
-  stream_lock();
+  src_lock();
   s_stream_on = false;
   audio_ring_clear(&s_ring);
-  stream_unlock();
+  src_unlock();
 }
 
 bool audio_stream_active(void) {
