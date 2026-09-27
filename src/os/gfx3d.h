@@ -9,6 +9,7 @@
 //  * The camera looks along -z with x to its right and y up; depth = -z_view.
 //  * Rotations are R = Ry(yaw) * Rx(pitch) * Rz(roll): positive yaw turns
 //    left, positive pitch looks up, positive roll banks left.
+//  * Angles (yaw, pitch, roll, fov_y, sky band angles) are in radians.
 //  * A model with the identity rotation faces -z, like the camera.
 //  * Triangle (a, b, c) faces where (b - a) x (c - a) points: seen from its
 //    front, its vertices run counter-clockwise.
