@@ -13,6 +13,7 @@
 - Audio: the PCM stream is the firmware's ring (`audio_ring.h`), drained at 44.1 kHz by wall clock on the Core 1 thread (`sim_stream_drain()` stands in for the DMA ISR), so `audio_ring_free()` and flow control behave as on hardware; the fileplayer and MOD player are the firmware's `fileplayer.c`/`mod_player.c`. The sample mixer and MP3 player are simulator copies in `sim_audio.c` (keep their logic in step with `sound.c`/`mp3_player.c`); tone, samples and MP3 go to SDL directly.
 - Networking: `make simulator` replaces `wifi.c`/`http.c`/`tcp.c` with its own libcurl/POSIX layer (`sim_wifi.c`, `sim_http.c`, `sim_tcp.c`: always online, none of the firmware's Core 0/Core 1 races). See the firmware-net build below for the real stack.
 - Everything else (zip including read-in-place archive handles, modplayer, display clip rect, drawPlane, tilemap, sprites) mirrors firmware, including `g_api.version`.
+- **Lua service hook**: the simulator (and the web build) service the Lua VM from the synchronous adaptive count hook; firmware runs the VM hook-free and arms the hook from a 1 ms Core 0 timer (`src/os/CLAUDE.md`, Service hook). Exit/menu/dev-command latency is covered on both by `tests/e2e/test_lua_hook_target.py`; VM speed and the watchdog only on hardware (`test_lua_hook_hw.py`).
 
 ## Test control channel (`sim_socket_handler.c`, `sim_test_control.c`)
 - `get_log_buffer {since_seq, tail}` returns `{lines:[{seq,t_ms,src,text}], next_seq, dropped, more}` with `src` = `lua`/`native`/`os`/`err`; `subscribe {"logs":true}` pushes `log {seq,src,text}` notifications.

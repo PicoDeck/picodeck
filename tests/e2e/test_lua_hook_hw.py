@@ -1,0 +1,60 @@
+"""Hardware-only checks for the timer-armed Lua hook: the VM runs without the
+per-instruction hook tax, and the watchdog is fed through a long compute loop
+inside a coroutine (the simulator has neither the tax nor a watchdog)."""
+import time
+
+import pytest
+
+pytestmark = [pytest.mark.hardware, pytest.mark.timeout(300)]
+
+SPEED = """
+local T = picocalc.sys.loadlib("picotest")
+T.case("empty_loop_ns", function()
+  local n = 2000000
+  local t0 = picocalc.sys.getTimeMs()
+  for _ = 1, n do end
+  local ms = picocalc.sys.getTimeMs() - t0
+  local f = picocalc.fs.open("/data/" .. APP_ID .. "/ns.txt", "w")
+  picocalc.fs.write(f, string.format("%.1f", ms * 1e6 / n))
+  picocalc.fs.close(f)
+end)
+T.done()
+"""
+
+WATCHDOG = """
+local T = picocalc.sys.loadlib("picotest")
+T.case("coroutine_compute_15s", function()
+  local co = coroutine.wrap(function()
+    local t_end = picocalc.sys.getTimeMs() + 15000
+    local x = 0
+    while picocalc.sys.getTimeMs() < t_end do x = x + 1 end
+    return x
+  end)
+  T.ok(co() > 0)
+end)
+T.done()
+"""
+
+# P0 (specs/2026-09-27-p0-lua-perf-findings.md): 491 ns/iter with the
+# permanent count hook, 189 with the timer-armed hook at -Os.
+EMPTY_LOOP_NS_MAX = 260.0
+
+
+def test_vm_runs_without_per_instruction_hook_cost(target):
+    target.stage_lua_app("hook_speed", SPEED, id="com.test.hook_speed")
+    run = target.run_lua_app("hook_speed", timeout=60)
+    run.assert_clean_exit()
+    ns = float(target.read_file("/data/com.test.hook_speed/ns.txt"))
+    assert ns < EMPTY_LOOP_NS_MAX, f"empty loop {ns} ns/iter"
+
+
+def test_watchdog_fed_through_long_coroutine_compute(target):
+    # Core 1 relays watchdog kicks for 60 s after boot (g_core0_heartbeat_ms
+    # starts at 0), which would mask a starved hook: start after that window.
+    up = target.status()["uptime_ms"]
+    if up < 70000:
+        time.sleep((70000 - up) / 1000)
+    target.stage_lua_app("hook_wdt", WATCHDOG, id="com.test.hook_wdt")
+    run = target.run_lua_app("hook_wdt", timeout=90)
+    run.assert_clean_exit()  # a watchdog reset reports device_rebooted
+    run.assert_all_passed(["coroutine_compute_15s"])

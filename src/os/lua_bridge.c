@@ -205,6 +205,48 @@ static void lua_bridge_install_hook(lua_State *L, int count) {
   lua_sethook(L, menu_lua_hook, LUA_MASKCOUNT, count);
 }
 
+// With any count hook installed, Lua 5.4 calls luaG_traceexec before EVERY
+// instruction (vmfetch's `trap`), whatever the count: on the device that
+// tax was ~60% of VM time (P0: an empty loop 491 ns/iter with it, 189
+// without). So on firmware the VM runs hook-free and a 1 ms Core 0 repeating
+// timer arms a count-1 hook on the running thread (lua_sethook is async-safe:
+// Lua's own lua.c arms its SIGINT stop the same way); menu_lua_hook services
+// and disarms it. The simulator and the web build have no Core 0 interrupt (a
+// host thread calling lua_sethook would race the VM), so they keep the
+// adaptive synchronous count hook.
+#ifndef PICODECK_SIMULATOR
+#define LUA_BRIDGE_ASYNC_HOOK 1
+static volatile bool s_async_active = false;  // an app's VM is running
+static repeating_timer_t s_arm_timer;
+static bool s_arm_timer_started = false;
+
+static bool lua_bridge_arm_cb(repeating_timer_t *t) {
+  (void)t;
+  lua_State *L = s_running_L;
+  if (s_async_active && L)
+    lua_sethook(L, menu_lua_hook, LUA_MASKCOUNT, 1);
+  return true;
+}
+#else
+#define LUA_BRIDGE_ASYNC_HOOK 0
+#endif
+
+// Called once per app, as the last step of registration.
+static void lua_bridge_hook_start(lua_State *L) {
+  s_running_L = L;
+#if LUA_BRIDGE_ASYNC_HOOK
+  lua_sethook(L, NULL, 0, 0);
+  if (!s_arm_timer_started)  // default alarm pool: created on Core 0
+    s_arm_timer_started =
+        add_repeating_timer_us(-1000, lua_bridge_arm_cb, NULL, &s_arm_timer);
+  s_async_active = s_arm_timer_started;
+  if (s_async_active)
+    return;
+  printf("[LUA] no alarm slot for the service timer: synchronous hook\n");
+#endif
+  lua_bridge_install_hook(L, LUA_HOOK_COUNT);
+}
+
 bool lua_bridge_exit_requested(void) { return s_exit_requested; }
 
 void lua_bridge_raise_exit(lua_State *L) {
@@ -236,6 +278,11 @@ void lua_bridge_raise_exit(lua_State *L) {
 void lua_bridge_exit_reset(lua_State *L) {
   s_exit_requested = false;
   dev_commands_clear_exit();
+#if LUA_BRIDGE_ASYNC_HOOK
+  // The VM is about to close (or has): stop arming it. lua_close's __gc
+  // handlers run under the synchronous count hook installed below.
+  s_async_active = false;
+#endif
   if (L)
     lua_bridge_install_hook(L, LUA_HOOK_COUNT);
 }
@@ -346,6 +393,13 @@ void lua_bridge_service_poll(lua_State *L) { lua_service(L, false); }
 // opcode once an exit was requested).
 static void menu_lua_hook(lua_State *L, lua_Debug *ar) {
   (void)ar;
+#if LUA_BRIDGE_ASYNC_HOOK
+  if (s_async_active && !s_exit_requested) {
+    lua_sethook(L, NULL, 0, 0);  // disarm first: the timer re-arms in 1 ms
+    lua_service(L, false);
+    return;
+  }
+#endif
   if (!s_exit_requested) {
     // Rescale the count when the gap since the last call is off target by
     // more than 2x either way (so a steady app is left alone).
@@ -509,11 +563,7 @@ void lua_bridge_register(lua_State *L) {
   // Set as global
   lua_setglobal(L, "picocalc");
 
-  s_running_L = L;
-  // Install instruction-count hook for menu button interception.
-  // Fires every LUA_HOOK_COUNT Lua opcodes to catch menu button presses
-  // even during tight loops, without requiring apps to poll input.
-  lua_bridge_install_hook(L, LUA_HOOK_COUNT);
+  lua_bridge_hook_start(L);
   printf("[LUA] lua_bridge_register complete\n");
 }
 
