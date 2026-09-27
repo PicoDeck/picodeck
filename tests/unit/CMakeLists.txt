@@ -68,9 +68,17 @@ picodeck_unit_test(test_pio_psram_range INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_pio_psram_xip INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_zip_name SOURCES ${SRC}/os/zip_name.c)
 picodeck_unit_test(test_text_wrap SOURCES ${SRC}/os/text_wrap.c)
+picodeck_unit_test(test_module_path SOURCES ${SRC}/os/module_path.c ${SRC}/os/fs_path.c)
 # Clip-once rasterisers shared by the firmware display and the simulator.
 picodeck_unit_test(test_display_clip INCLUDES ${SRC}/drivers)
 target_link_libraries(test_display_clip PRIVATE m)
+target_compile_options(test_display_clip PRIVATE -ffp-contract=off)
+# The 3D pipeline (src/os/gfx3d.c) over host malloc; -ffp-contract=off as on
+# the device so shared edges stay bit-identical.
+picodeck_unit_test(test_gfx3d SOURCES ${SRC}/os/gfx3d.c INCLUDES ${SRC}/drivers
+                   DEFINES GFX3D_MALLOC=malloc GFX3D_FREE=free)
+target_link_libraries(test_gfx3d PRIVATE m)
+target_compile_options(test_gfx3d PRIVATE -ffp-contract=off -Wdouble-promotion)
 # Lua float formatting vs glibc (built without PICODECK_LUA_SPRINTF: no luaconf).
 picodeck_unit_test(test_numfmt SOURCES ${SRC}/os/lua_numfmt.c)
 target_link_libraries(test_numfmt PRIVATE m)

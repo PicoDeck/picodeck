@@ -21,6 +21,14 @@ static int l_sys_getTimeMs(lua_State *L) {
   return 1;
 }
 
+// Microseconds since boot as a wrapping 32-bit integer (lua_Integer is
+// 32-bit): subtract two readings as integers, which is exact for gaps under
+// ~35 minutes even across the wrap.
+static int l_sys_getTimeUs(lua_State *L) {
+  lua_pushinteger(L, (lua_Integer)(uint32_t)to_us_since_boot(get_absolute_time()));
+  return 1;
+}
+
 static int l_sys_getBattery(lua_State *L) {
   // Battery reads are slow I2C round-trips — cache for 5 seconds.
   static int s_cached = -1;
@@ -479,6 +487,7 @@ static int l_sys_resetIdleTimer(lua_State *L) {
 
 static const luaL_Reg l_sys_lib[] = {{"getMemInfo", l_sys_getMemInfo},
                                      {"getTimeMs", l_sys_getTimeMs},
+                                     {"getTimeUs", l_sys_getTimeUs},
                                      {"getBattery", l_sys_getBattery},
                                      {"log", l_sys_log},
                                      {"sleep", l_sys_sleep},

@@ -345,6 +345,11 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/perf.c
     ${PICODECK_ROOT}/src/os/lua_bridge_graphics.c
     ${PICODECK_ROOT}/src/os/lua_bridge_3d.c
+    ${PICODECK_ROOT}/src/os/gfx3d.c
+    ${PICODECK_ROOT}/src/os/lua_bridge_gfx3d.c
+    ${PICODECK_ROOT}/src/os/module_path.c
+    ${PICODECK_ROOT}/src/os/lua_bridge_require.c
+    ${PICODECK_ROOT}/src/os/lua_corolib.c
     ${PICODECK_ROOT}/src/os/lua_bridge_ui.c
     ${PICODECK_ROOT}/src/os/toast.c
     ${PICODECK_ROOT}/src/os/lua_bridge_audio.c
@@ -437,6 +442,9 @@ add_executable(picodeck_simulator
     ${SIM_PLATFORM_SOURCES}
     ${PICODECK_CORE_SOURCES}
 )
+
+set_source_files_properties(${PICODECK_ROOT}/src/os/gfx3d.c PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
 
 target_include_directories(picodeck_simulator PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

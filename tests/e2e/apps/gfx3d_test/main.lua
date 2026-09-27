@@ -1,0 +1,126 @@
+local T = picocalc.sys.loadlib("picotest")
+local g3, gfx = picocalc.gfx3d, picocalc.graphics
+
+-- One unlit triangle at depth -z facing +z (towards a camera at the origin
+-- looking along -z); reversed (clockwise from the camera) when cw is true.
+local function tri(z, cw)
+    local v = { -1, -1, z, 1, -1, z, 0, 1, z }
+    return g3.newMesh(v, cw and { 1, 3, 2 } or { 1, 2, 3 }, 0xF800, g3.UNLIT)
+end
+
+T.case("constants", function()
+    T.eq(math.type(g3.DOUBLE_SIDED), "integer")
+    T.ok(g3.DOUBLE_SIDED ~= g3.UNLIT and g3.UNLIT ~= g3.NO_FOG)
+end)
+
+T.case("newMesh_and_getInfo", function()
+    local m = g3.newMesh({ 0, 0, 0, 2, 0, 0, 0, 2, 0 }, { 1, 2, 3 }, { 0x07E0 })
+    local nv, nt, cx, cy, cz, r = m:getInfo()
+    T.eq(nv, 3); T.eq(nt, 1)
+    T.eq(cx, 1.0); T.eq(cy, 1.0); T.eq(cz, 0.0)
+    T.ok(math.abs(r - math.sqrt(2)) < 1e-5, tostring(r))
+end)
+
+T.case("newMesh_argument_errors", function()
+    local v = { 0, 0, 0, 1, 0, 0, 0, 1, 0 }
+    T.raises(function() g3.newMesh({ 0, 0 }, { 1, 2, 3 }, 0) end, "multiple of 3")
+    T.raises(function() g3.newMesh(v, { 1, 2 }, 0) end, "multiple of 3")
+    T.raises(function() g3.newMesh(v, { 1, 2, 4 }, 0) end, "out of range")
+    T.raises(function() g3.newMesh(v, { 0, 1, 2 }, 0) end, "out of range")
+    T.raises(function() g3.newMesh(v, { 1, 2.5, 3 }, 0) end, "integer expected")
+    T.raises(function() g3.newMesh({ 0, 0, 0 / 0, 1, 0, 0, 0, 1, 0 }, { 1, 2, 3 }, 0) end, "NaN")
+    T.raises(function() g3.newMesh(v, { 1, 2, 3 }, { 0, 0 }) end, "one colour per triangle")
+    T.raises(function() g3.newMesh(v, { 1, 2, 3 }, 0, 8) end, "flags")
+    T.raises(function() g3.newMesh(v, { 1, 2, 3 }, 0x10000) end, "colour")
+end)
+
+T.case("scene_state_errors", function()
+    local m = tri(-5)
+    T.raises(function() g3.draw(m, 0, 0, 0, 0, 0, 0) end, "beginScene")
+    T.raises(function() g3.endScene() end, "beginScene")
+    g3.beginScene()
+    T.raises(function() g3.draw(m, 0, 0, 0, 0, 0, 0, 0) end, "scale must be positive")
+    T.raises(function() g3.drawBasis(m, 0, 0, 0, 0, 0, 0, 0, 1, 0) end, "not parallel")
+    T.raises(function() g3.draw(m, 0 / 0, 0, 0, 0, 0, 0) end, "NaN")
+    g3.endScene()
+    T.raises(function() g3.endScene() end, "beginScene")
+end)
+
+T.case("setter_errors", function()
+    T.raises(function() g3.setProjection(0, 1, 10) end, "fovY")
+    T.raises(function() g3.setProjection(1, 5, 5) end, "near < far")
+    T.raises(function() g3.setViewport(400, 400, 10, 10) end, "overlap")
+    T.raises(function() g3.lookAt(1, 2, 3, 1, 2, 3) end, "must differ")
+    T.raises(function() g3.setLight(0, 0, 0) end, "zero")
+    T.raises(function() g3.setFog(10, 5, 0) end, "near < far")
+    T.raises(function() g3.setSky({ { 0.5, 1 }, { 0.2, 2 } }) end, "increase")
+    T.raises(function() g3.setSky({}) end, "1 to 8")
+    g3.setSky(nil)
+    g3.setFog(nil)
+    g3.setViewport(0, 0, 320, 320)
+    g3.setProjection(1.0471976, 0.5, 1000)
+end)
+
+T.case("culling_and_double_sided", function()
+    g3.lookAt(0, 0, 0, 0, 0, -1)
+    g3.beginScene(0)
+    g3.draw(tri(-5), 0, 0, 0, 0, 0, 0)
+    g3.draw(tri(-5, true), 0, 0, 0, 0, 0, 0)
+    g3.endScene()
+    local s = g3.getStats()
+    T.eq(s.tris_in, 2); T.eq(s.drawn, 1); T.eq(s.culled, 1)
+    local ds = g3.newMesh({ -1, -1, -5, 1, -1, -5, 0, 1, -5 }, { 1, 3, 2 }, 0xF800, g3.DOUBLE_SIDED)
+    g3.beginScene(0)
+    g3.draw(ds, 0, 0, 0, 0, 0, 0)
+    g3.endScene()
+    T.eq(g3.getStats().drawn, 1)
+end)
+
+T.case("mesh_collected_between_draw_and_endScene", function()
+    g3.beginScene(0)
+    do
+        local m = tri(-5)
+        g3.draw(m, 0, 0, 0, 0, 0, 0)
+    end
+    collectgarbage("collect")
+    collectgarbage("collect")
+    g3.endScene()
+    T.eq(g3.getStats().drawn, 1)
+end)
+
+T.case("sprite_image_collected_before_endScene", function()
+    g3.beginScene(0)
+    do
+        g3.drawSprite(gfx.image.new(4, 4), 0, 0, -10, 2)
+    end
+    collectgarbage("collect")
+    collectgarbage("collect")
+    g3.endScene()
+    T.eq(g3.getStats().sprites, 1)
+end)
+
+T.case("error_mid_scene_then_next_frame", function()
+    local ok = pcall(function() g3.beginScene(0); error("boom") end)
+    T.eq(ok, false)
+    g3.beginScene(0)
+    g3.draw(tri(-5), 0, 0, 0, 0, 0, 0)
+    g3.endScene()
+    T.eq(g3.getStats().drawn, 1)
+end)
+
+T.case("project", function()
+    g3.lookAt(0, 0, 0, 0, 0, -1)
+    local x, y, d = g3.project(0, 0, -10)
+    T.ok(math.abs(x - 160) < 0.01 and math.abs(y - 160) < 0.01, x .. "," .. y)
+    T.ok(math.abs(d - 10) < 1e-4, tostring(d))
+    T.eq(g3.project(0, 0, 10), nil)
+end)
+
+T.case("stats_fields", function()
+    local s = g3.getStats()
+    for _, k in ipairs({ "tris_in", "culled", "clipped", "drawn", "sprites", "overflow", "us_geom", "us_raster" }) do
+        T.eq(math.type(s[k]), "integer", k)
+    end
+end)
+
+T.done()

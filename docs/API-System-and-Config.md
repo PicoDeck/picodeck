@@ -22,6 +22,22 @@ local elapsed = picocalc.sys.getTimeMs() - start
 
 ---
 
+#### `picocalc.sys.getTimeUs()`
+Returns microseconds since boot as a 32-bit integer that wraps (it goes negative after ~35.8 minutes and wraps every ~71.6 minutes).
+
+- **Parameters:** None
+- **Returns:** (integer) Microseconds since startup, modulo 2^32
+
+Subtract two readings **as integers** for an interval: the difference is exact for gaps under ~35 minutes, even across the wrap. Do not convert a reading to a float first (a float holds microseconds exactly only up to ~16.8 s). In the simulator the value moves in 1 ms steps unless it runs with virtual time.
+
+```lua
+local t0 = picocalc.sys.getTimeUs()
+-- work
+local us = picocalc.sys.getTimeUs() - t0
+```
+
+---
+
 #### `picocalc.sys.sleep(ms)`
 Sleeps for the specified number of milliseconds. Does not consume input events.
 

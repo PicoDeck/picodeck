@@ -1,0 +1,2 @@
+{ "id": "net.picodeck.coro_test", "name": "Coroutine Test",
+  "description": "coroutine library parity fixture", "version": "1.0", "author": "PicoDeck" }

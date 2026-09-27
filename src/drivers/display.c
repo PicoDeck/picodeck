@@ -26,6 +26,7 @@
 // 16 KB XIP cache.
 #define DISP_HOT __attribute__((optimize("O2")))
 #include "display_clip.h"
+#include "display_raster.h"
 
 // ── Framebuffer ──────────────────────────────────────────────────────────────
 // Placed in internal SRAM smoothly now that the Lua heap has been relocated
@@ -568,6 +569,16 @@ void display_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2,
                      fb_color(color));
 }
 
+void display_get_raster_target(display_raster_target_t *t) {
+  t->fb = s_framebuffer;
+  t->stride = FB_WIDTH;
+  t->clip_x0 = s_clip_x0;
+  t->clip_y0 = s_clip_y0;
+  t->clip_x1 = s_clip_x1;
+  t->clip_y1 = s_clip_y1;
+  t->swap = true;
+}
+
 // Text goes through the shared renderer in src/fonts/font.c. The hardware
 // framebuffer is byte-swapped, so colors are swapped here; the clip rect is
 // the driver's own.
@@ -767,6 +778,21 @@ DISP_HOT void display_draw_image_scaled_nn(int x, int y, const uint16_t *data,
   disp_clip_t c = cur_clip();
   disp_blit_scaled(s_framebuffer, FB_WIDTH, &c, x, y, data, src_w, src_h,
                    dst_w, dst_h, transparent_color, true);
+}
+
+DISP_HOT void display_draw_image_stretched(int x, int y, int dst_w, int dst_h,
+                                           const uint16_t *data, int img_w,
+                                           int img_h, int sx, int sy, int sw,
+                                           int sh, uint16_t transparent_color) {
+  if (sx < 0) { sw += sx; sx = 0; }
+  if (sy < 0) { sh += sy; sy = 0; }
+  if (sw > img_w - sx) sw = img_w - sx;
+  if (sh > img_h - sy) sh = img_h - sy;
+  if (sw <= 0 || sh <= 0) return;
+  uint16_t key = transparent_color ? transparent_color : s_transparent_color;
+  disp_clip_t c = cur_clip();
+  disp_blit_scaled_rect(s_framebuffer, FB_WIDTH, &c, x, y, data, img_w, sx, sy,
+                        sw, sh, dst_w, dst_h, key, true);
 }
 
 void display_set_transparent_color(uint16_t color) {

@@ -263,6 +263,28 @@ static int l_graphics_image_drawScaledNN(lua_State *L) {
   return 0;
 }
 
+// img:drawStretched(x, y, w, h [, srcRect]) — nearest-neighbour stretch of the
+// image (or of srcRect {x, y, w, h}, clamped to the image) to w x h.
+static int l_graphics_image_drawStretched(lua_State *L) {
+  lua_image_t *img = check_image(L, 1);
+  int x = (int)lb_checkint(L, 2);
+  int y = (int)lb_checkint(L, 3);
+  int w = (int)lb_checkint(L, 4);
+  int h = (int)lb_checkint(L, 5);
+  int sx = 0, sy = 0, sw = img->w, sh = img->h;
+  if (!lua_isnoneornil(L, 6)) {
+    luaL_checktype(L, 6, LUA_TTABLE);
+    lua_getfield(L, 6, "x"); sx = (int)lb_optint_at(L, -1, 6, "field 'x'", 0); lua_pop(L, 1);
+    lua_getfield(L, 6, "y"); sy = (int)lb_optint_at(L, -1, 6, "field 'y'", 0); lua_pop(L, 1);
+    lua_getfield(L, 6, "w"); sw = (int)lb_optint_at(L, -1, 6, "field 'w'", img->w); lua_pop(L, 1);
+    lua_getfield(L, 6, "h"); sh = (int)lb_optint_at(L, -1, 6, "field 'h'", img->h); lua_pop(L, 1);
+  }
+  if (w <= 0 || h <= 0) return 0;
+  display_draw_image_stretched(x, y, w, h, img->data, img->w, img->h, sx, sy, sw,
+                               sh, img->transparent_color);
+  return 0;
+}
+
 static int l_graphics_image_setTransparentColor(lua_State *L) {
   lua_image_t *img = check_image(L, 1);
   if (lua_isnil(L, 2) || lua_isnone(L, 2))
@@ -289,6 +311,7 @@ static const luaL_Reg l_graphics_image_methods[] = {
     {"drawTiled", l_graphics_image_drawTiled},
     {"drawScaled", l_graphics_image_drawScaled},
     {"drawScaledNN", l_graphics_image_drawScaledNN},
+    {"drawStretched", l_graphics_image_drawStretched},
     {"setTransparentColor", l_graphics_image_setTransparentColor},
     {"getTransparentColor", l_graphics_image_getTransparentColor},
     {"getMetadata", l_graphics_image_getMetadata},

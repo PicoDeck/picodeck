@@ -48,6 +48,7 @@ static int s_clip_x1 = 319, s_clip_y1 = 319;
 // The clip-once rasterisers are shared with the firmware driver; this
 // framebuffer is host order, so they run with swap = false.
 #include "../../src/drivers/display_clip.h"
+#include "../../src/drivers/display_raster.h"
 static inline disp_clip_t cur_clip(void) {
     return (disp_clip_t){s_clip_x0, s_clip_y0, s_clip_x1, s_clip_y1};
 }
@@ -291,6 +292,16 @@ void display_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2, uint1
                        y2, color);
 }
 
+void display_get_raster_target(display_raster_target_t *t) {
+    t->fb = display_get_back_buffer();
+    t->stride = 320;
+    t->clip_x0 = s_clip_x0;
+    t->clip_y0 = s_clip_y0;
+    t->clip_x1 = s_clip_x1;
+    t->clip_y1 = s_clip_y1;
+    t->swap = false;
+}
+
 void display_draw_textured_column(int x, int y0, int y1,
                                   const uint16_t *tex, int tex_w, int tex_h,
                                   int tex_x, int tex_y0, int tex_y1) {
@@ -487,6 +498,20 @@ void display_draw_image_scaled_nn(int x, int y, const uint16_t *data,
     disp_clip_t c = cur_clip();
     disp_blit_scaled(display_get_back_buffer(), 320, &c, x, y, data, src_w,
                      src_h, dst_w, dst_h, transparent_color, false);
+}
+
+void display_draw_image_stretched(int x, int y, int dst_w, int dst_h,
+                                  const uint16_t *data, int img_w, int img_h,
+                                  int sx, int sy, int sw, int sh,
+                                  uint16_t transparent_color) {
+    if (sx < 0) { sw += sx; sx = 0; }
+    if (sy < 0) { sh += sy; sy = 0; }
+    if (sw > img_w - sx) sw = img_w - sx;
+    if (sh > img_h - sy) sh = img_h - sy;
+    if (sw <= 0 || sh <= 0) return;
+    disp_clip_t c = cur_clip();
+    disp_blit_scaled_rect(display_get_back_buffer(), 320, &c, x, y, data, img_w,
+                          sx, sy, sw, sh, dst_w, dst_h, transparent_color, false);
 }
 
 void display_draw_image_scaled(int x, int y, int img_w, int img_h,

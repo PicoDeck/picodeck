@@ -48,6 +48,7 @@ var docFileMapping = map[string]string{
 	"sound":     "API-Audio-and-Sound.md",
 	"perf":      "API-Performance.md",
 	"graphics":  "API-Display-and-Graphics.md",
+	"gfx3d":     "API-3D.md",
 	"video":     "API-Video.md",
 	"repl":      "API-Repl.md",
 	"terminal":  "API-Terminal.md",

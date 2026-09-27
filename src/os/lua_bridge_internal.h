@@ -73,6 +73,9 @@ lua_Integer lb_optint(lua_State *L, int idx, lua_Integer def);
 lua_Integer lb_checkint_at(lua_State *L, int idx, int arg, const char *what);
 lua_Integer lb_optint_at(lua_State *L, int idx, int arg, const char *what,
                          lua_Integer def);
+float lb_checkfloat(lua_State *L, int idx);
+float lb_optfloat(lua_State *L, int idx, float def);
+void lua_bridge_gfx3d_init(lua_State *L);
 // Clamps v to [lo, hi]. The +-2^24 bound above does not protect sinks
 // narrower than that: uint8_t volumes/colour channels and unsigned
 // positions clamp instead of wrapping.
@@ -111,6 +114,7 @@ void lua_bridge_tcp_init(lua_State *L);
 void lua_bridge_crypto_init(lua_State *L);
 void lua_bridge_mod_init(lua_State *L);
 void lua_bridge_json_init(lua_State *L);
+void lua_bridge_require_init(lua_State *L);
 
 // Shared JSON codec — game.save is built on these so the firmware carries one
 // JSON implementation rather than several hand-rolled ones.

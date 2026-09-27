@@ -138,6 +138,7 @@ static void lua_vm_body(void *arg) {
   if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
     lua_bridge_show_error(L, "Init error:");
     sim_app_outcome_set(SIM_APP_RESULT_LOAD_FAILED, NULL);
+    lua_bridge_exit_reset(L);
     lua_close(L);
     umm_free(ctx->lua_src);
     return;
@@ -175,6 +176,7 @@ static void lua_vm_body(void *arg) {
     lua_bridge_show_error(L, load_err == LUA_ERRMEM ? "Out of memory loading app:"
                                                     : "Load error:");
     sim_app_outcome_set(SIM_APP_RESULT_LOAD_FAILED, NULL);
+    lua_bridge_exit_reset(L);
     lua_close(L);
     return;
   }

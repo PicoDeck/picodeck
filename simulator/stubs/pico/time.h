@@ -27,6 +27,10 @@ static inline uint32_t to_ms_since_boot(absolute_time_t t) {
     return (uint32_t)(t / 1000);
 }
 
+static inline uint64_t to_us_since_boot(absolute_time_t t) {
+    return (uint64_t)t;
+}
+
 static inline int64_t absolute_time_diff_us(absolute_time_t from, absolute_time_t to) {
     return (int64_t)(to - from);
 }

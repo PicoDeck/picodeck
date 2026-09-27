@@ -1012,6 +1012,7 @@ local faces = {1,2,3, 1,3,4,  5,6,7, 5,7,8}  -- two quads as triangles
 draw3DWireframeEx(verts, edges, angle, angle*0.7, 0,
     160, 160, 300, picocalc.display.WHITE, picocalc.display.BLUE, 2, 3, faces)
 ```
+For scenes (a camera, many objects, clipping and depth order), use [picocalc.gfx3d](API-3D.md).
 
 ---
 
@@ -1383,6 +1384,21 @@ Samples source pixels exactly for any scale (older firmware sampled the wrong co
 
 ```lua
 img:drawScaledNN(10, 10, 3)  -- 3x zoom (pixel art style)
+```
+
+---
+
+#### `image:drawStretched(x, y, w, h [, srcRect])`
+Draws the image (or the `srcRect` part of it) stretched to exactly `w` × `h` pixels, nearest-neighbour, honouring the image's transparent colour. Unlike `drawScaledNN`, the size need not be an integer multiple, and the result stays pixel-sharp (no filtering).
+
+- **Parameters:**
+  - `x`, `y` (number): Top-left corner on screen
+  - `w`, `h` (number): Destination size; `0` or less draws nothing
+  - `srcRect` (table, optional): `{x=, y=, w=, h=}` source rectangle; clamped to the image
+- **Returns:** None
+
+```lua
+sheet:drawStretched(100, 80, 48, 24, { x = 16, y = 0, w = 16, h = 8 })  -- one frame, 3x
 ```
 
 ---
