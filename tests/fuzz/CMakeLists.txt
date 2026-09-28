@@ -32,3 +32,7 @@ endfunction()
 picodeck_fuzz_target(fuzz_elf_plan SOURCES ${PICODECK_ROOT}/src/os/elf_plan.c)
 picodeck_fuzz_target(fuzz_app_manifest SOURCES ${PICODECK_ROOT}/src/os/app_manifest.c)
 picodeck_fuzz_target(fuzz_wav SOURCES ${PICODECK_ROOT}/src/drivers/wav.c INCLUDES ${PICODECK_ROOT}/src/drivers)
+picodeck_fuzz_target(fuzz_qoa SOURCES ${PICODECK_ROOT}/src/drivers/qoa.c
+                     ${PICODECK_ROOT}/third_party/qoa/qoa.c
+                     INCLUDES ${PICODECK_ROOT}/src/drivers ${PICODECK_ROOT}/third_party)
+target_compile_definitions(fuzz_qoa PRIVATE QOA_NO_ENCODER)

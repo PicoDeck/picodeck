@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "qoa.h"
+
 #define FILEPLAYER_BUFFER_SIZE 8192
 #define FILEPLAYER_MAX_INSTANCES 2
 
@@ -16,7 +18,8 @@ typedef enum {
 typedef enum {
     FILEPLAYER_TYPE_UNKNOWN = 0,
     FILEPLAYER_TYPE_WAV,
-    FILEPLAYER_TYPE_MP3
+    FILEPLAYER_TYPE_MP3,
+    FILEPLAYER_TYPE_QOA
 } fileplayer_type_t;
 
 typedef struct {
@@ -48,6 +51,14 @@ typedef struct {
     uint8_t repeats;        // plays asked for by play(); 0 = until stopped
     uint8_t plays;          // plays finished since play()
     bool pass_pushed;       // this pass through the data pushed audio
+    // QOA (type == FILEPLAYER_TYPE_QOA).  position/data_size stay virtual
+    // 16-bit PCM bytes, so position, offset and flow control are shared
+    // with WAV; these track the compressed side and the decoded-but-not-
+    // yet-pushed frames sitting in fileplayer.c's shared s_qoa_pcm.
+    qoa_info_t qoa;
+    uint32_t qoa_file_pos;    // file offset of the next frame to read
+    uint32_t qoa_pcm_done;    // decoded frames already pushed
+    uint32_t qoa_pcm_have;    // decoded frames in the scratch
 } fileplayer_t;
 
 void fileplayer_init(void);

@@ -385,6 +385,8 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/drivers/sound.c
     ${PICODECK_ROOT}/src/drivers/mp3_player.c
     ${PICODECK_ROOT}/src/drivers/wav.c
+    ${PICODECK_ROOT}/src/drivers/qoa.c
+    ${PICODECK_ROOT}/third_party/qoa/qoa.c
     ${PICODECK_ROOT}/third_party/miniz/miniz.c
     ${PICODECK_ROOT}/third_party/miniz/miniz_tinfl.c
     ${PICODECK_ROOT}/third_party/miniz/miniz_tdef.c
@@ -449,6 +451,12 @@ add_executable(picodeck_simulator
 set_source_files_properties(${PICODECK_ROOT}/src/os/gfx3d.c PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 
+# The vendored QOA reference: decode only, third-party warnings off (as
+# mongoose.c above).
+set_source_files_properties(${PICODECK_ROOT}/third_party/qoa/qoa.c PROPERTIES
+    COMPILE_OPTIONS "-w"
+    COMPILE_DEFINITIONS "QOA_NO_ENCODER")
+
 target_include_directories(picodeck_simulator PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/stubs
@@ -462,6 +470,7 @@ target_include_directories(picodeck_simulator PRIVATE
     ${CMAKE_BINARY_DIR}/generated/miniz
     ${PICODECK_ROOT}/third_party/stb
     ${PICODECK_ROOT}/third_party/pocketmod
+    ${PICODECK_ROOT}/third_party
     ${unicorn_SOURCE_DIR}/include
 )
 

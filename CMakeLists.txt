@@ -207,6 +207,15 @@ target_include_directories(libmad PUBLIC ${LIBMAD_DIR})
 target_compile_definitions(libmad PRIVATE PROGMEM=)
 target_compile_options(libmad PRIVATE -O2 -Wno-unused-parameter -Wno-unused-variable)
 
+# ── QOA decoder (third_party/qoa, MIT) ─────────────────────────────────────
+# Decode only: the encoder is compiled out (QOA_NO_ENCODER).  Decode runs on
+# Core 1 in fileplayer_update; the whole decoder is ~1 KB of code.
+set(QOA_DIR ${CMAKE_SOURCE_DIR}/third_party/qoa)
+add_library(qoa STATIC ${QOA_DIR}/qoa.c)
+target_include_directories(qoa PUBLIC ${CMAKE_SOURCE_DIR}/third_party)
+target_compile_definitions(qoa PRIVATE QOA_NO_ENCODER)
+target_compile_options(qoa PRIVATE -O2 -Wno-unused-parameter -Wno-sign-compare)
+
 # ── PIO PSRAM (mainboard 8MB PSRAM via PIO1 SPI) ─────────────────────────────
 # Uses the polpo rp2040-psram library (third_party/rp2040-psram/).
 # Pin defines are passed via compile definitions so the library source
@@ -321,6 +330,7 @@ add_executable(picodeck
     src/drivers/audio_mix.c
     src/drivers/sound.c
     src/drivers/fileplayer.c
+    src/drivers/qoa.c
     src/drivers/wav.c
     src/drivers/mp3_player.c
     src/drivers/video_player.cpp
@@ -379,6 +389,7 @@ target_link_libraries(picodeck
     fatfs
     libmad_ram
     libmad
+    qoa
     jpegdec_lib
     image_decoders
     pio_psram_lib

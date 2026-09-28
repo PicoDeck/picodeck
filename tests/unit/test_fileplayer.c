@@ -17,6 +17,7 @@
 #include "audio.h"
 #include "sdcard.h"
 #include "fakes/sdcard_fake.h"
+#include "qoa/qoa.h"  // vendored reference encoder, for fixtures
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -68,6 +69,25 @@ static void put_wav(const char *path, uint32_t frames, uint16_t channels,
   for (uint32_t i = 0; i < frames * channels; i++) le16(buf + 44 + i * 2, (uint16_t)value);
   sdfake_put(path, (const char *)buf, 44 + data);
   free(buf);
+}
+
+// A QOA file of `frames` content frames per channel whose every sample is
+// `value`, encoded with the vendored reference encoder.
+static void put_qoa(const char *path, uint32_t frames, uint8_t channels,
+                    uint32_t rate, int16_t value) {
+  int16_t *pcm = malloc((size_t)frames * channels * 2);
+  for (uint32_t i = 0; i < frames * channels; i++) pcm[i] = value;
+  qoa_desc d;
+  memset(&d, 0, sizeof(d));
+  d.channels = channels;
+  d.samplerate = rate;
+  d.samples = frames;
+  unsigned len = 0;
+  void *q = qoa_encode((const short *)pcm, &d, &len);
+  CHECK(q != NULL);
+  sdfake_put(path, (const char *)q, len);
+  free(q);
+  free(pcm);
 }
 
 static void setup(void) {
@@ -219,6 +239,85 @@ static void test_cross_core_stop_is_safe(void) {
   CHECK(1);
 }
 
+// QOA through the same flow control: the producer paces on the ring, so a
+// 1 s mono file plays every one of its frames and drops none.
+static void test_qoa_plays_every_frame(void) {
+  setup();
+  put_qoa("/a.qoa", 22050, 1, 22050, 1000);  // 1 s mono
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/a.qoa"));
+  CHECK_EQ_INT(fileplayer_get_length(p), 22050);
+  CHECK(fileplayer_play(p, 1));
+  int ticks = run(p, 44, 100000);
+  CHECK(!fileplayer_is_playing(p));
+  CHECK_EQ_INT(s_dropped, 0);
+  CHECK_EQ_INT(s_pushed, 22050);
+  CHECK(ticks >= (22050 - (int)RING_FRAMES) / 44);
+  // QOA is lossy: the constant comes back near it, not at it.
+  CHECK(s_last_l > 900 && s_last_l < 1100);
+  fileplayer_destroy(p);
+}
+
+static void test_qoa_stereo_at_44100(void) {
+  setup();
+  put_qoa("/s.qoa", 44100, 2, 44100, -3000);
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/s.qoa"));
+  CHECK_EQ_INT(fileplayer_get_length(p), 44100);
+  CHECK(fileplayer_play(p, 1));
+  run(p, 88, 100000);
+  CHECK(!fileplayer_is_playing(p));
+  CHECK_EQ_INT(s_dropped, 0);
+  CHECK_EQ_INT(s_pushed, 44100);
+  fileplayer_destroy(p);
+}
+
+// A QOA frame boundary is a decode unit; SD busy must still skip the tick.
+static void test_qoa_sd_busy_skips_the_tick(void) {
+  setup();
+  put_qoa("/a.qoa", 4410, 2, 22050, 7);
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/a.qoa"));
+  CHECK(fileplayer_play(p, 1));
+  sdfake_set_busy(true);
+  for (int i = 0; i < 20; i++) fileplayer_update();
+  CHECK_EQ_INT(s_pushed, 0);
+  CHECK(fileplayer_is_playing(p));
+  sdfake_set_busy(false);
+  run(p, 256, 100000);
+  CHECK_EQ_INT(s_pushed, 4410);
+  CHECK_EQ_INT(s_dropped, 0);
+  fileplayer_destroy(p);
+}
+
+// Seek lands on a frame boundary and replays from there; looping a QOA
+// rewinds the compressed stream too.
+static void test_qoa_seek_and_loop(void) {
+  setup();
+  put_qoa("/seek.qoa", 66150, 1, 22050, 500);  // 3 s mono
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/seek.qoa"));
+  CHECK(fileplayer_play(p, 1));
+  for (int i = 0; i < 10; i++) { fileplayer_update(); drain(44); }
+  fileplayer_set_offset(p, 2);
+  CHECK_EQ_INT(fileplayer_get_offset(p), 2);
+  uint64_t before = s_pushed;
+  run(p, 44, 100000);
+  // One second of content remains after the seek (the decode's frame
+  // granularity is 5120 samples: well under the 1% tolerance).
+  uint64_t after = s_pushed - before;
+  CHECK(after > 22050 * 99 / 100 && after < 22050 * 101 / 100);
+  CHECK(!fileplayer_is_playing(p));
+
+  // play(2) delivers the file twice.
+  ring_reset();
+  CHECK(fileplayer_play(p, 2));
+  run(p, 100, 100000);
+  CHECK_EQ_INT(s_pushed, 66150 * 2);
+  CHECK_EQ_INT(s_dropped, 0);
+  fileplayer_destroy(p);
+}
+
 int main(void) {
   test_flow_control_plays_every_frame();
   test_mono_and_rate_flow_control();
@@ -226,6 +325,10 @@ int main(void) {
   test_sd_busy_skips_the_tick();
   test_players_keep_their_own_files();
   test_cross_core_stop_is_safe();
+  test_qoa_plays_every_frame();
+  test_qoa_stereo_at_44100();
+  test_qoa_sd_busy_skips_the_tick();
+  test_qoa_seek_and_loop();
   fileplayer_reset();
   sdfake_reset();
   return check_report("test_fileplayer");

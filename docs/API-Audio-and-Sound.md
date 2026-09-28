@@ -432,7 +432,7 @@ end)
 
 ### FilePlayer
 
-Streams a WAV file from the SD card without loading it fully into memory.
+Streams a WAV or QOA file from the SD card without loading it fully into memory.
 
 #### `picocalc.sound.fileplayer([bufferSize])`
 Creates a FilePlayer.
@@ -444,12 +444,15 @@ Creates a FilePlayer.
 ---
 
 #### `player:load(path)`
-Opens a WAV file for streaming.
+Opens a WAV or QOA file for streaming (sniffed from the header, not the extension).
 
-Streams 16-bit PCM only: an 8-bit WAV is refused here (a Sample accepts it).
+WAV streams 16-bit PCM only: an 8-bit WAV is refused here (a Sample accepts it).
+QOA ("Quite OK Audio") is a lossy format about 5× smaller than PCM — a good
+choice for music: decode is cheap and it reads a fifth of the bytes from the
+SD card. Encode offline with the reference `qoaconv` tool. Mono and stereo only.
 
 - **Parameters:**
-  - `path` (string): Absolute path to a WAV file
+  - `path` (string): Absolute path to a WAV or QOA file
 - **Returns:** `true` on success, or `nil, errstr`
 
 ---
@@ -547,7 +550,7 @@ Streams an MP3 file from the SD card.
 
 The MP3 plays through the same mixer as samples, the stream and tones, so music and sound effects play together; `picocalc.audio.setVolume` scales it too. Sources add up: a full-volume MP3 plus loud samples clips, so leave headroom (music at about 60).
 
-**Performance.** MP3 decoding runs on the second core, but it shares the flash and PSRAM cache with your app, so it slows your app's own code. Measured in a gfx3d game at 200 MHz: 44.1 kHz stereo MP3 music made every frame about 2.1× slower, 22.05 kHz mono about 1.24×. A looping WAV streamed with a [FilePlayer](#fileplayer) (`play(0)`) cost 2.5% at 22.05 kHz mono and 15% at 44.1 kHz stereo, because it reads the SD card over its own bus. A tracker module on the [MOD player](API-Modplayer.md) sits between the two: 14% with 4 channels, 24% with 8. For music in a real-time game, use WAV, or a MOD if you can spare the frame time.
+**Performance.** MP3 decoding runs on the second core, but it shares the flash and PSRAM cache with your app, so it slows your app's own code. Measured in a gfx3d game at 200 MHz: 44.1 kHz stereo MP3 music made every frame about 2.1× slower, 22.05 kHz mono about 1.24×. A looping WAV streamed with a [FilePlayer](#fileplayer) (`play(0)`) cost 2.5% at 22.05 kHz mono and 15% at 44.1 kHz stereo, because it reads the SD card over its own bus. A tracker module on the [MOD player](API-Modplayer.md) sits between the two: 14% with 4 channels, 24% with 8. For music in a real-time game, use WAV or QOA, or a MOD if you can spare the frame time. A QOA file is one fifth the bytes of the same music as WAV, so a streamed QOA costs less SD time than the WAV it was made from, and its decode adds only about 1% of the second core — well under MP3.
 
 #### `picocalc.sound.mp3player()`
 Creates an MP3Player.

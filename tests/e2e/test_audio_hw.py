@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from helpers import write_qoa
+
 pytestmark = [pytest.mark.hardware, pytest.mark.timeout(900)]
 
 FFMPEG = shutil.which("ffmpeg")
@@ -36,6 +38,11 @@ BASELINE = {
     "mp3": {"tick_over": 268, "tick_missed": 9394, "tick_max_us": 43995},
     "sfx": {"tick_over": 2, "tick_missed": 6, "tick_max_us": 2963},
 }
+# QOA streams through the fileplayer: a ~4 KB frame read + a ~1 ms decode
+# every ~116 ms, so expect WAV-like ticks — far below MP3's.  Provisional
+# until measured on the device; recalibrate like the others (worst of three
+# runs) on the first hardware run.
+BASELINE["qoa"] = {"tick_over": 300, "tick_missed": 100, "tick_max_us": 6000}
 BASELINE["both"] = {k: BASELINE["mp3"][k] + BASELINE["sfx"][k]
                     for k in BASELINE["mp3"]}
 
@@ -89,9 +96,10 @@ def sfx_wav(path: Path, hz: int, seconds: float = 0.5, rate: int = 22050):
         w.writeframes(pcm)
 
 
-# run.txt holds "<mode> <seconds>": mp3 (music alone), sfx (eight voices),
-# both (music + voices, a pause at 40% and a resume at 50% of the run),
-# listen (the captioned sequence of test_listen).
+# run.txt holds "<mode> <seconds>": mp3 (music alone), qoa (QOA music alone,
+# through the fileplayer), sfx (eight voices), both (music + voices, a pause
+# at 40% and a resume at 50% of the run), listen (the captioned sequence of
+# test_listen).
 FIXTURE = r'''
 local T = picocalc.sys.loadlib("picotest")
 local sys, sound, fs, input = picocalc.sys, picocalc.sound, picocalc.fs, picocalc.input
@@ -126,8 +134,12 @@ local STEPS = {
 
 T.case("play", function()
   local metrics = {mode = MODE}
-  local mp3
-  if MODE ~= "sfx" then
+  local mp3, qoa
+  if MODE == "qoa" then
+    qoa = sound.fileplayer()
+    T.ok(qoa:load(APP_DIR .. "/music.qoa"), "load music.qoa")
+    qoa:play(0)                              -- loop
+  elseif MODE ~= "sfx" then
     mp3 = sound.mp3player()
     T.ok(mp3:load(APP_DIR .. "/music.mp3"), "load music.mp3")
     mp3:setVolume(60)
@@ -196,6 +208,11 @@ T.case("play", function()
     mp3:stop()
     metrics.stop_us = sys.getTimeUs() - u0
   end
+  if qoa then
+    T.ok(qoa:isPlaying(), "the looping QOA still plays")
+    metrics.position = qoa:getOffset()
+    qoa:stop()
+  end
   for i = 1, #voices do voices[i]:stop() end
   write("metrics.json", picocalc.json.encode(metrics))
 end)
@@ -257,9 +274,14 @@ def mix_app(target):
         with tempfile.TemporaryDirectory() as tmp:
             music = Path(tmp) / "music.mp3"
             music_mp3(music)
+            # 20 s of stereo 44.1 kHz QOA (~430 KB): the format's worst
+            # streaming case (frame reads + decode on Core 1).
+            music_qoa = Path(tmp) / "music.qoa"
+            write_qoa(music_qoa, seconds=20, rate=44100, channels=2, hz=440)
             target.stage_lua_app(APP, FIXTURE, requirements=("audio",),
                                  id=APP_ID,
-                                 files={"music.mp3": music.read_bytes()})
+                                 files={"music.mp3": music.read_bytes(),
+                                        "music.qoa": music_qoa.read_bytes()})
         with tempfile.TemporaryDirectory() as tmp:
             files = {}
             for i, hz in enumerate(SFX_HZ, 1):
@@ -288,6 +310,19 @@ def test_mp3_music_alone(mix_app):
     assert stats["mp3_underruns"] == 0, stats
     assert stats["stream_underruns"] == 0, stats
     assert_tick_cost_within(stats, BASELINE["mp3"])
+
+
+def test_qoa_music_alone(mix_app):
+    """QOA music alone (looping stereo 44.1 kHz through the fileplayer):
+    no stream underruns, and Core 1's tick cost stays WAV-like."""
+    stats, m, outcome, results = mix_app("qoa")
+    print("qoa music alone:", stats, m)
+    assert outcome["result"] == "returned", outcome
+    assert_passed(results)
+    assert stats["window_ms"] >= 15000 and stats["ticks"] > 0, stats
+    assert stats["out"] == 1, stats
+    assert stats["stream_underruns"] == 0, stats
+    assert_tick_cost_within(stats, BASELINE["qoa"])
 
 
 def test_eight_sample_voices(mix_app):

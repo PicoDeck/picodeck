@@ -405,6 +405,101 @@ def write_wav(path: Path, seconds: float = 0.05, rate: int = 22050):
         w.writeframes(b"\x00\x00" * int(seconds * rate))
 
 
+_QOA_SCALEFACTOR_TAB = [1, 7, 21, 45, 84, 138, 211, 304,
+                        421, 562, 731, 928, 1157, 1419, 1715, 2048]
+_QOA_DEQUANT_TAB = [
+    [1, -1, 3, -3, 5, -5, 7, -7],
+    [5, -5, 18, -18, 32, -32, 49, -49],
+    [16, -16, 53, -53, 95, -95, 147, -147],
+    [34, -34, 113, -113, 203, -203, 315, -315],
+    [63, -63, 210, -210, 378, -378, 588, -588],
+    [104, -104, 345, -345, 621, -621, 966, -966],
+    [158, -158, 528, -528, 950, -950, 1477, -1477],
+    [228, -228, 760, -760, 1368, -1368, 2128, -2128],
+    [316, -316, 1053, -1053, 1895, -1895, 2947, -2947],
+    [422, -422, 1405, -1405, 2529, -2529, 3934, -3934],
+    [548, -548, 1828, -1828, 3290, -3290, 5117, -5117],
+    [696, -696, 2320, -2320, 4176, -4176, 6496, -6496],
+    [868, -868, 2893, -2893, 5207, -5207, 8099, -8099],
+    [1064, -1064, 3548, -3548, 6386, -6386, 9933, -9933],
+    [1286, -1286, 4288, -4288, 7718, -7718, 12005, -12005],
+    [1536, -1536, 5120, -5120, 9216, -9216, 14336, -14336],
+]
+# Residuals -8..8 -> 3-bit quantized index (from the QOA spec).
+_QOA_QUANT_TAB = [7, 7, 7, 5, 5, 3, 3, 1, 0, 0, 2, 2, 4, 4, 6, 6, 6]
+
+
+def write_qoa(path: Path, seconds: float = 1.0, rate: int = 22050,
+              channels: int = 1, hz: int = 0):
+    """A valid QOA file ("qoaf"), encoded per the reference algorithm but
+    with a two-pass per-slice scalefactor pick instead of the brute-force
+    16-way search (25x faster, still spec-valid; the fixtures don't need
+    fidelity).  Content is a sine of `hz` (0 = near-silence)."""
+    import math
+    import struct
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    total = int(seconds * rate)
+    pcm = [
+        [int(12000 * math.sin(2 * math.pi * hz * i / rate)) if hz else 0
+         for _ in range(channels)]
+        for i in range(total)
+    ]
+
+    def predict(lms):
+        return sum(w * h for w, h in zip(lms[0], lms[1])) >> 13
+
+    def update(lms, sample, residual):
+        delta = residual >> 4
+        lms[0] = [w + (-delta if h < 0 else delta) for w, h in zip(lms[0], lms[1])]
+        lms[1] = lms[1][1:] + [sample]
+
+    out = bytearray(b"qoaf" + struct.pack(">I", total))
+    pos = 0
+    while pos < total:
+        fsamples = min(256 * 20, total - pos)
+        slices = (fsamples + 19) // 20
+        fsize = 8 + 16 * channels + 8 * slices * channels
+        out += struct.pack(">B", channels) + rate.to_bytes(3, "big") + \
+               struct.pack(">HH", fsamples, fsize)
+        # Per the reference encoder, frames start from weights {0,0,-1,2}
+        # (in .13 fixed point) and zero history.
+        lms = [[[0, 0, -(1 << 13), 1 << 14], [0, 0, 0, 0]]
+               for _ in range(channels)]  # [channel][weights, history]
+        for w, h in lms:
+            out += struct.pack(">4h", *h) + struct.pack(">4h", *w)
+        for s in range(slices):
+            for c in range(channels):
+                n = min(20, fsamples - s * 20)
+                # Pass 1: residuals under perfect reconstruction, to size
+                # the scalefactor.
+                probe = [list(lms[c][0]), list(lms[c][1])]
+                peak = 0
+                for k in range(n):
+                    r = pcm[pos + s * 20 + k][c] - predict(probe)
+                    peak = max(peak, abs(r))
+                    update(probe, pcm[pos + s * 20 + k][c], r)
+                sf = 0
+                while sf < 15 and peak > _QOA_SCALEFACTOR_TAB[sf] * 8:
+                    sf += 1
+                # Pass 2: encode for real.
+                slice_bits = sf
+                for k in range(n):
+                    predicted = predict(lms[c])
+                    residual = pcm[pos + s * 20 + k][c] - predicted
+                    scaled = (residual * ((1 << 16) // _QOA_SCALEFACTOR_TAB[sf])
+                              + (1 << 15)) >> 16
+                    quantized = _QOA_QUANT_TAB[max(-8, min(8, scaled)) + 8]
+                    dequantized = _QOA_DEQUANT_TAB[sf][quantized]
+                    reconstructed = max(-32768, min(32767, predicted + dequantized))
+                    update(lms[c], reconstructed, dequantized)
+                    slice_bits = (slice_bits << 3) | quantized
+                slice_bits <<= (20 - n) * 3
+                out += slice_bits.to_bytes(8, "big")
+        pos += fsamples
+    path.write_bytes(bytes(out))
+
+
 def write_mp3(path: Path, frames: int = 8):
     """A decodable MP3 of silence: MPEG-1 Layer III, 128 kbps, 44.1 kHz,
     joint stereo, no padding (417-byte frames; all-zero side info and main

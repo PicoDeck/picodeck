@@ -63,6 +63,13 @@ picodeck_unit_test(test_elf_plan SOURCES ${SRC}/os/elf_plan.c)
 picodeck_unit_test(test_fs_path SOURCES ${SRC}/os/fs_path.c)
 picodeck_unit_test(test_app_manifest SOURCES ${SRC}/os/app_manifest.c)
 picodeck_unit_test(test_wav SOURCES ${SRC}/drivers/wav.c INCLUDES ${SRC}/drivers)
+# QOA probing/decode for the fileplayer, against the vendored reference
+# (encoder included here for in-process fixtures; firmware builds it out).
+picodeck_unit_test(test_qoa SOURCES ${SRC}/drivers/qoa.c
+                ${PICODECK_ROOT}/third_party/qoa/qoa.c
+                INCLUDES ${SRC}/drivers ${PICODECK_ROOT}/third_party)
+set_source_files_properties(${PICODECK_ROOT}/third_party/qoa/qoa.c
+                PROPERTIES COMPILE_OPTIONS "-Wno-error")
 picodeck_unit_test(test_audio_ring INCLUDES ${SRC}/drivers)
 # The MP3 staging buffer as a mixer source (header-only, like audio_ring.h).
 picodeck_unit_test(test_pcm_stage INCLUDES ${SRC}/drivers)
@@ -126,7 +133,9 @@ target_compile_options(test_audio_mix PRIVATE -Wno-unused-parameter)
 # flow control against a model of the stream ring, per-player files, and
 # Core 0 stop vs Core 1 update on two threads.
 picodeck_unit_test(test_fileplayer SOURCES ${SRC}/drivers/fileplayer.c
-                ${SRC}/drivers/wav.c ${SD_FAKE} INCLUDES ${SD_INCLUDES})
+                ${SRC}/drivers/wav.c ${SRC}/drivers/qoa.c
+                ${PICODECK_ROOT}/third_party/qoa/qoa.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES} ${PICODECK_ROOT}/third_party)
 target_link_libraries(test_fileplayer PRIVATE pthread)
 # The MOD player (mod_player.c + pocketmod): Core 0 load/free vs Core 1
 # update on two threads.
