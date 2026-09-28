@@ -2324,6 +2324,10 @@ function picocalc.gfx3d.setSky(bands) end
 function picocalc.gfx3d.beginScene(clearColor) end
 function picocalc.gfx3d.draw(mesh, x, y, z, yaw, pitch, roll, scale, bias, sortAsOne) end
 function picocalc.gfx3d.drawBasis(mesh, x, y, z, fx, fy, fz, ux, uy, uz, scale, bias, sortAsOne) end
+---@param list table an array of meshes built in world coordinates
+---@param bias number|nil depth bias for every mesh (default 0)
+---@param start integer|nil the first index drawn; the rest wrap round (default 1)
+function picocalc.gfx3d.drawList(list, bias, start) end
 function picocalc.gfx3d.drawBackground(mesh) end
 function picocalc.gfx3d.drawSprite(image, x, y, z, size, sx, sy, sw, sh, bias) end
 function picocalc.gfx3d.endScene() end
