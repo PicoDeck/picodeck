@@ -2,7 +2,8 @@
 // device's DMA refill ISR and the simulator's output both render. Every
 // source adds into the frame; starting or stopping the stream never
 // restarts the output or touches the other sources; the master volume
-// scales the sum; a tone lasts its duration in mixed frames.
+// scales the sum before it is clipped; a tone lasts its duration in mixed
+// frames.
 #include "check.h"
 #include "audio.h"
 #include "audio_mix.h"
@@ -138,6 +139,24 @@ static void test_the_sum_clips(void) {
   CHECK_EQ_INT(left(0), 32767);
 }
 
+// The master volume scales the sum before the clip: a sum over full scale
+// turned down to half is half the sum, not half of a clipped one.
+static void test_the_volume_applies_before_the_clip(void) {
+  reset_all();
+  play_const(1000);
+  s_mp3_on = true;
+  s_mp3_value = 30000;
+  audio_start_stream(AUDIO_OUT_RATE);
+  push_const(30000, 4);
+  audio_set_volume(50);
+  render(1);
+  int sum = 1000 + ring_value(30000) + 30000;  // 60952: over the clip
+  CHECK(sum > 32767);
+  CHECK_EQ_INT(left(0), sum * 128 / 256);
+  CHECK(left(0) != 32767 * 128 / 256);
+  s_mp3_on = false;
+}
+
 static void test_a_tone_lasts_its_duration(void) {
   reset_all();
   audio_play_tone(1000, 10);           // 441 frames
@@ -229,6 +248,7 @@ int main(void) {
   test_starting_a_stream_does_not_restart_anything();
   test_master_volume_scales_the_sum();
   test_the_sum_clips();
+  test_the_volume_applies_before_the_clip();
   test_a_tone_lasts_its_duration();
   test_a_timed_tone_replaces_an_untimed_one();
   test_underruns_count_only_while_streaming();

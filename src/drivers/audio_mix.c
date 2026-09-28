@@ -126,15 +126,17 @@ void __time_critical_func(audio_mix_render)(int16_t *lr, int frames) {
     }
     src_unlock();
 
-    // Clip, then the master volume, which scales the signed mix (about
-    // zero: scaling the PWM level pulled silence toward 0, a pop on every
-    // volume change).
+    // The master volume, then the clip: turned down, a sum over full scale
+    // comes out quieter and undistorted, not a quieter clipped one. The
+    // volume scales the signed mix (about zero: scaling the PWM level
+    // pulled silence toward 0, a pop on every volume change).
     for (int i = 0; i < n; i++) {
-      int32_t ml = s_mix_l[i], mr = s_mix_r[i];
+      int32_t ml = s_mix_l[i] * (int32_t)vol / 256;
+      int32_t mr = s_mix_r[i] * (int32_t)vol / 256;
       if (ml > 32767) ml = 32767; else if (ml < -32768) ml = -32768;
       if (mr > 32767) mr = 32767; else if (mr < -32768) mr = -32768;
-      lr[2 * (base + i)] = (int16_t)(ml * (int32_t)vol / 256);
-      lr[2 * (base + i) + 1] = (int16_t)(mr * (int32_t)vol / 256);
+      lr[2 * (base + i)] = (int16_t)ml;
+      lr[2 * (base + i) + 1] = (int16_t)mr;
     }
   }
 }
