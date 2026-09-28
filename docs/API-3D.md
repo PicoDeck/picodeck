@@ -151,8 +151,8 @@ Fills the viewport (sky or clear colour) and draws everything, far to near, into
 
 ---
 
-#### `picocalc.gfx3d.getStats()`
-- **Returns:** a table describing the last frame:
+#### `picocalc.gfx3d.getStats([t])`
+- **Returns:** a table describing the last frame. Pass a table `t` to have it filled and returned instead, so a per-frame call allocates nothing:
 
 | Field | Meaning |
 |---|---|

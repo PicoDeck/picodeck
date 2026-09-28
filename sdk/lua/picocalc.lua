@@ -2329,8 +2329,9 @@ function picocalc.gfx3d.drawSprite(image, x, y, z, size, sx, sy, sw, sh, bias) e
 function picocalc.gfx3d.endScene() end
 ---@return number|nil sx, number sy, number depth
 function picocalc.gfx3d.project(x, y, z) end
+---@param t table|nil a table to fill and return instead of a new one
 ---@return {tris_in: integer, culled: integer, clipped: integer, drawn: integer, sprites: integer, overflow: integer, us_geom: integer, us_raster: integer}
-function picocalc.gfx3d.getStats() end
+function picocalc.gfx3d.getStats(t) end
 
 -- =============================================================================
 -- picocalc.video  (MJPEG AVI playback)

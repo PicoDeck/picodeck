@@ -123,4 +123,18 @@ T.case("stats_fields", function()
     end
 end)
 
+T.case("getStats_fills_a_given_table", function()
+    g3.lookAt(0, 0, 0, 0, 0, -1)
+    g3.beginScene(0)
+    g3.draw(tri(-5), 0, 0, 0, 0, 0, 0)
+    g3.endScene()
+    local t = { mine = 7 }
+    local r = g3.getStats(t)
+    T.ok(r == t, "returns the table it was given")
+    T.eq(t.tris_in, 1); T.eq(t.mine, 7)
+    T.eq(math.type(t.us_raster), "integer")
+    T.ok(g3.getStats(nil) ~= t, "nil: a new table")
+    T.ok(not pcall(g3.getStats, 5), "a non-table is an error")
+end)
+
 T.done()

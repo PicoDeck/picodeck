@@ -425,9 +425,16 @@ static int l_gfx3d_project(lua_State *L) {
   return 3;
 }
 
+// getStats([t]): the last frame's counters, into t (returned) when given, so
+// a per-frame call need not allocate, else into a new table.
 static int l_gfx3d_getStats(lua_State *L) {
   const gfx3d_stats_t *s = gfx3d_get_stats(ctx(L));
-  lua_createtable(L, 0, 8);
+  if (lua_isnoneornil(L, 1)) {
+    lua_createtable(L, 0, 8);
+  } else {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_settop(L, 1);
+  }
   lua_pushinteger(L, (lua_Integer)s->tris_in);  lua_setfield(L, -2, "tris_in");
   lua_pushinteger(L, (lua_Integer)s->culled);   lua_setfield(L, -2, "culled");
   lua_pushinteger(L, (lua_Integer)s->clipped);  lua_setfield(L, -2, "clipped");
