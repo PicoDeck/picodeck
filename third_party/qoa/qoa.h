@@ -16,6 +16,9 @@ PicoDeck local patches:
    files a real encoder produces.
 3. qoa_encode loops over qoa->channels (upstream referenced an undeclared
    `channels`).
+4. qoa_div (encoder) multiplies in 64 bits: a residual beyond 16 bits times
+   the .16 reciprocal overflowed int.  Bit-identical wherever upstream did
+   not overflow.
 Everything else is verbatim upstream (https://github.com/phoboslab/qoa).
 
 
@@ -321,7 +324,10 @@ static const int qoa_reciprocal_tab[16] = {
 
 static inline int qoa_div(int v, int scalefactor) {
 	int reciprocal = qoa_reciprocal_tab[scalefactor];
-	int n = (v * reciprocal + (1 << 15)) >> 16;
+	/* PicoDeck patch 4: 64-bit product.  A residual can exceed 16 bits (a
+	full-scale sample against the opposite prediction), and v * 65536 then
+	overflows int (UBSan, test_qoa's first fixture). */
+	int n = (int)(((long long)v * reciprocal + (1 << 15)) >> 16);
 	n = n + ((v > 0) - (v < 0)) - ((n > 0) - (n < 0)); /* round away from 0 */
 	return n;
 }
