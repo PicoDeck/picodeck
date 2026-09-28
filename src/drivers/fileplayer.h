@@ -45,6 +45,8 @@ typedef struct {
     void *loop_callback_arg;
     bool stop_on_underrun;
     float rate;
+    uint8_t repeats;        // plays asked for by play(); 0 = until stopped
+    uint8_t plays;          // plays finished since play()
 } fileplayer_t;
 
 void fileplayer_init(void);
