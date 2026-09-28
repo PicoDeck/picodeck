@@ -1,7 +1,8 @@
 name: Fuzz (nightly)
 
 # libFuzzer targets for the parsers that take untrusted files (tests/fuzz):
-# the native-app ELF loader's validation, app.json, and WAV headers. Each
+# the native-app ELF loader's validation, app.json, WAV headers and QOA
+# frames. Each
 # runs 120 s. The working corpus is carried between nights in the actions
 # cache (and uploaded as an artifact); seeds live in tests/fuzz/corpus.
 # A crash fails the job and uploads the reproducer (build_fuzz/crash-*):
@@ -19,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [elf_plan, app_manifest, wav]
+        target: [elf_plan, app_manifest, wav, qoa]
     steps:
       - uses: actions/checkout@v4
 
