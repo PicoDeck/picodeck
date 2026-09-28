@@ -113,7 +113,7 @@ end
 
 Full audio playback system supporting WAV samples and MP3 files. Provides three player types:
 - **SamplePlayer** — plays a pre-loaded WAV sample from memory
-- **FilePlayer** — streams a WAV file from the SD card
+- **FilePlayer** — streams a WAV or QOA file from the SD card
 - **MP3Player** — streams an MP3 file from the SD card
 
 ### Top-Level Functions
@@ -451,7 +451,8 @@ QOA ("Quite OK Audio") is a lossy format a fifth the size of 16-bit PCM, and
 the cheapest music format for a real-time app (see **Performance** below):
 the second core decodes it a little at a time and reads a fifth of the bytes
 from the SD card. Encode offline with the reference `qoaconv` tool
-(https://github.com/phoboslab/qoa). Mono and stereo only, up to 192 kHz.
+(https://github.com/phoboslab/qoa). Mono and stereo only, up to 192 kHz. A
+file cut short (an interrupted copy) plays the whole frames it holds.
 
 - **Parameters:**
   - `path` (string): Absolute path to a WAV or QOA file

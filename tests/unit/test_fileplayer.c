@@ -313,8 +313,8 @@ static void test_qoa_sd_busy_skips_the_tick(void) {
   fileplayer_destroy(p);
 }
 
-// Seek lands on a frame boundary and replays from there; looping a QOA
-// rewinds the compressed stream too.
+// Seek replays from the offset (sample-exact: test_qoa_seek_is_sample_exact);
+// looping a QOA rewinds the compressed stream too.
 static void test_qoa_seek_and_loop(void) {
   setup();
   put_qoa("/seek.qoa", 66150, 1, 22050, 500);  // 3 s mono
@@ -326,8 +326,7 @@ static void test_qoa_seek_and_loop(void) {
   CHECK_EQ_INT(fileplayer_get_offset(p), 2);
   uint64_t before = s_pushed;
   run(p, 44, 100000);
-  // One second of content remains after the seek (the decode's frame
-  // granularity is 5120 samples: well under the 1% tolerance).
+  // One second of content remains after the seek.
   uint64_t after = s_pushed - before;
   CHECK(after > 22050 * 99 / 100 && after < 22050 * 101 / 100);
   CHECK(!fileplayer_is_playing(p));
@@ -395,6 +394,71 @@ static void test_qoa_short_file_ends_at_its_frames(void) {
   fileplayer_destroy(p);
 }
 
+// A copy cut part way through a frame (as an interrupted one usually is)
+// plays its whole frames and loops like a short WAV; the cut frame is not
+// playable, and the length says what is there.
+static void test_qoa_cut_mid_frame_plays_what_is_there(void) {
+  setup();
+  enum { N = 12000 };  // mono frames of 5120, 5120 and 1760
+  int16_t *pcm = malloc(N * 2);
+  for (int i = 0; i < N; i++) pcm[i] = 900;
+  qoa_desc d;
+  memset(&d, 0, sizeof(d));
+  d.channels = 1;
+  d.samplerate = 22050;
+  d.samples = N;
+  unsigned len = 0;
+  uint8_t *q = qoa_encode((const short *)pcm, &d, &len);
+  CHECK(q != NULL);
+  uint32_t full = 8 + 16 + 8 * 256;
+  sdfake_put("/cut.qoa", (const char *)q, 8 + full + 1000);  // mid frame 2
+  free(q);
+  free(pcm);
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/cut.qoa"));
+  CHECK_EQ_INT(fileplayer_get_length(p), 5120);
+  CHECK(fileplayer_play(p, 2));
+  run(p, 44, 100000);
+  CHECK(!fileplayer_is_playing(p));
+  CHECK_EQ_INT(s_pushed, 2 * 5120);
+  fileplayer_destroy(p);
+}
+
+// No tick decodes more than a bounded run of frames, skipped ones included:
+// play() finds the ring empty, a seek skips up to a frame's worth.
+static void test_qoa_tick_decode_is_bounded(void) {
+  setup();
+  put_qoa("/b.qoa", 66150, 1, 22050, 300);  // 3 s mono
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/b.qoa"));
+  CHECK(fileplayer_play(p, 1));
+  fileplayer_update();                      // an empty ring: 4096 free
+  CHECK(s_pushed > 0 && s_pushed <= 1024);
+  drain(RING_FRAMES);
+  fileplayer_set_offset(p, 2);              // 3140 frames into frame 8
+  uint64_t before = s_pushed;
+  fileplayer_update();                      // all 1024 dropped: none pushed
+  CHECK_EQ_INT((int)(s_pushed - before), 0);
+  run(p, 44, 100000);
+  CHECK_EQ_INT((int)(s_pushed - before), 66150 - 44100);
+  fileplayer_destroy(p);
+}
+
+// A NaN rate (Lua setRate(0/0)) must not leave a player "playing" forever
+// with nothing to push: it clamps like any rate below the minimum.
+static void test_nan_rate_still_plays(void) {
+  setup();
+  put_wav("/n.wav", 2205, 1, 22050, 5);
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/n.wav"));
+  fileplayer_set_rate(p, 0.0f / 0.0f);
+  CHECK(fileplayer_get_rate(p) >= 0.1f);
+  CHECK(fileplayer_play(p, 1));
+  run(p, 44, 100000);
+  CHECK(!fileplayer_is_playing(p));
+  fileplayer_destroy(p);
+}
+
 // QOA decodes a chunk at a time into the stack: loading and playing one
 // takes nothing from the shared PSRAM heap, where a block left behind would
 // split the space a later app may need in one piece.
@@ -428,6 +492,9 @@ int main(void) {
   test_qoa_seek_and_loop();
   test_qoa_seek_is_sample_exact();
   test_qoa_needs_no_heap();
+  test_qoa_cut_mid_frame_plays_what_is_there();
+  test_qoa_tick_decode_is_bounded();
+  test_nan_rate_still_plays();
   test_qoa_short_file_ends_at_its_frames();
   fileplayer_reset();
   sdfake_reset();

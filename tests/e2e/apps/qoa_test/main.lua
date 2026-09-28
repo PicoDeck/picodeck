@@ -1,8 +1,8 @@
 -- QOA streaming through the fileplayer (the Quite OK Audio format, decoded
--- on Core 1 by src/drivers/qoa.c + third_party/qoa). picotest kit.
+-- on Core 1 by src/drivers/qoa.c). picotest kit.
 --
--- The harness stages three_s.qoa (3.0 s mono 22050 Hz) and one_s.qoa
--- (1.0 s).  The simulator drains the stream ring at the real 44.1 kHz
+-- The harness stages three_s.qoa (3.0 s mono 22050 Hz), one_s.qoa (1.0 s)
+-- and stereo_s.qoa (1.0 s stereo 44100 Hz).  The simulator drains the stream ring at the real 44.1 kHz
 -- output rate, so wall-clock play time checks the producer's flow control,
 -- exactly as tests/e2e/apps/fileplayer_test does for WAV.
 -- See tests/e2e/test_qoa.py.

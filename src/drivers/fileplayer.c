@@ -16,6 +16,9 @@
 // Below this a read is not worth an SD transaction (unless it finishes the
 // data chunk): wait for the ring to drain further.
 #define FILEPLAYER_READ_MIN 512u
+// The most QOA frames one Core 1 tick decodes (~0.2 ms of stereo from RAM
+// at 200 MHz); a quarter of the stream ring.
+#define QOA_TICK_FRAMES 1024u
 
 /* Locking. Core 1 streams the active player in fileplayer_update(); Core 0
  * loads, plays, seeks, stops and frees players. s_lock guards everything
@@ -225,6 +228,16 @@ bool fileplayer_load(fileplayer_t *player, const char *path) {
         // offset and flow-control code is shared with WAV.
         ok = parse_qoa_header(f, &qinfo);
         if (ok) {
+            // A copy cut short plays its whole frames (and loops, like a
+            // short WAV); the cut frame is not playable.
+            int size = sdcard_fsize_handle(f);
+            qinfo.samples = qoa_samples_in(&qinfo, size > 0 ? (uint32_t)size : 0);
+            if (qinfo.samples == 0) {
+                printf("fileplayer: %s\n", qoa_strerror(QOA_ERR_TRUNCATED));
+                ok = false;
+            }
+        }
+        if (ok) {
             info.sample_rate = qinfo.sample_rate;
             info.channels = qinfo.channels;
             info.block_align = (uint16_t)(2 * qinfo.channels);
@@ -414,7 +427,7 @@ void fileplayer_set_stop_on_underrun(fileplayer_t *player, bool flag) {
 
 void fileplayer_set_rate(fileplayer_t *player, float rate) {
     if (!player) return;
-    if (rate < 0.1f) rate = 0.1f;
+    if (!(rate >= 0.1f)) rate = 0.1f;  // NaN too: it compares false
     if (rate > 4.0f) rate = 4.0f;
     player->rate = rate;
 }
@@ -543,6 +556,7 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
     int16_t pcm[FILEPLAYER_READ_MIN / 2];
     const uint32_t chunk = sizeof(pcm) / p->block_align;
     bool read = false, eof = false;
+    uint32_t decoded = 0;  // this tick, dropped (seek) frames included
     for (;;) {
         uint32_t remaining =
             p->position < p->data_size ? p->data_size - p->position : 0;
@@ -587,7 +601,14 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
             max = 20;
         if (max > chunk)
             max = chunk;
+        // Bounded work per tick: the tick after play() (an empty ring) or a
+        // seek (up to a frame to drop) spreads over a few ticks, not one.
+        if (decoded + 20 > QOA_TICK_FRAMES)
+            break;
+        if (max > QOA_TICK_FRAMES - decoded)
+            max = QOA_TICK_FRAMES - decoded;
         uint32_t k = qoa_dec_run(&p->qoa_dec, s_wav_buffer, pcm, max);
+        decoded += k;
         if (k == 0) {
             if (p->qoa_dec.pos >= p->qoa_dec.samples) {
                 p->qoa_loaded = false;  // frame done: the next one

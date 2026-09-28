@@ -50,6 +50,12 @@ const char *qoa_strerror(qoa_err_t err);
 // the last is full, so this is exact.
 uint32_t qoa_frame_offset(const qoa_info_t *info, uint32_t index);
 
+// Content frames per channel that a file of file_size bytes holds in whole
+// frames: info->samples when every frame is there, less when the file was
+// cut short (a frame cut part way is not playable), 0 when not even the
+// first frame is whole.
+uint32_t qoa_samples_in(const qoa_info_t *info, uint32_t file_size);
+
 // The size field of the frame header at buf (len bytes available): where
 // the next frame starts.  0 when len is shorter than a frame header.
 uint32_t qoa_frame_bytes(const uint8_t *buf, size_t len);

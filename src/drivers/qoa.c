@@ -5,12 +5,13 @@
 #include "pico/stdlib.h"    // pico.h first on the device (sound.c does the same)
 #include "pico/platform.h"  // __time_critical_func, __not_in_flash
 
-// Big-endian header fields.
-static uint32_t be16(const uint8_t *p) {
+// Big-endian header fields.  Always inlined: qoa_dec_run runs from RAM,
+// and a call out to a flash copy would fetch through the XIP cache.
+static __force_inline uint32_t be16(const uint8_t *p) {
     return ((uint32_t)p[0] << 8) | p[1];
 }
 
-static uint32_t be32(const uint8_t *p) {
+static __force_inline uint32_t be32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
            ((uint32_t)p[2] << 8) | p[3];
 }
@@ -29,7 +30,8 @@ qoa_err_t qoa_parse(const uint8_t *buf, size_t len, qoa_info_t *out) {
     if (memcmp(buf, "qoaf", 4) != 0 || samples == 0 || channels == 0 ||
         rate == 0)
         return QOA_ERR_NOT_QOA;
-    if (channels > 2 || rate > 192000)  // wav.c's limit
+    // wav.c's rate limit; and the player counts 16-bit PCM bytes in 32 bits.
+    if (channels > 2 || rate > 192000 || samples > UINT32_MAX / (2u * channels))
         return QOA_ERR_UNSUPPORTED;
 
     // First-frame header: fsamples and fsize, so the player knows a full
@@ -38,6 +40,10 @@ qoa_err_t qoa_parse(const uint8_t *buf, size_t len, qoa_info_t *out) {
     uint32_t fsamples = be16(fh + 4);
     uint32_t fsize = be16(fh + 6);
     if (fsamples == 0 || fsamples > 256u * 20u)
+        return QOA_ERR_BAD_FRAME;
+    // A conforming file's first frame is full, or the whole file: frame
+    // offsets and seeks rest on it.
+    if (fsamples != (samples < 5120u ? samples : 5120u))
         return QOA_ERR_BAD_FRAME;
     uint32_t slices = (fsamples + 19u) / 20u;
     if (fsize != 8u + 16u * channels + 8u * slices * channels)
@@ -67,6 +73,23 @@ const char *qoa_strerror(qoa_err_t err) {
 
 uint32_t qoa_frame_offset(const qoa_info_t *info, uint32_t index) {
     return info->first_frame_offset + (index / info->frame_samples) * info->frame_size;
+}
+
+uint32_t qoa_samples_in(const qoa_info_t *info, uint32_t file_size) {
+    if (!info || info->frame_size == 0 || file_size < info->first_frame_offset)
+        return 0;
+    uint32_t body = file_size - info->first_frame_offset;
+    uint32_t whole = body / info->frame_size;
+    uint32_t rest = body % info->frame_size;
+    if ((uint64_t)whole * info->frame_samples >= info->samples)
+        return info->samples;
+    uint32_t done = whole * info->frame_samples;
+    // The tail frame: whatever is left, if all of its slices are there.
+    uint32_t tail = info->samples - done;
+    if (tail < info->frame_samples &&
+        rest >= 8u + 16u * info->channels + (tail + 19u) / 20u * 8u * info->channels)
+        return info->samples;
+    return done;
 }
 
 uint32_t qoa_frame_bytes(const uint8_t *buf, size_t len) {

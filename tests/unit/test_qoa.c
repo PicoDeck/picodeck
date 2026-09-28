@@ -258,7 +258,50 @@ static void test_stream_bad_frames(void) {
   free(pcm);
 }
 
+// How much of a file's announced audio its bytes hold: all of it when every
+// frame is there; up to the last whole frame when a copy was cut short.
+static void test_samples_in_file(void) {
+  uint32_t frames = 12000;  // mono: frames of 5120, 5120, 1760
+  int16_t *pcm = make_pcm(frames, 1);
+  unsigned len;
+  uint8_t *q = encode(pcm, frames, 22050, 1, &len);
+  qoa_info_t info;
+  CHECK_EQ_INT(qoa_parse(q, len, &info), QOA_OK);
+  uint32_t full = info.frame_size;
+  CHECK_EQ_U32(qoa_samples_in(&info, len), 12000);
+  CHECK_EQ_U32(qoa_samples_in(&info, len + 100), 12000);   // trailing bytes
+  CHECK_EQ_U32(qoa_samples_in(&info, len - 1), 10240);     // tail frame cut
+  CHECK_EQ_U32(qoa_samples_in(&info, 8 + 2 * full), 10240);
+  CHECK_EQ_U32(qoa_samples_in(&info, 8 + full + 1000), 5120);  // cut mid-frame
+  CHECK_EQ_U32(qoa_samples_in(&info, 8 + full - 1), 0);
+  CHECK_EQ_U32(qoa_samples_in(&info, 8), 0);
+  CHECK_EQ_U32(qoa_samples_in(&info, 0), 0);
+  free(q);
+  free(pcm);
+}
+
+// Files the geometry cannot describe: a first frame shorter than a full one
+// (the reference encoder never writes one; seeks would land wrong), and a
+// sample count whose 16-bit PCM size overflows 32 bits.
+static void test_parse_refuses_odd_geometry(void) {
+  int16_t *pcm = make_pcm(6000, 2);
+  unsigned len;
+  uint8_t *q = encode(pcm, 100, 44100, 2, &len);  // one 100-sample frame
+  qoa_info_t info;
+  CHECK_EQ_INT(qoa_parse(q, len, &info), QOA_OK);
+  q[4] = 0; q[5] = 0; q[6] = 0x27; q[7] = 0x10;    // header: 10000 samples
+  CHECK_EQ_INT(qoa_parse(q, len, &info), QOA_ERR_BAD_FRAME);
+  free(q);
+  q = encode(pcm, 6000, 44100, 2, &len);
+  q[4] = 0x40; q[5] = 0; q[6] = 0; q[7] = 1;       // 2^30 + 1 stereo samples
+  CHECK_EQ_INT(qoa_parse(q, len, &info), QOA_ERR_UNSUPPORTED);
+  free(q);
+  free(pcm);
+}
+
 int main(void) {
+  test_samples_in_file();
+  test_parse_refuses_odd_geometry();
   test_stream_matches_reference();
   test_stream_needs_a_slice_of_room();
   test_stream_bad_frames();

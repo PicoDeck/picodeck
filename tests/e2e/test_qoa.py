@@ -1,5 +1,5 @@
-"""QOA streaming through the fileplayer (src/drivers/qoa.c +
-third_party/qoa into src/drivers/fileplayer.c).
+"""QOA streaming through the fileplayer (src/drivers/qoa.c's streaming
+decoder in src/drivers/fileplayer.c).
 
 Mirrors test_fileplayer.py: the simulator runs the firmware fileplayer and
 drains the stream ring at the real 44.1 kHz output rate, so wall-clock play
