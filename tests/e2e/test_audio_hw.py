@@ -38,11 +38,11 @@ BASELINE = {
     "mp3": {"tick_over": 268, "tick_missed": 9394, "tick_max_us": 43995},
     "sfx": {"tick_over": 2, "tick_missed": 6, "tick_max_us": 2963},
 }
-# QOA streams through the fileplayer: a ~4 KB frame read + a ~1 ms decode
-# every ~116 ms, so expect WAV-like ticks — far below MP3's.  Provisional
-# until measured on the device; recalibrate like the others (worst of three
-# runs) on the first hardware run.
-BASELINE["qoa"] = {"tick_over": 300, "tick_missed": 100, "tick_max_us": 6000}
+# QOA (stereo 44.1 kHz) streams through the fileplayer: a 4 KB frame read
+# every ~116 ms, the longest tick (~12 ms at SD speed), and the decode a
+# chunk per tick from RAM. Worst of three runs of the streaming decoder;
+# the whole-frame decode before it missed 3921 ticks, max 23803 us.
+BASELINE["qoa"] = {"tick_over": 185, "tick_missed": 1699, "tick_max_us": 12165}
 BASELINE["both"] = {k: BASELINE["mp3"][k] + BASELINE["sfx"][k]
                     for k in BASELINE["mp3"]}
 
