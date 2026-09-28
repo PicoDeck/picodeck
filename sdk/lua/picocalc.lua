@@ -1050,32 +1050,36 @@ function PicoDeckFilePlayer:setStopOnUnderrun(flag) end
 
 ---Open an MP3 file for streaming.
 ---@param path string
----@return boolean ok
+---@return boolean? ok `true`, or `nil` if the file cannot be opened or is not an MP3
+---@return string? error
 function PicoDeckMp3Player:load(path) end
 
----Start playback.
+---Start playback from the beginning of the file (also after it finished).
+---A `play()` while playing fades out first (~1.5 ms, no click).
 ---@param repeat_count? integer 0 = infinite
 ---@return boolean ok
 function PicoDeckMp3Player:play(repeat_count) end
 
----Stop playback.
+---Stop playback (fades out over ~1.5 ms).
 function PicoDeckMp3Player:stop() end
 
----Pause playback.
+---Pause playback (fades out over ~1.5 ms).
 function PicoDeckMp3Player:pause() end
 
----Resume after pause.
+---Resume after pause (fades back in).
 function PicoDeckMp3Player:resume() end
 
+---`true` until the last decoded audio has played.
 ---@return boolean
 function PicoDeckMp3Player:isPlaying() end
 
----Return current playback position in seconds.
----@return number
+---Return the frames played since `play()` (divide by `getSampleRate()` for
+---seconds; it keeps counting across loops).
+---@return integer
 function PicoDeckMp3Player:getPosition() end
 
----Return total duration in seconds.
----@return number
+---Return `0`: an MP3's length is not known without decoding all of it.
+---@return integer
 function PicoDeckMp3Player:getLength() end
 
 ---Return the sample rate of the MP3 stream in Hz.

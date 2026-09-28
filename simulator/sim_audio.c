@@ -1230,8 +1230,8 @@ bool mp3_player_is_fed_mode(void) {
     return s_fed_mode;
 }
 
-void mp3_player_start_dma_fed(void) {
-    // Simulator: no DMA, decode happens in mp3_player_update() via SDL
+void mp3_player_start_fed_output(void) {
+    // Simulator: decode happens in mp3_player_update()
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

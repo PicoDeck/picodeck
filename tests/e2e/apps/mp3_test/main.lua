@@ -69,4 +69,12 @@ T.case("looping_truncated_mp3_keeps_core1_alive", function()
     fp:stop()
 end)
 
+T.case("load_failure_is_reported", function()
+    local mp = sound.mp3player()
+    local ok, err = mp:load(APP_DIR .. "/missing.mp3")
+    T.ok(ok == nil and type(err) == "string", "load of a missing file returned " .. tostring(ok))
+    ok, err = mp:load(APP_DIR .. "/tone.wav")
+    T.ok(ok == nil and type(err) == "string", "load of a WAV returned " .. tostring(ok))
+end)
+
 T.done()

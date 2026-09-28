@@ -6,7 +6,7 @@ Audio output, including simple tones and full sample/file playback.
 
 ## picocalc.audio
 
-Tones, the master volume and a raw PCM stream. One mixer sums everything that makes sound (tones, the stream, SamplePlayers, the FilePlayer and the MOD player) into a single 44.1 kHz output, so they all play at once.
+Tones, the master volume and a raw PCM stream. One mixer sums everything that makes sound (tones, the stream, SamplePlayers, the FilePlayer, the MOD player and the MP3Player) into a single 44.1 kHz output, so they all play at once.
 
 ### Functions
 
@@ -541,6 +541,8 @@ player:setStopOnUnderrun(true)
 
 Streams an MP3 file from the SD card.
 
+The MP3 plays through the same mixer as samples, the stream and tones, so music and sound effects play together; `picocalc.audio.setVolume` scales it too. Sources add up: a full-volume MP3 plus loud samples clips, so leave headroom (music at about 60).
+
 #### `picocalc.sound.mp3player()`
 Creates an MP3Player.
 
@@ -559,17 +561,17 @@ mp3:play()
 #### `player:load(path)`
 Opens an MP3 file for streaming.
 
-- **Returns:** `true` on success, or `nil, errstr`
+- **Returns:** `true` on success, or `nil, errstr` if the file cannot be opened or is not an MP3
 
 ---
 
 #### `player:play([repeat])` / `player:stop()` / `player:pause()` / `player:resume()` / `player:isPlaying()`
-Standard playback controls.
+Standard playback controls. `play()` starts from the beginning of the file (also after it finished). `stop()`, `pause()` and a `play()` while playing fade out over ~1.5 ms (no click); `resume()` fades back in. `isPlaying()` stays `true` until the last decoded audio has played.
 
 ---
 
 #### `player:getPosition()` / `player:getLength()`
-Returns current playback position or total duration in seconds.
+`getPosition()` returns the frames played since `play()` (divide by `getSampleRate()` for seconds; it keeps counting across loops). `getLength()` returns `0`: an MP3's length is not known without decoding all of it.
 
 ---
 

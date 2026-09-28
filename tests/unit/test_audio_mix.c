@@ -26,6 +26,18 @@ void audio_output_stop(void) {
 bool audio_output_running(void) { return s_out_on; }
 uint32_t audio_output_isr_count(void) { return 0; }
 
+// The MP3 player (mp3_player.c) is a fake source too: s_mp3_value per frame.
+static bool s_mp3_on;
+static int32_t s_mp3_value;
+void mp3_player_mix(int32_t *l, int32_t *r, int frames) {
+  if (!s_mp3_on)
+    return;
+  for (int i = 0; i < frames; i++) {
+    l[i] += s_mp3_value;
+    r[i] += s_mp3_value;
+  }
+}
+
 static int16_t s_lr[2 * 512];
 
 static void reset_all(void) {
@@ -37,6 +49,7 @@ static void reset_all(void) {
   sound_init();
   s_out_on = false;
   s_out_starts = s_out_stops = 0;
+  s_mp3_on = false;
 }
 
 static void render(int frames) { audio_mix_render(s_lr, frames); }
@@ -190,6 +203,21 @@ static void test_pushes_while_stopped_are_dropped(void) {
   CHECK_EQ_INT(audio_ring_free(), 4096);
 }
 
+static void test_the_mp3_adds_in_too(void) {
+  reset_all();
+  play_const(1000);
+  s_mp3_on = true;
+  s_mp3_value = 500;
+  audio_start_stream(AUDIO_OUT_RATE);
+  push_const(2000, 4);
+  render(1);
+  CHECK_EQ_INT(left(0), 1000 + 500 + ring_value(2000));
+  audio_set_volume(50);
+  render(1);
+  CHECK_EQ_INT(left(0), (1000 + 500 + ring_value(2000)) * 128 / 256);
+  s_mp3_on = false;
+}
+
 int main(void) {
   test_sources_add_up();
   test_stopping_the_stream_leaves_the_rest();
@@ -202,6 +230,7 @@ int main(void) {
   test_half_rate_stream_repeats_each_frame();
   test_zero_rate_streams_at_the_output_rate();
   test_pushes_while_stopped_are_dropped();
+  test_the_mp3_adds_in_too();
   sound_init();  // LeakSanitizer: the last test's samples
   return check_report("test_audio_mix");
 }

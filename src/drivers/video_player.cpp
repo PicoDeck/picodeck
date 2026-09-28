@@ -597,8 +597,8 @@ static void audio_stop(video_priv_t *priv) {
 }
 
 // (Re)start fed-mode audio positioned at `frame`.  Pre-fills the compressed
-// ring from SD; starts DMA immediately unless `defer_dma` (paused — resume
-// starts it).  Any previous fed session is torn down first.
+// ring from SD; starts the output immediately unless `defer_dma` (paused —
+// resume starts it).  Any previous fed session is torn down first.
 static void audio_start_at(video_priv_t *priv, video_player_t *player,
                            uint32_t frame, bool defer_dma) {
     audio_stop(priv);
@@ -615,7 +615,7 @@ static void audio_start_at(video_priv_t *priv, video_player_t *player,
     if (priv->audio_feed_cursor >= priv->audio_index_count)
         priv->audio_feed_cursor = priv->audio_index_count - 1;
     video_feed_audio(priv, 50);            // pre-fill fed ring with compressed data
-    if (!defer_dma) mp3_player_start_dma_fed();  // decode + start DMA with real audio
+    if (!defer_dma) mp3_player_start_fed_output();  // decode + start the mixer pulling it
 }
 
 // Align the wall-clock frame timer so that frame `current_frame` is due now.
@@ -952,11 +952,11 @@ void video_player_play(video_player_t *player) {
     priv->osd_hide_at_us = time_us_64() + priv->osd_timeout_us;
 
     // Start audio if available (before capturing start_time_us so the clock
-    // starts only after audio DMA is queued, keeping A/V in sync from frame 0)
+    // starts only after the audio is queued, keeping A/V in sync from frame 0)
     audio_start_at(priv, player, player->current_frame, false);
 
     // Capture start time after audio setup so the video clock aligns with
-    // audio sample 0 (video_feed_audio + start_dma_fed take ~50ms of SD I/O)
+    // audio sample 0 (video_feed_audio + start_fed_output take ~50ms of SD I/O)
     rebase_clock(priv, player);
 }
 
@@ -992,14 +992,14 @@ void video_player_resume(video_player_t *player) {
     if (priv->audio_active) {
         mp3_player_t *mp3 = mp3_player_create();
         if (mp3_player_is_playing(mp3)) {
-            // Already playing (e.g. seek restarted DMA while paused)
+            // Already playing (e.g. a seek restarted it while paused)
         } else if (mp3->playing && mp3->paused) {
             // Normal resume from pause
             mp3_player_resume(mp3);
         } else {
-            // Fed mode was restarted (e.g. seek while paused) — start DMA
+            // Fed mode was restarted (e.g. seek while paused) — start it
             video_feed_audio(priv, 50);
-            mp3_player_start_dma_fed();
+            mp3_player_start_fed_output();
         }
     }
     // Capture start time after any audio work so clock aligns with audio

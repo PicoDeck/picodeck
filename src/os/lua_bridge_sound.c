@@ -845,7 +845,11 @@ static int l_sound_mp3player_load(lua_State *L) {
         lua_pushstring(L, "access denied");
         return 2;
     }
-    g_api.soundplayer->mp3PlayerLoad(player, path);
+    if (!mp3_player_load(player, path)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "failed to load mp3");
+        return 2;
+    }
     lua_pushboolean(L, true);
     return 1;
 }

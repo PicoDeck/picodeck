@@ -1,6 +1,7 @@
 #include "audio_mix.h"
 #include "audio.h"
 #include "audio_ring.h"
+#include "mp3_player.h"
 #include "sound.h"
 #include "pico/platform.h"
 #include "pico/critical_section.h"
@@ -82,6 +83,9 @@ void __time_critical_func(audio_mix_render)(int16_t *lr, int frames) {
 
     // The sample players write the chunk (zeros when none plays).
     sound_mixer_process(s_mix_l, s_mix_r, n);
+
+    // + the MP3 player
+    mp3_player_mix(s_mix_l, s_mix_r, n);
 
     // + the PCM stream, + the tone: both audio_mix.c's own sources, held
     // under the same lock for the whole chunk so a play/stop/volume call

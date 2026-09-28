@@ -266,6 +266,9 @@ def test_mp3_music_alone(mix_app):
     assert outcome["result"] == "returned", outcome
     assert_passed(results)
     assert stats["window_ms"] >= 15000 and stats["ticks"] > 0, stats
+    assert stats["out"] == 1, stats
+    assert stats["mp3_underruns"] == 0, stats
+    assert stats["stream_underruns"] == 0, stats
 
 
 def test_eight_sample_voices(mix_app):
@@ -277,3 +280,88 @@ def test_eight_sample_voices(mix_app):
     assert_passed(results)
     assert stats["window_ms"] >= 15000 and stats["ticks"] > 0, stats
     assert stats["voices"] == 8, stats
+
+
+def test_music_with_eight_voices(mix_app):
+    """MP3 music and eight sample voices at once (they could not share the
+    output before): no MP3 underruns, eight busy voices, and the pause and
+    resume in the middle fade within the bound and hold the position."""
+    stats, m, outcome, results = mix_app("both")
+    print("music + 8 voices:", stats, m)
+    assert outcome["result"] == "returned", outcome
+    assert_passed(results)
+    assert stats["out"] == 1 and stats["voices"] == 8, stats
+    assert stats["mp3_underruns"] == 0, stats
+    assert stats["stream_underruns"] == 0, stats
+    assert m["pause_us"] <= 60000 and m["stop_us"] <= 60000, m
+    assert m["pos_before_resume"] == m["pos_at_pause"], m
+    assert m["position"] > m["pos_before_resume"], m
+
+
+VIDEO_APP, VIDEO_ID = "audio_video", "com.test.audio_video"
+
+VIDEO_FIXTURE = r'''
+-- A looping sample starts the output at 200 MHz, then a looping clip with
+-- MP3 audio plays (the player boosts to 300 MHz) for SECONDS.
+local T = picocalc.sys.loadlib("picotest")
+local sys, sound, fs, input = picocalc.sys, picocalc.sound, picocalc.fs, picocalc.input
+local SECONDS = 14
+T.case("video", function()
+  local s = sound.sample(APP_DIR .. "/sfx1.wav")
+  T.ok(s, "load sfx1.wav")
+  local voice = sound.sampleplayer(s)
+  voice:setVolume(30)
+  voice:play(0)                          -- loop: the output runs from here
+  local v = picocalc.video.player()
+  T.ok(v:load(APP_DIR .. "/clip.avi"), "load clip.avi")
+  v:setLoop(true)
+  v:play()
+  local f = fs.open(fs.appPath("playing"), "w")
+  fs.write(f, "1")
+  fs.close(f)
+  local t_end = sys.getTimeMs() + SECONDS * 1000
+  while sys.getTimeMs() < t_end do
+    v:update()
+    input.update()
+  end
+  T.ok(v:isPlaying(), "the clip still plays")
+  v:stop()
+  voice:stop()
+end)
+T.done()
+'''
+
+
+def test_output_rate_survives_the_video_boost(target):
+    """The output, started at 200 MHz by a sample, keeps 44.1 kHz after the
+    video player boosts clk_sys to 300 MHz (audio_apply_clock re-derives the
+    PWM divider), with the clip's MP3 audio mixed in; after the app, the
+    output is off and the clock back at 200 MHz."""
+    if not FFMPEG:
+        pytest.skip("ffmpeg makes the clip")
+    with tempfile.TemporaryDirectory() as tmp:
+        clip = Path(tmp) / "clip.avi"
+        # 5 s (~215 KB; it loops): with sfx1.wav the push stays under
+        # ~250 KB, inside push_app's extraction timeout (see mix_app). An
+        # 8 s clip is ~340 KB on its own.
+        subprocess.run([FFMPEG, "-v", "error", "-y",
+                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+                        "-t", "5", "-c:v", "mjpeg", "-pix_fmt", "yuvj420p",
+                        "-q:v", "12", "-c:a", "libmp3lame", "-b:a", "96k",
+                        "-ac", "2", str(clip)], check=True)
+        sfx = Path(tmp) / "sfx1.wav"
+        sfx_wav(sfx, SFX_HZ[0])
+        target.stage_lua_app(VIDEO_APP, VIDEO_FIXTURE, requirements=("audio",),
+                             id=VIDEO_ID,
+                             files={"clip.avi": clip.read_bytes(),
+                                    "sfx1.wav": sfx.read_bytes()})
+    stats, _, outcome, results = measure(target, VIDEO_APP, VIDEO_ID, measure_s=6)
+    print("video boost:", stats)
+    assert outcome["result"] == "returned", outcome
+    assert_passed(results)
+    rate = stats["isr"] * 1000 / stats["window_ms"]
+    assert stats["sys_khz"] == 300000, stats
+    assert 334 <= rate <= 355, f"{rate:.1f} refills/s at 300 MHz, want ~344.5: {stats}"
+    after = audiostat(target)
+    assert after["out"] == 0 and after["sys_khz"] == 200000, after
