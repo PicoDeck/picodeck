@@ -395,26 +395,23 @@ static void test_qoa_short_file_ends_at_its_frames(void) {
   fileplayer_destroy(p);
 }
 
-// The decode scratch is the app's: it is freed at app teardown
-// (fileplayer_reset), not left in the shared PSRAM heap, where a stray
-// block splits the space a later app may need in one piece.
+// QOA decodes a chunk at a time into the stack: loading and playing one
+// takes nothing from the shared PSRAM heap, where a block left behind would
+// split the space a later app may need in one piece.
 size_t umm_fake_live(void);
-static void test_qoa_scratch_freed_at_reset(void) {
+static void test_qoa_needs_no_heap(void) {
   setup();
   size_t base = umm_fake_live();
-  put_qoa("/a.qoa", 4410, 1, 22050, 7);
+  put_qoa("/a.qoa", 12000, 2, 22050, 7);
   fileplayer_t *p = fileplayer_create();
   CHECK(fileplayer_load(p, "/a.qoa"));
-  CHECK(umm_fake_live() > base);
-  fileplayer_reset();
-  CHECK_EQ_INT((int)umm_fake_live(), (int)base);
-  // A later app loads QOA again: the scratch comes back.
-  p = fileplayer_create();
-  CHECK(fileplayer_load(p, "/a.qoa"));
   CHECK(fileplayer_play(p, 1));
+  for (int i = 0; i < 5; i++) { fileplayer_update(); drain(44); }
+  CHECK_EQ_INT((int)umm_fake_live(), (int)base);
   run(p, 44, 100000);
-  CHECK_EQ_INT(s_pushed, 4410);
-  fileplayer_reset();
+  CHECK_EQ_INT(s_pushed, 12000);
+  CHECK_EQ_INT(s_dropped, 0);
+  fileplayer_destroy(p);
   CHECK_EQ_INT((int)umm_fake_live(), (int)base);
 }
 
@@ -430,7 +427,7 @@ int main(void) {
   test_qoa_sd_busy_skips_the_tick();
   test_qoa_seek_and_loop();
   test_qoa_seek_is_sample_exact();
-  test_qoa_scratch_freed_at_reset();
+  test_qoa_needs_no_heap();
   test_qoa_short_file_ends_at_its_frames();
   fileplayer_reset();
   sdfake_reset();

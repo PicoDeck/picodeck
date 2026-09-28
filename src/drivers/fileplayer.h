@@ -53,14 +53,15 @@ typedef struct {
     bool pass_pushed;       // this pass through the data pushed audio
     // QOA (type == FILEPLAYER_TYPE_QOA).  position/data_size stay virtual
     // 16-bit PCM bytes, so position, offset and flow control are shared
-    // with WAV; these track the compressed side and the decoded-but-not-
-    // yet-pushed frames sitting in fileplayer.c's shared s_qoa_pcm.
+    // with WAV; these track the compressed side.  The frame being decoded
+    // sits in fileplayer.c's shared s_wav_buffer (one player streams at a
+    // time), qoa_dec holds its decoder state between ticks.
     qoa_info_t qoa;
+    qoa_dec_t qoa_dec;
+    bool qoa_loaded;          // qoa_dec is part way through a frame
     uint32_t qoa_file_pos;    // file offset of the next frame to read
-    uint32_t qoa_pcm_done;    // decoded frames already pushed
-    uint32_t qoa_pcm_have;    // decoded frames in the scratch
-    uint32_t qoa_skip;        // frames of the next decoded frame before the
-                              // position (a seek lands mid-frame)
+    uint32_t qoa_skip;        // frames of the next frame before the position
+                              // (a seek lands mid-frame): decoded, dropped
 } fileplayer_t;
 
 void fileplayer_init(void);

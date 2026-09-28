@@ -1,10 +1,12 @@
 #pragma once
 
-// QOA ("Quite OK Audio") probing and whole-frame decode for the streaming
-// file player.  Pure: caller-supplied buffers, no IO.  Decode defers to the
-// vendored reference implementation (third_party/qoa, MIT); this module adds
-// the player's limits (1-2 channels) and frame/seek arithmetic.
-// Host-tested in tests/unit/test_qoa.c, fuzzed by tests/fuzz/fuzz_qoa.c.
+// QOA ("Quite OK Audio") probing and streaming decode for the file player.
+// Pure: caller-supplied buffers, no IO.  The decoder reimplements the
+// reference (third_party/qoa, MIT) a few slices at a time, so Core 1 decodes
+// only what the stream ring can take each tick; host-tested sample for
+// sample against the reference in tests/unit/test_qoa.c (which also encodes
+// its fixtures with it) and fuzzed by tests/fuzz/fuzz_qoa.c.  The firmware
+// does not build the reference.
 //
 // Every QOA frame carries its own LMS state, so frames decode independently:
 // seeking is frame-index arithmetic and looping is a rewind, with no decoder
@@ -22,9 +24,6 @@
 // slice per channel.
 #define QOA_MAX_FRAME_BYTES (8u + 16u * 2u + 8u * 256u * 2u)  // 4136
 
-// Largest PCM output of one frame: 256 slices * 20 samples, 2 channels, s16.
-#define QOA_MAX_FRAME_PCM_BYTES (256u * 20u * 2u * 2u)  // 20480
-
 typedef struct {
     uint8_t  channels;           // 1 or 2
     uint32_t sample_rate;        // Hz
@@ -38,7 +37,7 @@ typedef struct {
 typedef enum {
     QOA_OK = 0,
     QOA_ERR_NOT_QOA,      // bad magic, zero samples, or a truncated header
-    QOA_ERR_UNSUPPORTED,  // more than 2 channels
+    QOA_ERR_UNSUPPORTED,  // more than 2 channels, or above 192 kHz
     QOA_ERR_BAD_FRAME,    // a frame header that disagrees with the file
     QOA_ERR_TRUNCATED,    // a frame that does not fit the buffer
 } qoa_err_t;
@@ -55,9 +54,29 @@ uint32_t qoa_frame_offset(const qoa_info_t *info, uint32_t index);
 // the next frame starts.  0 when len is shorter than a frame header.
 uint32_t qoa_frame_bytes(const uint8_t *buf, size_t len);
 
-// Decode the frame at buf (len bytes from the frame's start) into out, which
-// must hold QOA_MAX_FRAME_PCM_BYTES.  Returns content frames per channel
-// (frame_samples, or fewer for the last frame), 0 on a bad or truncated
-// frame.
-uint32_t qoa_frame_decode(const qoa_info_t *info, const uint8_t *buf,
-                          size_t len, int16_t *out);
+// Streaming decode of one frame, a few slices per call: Core 1 decodes only
+// what the stream ring can take each tick, into a small buffer, so no tick
+// decodes a whole frame and no whole-frame PCM scratch is needed.  The LMS
+// state lives here between calls; the frame's bytes stay with the caller.
+typedef struct {
+    int32_t  history[2][4];
+    int32_t  weights[2][4];
+    uint32_t samples;    // content frames per channel in this frame
+    uint32_t pos;        // content frames decoded so far
+    uint32_t off;        // byte offset of the next slice group in the frame
+    uint8_t  channels;
+} qoa_dec_t;
+
+// Start decoding the frame at frame (len bytes available): check its header
+// against info (channels, rate, a size that fits len and holds its samples)
+// and load its LMS state.  Returns its content frames per channel, 0 for a
+// bad or truncated frame.
+uint32_t qoa_dec_begin(qoa_dec_t *d, const qoa_info_t *info,
+                       const uint8_t *frame, size_t len);
+
+// Decode the next whole slices of the frame that fit in max_frames content
+// frames into out (interleaved 16-bit).  Returns the frames decoded: 0 at
+// the end of the frame, or when max_frames holds no whole slice.
+uint32_t qoa_dec_run(qoa_dec_t *d, const uint8_t *frame, int16_t *out,
+                     uint32_t max_frames);
+

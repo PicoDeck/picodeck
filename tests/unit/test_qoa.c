@@ -1,8 +1,8 @@
-// Host unit tests for src/drivers/qoa.c (QOA probing + whole-frame decode
-// for the streaming file player).  Fixtures are encoded in-process with the
-// vendored reference encoder (third_party/qoa, built here without
-// QOA_NO_ENCODER); QOA decode is deterministic, so the wrapper's output must
-// match the reference decoder byte for byte.
+// Host unit tests for src/drivers/qoa.c (QOA probing + streaming decode for
+// the file player).  Fixtures are encoded in-process with the vendored
+// reference encoder (third_party/qoa, built here without QOA_NO_ENCODER);
+// QOA decode is deterministic, so the streaming decoder must match the
+// reference decoder sample for sample.
 #include "check.h"
 #include "qoa.h"
 #include "qoa/qoa.h"
@@ -96,6 +96,13 @@ static void test_malformed(void) {
 
   memset(q + 4, 0, 4);  // zero samples
   CHECK_EQ_INT(qoa_parse(q, len, &info), QOA_ERR_NOT_QOA);
+  q[7] = (uint8_t)frames;
+
+  q[8] = 0;  // no channels
+  CHECK_EQ_INT(qoa_parse(q, len, &info), QOA_ERR_NOT_QOA);
+  q[8] = 1;
+  memset(q + 9, 0xff, 3);  // 16.7 MHz: past what the stream accepts (as WAV)
+  CHECK_EQ_INT(qoa_parse(q, len, &info), QOA_ERR_UNSUPPORTED);
 
   // Three channels: a valid QOA file the player cannot stream.
   free(q);
@@ -105,41 +112,6 @@ static void test_malformed(void) {
   CHECK_EQ_INT(qoa_parse(q, len, &info), QOA_ERR_UNSUPPORTED);
   free(q);
   free(pcm3);
-  free(pcm);
-}
-
-static void test_decode_matches_reference(void) {
-  uint32_t frames = 12000;
-  int16_t *pcm = make_pcm(frames, 2);
-  unsigned len;
-  uint8_t *q = encode(pcm, frames, 44100, 2, &len);
-  CHECK(q != NULL);
-
-  qoa_info_t info;
-  CHECK_EQ_INT(qoa_parse(q, len, &info), QOA_OK);
-
-  // Reference whole-file decode.
-  qoa_desc desc;
-  short *ref = qoa_decode(q, (int)len, &desc);
-  CHECK(ref != NULL);
-  CHECK_EQ_U32(desc.samples, frames);
-
-  int16_t *out = malloc(QOA_MAX_FRAME_PCM_BYTES);
-  uint32_t done = 0;
-  uint32_t off = info.first_frame_offset;
-  while (done < frames) {
-    uint32_t n = qoa_frame_decode(&info, q + off, len - off, out);
-    CHECK(n > 0);
-    CHECK(n <= info.frame_samples);
-    CHECK(memcmp(out, ref + (size_t)done * 2, (size_t)n * 2 * 2) == 0);
-    done += n;
-    // Advance exactly as the fileplayer does: full frames are frame_size.
-    off += qoa_frame_offset(&info, done) - qoa_frame_offset(&info, done - n);
-  }
-  CHECK_EQ_U32(done, frames);
-  free(out);
-  free(ref);
-  free(q);
   free(pcm);
 }
 
@@ -179,45 +151,122 @@ static void test_frame_bytes(void) {
   free(pcm);
 }
 
-static void test_decode_bad_frames(void) {
+// The streaming decoder (a few slices per call, as Core 1 decodes only what
+// the stream ring can take each tick) matches the reference decoder sample
+// for sample at any chunk size, through full frames and a short tail frame
+// that ends mid-slice.
+static void check_stream(uint32_t frames, uint8_t ch, uint32_t rate,
+                         uint32_t chunk) {
+  int16_t *pcm = make_pcm(frames, ch);
+  unsigned len;
+  uint8_t *q = encode(pcm, frames, rate, ch, &len);
+  CHECK(q != NULL);
+  qoa_info_t info;
+  CHECK_EQ_INT(qoa_parse(q, len, &info), QOA_OK);
+  qoa_desc desc;
+  short *ref = qoa_decode(q, (int)len, &desc);
+  CHECK(ref != NULL);
+  int16_t *out = malloc((size_t)chunk * ch * 2);
+  uint32_t done = 0, off = info.first_frame_offset;
+  int mismatched = 0;
+  while (done < frames) {
+    qoa_dec_t d;
+    uint32_t n = qoa_dec_begin(&d, &info, q + off, len - off);
+    CHECK(n > 0);
+    if (n == 0)
+      break;
+    uint32_t got = 0, k;
+    while ((k = qoa_dec_run(&d, q + off, out, chunk)) > 0) {
+      CHECK(k <= chunk);
+      if (memcmp(out, ref + (size_t)(done + got) * ch, (size_t)k * ch * 2) != 0)
+        mismatched++;
+      got += k;
+    }
+    CHECK_EQ_U32(got, n);
+    done += n;
+    off += qoa_frame_bytes(q + off, len - off);
+  }
+  CHECK_EQ_U32(done, frames);
+  CHECK_EQ_INT(mismatched, 0);
+  CHECK_EQ_U32(off, len);
+  free(out);
+  free(ref);
+  free(q);
+  free(pcm);
+}
+
+static void test_stream_matches_reference(void) {
+  check_stream(6010, 1, 22050, 20);     // tail frame ends 10 into a slice
+  check_stream(6010, 1, 22050, 128);
+  check_stream(12000, 2, 44100, 57);    // whole slices only: 40 at a time
+  check_stream(12000, 2, 44100, 5120);  // a whole frame per call
+}
+
+// Whole slices only: a buffer smaller than a slice makes no progress, and the
+// next call with room carries on where the frame stands.
+static void test_stream_needs_a_slice_of_room(void) {
+  int16_t *pcm = make_pcm(100, 1);
+  unsigned len;
+  uint8_t *q = encode(pcm, 100, 22050, 1, &len);
+  qoa_info_t info;
+  CHECK_EQ_INT(qoa_parse(q, len, &info), QOA_OK);
+  qoa_dec_t d;
+  int16_t out[40];
+  CHECK_EQ_U32(qoa_dec_begin(&d, &info, q + 8, len - 8), 100);
+  CHECK_EQ_U32(qoa_dec_run(&d, q + 8, out, 19), 0);
+  CHECK_EQ_U32(qoa_dec_run(&d, q + 8, out, 40), 40);
+  CHECK_EQ_U32(qoa_dec_run(&d, q + 8, out, 40), 40);
+  CHECK_EQ_U32(qoa_dec_run(&d, q + 8, out, 40), 20);
+  CHECK_EQ_U32(qoa_dec_run(&d, q + 8, out, 40), 0);  // the frame is done
+  free(q);
+  free(pcm);
+}
+
+// A frame whose header disagrees with the file, or that the buffer does not
+// hold, is refused before any sample is decoded.
+static void test_stream_bad_frames(void) {
   uint32_t frames = 6000;
   int16_t *pcm = make_pcm(frames, 2);
   unsigned len;
   uint8_t *q = encode(pcm, frames, 44100, 2, &len);
-  CHECK(q != NULL);
   qoa_info_t info;
   CHECK_EQ_INT(qoa_parse(q, len, &info), QOA_OK);
-
-  int16_t *out = malloc(QOA_MAX_FRAME_PCM_BYTES);
-  // Truncated: less than a full frame.
-  CHECK_EQ_U32(qoa_frame_decode(&info, q + 8, info.frame_size - 1, out), 0);
-  CHECK_EQ_U32(qoa_frame_decode(&info, q + 8, 4, out), 0);
-  // Corrupt the frame header's channel count.
-  q[8] = 5;
-  CHECK_EQ_U32(qoa_frame_decode(&info, q + 8, info.frame_size, out), 0);
-  q[8] = 2;
-  // And a corrupt frame size field.
-  q[8 + 6] = 0xff;
-  q[8 + 7] = 0xff;
-  CHECK_EQ_U32(qoa_frame_decode(&info, q + 8, len - 8, out), 0);
-  // Sane again: the same frame decodes.
-  q[8 + 6] = (uint8_t)(info.frame_size >> 8);
-  q[8 + 7] = (uint8_t)(info.frame_size & 0xff);
-  CHECK_EQ_U32(qoa_frame_decode(&info, q + 8, info.frame_size, out),
-               info.frame_samples);
-  free(out);
+  qoa_dec_t d;
+  uint8_t *f = q + 8;
+  CHECK_EQ_U32(qoa_dec_begin(&d, &info, f, info.frame_size - 1), 0);  // truncated
+  CHECK_EQ_U32(qoa_dec_begin(&d, &info, f, 4), 0);
+  f[0] = 1;                                                            // channels
+  CHECK_EQ_U32(qoa_dec_begin(&d, &info, f, info.frame_size), 0);
+  f[0] = 2;
+  f[3] ^= 1;                                                           // sample rate
+  CHECK_EQ_U32(qoa_dec_begin(&d, &info, f, info.frame_size), 0);
+  f[3] ^= 1;
+  f[4] = 0x7f;                                                         // more samples
+  CHECK_EQ_U32(qoa_dec_begin(&d, &info, f, info.frame_size), 0);       // than slices
+  f[4] = 0;
+  f[5] = 0;                                                            // no samples
+  CHECK_EQ_U32(qoa_dec_begin(&d, &info, f, info.frame_size), 0);
+  f[4] = (uint8_t)(info.frame_samples >> 8);
+  f[5] = (uint8_t)(info.frame_samples & 0xff);
+  f[6] = 0xff;                                                         // frame size
+  f[7] = 0xff;
+  CHECK_EQ_U32(qoa_dec_begin(&d, &info, f, len - 8), 0);
+  f[6] = (uint8_t)(info.frame_size >> 8);
+  f[7] = (uint8_t)(info.frame_size & 0xff);
+  CHECK_EQ_U32(qoa_dec_begin(&d, &info, f, info.frame_size), info.frame_samples);
   free(q);
   free(pcm);
 }
 
 int main(void) {
+  test_stream_matches_reference();
+  test_stream_needs_a_slice_of_room();
+  test_stream_bad_frames();
   test_frame_bytes();
   test_parse_roundtrip();
   test_parse_mono();
   test_malformed();
-  test_decode_matches_reference();
   test_frame_offset();
-  test_decode_bad_frames();
   for (int e = QOA_OK; e <= QOA_ERR_TRUNCATED; e++)
     CHECK(qoa_strerror((qoa_err_t)e)[0] != '\0');
   return check_report("test_qoa");

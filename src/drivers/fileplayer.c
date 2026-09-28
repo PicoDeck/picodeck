@@ -34,13 +34,6 @@ static fileplayer_t *s_active_player = NULL;
 static uint8_t *s_wav_buffer = NULL;
 static volatile bool s_underflow = false;
 
-// Shared PCM scratch for a decoded QOA frame (one player streams at a time).
-// Allocated on the app's first QOA load and freed at its teardown
-// (fileplayer_reset): left in the shared PSRAM heap, it would split the
-// space a later app may need in one piece.  Decode is whole-frame, so it
-// holds QOA_MAX_FRAME_PCM_BYTES.  Core 1 touches it only under s_lock.
-static int16_t *s_qoa_pcm = NULL;
-
 // Parse the header window at the start of f (RIFF chunk walk in wav.c).
 // The window buffer comes from PSRAM, not the 4 KB main stack.
 static bool parse_wav_header(sdfile_t f, int file_size, wav_info_t *info) {
@@ -99,8 +92,7 @@ static fileplayer_type_t detect_file_type(sdfile_t f) {
     return FILEPLAYER_TYPE_UNKNOWN;
 }
 
-// Parse the QOA header window at the start of f and allocate the shared
-// decode scratch on first use.
+// Parse the QOA header window at the start of f.
 static bool parse_qoa_header(sdfile_t f, qoa_info_t *info) {
     uint8_t hdr[QOA_HEADER_WINDOW];
     int n = sdcard_fread(f, hdr, sizeof(hdr));
@@ -109,25 +101,17 @@ static bool parse_qoa_header(sdfile_t f, qoa_info_t *info) {
         printf("fileplayer: %s\n", qoa_strerror(err));
         return false;
     }
-    if (!s_qoa_pcm) {
-        s_qoa_pcm = (int16_t *)umm_malloc(QOA_MAX_FRAME_PCM_BYTES);
-        if (!s_qoa_pcm) {
-            printf("fileplayer: no memory for the QOA decode scratch\n");
-            return false;
-        }
-    }
     return true;
 }
 
-// Reset the compressed cursor and decode scratch for a QOA player to match
-// its (virtual PCM) position: the frame holding it is decoded next, and its
-// frames before the position are skipped.  Call with s_lock held.
+// Point a QOA player's compressed cursor at its (virtual PCM) position: the
+// frame holding it is read next, and its frames before the position are
+// decoded and dropped.  Call with s_lock held.
 static void qoa_reposition_locked(fileplayer_t *player) {
     uint32_t index = player->position / player->block_align;
     player->qoa_file_pos = qoa_frame_offset(&player->qoa, index);
     player->qoa_skip = index % player->qoa.frame_samples;
-    player->qoa_pcm_done = 0;
-    player->qoa_pcm_have = 0;
+    player->qoa_loaded = false;
 }
 
 static bool any_playing_locked(void) {
@@ -160,10 +144,7 @@ void fileplayer_reset(void) {
     memset(s_players, 0, sizeof(s_players));
     s_active_player = NULL;
     s_underflow = false;
-    int16_t *qoa_pcm = s_qoa_pcm;
-    s_qoa_pcm = NULL;
     mutex_exit(&s_lock);
-    umm_free(qoa_pcm);
     if (stream)
         audio_stop_stream();
     for (int i = 0; i < FILEPLAYER_MAX_INSTANCES; i++)
@@ -544,10 +525,11 @@ static fp_callback_t update_locked(fileplayer_t *p) {
     return cb;
 }
 
-// One streaming step for the active QOA player p (s_lock held).  A frame is
-// read and decoded whole into s_qoa_pcm (every QOA frame carries its own LMS
-// state, so no decoder state survives between frames), then pushed at the
-// ring's pace over as many ticks as it takes; position stays virtual PCM.
+// One streaming step for the active QOA player p (s_lock held).  Each tick
+// decodes only what the stream ring can take, a chunk at a time into the
+// stack (qoa_dec_run, from RAM), so no tick decodes a whole frame and no
+// PCM scratch exists; a frame's bytes are read into s_wav_buffer when the
+// last one is done, at most one read per tick.  position stays virtual PCM.
 static fp_callback_t qoa_update_locked(fileplayer_t *p) {
     fp_callback_t cb = {NULL, NULL};
 
@@ -557,25 +539,35 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
         return cb;
     }
 
-    // Refill the decode scratch when it is drained and data remains.
-    bool eof = false;  // the file ended before the length its header gives
-    if (p->qoa_pcm_done >= p->qoa_pcm_have && p->position < p->data_size) {
-        // Full frames are qoa.frame_size and only the tail frame is
-        // shorter, so one read of that size holds a whole frame: at the end
-        // of the file it comes back short.  Core 1 never asks the card for
-        // the file size (a blocking call on Core 0's SD mutex).
-        int n = sdcard_try_fread_at(p->file, p->qoa_file_pos, s_wav_buffer,
-                                    (int)p->qoa.frame_size);
-        if (n == SDCARD_BUSY)
-            return cb;  // Core 0 owns the card: next tick
-        if (n == 0) {
-            eof = true;
-        } else {
-            uint32_t decoded = n > 0
-                                   ? qoa_frame_decode(&p->qoa, s_wav_buffer,
-                                                      (size_t)n, s_qoa_pcm)
-                                   : 0;
-            if (decoded == 0) {
+    // One chunk: the WAV path's smallest read (256 mono / 128 stereo frames).
+    int16_t pcm[FILEPLAYER_READ_MIN / 2];
+    const uint32_t chunk = sizeof(pcm) / p->block_align;
+    bool read = false, eof = false;
+    for (;;) {
+        uint32_t remaining =
+            p->position < p->data_size ? p->data_size - p->position : 0;
+        uint32_t budget = bytes_that_fit(p);  // virtual PCM bytes
+        if (remaining == 0 ||
+            (budget < FILEPLAYER_READ_MIN && budget < remaining))
+            break;  // done, or the ring is (nearly) full: next tick
+        if (!p->qoa_loaded) {
+            if (read)
+                break;
+            read = true;
+            // A full frame is qoa.frame_size and only the tail frame is
+            // shorter, so one read holds a whole frame: at the end of the
+            // file it comes back short.  Core 1 never asks the card for the
+            // file size (a blocking call on Core 0's SD mutex).
+            int n = sdcard_try_fread_at(p->file, p->qoa_file_pos, s_wav_buffer,
+                                        (int)p->qoa.frame_size);
+            if (n == SDCARD_BUSY)
+                return cb;  // Core 0 owns the card: next tick
+            if (n == 0) {
+                eof = true;  // the file ends before its header's length
+                break;
+            }
+            if (n < 0 || qoa_dec_begin(&p->qoa_dec, &p->qoa, s_wav_buffer,
+                                       (size_t)n) == 0) {
                 // Read error or a corrupt frame mid-file: finish (never
                 // loop into the same bad frame), as a WAV read error does.
                 p->state = FILEPLAYER_STATE_STOPPED;
@@ -586,38 +578,40 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
             }
             // The next frame starts where this one's size field says.
             p->qoa_file_pos += qoa_frame_bytes(s_wav_buffer, (size_t)n);
-            p->qoa_pcm_done = p->qoa_skip < decoded ? p->qoa_skip : decoded;
-            p->qoa_skip = 0;
-            p->qoa_pcm_have = decoded;
-            // Never decode past the virtual data size (a file whose frames
-            // sum to more than its header claims): the surplus is
-            // undeliverable.
-            uint32_t deliverable = (p->data_size - p->position) / p->block_align;
-            if (p->qoa_pcm_have - p->qoa_pcm_done > deliverable)
-                p->qoa_pcm_have = p->qoa_pcm_done + deliverable;
+            p->qoa_loaded = true;
         }
-    }
-
-    // Push decoded PCM at the ring's pace.
-    uint32_t pushed = 0;
-    if (p->qoa_pcm_done < p->qoa_pcm_have) {
-        uint32_t budget = bytes_that_fit(p);  // virtual PCM bytes
-        uint32_t left = (p->qoa_pcm_have - p->qoa_pcm_done) * p->block_align;
-        uint32_t n = budget < left ? budget : left;
-        n -= n % p->block_align;
-        if (n >= FILEPLAYER_READ_MIN || n >= left) {
-            push_pcm(p, s_qoa_pcm + p->qoa_pcm_done * p->channels, n);
-            p->qoa_pcm_done += n / p->block_align;
-            p->position += n;
+        // At least a slice (20 frames), even when the file's last few
+        // frames are all the ring may take: what lies past them is dropped.
+        uint32_t max = budget / p->block_align;
+        if (max < 20)
+            max = 20;
+        if (max > chunk)
+            max = chunk;
+        uint32_t k = qoa_dec_run(&p->qoa_dec, s_wav_buffer, pcm, max);
+        if (k == 0) {
+            if (p->qoa_dec.pos >= p->qoa_dec.samples) {
+                p->qoa_loaded = false;  // frame done: the next one
+                continue;
+            }
+            break;  // no whole slice fits: next tick
+        }
+        uint32_t from = p->qoa_skip < k ? p->qoa_skip : k;
+        p->qoa_skip -= from;
+        uint32_t frames = k - from;
+        // Never past the virtual data size (a file whose frames hold more
+        // than its header claims): the surplus is undeliverable.
+        if (frames > remaining / p->block_align)
+            frames = remaining / p->block_align;
+        if (frames > 0) {
+            push_pcm(p, pcm + from * p->channels, frames * p->block_align);
+            p->position += frames * p->block_align;
             p->pass_pushed = true;
-            pushed = n;
         }
     }
 
-    // End of data (all decoded PCM delivered, or the file ended early):
-    // loop or finish, as WAV does.
-    if (pushed == 0 && p->qoa_pcm_done >= p->qoa_pcm_have &&
-        (p->position >= p->data_size || eof)) {
+    // End of data (every frame delivered, or the file ended early): loop or
+    // finish, as WAV does.
+    if (p->position >= p->data_size || eof) {
         if (p->pass_pushed &&
             (p->loop || p->repeats == 0 || ++p->plays < p->repeats)) {
             p->position = 0;

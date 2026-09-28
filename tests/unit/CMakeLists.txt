@@ -67,7 +67,8 @@ picodeck_unit_test(test_wav SOURCES ${SRC}/drivers/wav.c INCLUDES ${SRC}/drivers
 # (encoder included here for in-process fixtures; firmware builds it out).
 picodeck_unit_test(test_qoa SOURCES ${SRC}/drivers/qoa.c
                 ${PICODECK_ROOT}/third_party/qoa/qoa.c
-                INCLUDES ${SRC}/drivers ${PICODECK_ROOT}/third_party)
+                INCLUDES ${SRC}/drivers ${PICODECK_ROOT}/third_party
+                ${PICODECK_ROOT}/simulator/stubs)
 set_source_files_properties(${PICODECK_ROOT}/third_party/qoa/qoa.c
                 PROPERTIES COMPILE_OPTIONS "-Wno-error")
 picodeck_unit_test(test_audio_ring INCLUDES ${SRC}/drivers)
