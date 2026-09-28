@@ -11,6 +11,8 @@
 #include "hal/hal_psram.h"
 #include "hal/hal_timing.h"
 #include "drivers/keyboard.h"
+#include "drivers/audio_mix.h"
+#include "drivers/sound.h"
 #include "os/launcher.h"
 #include "os/lua_psram_alloc.h"
 #include "os/screenshot.h"
@@ -789,18 +791,9 @@ static char *h_get_heap_info(const char *params) {
 
 static char *h_get_audio_state(const char *params) {
     (void)params;
-    extern volatile bool s_tone_playing;
-    extern volatile bool s_stream_active;
-    extern int sound_get_playing_source_count(void);
-    bool tone = false;
-    bool stream = false;
-    int players = 0;
-    extern pthread_mutex_t s_sound_mutex;
-    pthread_mutex_lock(&s_sound_mutex);
-    tone = s_tone_playing;
-    stream = s_stream_active;
-    players = sound_get_playing_source_count();
-    pthread_mutex_unlock(&s_sound_mutex);
+    bool tone = audio_tone_playing();
+    bool stream = audio_stream_active();
+    int players = sound_get_playing_source_count();
     static char buf[128];
     snprintf(buf, sizeof(buf),
              "{\"jsonrpc\":\"2.0\",\"result\":{\"tone_playing\":%s,\"stream_active\":%s,\"sound_players_active\":%d}}",

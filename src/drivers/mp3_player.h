@@ -10,7 +10,6 @@ typedef struct {
     uint8_t *working_buffer;
     bool playing;
     bool paused;
-    uint32_t position;
     uint32_t length;
     uint8_t volume;
     bool loop;

@@ -193,7 +193,7 @@ Native apps receive `PicoCalcAPI *api` as their entry point argument. Call `api-
 
 `make simulator` builds `build_sim/picodeck_simulator` (SDL2 + Unicorn Engine for native ELF apps). What it does not model, in brief (full list in `simulator/CLAUDE.md`):
 - `picocalc.crypto` is absent; `picocalc.video` is stubbed; TLS verification, the SNTP clock gate and the TRNG are firmware-only.
-- Display, sample mixer and MP3 player are separate simulator implementations (`stubs/driver_stubs.c`, `sim_audio.c`): keep them in step with the firmware, and confirm colour and timing on hardware.
+- The display is a separate simulator implementation (`stubs/driver_stubs.c`): keep it in step with the firmware, and confirm colour and timing on hardware. Audio runs the firmware mixer; `sim_audio.c` is only its output.
 - Networking is libcurl unless you build `make simulator-net` (the firmware stack on Mongoose, no TLS).
 - `umm_*` is a counting allocator: largest-block and fragmentation figures need `--real-umm`.
 
