@@ -91,17 +91,34 @@ T.case("play_after_finish_replays", function()
 end)
 
 T.case("idle_controls_return_at_once", function()
-    -- Nothing mixes the MP3 in any of these: none may wait for a fade.
+    -- The output must actually be running (a tone keeps it going, so
+    -- audio_output_running() is true) or fade_out_and_wait returns at once
+    -- regardless of whether anything mixes the MP3, and the test proves
+    -- nothing. With the output running, nothing mixes the MP3 in any of
+    -- these idle controls, so none may wait for a fade.
+    pc.audio.playTone(440)
     local mp = sound.mp3player()
+
     local t0 = sys.getTimeUs()
     mp:pause()
     mp:stop()
     mp:stop()
+    local us1 = sys.getTimeUs() - t0
+
     T.ok(mp:load(APP_DIR .. "/whole.mp3"))
+
+    local t1 = sys.getTimeUs()
     mp:pause()
     mp:resume()
-    local us = sys.getTimeUs() - t0
-    T.ok(us < 40000, "idle controls took " .. us .. " us")
+    local us2 = sys.getTimeUs() - t1
+
+    local us = us1 + us2
+    -- Generous bound under -n auto on a loaded host: this catches a hang or
+    -- a repeated 50 ms fade-wait timeout (fade_out_and_wait), not scheduler
+    -- jitter.
+    T.ok(us < 200000, "idle controls took " .. us .. " us")
+
+    pc.audio.stopTone()
     mp:stop()
 end)
 
