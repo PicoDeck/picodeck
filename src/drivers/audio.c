@@ -72,10 +72,14 @@ static unsigned int  s_pwm_slice = 0;
 static volatile bool s_output_on = false;
 static int16_t       s_render[2 * OUT_CHUNK];
 
+// The refill stats. The ISR (Core 1) writes them; Core 0 only asks for a
+// reset, which the ISR carries out at its next refill (its read-modify-
+// writes would put back counts read before a reset written from Core 0).
 static volatile uint32_t s_isr_total;   // refills since boot
 static volatile uint32_t s_isr_window;  // since the last stats reset
 static volatile uint32_t s_isr_us;
 static volatile uint32_t s_isr_max_us;
+static volatile bool     s_isr_reset_req;
 
 // [-32768, 32767] -> [0, OUT_PWM_WRAP] (65535 * 1512 >> 16 is 1511).
 static inline __attribute__((always_inline)) uint32_t pwm_level(int16_t v) {
@@ -93,6 +97,12 @@ static void __time_critical_func(output_fill)(uint32_t *buf) {
 
 static void __time_critical_func(output_isr)(void) {
   uint32_t t0 = time_us_32();
+  if (s_isr_reset_req) {
+    s_isr_window = 0;
+    s_isr_us = 0;
+    s_isr_max_us = 0;
+    s_isr_reset_req = false;
+  }
   s_isr_total++;
   s_isr_window++;
   dma_hw->ints0 = 1u << s_dma_chan;
@@ -214,13 +224,16 @@ void audio_stream_poll(void) {
 
 void audio_output_get_stats(audio_output_stats_t *out) {
   out->running = s_output_on;
-  out->isr_count = s_isr_window;
-  out->isr_us = s_isr_us;
-  out->isr_max_us = s_isr_max_us;
+  // A reset the ISR has not carried out yet (it cannot while the output is
+  // stopped) reads as the empty window it asked for.
+  bool reset = s_isr_reset_req;
+  out->isr_count = reset ? 0 : s_isr_window;
+  out->isr_us = reset ? 0 : s_isr_us;
+  out->isr_max_us = reset ? 0 : s_isr_max_us;
 }
 
+// Carried out by the refill ISR at its next refill (~2.9 ms while the
+// output runs).
 void audio_output_reset_stats(void) {
-  s_isr_window = 0;
-  s_isr_us = 0;
-  s_isr_max_us = 0;
+  s_isr_reset_req = true;
 }

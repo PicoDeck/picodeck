@@ -506,13 +506,15 @@ static void dev_command_run(void *arg) {
                strcmp(s_cmd_buf, "audiostat reset") == 0) {
         // Core 1's tick cost and the audio output's refill interrupt
         // (tests/e2e/test_audio_hw.py). "reset" starts a new window; Core 1
-        // zeroes its tick counters at its next tick, so give it one.
+        // zeroes its tick counters at its next tick (1 ms) and the refill
+        // interrupt its own at its next refill (~2.9 ms), so give them both
+        // time.
         if (strcmp(s_cmd_buf, "audiostat reset") == 0) {
             core1_reset_tick_stats();
             audio_output_reset_stats();
             audio_stream_reset_underruns();
             mp3_player_reset_staging_underruns();
-            sleep_ms(3);
+            sleep_ms(5);
         }
         core1_tick_stats_t t;
         core1_get_tick_stats(&t);

@@ -234,6 +234,10 @@ void audio_stream_debug(uint32_t *isr_count, uint32_t *underruns,
     *ring_used = audio_ring_used(&s_ring);
 }
 
+// Under the lock: the render's s_stream_underruns++ is a read-modify-write
+// that would put back a count read before the reset.
 void audio_stream_reset_underruns(void) {
+  src_lock();
   s_stream_underruns = 0;
+  src_unlock();
 }
