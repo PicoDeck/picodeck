@@ -52,7 +52,12 @@ alarm_pool_t *audio_get_core1_alarm_pool(void) {
 // output starts with the first sound and runs, silent between sounds,
 // until the app's teardown stops it.
 
-#define OUT_PWM_WRAP   1699  // 44.1 kHz at 300 MHz is a whole divider (4)
+// 1512 counts a frame: 44,091.7 Hz (-0.02%) at every supported clk_sys,
+// with a divider exact in 8.4 fixed point at each: 1.875 at 125 MHz, 2.25
+// at 150, 3 at 200, 3.75 at 250, 4.5 at 300. (A wrap of 1699 made a whole
+// divider only at 150/300 MHz: 43,776 Hz at 200, 13 cents flat, and a pitch
+// jump at the video player's boost.)
+#define OUT_PWM_WRAP   1511
 #define OUT_PWM_MID    ((OUT_PWM_WRAP + 1) / 2)
 #define OUT_DMA_FRAMES 128
 #define OUT_CHUNK      32    // frames per audio_mix_render call
@@ -72,7 +77,7 @@ static volatile uint32_t s_isr_window;  // since the last stats reset
 static volatile uint32_t s_isr_us;
 static volatile uint32_t s_isr_max_us;
 
-// [-32768, 32767] -> [0, OUT_PWM_WRAP] (65535 * 1700 >> 16 is 1699).
+// [-32768, 32767] -> [0, OUT_PWM_WRAP] (65535 * 1512 >> 16 is 1511).
 static inline __attribute__((always_inline)) uint32_t pwm_level(int16_t v) {
   return ((uint32_t)((int32_t)v + 32768) * (OUT_PWM_WRAP + 1)) >> 16;
 }
