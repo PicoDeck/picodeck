@@ -171,12 +171,108 @@ static void test_demo_pfn_file(void) {
   free(img);
 }
 
+
+// ── Reference renderer: font_render as it was before the byte-at-a-time
+// glyph path (a verbatim copy), so the fast path can be checked pixel for
+// pixel against it.
+#include "font_6x8.h"
+#include "font_8x12.h"
+
+static void ref_blit_cell(uint16_t *buf, int buf_w, int cx0, int cy0, int cx1,
+                          int cy1, long long x, long long y, int w, int h,
+                          const uint8_t *rows, int stride, uint16_t fg,
+                          uint16_t bg, bool transparent) {
+  long long r0 = y < cy0 ? cy0 - y : 0, r1 = y + h - 1 > cy1 ? cy1 - y : h - 1;
+  long long c0 = x < cx0 ? cx0 - x : 0, c1 = x + w - 1 > cx1 ? cx1 - x : w - 1;
+  if (r0 > r1 || c0 > c1) return;
+  for (int row = (int)r0; row <= (int)r1; row++) {
+    uint16_t *dst = buf + (size_t)(y + row) * buf_w + (size_t)(x + c0) - c0;
+    const uint8_t *bits = rows ? rows + row * stride : NULL;
+    for (int col = (int)c0; col <= (int)c1; col++) {
+      bool on;
+      if (bits) {
+        on = (bits[col >> 3] & (0x80 >> (col & 7))) != 0;
+      } else {
+        on = row < h - 1 && col < w - 1 &&
+             (row == 0 || row == h - 2 || col == 0 || col == w - 2);
+      }
+      if (on) dst[col] = fg;
+      else if (!transparent) dst[col] = bg;
+    }
+  }
+}
+
+static int ref_render(const pc_font_t *f, uint16_t *buf, int buf_w, int cx0,
+                      int cy0, int cx1, int cy1, int x, int y, const char *text,
+                      uint16_t fg, uint16_t bg, bool transparent) {
+  int h = f->height;
+  if ((long long)y + h - 1 < cy0 || y > cy1 || cx1 < cx0)
+    return font_text_width(f, text);
+  long long xx = x;
+  for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+    if (xx > cx1) return (int)(xx - x) + font_text_width(f, (const char *)p);
+    unsigned char c = *p;
+    if (c < f->first || c > f->last) {
+      int adv = f->max_width;
+      ref_blit_cell(buf, buf_w, cx0, cy0, cx1, cy1, xx, y, adv, h, NULL, 0, fg,
+                    bg, transparent);
+      xx += adv;
+      continue;
+    }
+    int gi = c - f->first;
+    int adv = f->widths ? f->widths[gi] : f->max_width;
+    const uint8_t *glyph = f->bitmaps + (size_t)gi * h * f->stride;
+    ref_blit_cell(buf, buf_w, cx0, cy0, cx1, cy1, xx, y, adv, h, glyph,
+                  f->stride, fg, bg, transparent);
+    xx += adv;
+  }
+  return (int)(xx - x);
+}
+
+// Every font shape (6x8 and 8x12 built-ins, the proportional test font, a
+// 12-wide font whose rows span two bytes) at every offset, clip and mode
+// renders exactly as the reference.
+static void test_render_matches_reference(void) {
+  static uint8_t wide_bits[5 * 10 * 2];
+  uint32_t seed = 12345;
+  for (size_t i = 0; i < sizeof wide_bits; i++) {
+    seed = seed * 1103515245u + 12345u;
+    wide_bits[i] = (uint8_t)(seed >> 16);
+  }
+  pc_font_t fonts[4] = {
+    {0x20, 0x7E, 8, 6, 1, NULL, &font_6x8[0][0], NULL},
+    {0x20, 0x7E, 12, 8, 1, NULL, &font_8x12[0][0], NULL},
+    prop_font(),
+    {'A', 'E', 10, 12, 2, NULL, wide_bits, NULL},
+  };
+  const char *texts[4] = {"Nova Rail 0:12.345 ~\x7f", "LAP 1/3 TIME\x01", "ABCA BZ",
+                          "ABCDE AZE"};
+  const int xs[] = {-7, -3, 0, 5}, ys[] = {-9, -2, 0, 3};
+  const int clips[3][4] = {{0, 0, 63, 23}, {2, 1, 40, 20}, {7, 5, 7, 5}};
+  static uint16_t got[64 * 24], want[64 * 24];
+  for (int fi = 0; fi < 4; fi++)
+    for (int xi = 0; xi < 4; xi++)
+      for (int yi = 0; yi < 4; yi++)
+        for (int ci = 0; ci < 3; ci++)
+          for (int tr = 0; tr < 2; tr++) {
+            for (int i = 0; i < 64 * 24; i++) got[i] = want[i] = 0x1234;
+            const int *c = clips[ci];
+            int a = font_render(&fonts[fi], got, 64, c[0], c[1], c[2], c[3], xs[xi],
+                                ys[yi], texts[fi], 0xFFFF, 0x0841, tr);
+            int b = ref_render(&fonts[fi], want, 64, c[0], c[1], c[2], c[3], xs[xi],
+                               ys[yi], texts[fi], 0xFFFF, 0x0841, tr);
+            CHECK(a == b);
+            CHECK(memcmp(got, want, sizeof got) == 0);
+          }
+}
+
 int main(void) {
   test_widths();
   test_wrap();
   test_render_mono_and_clip();
   test_render_proportional_and_fallback();
   test_render_stride2();
+  test_render_matches_reference();
   test_from_blob();
   test_demo_pfn_file();
   return check_report("test_font");

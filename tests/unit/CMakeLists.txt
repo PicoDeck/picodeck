@@ -57,7 +57,8 @@ endfunction()
 
 set(SRC ${PICODECK_ROOT}/src)
 
-picodeck_unit_test(test_font SOURCES ${SRC}/fonts/font.c INCLUDES ${SRC}/fonts)
+picodeck_unit_test(test_font SOURCES ${SRC}/fonts/font.c ${SRC}/fonts/font_6x8.c
+                   ${SRC}/fonts/font_8x12.c INCLUDES ${SRC}/fonts)
 picodeck_unit_test(test_elf_plan SOURCES ${SRC}/os/elf_plan.c)
 picodeck_unit_test(test_fs_path SOURCES ${SRC}/os/fs_path.c)
 picodeck_unit_test(test_app_manifest SOURCES ${SRC}/os/app_manifest.c)
