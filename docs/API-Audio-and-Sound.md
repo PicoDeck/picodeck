@@ -6,7 +6,7 @@ Audio output, including simple tones and full sample/file playback.
 
 ## picocalc.audio
 
-Tones, the master volume and a raw PCM stream. One mixer sums everything that makes sound into a single 44.1 kHz output. The FilePlayer, the MOD player and `startStream` share one PCM stream, so only one of them plays at a time: starting one takes the stream over. Tones, SamplePlayers and the MP3Player mix with the stream and with each other, so they all play at once.
+Tones, the master volume and a raw PCM stream. One mixer sums everything that makes sound into a single 44.1 kHz output. The FilePlayer, the MOD player and `startStream` share one PCM stream, so only one of them may play at a time. Stop the one that is playing before starting another: the only automatic stop is that starting a FilePlayer stops another FilePlayer. Tones, SamplePlayers and the MP3Player mix with the stream and with each other, so they all play at once.
 
 ### Functions
 

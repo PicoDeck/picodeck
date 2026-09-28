@@ -2,7 +2,9 @@
 title: "API Mod Player"
 ---
 
-Tracker module music playback (MOD, XM, S3M formats). The mod player runs on Core 1 alongside other audio.
+Tracker module music playback: **MOD files only**, the ProTracker family. Supported: modules tagged `M.K.`, `M!K!`, `FLT4`, `1CHN`–`9CHN` or `10CH`–`32CH` (1 to 32 channels), and untagged 15-sample Soundtracker modules. XM, S3M, IT and `FLT8` modules are not supported: `load` returns `false`. A file may be at most 512 KB.
+
+The player renders the module on Core 1 at 22,050 Hz. Its output shares one PCM stream with the FilePlayer and `picocalc.audio.startStream`, so stop whichever of them is playing before you start another; starting one does not stop the others. SamplePlayers, tones and the MP3Player mix with it, so sound effects play over the music.
 
 ## picocalc.modplayer
 
@@ -34,8 +36,8 @@ destroyed handle raises on use. Volume is 0-100.
 Load a tracker module file from the SD card.
 
 - **Parameters:**
-  - `path` (string): Path to a MOD, XM, or S3M file
-- **Returns:** (boolean) `true` if the file was loaded successfully
+  - `path` (string): Path to a MOD file
+- **Returns:** (boolean) `true` if the file was loaded; `false` if it is missing, larger than 512 KB, or not a MOD file the player can read
 
 ```lua
 local ok = player:load("/apps/myapp/music.mod")
