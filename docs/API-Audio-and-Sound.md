@@ -6,7 +6,7 @@ Audio output, including simple tones and full sample/file playback.
 
 ## picocalc.audio
 
-Simple tone generation via PWM. Useful for beeps, alerts, and simple sound effects.
+Tones, the master volume and a raw PCM stream. One mixer sums everything that makes sound into a single 44.1 kHz output. The FilePlayer, the MOD player and `startStream` share one PCM stream, so only one of them plays at a time: starting one takes the stream over. Tones, SamplePlayers and the MP3Player mix with the stream and with each other, so they all play at once.
 
 ### Functions
 
@@ -38,14 +38,14 @@ picocalc.audio.stopTone()
 ---
 
 #### `picocalc.audio.setVolume(volume)`
-Sets the audio output volume.
+Sets the master volume. It scales everything the mixer plays: tones, SamplePlayers, the stream (and so the FilePlayer and the MOD player) and the MP3Player. The master volume resets to 100 when the app exits.
 
 - **Parameters:**
   - `volume` (number): Volume level (0–100, where 0 is muted and 100 is maximum; larger values clamp to 100)
 - **Returns:** None
 
 ```lua
-picocalc.audio.setVolume(128)  -- 50% volume
+picocalc.audio.setVolume(50)  -- half volume
 ```
 
 ---
@@ -53,7 +53,7 @@ picocalc.audio.setVolume(128)  -- 50% volume
 ### PCM Streaming
 
 #### `picocalc.audio.startStream(sampleRate)`
-Initialize PCM audio streaming at the specified sample rate.
+Starts (or restarts) the PCM stream at `sampleRate` and empties its buffer. Other sounds keep playing. The FilePlayer and the MOD player use this stream while they play.
 
 - **Parameters:**
   - `sampleRate` (number): Sample rate in Hz (e.g. `44100`)
@@ -66,7 +66,7 @@ picocalc.audio.startStream(44100)
 ---
 
 #### `picocalc.audio.stopStream()`
-Stop the active PCM audio stream.
+Stops the PCM stream and empties its buffer. Tones and samples keep playing.
 
 - **Parameters:** None
 - **Returns:** None
@@ -78,7 +78,7 @@ picocalc.audio.stopStream()
 ---
 
 #### `picocalc.audio.pushSamples(samples)`
-Push audio samples to the streaming buffer. Samples are interleaved stereo pairs (left, right, left, right...).
+Push audio samples to the streaming buffer. Samples are interleaved stereo pairs (left, right, left, right...). Only while a stream is started (`startStream`): pushes before it, or after `stopStream`, are dropped.
 
 - **Parameters:**
   - `samples` (table): Array of int16 sample values (max 512 values = 256 stereo pairs)
@@ -95,7 +95,7 @@ picocalc.audio.pushSamples(samples)
 ---
 
 #### `picocalc.audio.ringFree()`
-Get the number of free slots available in the audio ring buffer. Use this to avoid pushing more samples than the buffer can hold.
+Get the number of free slots available in the audio ring buffer. Use this to avoid pushing more samples than the buffer can hold. While no stream is started it reports 0 (pushes are dropped then).
 
 - **Parameters:** None
 - **Returns:** (number) Free buffer slots
@@ -152,6 +152,8 @@ A `Sample` holds raw PCM audio data loaded from a WAV file.
 Creates a new Sample object, optionally loading a WAV file immediately.
 
 WAVs must be 8- or 16-bit PCM with 1-2 channels (float, 24/32-bit, ADPCM and more channels are refused); only the first 64 KB of sample data is kept.
+
+Samples have no fixed limit: each lives in PSRAM until it is collected.
 
 - **Parameters:**
   - `path` (string, optional): Absolute path to a WAV file
@@ -281,6 +283,8 @@ Creates a SamplePlayer, optionally pre-loading a sample.
 
 A SamplePlayer keeps its Sample alive (you may drop your own reference). `sampleplayer(path)` and `sample:play()` create a Sample of their own. Dropping the player returned by `sample:play()` stops that sound when it is collected.
 
+At most 8 SamplePlayers exist at once (the mixer's voices): a 9th returns `nil, errstr` until one is collected. Reuse players and call `setSample`, or keep a pool.
+
 - **Parameters:**
   - `sample_or_path` (userdata or string, optional): A `Sample` object or a WAV file path
 - **Returns:** (userdata) SamplePlayer object, or `nil, errstr` on failure
@@ -399,7 +403,7 @@ player:setRate(1.5)  -- play at 150% speed
 ---
 
 #### `player:setFinishCallback(fn)`
-Sets a callback fired when playback finishes (all repeats completed). Maximum 4 callbacks across all SamplePlayer instances. The callback fires on Core 0 via the Lua instruction hook (slight delay of up to ~256 opcodes).
+Sets a callback fired when playback finishes (all repeats completed). Each SamplePlayer can have one. The callback fires on Core 0 via the Lua instruction hook (slight delay of up to ~256 opcodes).
 
 - **Parameters:**
   - `fn` (function): Callback function (called with no arguments)
@@ -413,7 +417,7 @@ end)
 ---
 
 #### `player:setLoopCallback(fn)`
-Sets a callback fired each time the player loops back to the start. Same cross-core delivery mechanism as `setFinishCallback`.
+Sets a callback fired each time the player loops back to the start. Each SamplePlayer can have one. Same cross-core delivery mechanism as `setFinishCallback`.
 
 - **Parameters:**
   - `fn` (function): Callback function (called with no arguments)
@@ -541,6 +545,8 @@ player:setStopOnUnderrun(true)
 
 Streams an MP3 file from the SD card.
 
+The MP3 plays through the same mixer as samples, the stream and tones, so music and sound effects play together; `picocalc.audio.setVolume` scales it too. Sources add up: a full-volume MP3 plus loud samples clips, so leave headroom (music at about 60).
+
 #### `picocalc.sound.mp3player()`
 Creates an MP3Player.
 
@@ -559,17 +565,17 @@ mp3:play()
 #### `player:load(path)`
 Opens an MP3 file for streaming.
 
-- **Returns:** `true` on success, or `nil, errstr`
+- **Returns:** `true` on success, or `nil, errstr` if the file cannot be opened or is not an MP3
 
 ---
 
 #### `player:play([repeat])` / `player:stop()` / `player:pause()` / `player:resume()` / `player:isPlaying()`
-Standard playback controls.
+Standard playback controls. `play()` starts from the beginning of the file (also after it finished). `stop()`, `pause()` and a `play()` while playing fade out over ~1.5 ms (no click); `resume()` fades back in. `isPlaying()` stays `true` until the last decoded audio has played.
 
 ---
 
 #### `player:getPosition()` / `player:getLength()`
-Returns current playback position or total duration in seconds.
+`getPosition()` returns the frames played since `play()` (divide by `getSampleRate()` for seconds; it keeps counting across loops, and holds while paused); it returns `0` once the MP3 is stopped or has finished. `getLength()` returns `0`: an MP3's length is not known without decoding all of it.
 
 ---
 

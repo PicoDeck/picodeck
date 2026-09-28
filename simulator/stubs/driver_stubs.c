@@ -1018,12 +1018,13 @@ void display_effect_posterize(uint8_t levels) {
     }
 }
 
-// Audio/sound/fileplayer/mp3 are implemented in simulator/sim_audio.c
+// Audio/sound/fileplayer/mp3 are the firmware's own code (src/drivers/);
+// simulator/sim_audio.c is only the output.
 
 // Native audio callback
 _Atomic(void (*)(void)) g_native_audio_callback = NULL;
 
-// audio_ring_free / audio_stream_debug live in sim_audio.c.
+// audio_ring_free / audio_stream_debug live in src/drivers/audio_mix.c.
 
 // umm_malloc: a counting allocator over the host malloc (see stubs/
 // umm_malloc.h). Live bytes are the requested sizes of every block handed
@@ -1284,18 +1285,6 @@ int display_draw_text_to_buffer(uint16_t *buf, int buf_w, int buf_h,
                      x, y, text, fg, bg, false);
 }
 
-// --- Sound player callbacks ---
-// Stored like firmware sound.c (the Lua bridge finds a player's callback
-// slots through them, to reuse and release them); the simulator mixer does
-// not fire them yet.
-#include "../../src/drivers/sound.h"
-void sound_player_set_finish_callback(sound_player_t *player, int (*cb)(void *), void *arg) {
-    if (!player) return;
-    player->finish_callback = cb;
-    player->finish_callback_arg = arg;
-}
-void sound_player_set_loop_callback(sound_player_t *player, int (*cb)(void *), void *arg) {
-    if (!player) return;
-    player->loop_callback = cb;
-    player->loop_callback_arg = arg;
-}
+// sound_player_set_finish_callback / sound_player_set_loop_callback now come
+// from src/drivers/sound.c, compiled into the simulator (Task 5): defining
+// them here too would be a duplicate symbol.

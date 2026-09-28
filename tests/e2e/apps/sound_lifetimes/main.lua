@@ -11,8 +11,9 @@
 -- simulator reports the bad access; the release simulator sees the weak-table
 -- survival checks, the identity checks and the slot counts.
 --
--- The driver has SOUND_MAX_SAMPLES = 8 sample slots and 8 player slots, so a
--- leaked slot shows up as a failed create within a few iterations.
+-- Samples have no fixed limit; the driver has SOUND_MAX_PLAYERS = 8 player
+-- slots, so a leaked player slot shows up as a failed create within a few
+-- iterations.
 -- See tests/e2e/test_lifetimes_sound.py.
 
 local pc = picocalc
@@ -217,6 +218,25 @@ T.case("volume_range_0_100", function()
     local mp = T.ok(sound.mp3player(), "mp3player")
     mp:setVolume(300); T.eq(mp:getVolume(), 100, "mp3player 300")
     mp:setVolume(42);  T.eq(mp:getVolume(), 42, "mp3player 42")
+end)
+
+T.case("samples_are_not_capped_players_are", function()
+    local held = {}
+    for i = 1, 40 do
+        local s, err = sound.sample(SHORT)
+        T.ok(s, "sample " .. i .. " (" .. tostring(err) .. ")")
+        held[i] = s
+    end
+    local players = {}
+    for i = 1, SLOTS do
+        players[i] = sound.sampleplayer(held[i])
+        T.ok(players[i], "player " .. i)
+    end
+    local extra, err = sound.sampleplayer(held[SLOTS + 1])
+    T.ok(extra == nil, "a 9th sampleplayer was created")
+    T.ok(err and err:find("8"), "the error names the limit: " .. tostring(err))
+    held, players, extra = nil, nil, nil
+    all_slots_free("after 40 samples")
 end)
 
 T.done()

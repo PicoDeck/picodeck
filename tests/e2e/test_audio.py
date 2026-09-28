@@ -7,7 +7,7 @@ Uses get_audio_state RPC to check playback status.
 
 import pytest
 
-from helpers import lua_case_names
+from helpers import lua_case_names, run_lua_app
 
 
 AUDIO_CASES = lua_case_names("audio_test")
@@ -27,6 +27,20 @@ class TestAudioLua:
 
     def test_audio_suite_complete(self, audio_run):
         audio_run.assert_all_passed(AUDIO_CASES)
+
+
+class TestAudioTeardown:
+    """What an app leaves behind in the mixer does not reach the next app."""
+
+    def test_exit_resets_the_master_volume(self, simulator):
+        """audio_test leaves the master volume at 20; after it exits the
+        volume is back to 100, so the next app (and its MP3) is not quiet
+        until a reboot."""
+        assert simulator.call("get_audio_state")["master_volume"] == 100
+        run = run_lua_app(simulator, "audio_test")
+        run.assert_all_passed(AUDIO_CASES)
+        state = simulator.call("get_audio_state")
+        assert state["master_volume"] == 100, state
 
 
 class TestAudioRPC:
@@ -71,6 +85,7 @@ class TestAudioRPC:
         assert "tone_playing" in state
         assert "stream_active" in state
         assert "sound_players_active" in state
+        assert "master_volume" in state
         assert isinstance(state["tone_playing"], bool)
         assert isinstance(state["stream_active"], bool)
         assert isinstance(state["sound_players_active"], int)

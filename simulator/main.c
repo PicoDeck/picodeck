@@ -30,6 +30,7 @@
 #include "stubs/umm_malloc.h"  // sim_umm_use_real (--real-umm)
 #include "splash_logo.h"
 #include "drivers/display.h"
+#include "drivers/audio.h"
 #include "drivers/sound.h"
 #include "drivers/fileplayer.h"
 #include "drivers/mp3_player.h"
@@ -592,6 +593,12 @@ int main(int argc, char** argv) {
         kbd_set_backlight(brightness);
         idle_dim_init(brightness, dim_timeout_s);
     }
+
+    // Sample players and the mixer's own sources (audio_mix.c), mirroring
+    // src/main.c: before Core 1 starts pulling hal_audio_update(). The MP3
+    // player self-initializes lazily on first use, as on the device.
+    sound_init();
+    audio_init();
 
     // Initialize toast system and networking (before Core 1 starts)
     extern void toast_init(void);

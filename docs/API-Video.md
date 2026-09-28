@@ -275,7 +275,7 @@ ffmpeg -i <input>
 
 ## Audio implementation notes
 
-Audio is decoded using the **MP3 fed mode** in `mp3_player.c`. Rather than reading from an SD file directly, Core 0 (video player) pre-indexes audio chunks from the AVI file and feeds compressed MP3 data into a 64 KB ring buffer in QMI PSRAM. Core 1 reads from this ring and decodes in the normal MP3 DMA path. This avoids PIO PSRAM bus contention (PIO1 SPI is not safe across cores) and lets video and audio share the existing MP3 playback pipeline.
+Audio is decoded using the **MP3 fed mode** in `mp3_player.c`. Rather than reading from an SD file directly, Core 0 (video player) pre-indexes audio chunks from the AVI file and feeds compressed MP3 data into a 64 KB ring buffer in QMI PSRAM. Core 1 reads from this ring and the MP3 player decodes it; the one audio mixer mixes it with samples and tones, as it does any MP3. This avoids PIO PSRAM bus contention (PIO1 SPI is not safe across cores) and lets video and audio share the existing MP3 playback pipeline.
 
 Audio playback is automatically stopped and the ring freed when `player:stop()` is called or the player is garbage-collected.
 

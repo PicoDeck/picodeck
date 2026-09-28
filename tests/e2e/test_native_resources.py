@@ -108,6 +108,12 @@ def test_players_are_stopped_on_exit(leaky):
     assert leaky["audio"]["sound_players_active"] == 0, leaky["audio"]
 
 
+def test_master_volume_is_reset_on_exit(leaky):
+    """The app left the master volume at 20: the exit puts it back to 100,
+    so the next app (and its MP3) is not quiet until a reboot."""
+    assert leaky["audio"]["master_volume"] == 100, leaky["audio"]
+
+
 def test_appconfig_binds_only_own_id(leaky):
     """Native gate: appconfig->load(<another app's id>) is refused and leaves
     the store unbound (Lua apps always bind to their own id)."""

@@ -819,7 +819,9 @@ function picocalc.audio.playTone(freq, duration_ms) end
 ---Stop the currently playing tone immediately.
 function picocalc.audio.stopTone() end
 
----Set the audio output volume for tone playback.
+---Set the master volume. It scales everything the mixer plays: tones,
+---samples, the PCM stream (FilePlayer, MOD player) and MP3. It resets to
+---100 when the app exits.
 ---@param volume integer 0 (mute) – 100 (maximum)
 function picocalc.audio.setVolume(volume) end
 
@@ -867,8 +869,8 @@ function picocalc.sound.sample(path_or_duration) end
 ---The player keeps its sample alive: dropping your own reference to the sample
 ---is safe while the player plays it. A path loads a Sample that belongs to the
 ---player (`getSample()` returns it); it is freed with the player, or once a
----`setSample` replaces it. There are 8 sample slots and 8 player slots, freed
----by the garbage collector.
+---`setSample` replaces it. Samples have no fixed limit; at most 8 sampleplayers
+---exist at once, freed by the garbage collector.
 ---@param sample_or_path? PicoDeckSample|string
 ---@return PicoDeckSamplePlayer
 function picocalc.sound.sampleplayer(sample_or_path) end
@@ -1050,32 +1052,36 @@ function PicoDeckFilePlayer:setStopOnUnderrun(flag) end
 
 ---Open an MP3 file for streaming.
 ---@param path string
----@return boolean ok
+---@return boolean? ok `true`, or `nil` if the file cannot be opened or is not an MP3
+---@return string? error
 function PicoDeckMp3Player:load(path) end
 
----Start playback.
+---Start playback from the beginning of the file (also after it finished).
+---A `play()` while playing fades out first (~1.5 ms, no click).
 ---@param repeat_count? integer 0 = infinite
 ---@return boolean ok
 function PicoDeckMp3Player:play(repeat_count) end
 
----Stop playback.
+---Stop playback (fades out over ~1.5 ms).
 function PicoDeckMp3Player:stop() end
 
----Pause playback.
+---Pause playback (fades out over ~1.5 ms).
 function PicoDeckMp3Player:pause() end
 
----Resume after pause.
+---Resume after pause (fades back in).
 function PicoDeckMp3Player:resume() end
 
+---`true` until the last decoded audio has played.
 ---@return boolean
 function PicoDeckMp3Player:isPlaying() end
 
----Return current playback position in seconds.
----@return number
+---Return the frames played since `play()` (divide by `getSampleRate()` for
+---seconds; it keeps counting across loops). `0` once stopped or finished.
+---@return integer
 function PicoDeckMp3Player:getPosition() end
 
----Return total duration in seconds.
----@return number
+---Return `0`: an MP3's length is not known without decoding all of it.
+---@return integer
 function PicoDeckMp3Player:getLength() end
 
 ---Return the sample rate of the MP3 stream in Hz.

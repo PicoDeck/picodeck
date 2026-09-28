@@ -12,13 +12,21 @@
 #include <string.h>
 #include <stdio.h>
 
-static sound_context_t s_context;
+// Samples: a list of umm (PSRAM) allocations with no fixed limit, touched
+// only on Core 0 (create, destroy, sound_init); the mixer reaches samples
+// through players[].sample alone. Players: the mixer's SOUND_MAX_PLAYERS
+// voices.
+static struct {
+    sound_sample_t *samples;
+    sound_player_t players[SOUND_MAX_PLAYERS];
+    uint32_t time_offset_us;
+} s_context;
 
 /* The mixer runs in audio.c's DMA refill ISR on Core 1 and reads
  * s_context.players[] and their samples. Everything that changes which
  * sample a player reads, or frees sample data, holds this lock (a spin lock
  * with IRQs off). The ISR holds it for one mix chunk: 32 frames (audio.c's
- * MIX_CHUNK) x up to SOUND_MAX_SAMPLES players, tens of microseconds, four
+ * MIX_CHUNK) x up to SOUND_MAX_PLAYERS players, tens of microseconds, four
  * times per 128-frame DMA buffer; Core 0 holds it for field updates only.
  * Never nested: helpers named *_locked expect it held.
  *
@@ -81,19 +89,18 @@ void sound_init(void) {
         critical_section_init_with_lock_num(&s_mix_cs, next_striped_spin_lock_num());
         s_mix_cs_ready = true;
     }
-    // Reclaim any loaded sample data before dropping the pointers (app exit
-    // must not leak PSRAM). Detach everything under the lock first: the
-    // mixer may still be running for a tone or a stream.
-    sound_sample_t *old[SOUND_MAX_SAMPLES];
+    // Reclaim every sample (app exit must not leak PSRAM). Detach the
+    // players under the lock first: the mixer may still be running for a
+    // tone, a stream or the MP3.
     mix_lock();
-    memcpy(old, s_context.samples, sizeof(old));
+    sound_sample_t *s = s_context.samples;
     memset(&s_context, 0, sizeof(s_context));
     mix_unlock();
-    for (int i = 0; i < SOUND_MAX_SAMPLES; i++) {
-        if (old[i]) {
-            if (old[i]->data) umm_free(old[i]->data);
-            free(old[i]);
-        }
+    while (s) {
+        sound_sample_t *next = s->next;
+        if (s->data) umm_free(s->data);
+        umm_free(s);
+        s = next;
     }
 }
 
@@ -107,7 +114,7 @@ void sound_mixer_process(int32_t *out_l, int32_t *out_r, int frames) {
     memset(out_r, 0, frames * sizeof(*out_r));
 
     mix_lock();
-    for (int p = 0; p < SOUND_MAX_SAMPLES; p++) {
+    for (int p = 0; p < SOUND_MAX_PLAYERS; p++) {
         sound_player_t *player = &s_context.players[p];
         if (!player->playing || player->paused || !player->sample || !player->sample->loaded)
             continue;
@@ -176,7 +183,7 @@ void sound_mixer_process(int32_t *out_l, int32_t *out_r, int frames) {
 /* Fires deferred finish/loop callbacks — call from the Core 1 work pump
  * (NOT from the mixer ISR; callbacks trampoline into Lua). */
 void sound_pump_callbacks(void) {
-    for (int p = 0; p < SOUND_MAX_SAMPLES; p++) {
+    for (int p = 0; p < SOUND_MAX_PLAYERS; p++) {
         sound_player_t *player = &s_context.players[p];
         if (!player->finish_pending && !player->loop_pending)
             continue;
@@ -205,13 +212,15 @@ void sound_pump_callbacks(void) {
 }
 
 sound_sample_t *sound_sample_create(void) {
-    for (int i = 0; i < SOUND_MAX_SAMPLES; i++) {
-        if (!s_context.samples[i]) {
-            s_context.samples[i] = calloc(1, sizeof(sound_sample_t));
-            return s_context.samples[i];
-        }
-    }
-    return NULL;
+    sound_sample_t *s = umm_malloc(sizeof(*s));
+    if (!s)
+        return NULL;
+    memset(s, 0, sizeof(*s));
+    s->next = s_context.samples;
+    if (s->next)
+        s->next->prev = s;
+    s_context.samples = s;
+    return s;
 }
 
 /* Replaces sample's contents with fresh's under the mixer lock and rewinds
@@ -226,7 +235,7 @@ static uint8_t *swap_sample_data(sound_sample_t *sample, const sound_sample_t *f
     sample->bits_per_sample = fresh->bits_per_sample;
     sample->channels = fresh->channels;
     sample->loaded = fresh->loaded;
-    for (int p = 0; p < SOUND_MAX_SAMPLES; p++) {
+    for (int p = 0; p < SOUND_MAX_PLAYERS; p++) {
         sound_player_t *player = &s_context.players[p];
         if (player->sample == sample) {
             player->position = 0;
@@ -252,23 +261,24 @@ void sound_sample_destroy(sound_sample_t *sample) {
     // the mixer re-reads player->sample under the same lock, so once this
     // returns nothing on Core 1 can hold the pointer.
     mix_lock();
-    for (int p = 0; p < SOUND_MAX_SAMPLES; p++) {
+    for (int p = 0; p < SOUND_MAX_PLAYERS; p++) {
         sound_player_t *player = &s_context.players[p];
         if (player->sample == sample) {
             player_stop_locked(player);
             player->sample = NULL;
         }
     }
-    for (int i = 0; i < SOUND_MAX_SAMPLES; i++) {
-        if (s_context.samples[i] == sample) {
-            s_context.samples[i] = NULL;
-            break;
-        }
-    }
     mix_unlock();
+    // Off the list (Core 0 only, so outside the mixer lock).
+    if (sample->prev)
+        sample->prev->next = sample->next;
+    else
+        s_context.samples = sample->next;
+    if (sample->next)
+        sample->next->prev = sample->prev;
     if (sample->data)
         umm_free(sample->data);
-    free(sample);  // allocated with calloc(), not umm_malloc
+    umm_free(sample);
 }
 
 bool sound_sample_load(sound_sample_t *sample, const char *path) {
@@ -334,7 +344,7 @@ uint32_t sound_sample_get_sample_rate(const sound_sample_t *sample) {
 }
 
 sound_player_t *sound_player_create(void) {
-    for (int i = 0; i < SOUND_MAX_SAMPLES; i++) {
+    for (int i = 0; i < SOUND_MAX_PLAYERS; i++) {
         sound_player_t *player = &s_context.players[i];
         if (!player->in_use) {
             // A free slot is stopped and detached (sound_player_destroy),
@@ -402,9 +412,8 @@ void sound_player_play(sound_player_t *player, uint8_t repeat_count) {
     player->playing = true;
     mix_unlock();
 
-    // Samples are mixed into the PCM stream by audio.c's DMA refill hook —
-    // the stream must be running. No PWM re-init, no playback timer.
-    audio_stream_ensure_running();
+    // Samples are mixed by audio_mix.c's render: the output must be running.
+    audio_output_ensure_running();
 }
 
 void sound_player_stop(sound_player_t *player) {
@@ -525,7 +534,7 @@ sound_sample_t *sound_sample_get_subsample(const sound_sample_t *sample, uint32_
 
 int sound_get_playing_source_count(void) {
     int count = 0;
-    for (int i = 0; i < SOUND_MAX_SAMPLES; i++) {
+    for (int i = 0; i < SOUND_MAX_PLAYERS; i++) {
         if (s_context.players[i].playing)
             count++;
     }

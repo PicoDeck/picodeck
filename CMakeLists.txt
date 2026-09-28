@@ -318,6 +318,7 @@ add_executable(picodeck
     src/drivers/image_api.c
     src/drivers/image_preload.c
     src/drivers/audio.c
+    src/drivers/audio_mix.c
     src/drivers/sound.c
     src/drivers/fileplayer.c
     src/drivers/wav.c

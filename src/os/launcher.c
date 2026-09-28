@@ -518,16 +518,26 @@ extern _Atomic bool g_core1_paused;
 // MAX_SELECT, MIN_DESELECT — all in sysclk units) is recomputed; if the boot
 // quad init fell back to serial mode, rescale CLKDIV to keep SCK ≤50 MHz as
 // before.
+//
+// Two entry points, because a clock change is not atomic: PSRAM keeps
+// running at the OLD clkdiv from set_sys_clock_khz until something retimes
+// it, so a bare "recompute for sys_khz" call at either end of the change can
+// momentarily leave SCK above what the boot-calibrated RXDELAY was proven at
+// (Task 4b: this HardFaulted the Lua VM's PSRAM stack about 1 in 8 boosts).
+//   - psram_qmi_prescale(): call BEFORE set_sys_clock_khz, with the current
+//     and the target clk_sys. In quad mode this is timing safe at both
+//     (qmi_psram_prescale_timing/qmi_psram_timing); in serial mode there is
+//     no fine-grained timing to pre-scale, so it rescales CLKDIV for the
+//     faster (worse) of the two, as before.
+//   - psram_qmi_retime(): call for the clk_sys actually in force — after a
+//     successful set_sys_clock_khz, or with the old clk_sys on the abort
+//     path — to retime exactly for steady-state running there.
 #define PSRAM_QMI_SERIAL_MAX_SCK_KHZ 50000u
 #if defined(PICO_RP2350) && !defined(PICODECK_SIMULATOR)
 #include "hardware/structs/qmi.h"
 #include "hardware/sync.h"
 #include "drivers/qmi_psram.h"
-static void psram_qmi_apply_timing(uint32_t sys_khz) {
-  if (qmi_psram_is_quad()) {
-    qmi_psram_update_timing();
-    return;
-  }
+static void psram_qmi_serial_clkdiv(uint32_t sys_khz) {
   uint32_t clkdiv = (sys_khz + PSRAM_QMI_SERIAL_MAX_SCK_KHZ - 1)
                   / PSRAM_QMI_SERIAL_MAX_SCK_KHZ;
   if (clkdiv < 1) clkdiv = 1;
@@ -544,8 +554,25 @@ static void psram_qmi_apply_timing(uint32_t sys_khz) {
          (unsigned long)clkdiv, (unsigned long)(sys_khz / clkdiv),
          (unsigned long)sys_khz);
 }
+static void psram_qmi_prescale(uint32_t current_khz, uint32_t khz) {
+  if (qmi_psram_is_quad()) {
+    qmi_psram_prescale_timing(current_khz * 1000, khz * 1000);
+    return;
+  }
+  psram_qmi_serial_clkdiv(khz > current_khz ? khz : current_khz);
+}
+static void psram_qmi_retime(uint32_t sys_khz) {
+  if (qmi_psram_is_quad()) {
+    qmi_psram_update_timing();
+    return;
+  }
+  psram_qmi_serial_clkdiv(sys_khz);
+}
 #else
-static void psram_qmi_apply_timing(uint32_t sys_khz) { (void)sys_khz; }
+static void psram_qmi_prescale(uint32_t current_khz, uint32_t khz) {
+  (void)current_khz; (void)khz;
+}
+static void psram_qmi_retime(uint32_t sys_khz) { (void)sys_khz; }
 #endif
 
 void launcher_apply_clock(uint32_t khz) {
@@ -600,9 +627,14 @@ void launcher_apply_clock(uint32_t khz) {
   // 3. Ensure display DMA is finished before changing clock source
   display_apply_clock(); // This now waits for DMA internally
 
-  // 3b. Pre-scale the QMI PSRAM divider for the worst of both clocks so the
-  // PSRAM SCK never exceeds its validated rate, even mid-transition.
-  psram_qmi_apply_timing(khz > current_khz ? khz : current_khz);
+  // 3b. Pre-scale the QMI PSRAM timing so it stays safe at BOTH the current
+  // and the target clk_sys for the whole transition. The old code did no
+  // pre-scale at all in quad mode: it applied the current clock's timing,
+  // so PSRAM ran the old divider on the new clk_sys until the retime (only
+  // serial mode took the faster clock's clkdiv). qmi_psram_prescale_timing()
+  // computes all three fields (CLKDIV, MAX_SELECT, MIN_DESELECT) for both
+  // clocks together (Task 4b).
+  psram_qmi_prescale(current_khz, khz);
   pio_psram_set_sysclk(khz > current_khz ? khz : current_khz);
 
   // 4. Apply the new system clock
@@ -611,7 +643,7 @@ void launcher_apply_clock(uint32_t khz) {
   if (!ok) {
     printf("[LAUNCHER] Clock change to %lu MHz failed (PLL cannot produce this frequency)\n",
            (unsigned long)(khz / 1000));
-    psram_qmi_apply_timing(current_khz);
+    psram_qmi_retime(current_khz);
     pio_psram_set_sysclk(current_khz);
     kbd_resume_bus();  // The clock did not change, so the old divider is still right.
     g_core1_pause = false;
@@ -619,7 +651,7 @@ void launcher_apply_clock(uint32_t khz) {
   }
 
   // 4b. Retune the QMI PSRAM divider exactly for the new sysclk.
-  psram_qmi_apply_timing(khz);
+  psram_qmi_retime(khz);
   pio_psram_set_sysclk(khz);
 
   // 5. Re-configure peripheral clock so SPI/I2C/UART/PWM stay stable.
@@ -632,6 +664,10 @@ void launcher_apply_clock(uint32_t khz) {
 
   // 6. Update display PIO divider for new clk_sys frequency
   display_apply_clock();
+
+  // 6b. The audio output's PWM divider comes from clk_sys: re-derive it
+  // (it ran at the old rate for the few ms since step 4).
+  audio_apply_clock();
 
   // 7. Update keyboard I2C divider for new clk_sys frequency, and re-start
   // the bus engine paused in step 1b.

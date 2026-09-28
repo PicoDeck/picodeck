@@ -4,8 +4,9 @@
 // Built by tests/e2e/native/Makefile into tests/e2e/apps/native_leaky/
 // main.elf (committed). Driven by tests/e2e/test_native_resources.py, which
 // checks that the loader's exit sweep gives it all back: the files (FatFS
-// allows 16 open at once), the PSRAM behind images/terminals/players, and
-// the audio slot a still-playing sample player holds.
+// allows 16 open at once), the PSRAM behind images/terminals/players, the
+// audio slot a still-playing sample player holds, and the master volume it
+// turned down.
 //
 // It also exercises the well-behaved paths through the same wrappers (a
 // file closed twice, an image freed twice: the second call must be a no-op)
@@ -61,6 +62,7 @@ void picodeck_main(const PicoCalcAPI *api, const char *app_dir,
         api->soundplayer->playerSetSample(p, s);
         api->soundplayer->playerPlay(p, 255);
     }
+    api->audio->setVolume(20);  // left turned down: the exit resets it
     pcsound_player_t idle = api->soundplayer->playerNew();
     pcfileplayer_t fp = api->soundplayer->filePlayerNew();
     terminal_t *term = api->terminal->create(40, 20, 200);

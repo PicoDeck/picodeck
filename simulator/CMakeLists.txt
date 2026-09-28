@@ -381,6 +381,9 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_bridge_json.c
     ${PICODECK_ROOT}/src/drivers/mod_player.c
     ${PICODECK_ROOT}/src/drivers/fileplayer.c
+    ${PICODECK_ROOT}/src/drivers/audio_mix.c
+    ${PICODECK_ROOT}/src/drivers/sound.c
+    ${PICODECK_ROOT}/src/drivers/mp3_player.c
     ${PICODECK_ROOT}/src/drivers/wav.c
     ${PICODECK_ROOT}/third_party/miniz/miniz.c
     ${PICODECK_ROOT}/third_party/miniz/miniz_tinfl.c

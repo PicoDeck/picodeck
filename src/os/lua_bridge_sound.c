@@ -347,7 +347,8 @@ static int l_sound_sampleplayer_new(lua_State *L) {
     *ud = (sound_player_t *)g_api.soundplayer->playerNew();
     if (!*ud) {
         lua_pushnil(L);
-        lua_pushstring(L, "failed to create player");
+        lua_pushfstring(L, "at most %d sampleplayers can exist at once",
+                        SOUND_MAX_PLAYERS);
         return 2;
     }
     if (sample) {
@@ -619,7 +620,7 @@ typedef struct {
 static sound_lua_cb_t s_fp_finish_cbs[MAX_FILEPLAYER_CBS];
 static sound_lua_cb_t s_fp_loop_cbs[MAX_FILEPLAYER_CBS];
 
-#define MAX_SAMPLEPLAYER_CBS SOUND_MAX_SAMPLES
+#define MAX_SAMPLEPLAYER_CBS SOUND_MAX_PLAYERS
 static sound_lua_cb_t s_sp_finish_cbs[MAX_SAMPLEPLAYER_CBS];
 static sound_lua_cb_t s_sp_loop_cbs[MAX_SAMPLEPLAYER_CBS];
 
@@ -841,11 +842,15 @@ static int l_sound_mp3player_load(lua_State *L) {
     mp3_player_t *player = check_mp3player(L, 1);
     const char *path = luaL_checkstring(L, 2);
     if (!fs_sandbox_check(L, path, false)) {
-        lua_pushboolean(L, false);
+        lua_pushnil(L);
         lua_pushstring(L, "access denied");
         return 2;
     }
-    g_api.soundplayer->mp3PlayerLoad(player, path);
+    if (!mp3_player_load(player, path)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "failed to load mp3");
+        return 2;
+    }
     lua_pushboolean(L, true);
     return 1;
 }

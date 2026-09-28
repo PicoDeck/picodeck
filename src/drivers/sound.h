@@ -3,16 +3,19 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define SOUND_MAX_SAMPLES 8
+// Sample players that exist at once: the mixer's voices. Samples have no
+// fixed limit (each is a umm allocation until destroyed).
+#define SOUND_MAX_PLAYERS 8
 #define SOUND_MAX_SAMPLE_SIZE (64 * 1024)
 
-typedef struct {
+typedef struct sound_sample {
     uint8_t *data;
     uint32_t length;
     uint32_t sample_rate;
     uint8_t bits_per_sample;
     uint8_t channels;
     bool loaded;
+    struct sound_sample *prev, *next;  // every live sample (sound_init frees them)
 } sound_sample_t;
 
 typedef struct {
@@ -36,18 +39,11 @@ typedef struct {
     volatile bool loop_pending;
 } sound_player_t;
 
-typedef struct {
-    sound_sample_t *samples[SOUND_MAX_SAMPLES];
-    sound_player_t players[SOUND_MAX_SAMPLES];
-    uint8_t active_players;
-    uint32_t time_offset_us;
-} sound_context_t;
-
 void sound_init(void);
 
 /* The mixer is driven from audio.c's DMA refill hook (Core 1 ISR) — no
  * playback timer exists anymore. sound_mixer_process adds up to
- * SOUND_MAX_SAMPLES players' PCM into out_l/out_r (int32 accumulation,
+ * SOUND_MAX_PLAYERS players' PCM into out_l/out_r (int32 accumulation,
  * clipped by the caller) at AUDIO_OUT_RATE frames. sound_pump_callbacks
  * fires deferred finish/loop callbacks from the Core 1 work pump. */
 void sound_mixer_process(int32_t *out_l, int32_t *out_r, int frames);
