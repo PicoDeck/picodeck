@@ -29,6 +29,24 @@ LISTEN = os.environ.get("AUDIO_LISTEN") == "1"
 APP, APP_ID = "audio_mix", "com.test.audio_mix"
 SFX_HZ = (523, 587, 659, 698, 784, 880, 988, 1047)
 
+# Core 1's tick cost before the mixer took the MP3 over: the worst of
+# three runs of each scenario on the firmware before this change. "both"
+# could not run then; its budget is the two scenarios' sum.
+BASELINE = {
+    "mp3": {"tick_over": 268, "tick_missed": 9394, "tick_max_us": 43995},
+    "sfx": {"tick_over": 2, "tick_missed": 6, "tick_max_us": 2963},
+}
+BASELINE["both"] = {k: BASELINE["mp3"][k] + BASELINE["sfx"][k]
+                    for k in BASELINE["mp3"]}
+
+
+def assert_tick_cost_within(stats, base):
+    """The acceptance criterion "Core 1 tick overruns unchanged", with room
+    for run-to-run noise."""
+    assert stats["tick_missed"] <= base["tick_missed"] * 3 // 2 + 2, (stats, base)
+    assert stats["tick_over"] <= base["tick_over"] * 3 // 2 + 20, (stats, base)
+    assert stats["tick_max_us"] <= base["tick_max_us"] * 3 // 2 + 500, (stats, base)
+
 
 def audiostat(target, arg=""):
     """One `audiostat` reply as a dict of ints."""
@@ -269,6 +287,7 @@ def test_mp3_music_alone(mix_app):
     assert stats["out"] == 1, stats
     assert stats["mp3_underruns"] == 0, stats
     assert stats["stream_underruns"] == 0, stats
+    assert_tick_cost_within(stats, BASELINE["mp3"])
 
 
 def test_eight_sample_voices(mix_app):
@@ -280,6 +299,8 @@ def test_eight_sample_voices(mix_app):
     assert_passed(results)
     assert stats["window_ms"] >= 15000 and stats["ticks"] > 0, stats
     assert stats["voices"] == 8, stats
+    assert stats["stream_underruns"] == 0, stats
+    assert_tick_cost_within(stats, BASELINE["sfx"])
 
 
 def test_music_with_eight_voices(mix_app):
@@ -298,6 +319,35 @@ def test_music_with_eight_voices(mix_app):
     assert m["pause_us"] <= 120000 and m["stop_us"] <= 120000, m
     assert m["pos_before_resume"] == m["pos_at_pause"], m
     assert m["position"] > m["pos_before_resume"], m
+    assert_tick_cost_within(stats, BASELINE["both"])
+
+
+def test_exit_stops_the_output(mix_app, target):
+    """After an app that played music and eight voices exits, the launcher
+    runs with the output stopped: no refill interrupts at all."""
+    stats, _, outcome, results = mix_app("both", seconds=8, measure_s=3)
+    assert outcome["result"] == "returned", outcome
+    assert_passed(results)
+    assert stats["out"] == 1, stats
+    audiostat(target, "reset")
+    time.sleep(1.0)
+    after = audiostat(target)
+    assert after["out"] == 0 and after["isr"] == 0, after
+    assert after["voices"] == 0, after
+
+
+@pytest.mark.skipif(not LISTEN, reason="AUDIO_LISTEN=1: a person listens at the device")
+def test_listen(mix_app):
+    """The captioned sequence (see STEPS in FIXTURE): music alone, + eight
+    voices, pause and resume, a music volume sweep, a master volume sweep,
+    stop. The person listening reports any crackle, click, pop or dropout
+    against the on-screen step; the run itself only has to finish cleanly
+    with no MP3 underruns."""
+    stats, _, outcome, results = mix_app("listen", seconds=23, measure_s=20)
+    print("listen:", stats)
+    assert outcome["result"] == "returned", outcome
+    assert_passed(results)
+    assert stats["mp3_underruns"] == 0, stats
 
 
 VIDEO_APP, VIDEO_ID = "audio_video", "com.test.audio_video"
