@@ -29,4 +29,9 @@ T.case("volume_range", function()
     audio.setVolume(50)
 end)
 
+-- Left turned down on purpose: test_audio.py checks the exit resets it.
+T.case("leave_volume_low", function()
+    audio.setVolume(20)
+end)
+
 T.done()

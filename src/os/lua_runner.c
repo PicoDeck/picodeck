@@ -283,6 +283,9 @@ static bool lua_run_app(const app_entry_t *app) {
   fileplayer_reset();
   sound_init();
   mp3_player_reset();
+  // The master volume is the app's too: an app that turned it down must not
+  // leave every later app (and its MP3) quiet until a reboot.
+  audio_set_volume(100);
   // Every source is silent now: stop the output too, so the launcher runs
   // without its refill interrupt and the next app starts it afresh (at its
   // own clock).

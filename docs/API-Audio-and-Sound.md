@@ -38,7 +38,7 @@ picocalc.audio.stopTone()
 ---
 
 #### `picocalc.audio.setVolume(volume)`
-Sets the master volume. It scales everything the mixer plays.
+Sets the master volume. It scales everything the mixer plays: tones, SamplePlayers, the stream (and so the FilePlayer and the MOD player) and the MP3Player. The master volume resets to 100 when the app exits.
 
 - **Parameters:**
   - `volume` (number): Volume level (0–100, where 0 is muted and 100 is maximum; larger values clamp to 100)

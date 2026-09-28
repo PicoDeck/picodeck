@@ -819,7 +819,9 @@ function picocalc.audio.playTone(freq, duration_ms) end
 ---Stop the currently playing tone immediately.
 function picocalc.audio.stopTone() end
 
----Set the audio output volume for tone playback.
+---Set the master volume. It scales everything the mixer plays: tones,
+---samples, the PCM stream (FilePlayer, MOD player) and MP3. It resets to
+---100 when the app exits.
 ---@param volume integer 0 (mute) – 100 (maximum)
 function picocalc.audio.setVolume(volume) end
 

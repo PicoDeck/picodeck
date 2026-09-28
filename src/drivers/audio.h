@@ -25,7 +25,8 @@ void audio_stream_poll(void);
 // Every source starts the output if it is off, and they all play at once.
 void audio_play_tone(uint32_t freq_hz, uint32_t duration_ms);  // 0 ms: until stopped
 void audio_stop_tone(void);
-void audio_set_volume(uint8_t volume);  // master, 0-100, scales everything
+// Master, 0-100, scales everything; app teardowns reset it to 100.
+void audio_set_volume(uint8_t volume);
 
 // The PCM stream (fileplayer, MOD, the native/Lua stream API): stereo
 // interleaved int16 frames at the rate given to audio_start_stream.

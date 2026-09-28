@@ -794,10 +794,11 @@ static char *h_get_audio_state(const char *params) {
     bool tone = audio_tone_playing();
     bool stream = audio_stream_active();
     int players = sound_get_playing_source_count();
-    static char buf[128];
+    static char buf[160];
     snprintf(buf, sizeof(buf),
-             "{\"jsonrpc\":\"2.0\",\"result\":{\"tone_playing\":%s,\"stream_active\":%s,\"sound_players_active\":%d}}",
-             tone ? "true" : "false", stream ? "true" : "false", players);
+             "{\"jsonrpc\":\"2.0\",\"result\":{\"tone_playing\":%s,\"stream_active\":%s,\"sound_players_active\":%d,\"master_volume\":%d}}",
+             tone ? "true" : "false", stream ? "true" : "false", players,
+             (int)audio_get_volume());
     return strdup(buf);
 }
 

@@ -182,6 +182,10 @@ void audio_set_volume(uint8_t volume) {
   src_unlock();
 }
 
+uint8_t audio_get_volume(void) {
+  return s_volume;
+}
+
 // ── The PCM stream ──────────────────────────────────────────────────────────
 
 void audio_start_stream(uint32_t sample_rate) {

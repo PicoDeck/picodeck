@@ -223,7 +223,7 @@ typedef struct {
     // duration_ms = 0 plays indefinitely until stopTone() is called.
     void (*playTone)(uint32_t freq_hz, uint32_t duration_ms);
     void (*stopTone)(void);
-    // Master volume 0-100
+    // Master volume 0-100; it resets to 100 when the app exits
     void (*setVolume)(uint8_t volume);
     // PCM sample streaming. Samples are stereo interleaved int16_t (L,R,L,R).
     // count = number of stereo frames (each frame = 2 int16_t values).
