@@ -341,13 +341,16 @@ def test_output_rate_survives_the_video_boost(target):
         pytest.skip("ffmpeg makes the clip")
     with tempfile.TemporaryDirectory() as tmp:
         clip = Path(tmp) / "clip.avi"
-        # 5 s (~215 KB; it loops): with sfx1.wav the push stays under
-        # ~250 KB, inside push_app's extraction timeout (see mix_app). An
-        # 8 s clip is ~340 KB on its own.
+        # 3 s at 20 fps (~218 KB; it loops). With sfx1.wav the push stays
+        # under ~250 KB, inside push_app's extraction timeout (see mix_app).
+        # The frame rate keeps the MP3 in the video player's audio index,
+        # which holds frames * 1.5 + 64 chunks: ffmpeg writes one 26 ms MP3
+        # frame per chunk, so at 10 fps the index ran out ~1.4 s before the
+        # end of a 5 s clip and the MP3 went silent for the rest of it.
         subprocess.run([FFMPEG, "-v", "error", "-y",
-                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=20",
                         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
-                        "-t", "5", "-c:v", "mjpeg", "-pix_fmt", "yuvj420p",
+                        "-t", "3", "-c:v", "mjpeg", "-pix_fmt", "yuvj420p",
                         "-q:v", "12", "-c:a", "libmp3lame", "-b:a", "96k",
                         "-ac", "2", str(clip)], check=True)
         sfx = Path(tmp) / "sfx1.wav"
