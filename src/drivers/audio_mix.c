@@ -114,8 +114,8 @@ void __time_critical_func(audio_mix_render)(int16_t *lr, int frames) {
         int32_t t = phase < AUDIO_OUT_RATE / 2 ? level : -level;
         s_mix_l[i] += t * 128;
         s_mix_r[i] += t * 128;
-        // left == 0 first: a duration that already rounded to 0 frames
-        // must stop here, never decrement-and-wrap past it.
+        // left == 0 first is defensive (a timed tone starts with at least
+        // 44 frames: 1 ms): never decrement-and-wrap past it.
         if (timed && (left == 0 || --left == 0)) {
           s_tone_on = false;
           break;
@@ -158,8 +158,9 @@ void audio_play_tone(uint32_t freq_hz, uint32_t duration_ms) {
   s_tone_level = s_log_volume_lut[s_volume];
   s_tone_on = true;
   src_unlock();
-  // Never called while holding the lock: it may end up calling back into
-  // audio.c, which must not block on a lock the render also takes.
+  // Called after unlocking: starting the output is slow hardware setup
+  // (GPIO, PWM and DMA configuration), and its dma_claim_unused_channel
+  // takes the hardware-claim spin lock, which must not nest inside s_src_cs.
   audio_output_ensure_running();
 }
 

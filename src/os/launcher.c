@@ -628,10 +628,12 @@ void launcher_apply_clock(uint32_t khz) {
   display_apply_clock(); // This now waits for DMA internally
 
   // 3b. Pre-scale the QMI PSRAM timing so it stays safe at BOTH the current
-  // and the target clk_sys for the whole transition — a bare "worst of both"
-  // clkdiv (the old behaviour) still let MAX_SELECT/MIN_DESELECT drift out
-  // of spec in quad mode; qmi_psram_prescale_timing() computes all three
-  // fields together (Task 4b).
+  // and the target clk_sys for the whole transition. The old code did no
+  // pre-scale at all in quad mode: it applied the current clock's timing,
+  // so PSRAM ran the old divider on the new clk_sys until the retime (only
+  // serial mode took the faster clock's clkdiv). qmi_psram_prescale_timing()
+  // computes all three fields (CLKDIV, MAX_SELECT, MIN_DESELECT) for both
+  // clocks together (Task 4b).
   psram_qmi_prescale(current_khz, khz);
   pio_psram_set_sysclk(khz > current_khz ? khz : current_khz);
 

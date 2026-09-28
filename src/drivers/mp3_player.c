@@ -475,7 +475,7 @@ static void decode_fill_ring(void) {
         // Top up the staging buffer between frames: a 3-frame decode burst can
         // run 10-90ms on Core 1 (libmad resync storms, flash-cold synth), far
         // longer than the staging cushion, so refilling only once per update
-        // starves the DMA and crackles.
+        // lets the mixer drain the stage dry and crackles.
         refill_staging_buf();
     }
 }
