@@ -216,8 +216,10 @@ void audio_push_samples(const int16_t *samples, int count) {
   audio_ring_push(&s_ring, samples, count);  // drops what doesn't fit
 }
 
+// 0 while the stream is off: pushes are dropped then, and the producers
+// that pace on this (fileplayer, MOD) must wait, not read or render flat out.
 uint32_t audio_ring_free(void) {
-  return audio_ring_space(&s_ring);
+  return s_stream_on ? audio_ring_space(&s_ring) : 0;
 }
 
 void audio_stream_debug(uint32_t *isr_count, uint32_t *underruns,

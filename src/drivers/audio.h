@@ -36,6 +36,8 @@ void audio_start_stream(uint32_t sample_rate);
 void audio_stop_stream(void);
 void audio_push_samples(const int16_t *samples, int count);  // count = frames
 // Free frames in the ring: check before rendering, overflow is dropped.
+// 0 while the stream is stopped (pushes are dropped then), so a producer
+// that paces on it waits until its stream is started again.
 uint32_t audio_ring_free(void);
 void audio_stream_debug(uint32_t *isr_count, uint32_t *underruns, uint32_t *ring_used);
 void audio_stream_reset_underruns(void);

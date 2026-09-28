@@ -197,10 +197,15 @@ static void test_zero_rate_streams_at_the_output_rate(void) {
   CHECK_EQ_INT(left(1), ring_value(-4096));
 }
 
+// While the stream is off, pushes are dropped and the ring reports no room,
+// so the producers that pace on it (fileplayer, MOD) wait instead of
+// racing through their data.
 static void test_pushes_while_stopped_are_dropped(void) {
   reset_all();
   push_const(1000, 10);
-  CHECK_EQ_INT(audio_ring_free(), 4096);
+  CHECK_EQ_INT(audio_ring_free(), 0);
+  audio_start_stream(AUDIO_OUT_RATE);
+  CHECK_EQ_INT(audio_ring_free(), 4096);  // nothing of the pushes got in
 }
 
 static void test_the_mp3_adds_in_too(void) {

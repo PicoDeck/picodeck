@@ -95,7 +95,7 @@ picocalc.audio.pushSamples(samples)
 ---
 
 #### `picocalc.audio.ringFree()`
-Get the number of free slots available in the audio ring buffer. Use this to avoid pushing more samples than the buffer can hold. While no stream is started it reports the whole (empty) buffer.
+Get the number of free slots available in the audio ring buffer. Use this to avoid pushing more samples than the buffer can hold. While no stream is started it reports 0 (pushes are dropped then).
 
 - **Parameters:** None
 - **Returns:** (number) Free buffer slots
