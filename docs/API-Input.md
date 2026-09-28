@@ -159,7 +159,7 @@ True while a key is held. `k` is a one-character string (`"w"`; letters
 ignore case) or an integer keycode as `pollEvent` reports it. Updated by
 `update()`. Reliable for buttons (arrows, Enter, Esc, F-keys, modifiers);
 letters and shifted symbols depend on the keyboard reporting their release
-(pending hardware confirmation). `clearState()` clears a key that sticks.
+(letters confirmed on the device: Z and X held and released in a game; shifted symbols still pending hardware confirmation). `clearState()` clears a key that sticks.
 
 ---
 

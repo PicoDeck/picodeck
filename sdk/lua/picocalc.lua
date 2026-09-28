@@ -2324,13 +2324,18 @@ function picocalc.gfx3d.setSky(bands) end
 function picocalc.gfx3d.beginScene(clearColor) end
 function picocalc.gfx3d.draw(mesh, x, y, z, yaw, pitch, roll, scale, bias, sortAsOne) end
 function picocalc.gfx3d.drawBasis(mesh, x, y, z, fx, fy, fz, ux, uy, uz, scale, bias, sortAsOne) end
+---@param list table an array of meshes built in world coordinates
+---@param bias number|nil depth bias for every mesh (default 0)
+---@param start integer|nil the first index drawn; the rest wrap round (default 1)
+function picocalc.gfx3d.drawList(list, bias, start) end
 function picocalc.gfx3d.drawBackground(mesh) end
 function picocalc.gfx3d.drawSprite(image, x, y, z, size, sx, sy, sw, sh, bias) end
 function picocalc.gfx3d.endScene() end
 ---@return number|nil sx, number sy, number depth
 function picocalc.gfx3d.project(x, y, z) end
+---@param t table|nil a table to fill and return instead of a new one
 ---@return {tris_in: integer, culled: integer, clipped: integer, drawn: integer, sprites: integer, overflow: integer, us_geom: integer, us_raster: integer}
-function picocalc.gfx3d.getStats() end
+function picocalc.gfx3d.getStats(t) end
 
 -- =============================================================================
 -- picocalc.video  (MJPEG AVI playback)

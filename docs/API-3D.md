@@ -126,6 +126,17 @@ Like `draw`, but oriented by a forward vector (the model's −z points along it)
 
 ---
 
+#### `picocalc.gfx3d.drawList(list [, bias [, start]])`
+Draws every mesh in the array `list` as it is, in world coordinates with no transform: the same as `draw(m, 0, 0, 0, 0, 0, 0, 1, bias)` for each, in one call.
+
+- `bias` (default 0) applies to every mesh, as in `draw`.
+- `start` (default 1) is the first mesh drawn; the rest follow in order and wrap round to `list[start - 1]`, so you can submit the meshes nearest the camera first.
+- An element that is not a mesh raises an error naming it (`list[3]`), as does a `start` outside 1 to `#list`. An empty list draws nothing.
+
+Use it for scenery built in world coordinates, such as track sections: one `drawList` costs far less than a `draw` per mesh.
+
+---
+
 #### `picocalc.gfx3d.drawBackground(mesh)`
 Draws distant scenery, such as a mountain ring, centred on the camera. It turns with the camera but never moves with it. It is never fogged or far-clipped, and it is drawn before everything else, in the order submitted.
 
@@ -151,8 +162,8 @@ Fills the viewport (sky or clear colour) and draws everything, far to near, into
 
 ---
 
-#### `picocalc.gfx3d.getStats()`
-- **Returns:** a table describing the last frame:
+#### `picocalc.gfx3d.getStats([t])`
+- **Returns:** a table describing the last frame. Pass a table `t` to have it filled and returned instead, so a per-frame call allocates nothing:
 
 | Field | Meaning |
 |---|---|
@@ -188,7 +199,7 @@ Camera, projection, light, fog and viewport settings apply to the `draw*` calls 
 
 ### Performance notes
 - **Submit nearest objects first.** A frame holds 4096 triangles and sprites; the rest are dropped and counted in `overflow`, so submitting near-first means the dropped ones are the distant ones.
-- **Each `draw` costs one Lua→C call, plus work per vertex and per visible triangle.** Group static scenery into a few meshes rather than many tiny ones.
+- **Each `draw` costs one Lua→C call, plus work per vertex and per visible triangle.** Group static scenery into a few meshes rather than many tiny ones, and draw meshes built in world coordinates with one `drawList` call: on the device each `draw` call adds roughly 20-65 µs of overhead, so 70 of them cost several milliseconds a frame.
 - **Allocate meshes once, not every frame.** For smooth frame times, create tables up front and consider `collectgarbage("generational")`.
 
 Measured on the device (RP2350 at 200 MHz, a 320×240 viewport with sky and fog, a track strip in 8-segment chunks):

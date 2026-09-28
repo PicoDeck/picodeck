@@ -339,6 +339,38 @@ static int l_gfx3d_drawBasis(lua_State *L) {
   return 0;
 }
 
+// drawList(list [, bias [, start]]): every mesh in the array `list`, as it
+// is (world coordinates, no transform), from list[start] (default 1) round
+// to list[start - 1]. One Lua->C call for a whole static scene: each draw()
+// costs a Lua->C call, ~20-65 us of overhead on the device.
+static int l_gfx3d_drawList(lua_State *L) {
+  need_scene(L, "drawList");
+  luaL_checktype(L, 1, LUA_TTABLE);
+  const float bias = lb_optfloat(L, 2, 0.0f);
+  const lua_Integer n = luaL_len(L, 1);
+  const lua_Integer start = lb_optint(L, 3, 1);
+  if (n == 0) return 0;
+  if (start < 1 || start > n) return luaL_argerror(L, 3, "start must be in 1..#list");
+  static const float ident[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  static const float origin[3] = {0, 0, 0};
+  uint32_t geom = 0;
+  for (lua_Integer k = 0; k < n; k++) {
+    const lua_Integer i = (start - 1 + k) % n + 1;
+    lua_rawgeti(L, 1, i);
+    mesh_ud_t *u = (mesh_ud_t *)luaL_testudata(L, -1, MESH_MT);
+    if (!u || !u->m) {
+      s_us_geom += geom;
+      return luaL_error(L, "gfx3d.drawList: list[%d] is not a live mesh", (int)i);
+    }
+    const uint32_t t0 = now_us();
+    gfx3d_draw(s_g, u->m, ident, origin, 1.0f, bias, false);
+    geom += now_us() - t0;
+    lua_pop(L, 1);
+  }
+  s_us_geom += geom;
+  return 0;
+}
+
 static int l_gfx3d_drawBackground(lua_State *L) {
   need_scene(L, "drawBackground");
   const gfx3d_mesh_t *m = check_mesh(L, 1)->m;
@@ -425,9 +457,16 @@ static int l_gfx3d_project(lua_State *L) {
   return 3;
 }
 
+// getStats([t]): the last frame's counters, into t (returned) when given, so
+// a per-frame call need not allocate, else into a new table.
 static int l_gfx3d_getStats(lua_State *L) {
   const gfx3d_stats_t *s = gfx3d_get_stats(ctx(L));
-  lua_createtable(L, 0, 8);
+  if (lua_isnoneornil(L, 1)) {
+    lua_createtable(L, 0, 8);
+  } else {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_settop(L, 1);
+  }
   lua_pushinteger(L, (lua_Integer)s->tris_in);  lua_setfield(L, -2, "tris_in");
   lua_pushinteger(L, (lua_Integer)s->culled);   lua_setfield(L, -2, "culled");
   lua_pushinteger(L, (lua_Integer)s->clipped);  lua_setfield(L, -2, "clipped");
@@ -456,6 +495,7 @@ static const luaL_Reg l_gfx3d_lib[] = {
     {"beginScene", l_gfx3d_beginScene},
     {"draw", l_gfx3d_draw},
     {"drawBasis", l_gfx3d_drawBasis},
+    {"drawList", l_gfx3d_drawList},
     {"drawBackground", l_gfx3d_drawBackground},
     {"drawSprite", l_gfx3d_drawSprite},
     {"endScene", l_gfx3d_endScene},

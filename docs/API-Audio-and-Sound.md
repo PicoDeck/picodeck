@@ -547,6 +547,8 @@ Streams an MP3 file from the SD card.
 
 The MP3 plays through the same mixer as samples, the stream and tones, so music and sound effects play together; `picocalc.audio.setVolume` scales it too. Sources add up: a full-volume MP3 plus loud samples clips, so leave headroom (music at about 60).
 
+**Performance.** MP3 decoding runs on the second core, but it shares the flash and PSRAM cache with your app, so it slows your app's own code. Measured in a gfx3d game at 200 MHz: 44.1 kHz stereo MP3 music made every frame about 2.1× slower, 22.05 kHz mono about 1.24×. A looping WAV streamed with a [FilePlayer](#fileplayer) (`play(0)`) cost 2.5% at 22.05 kHz mono and 15% at 44.1 kHz stereo, because it reads the SD card over its own bus. For music in a real-time game, use WAV.
+
 #### `picocalc.sound.mp3player()`
 Creates an MP3Player.
 

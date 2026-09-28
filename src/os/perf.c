@@ -6,9 +6,15 @@
 
 #define PERF_SAMPLES 30
 
-static uint32_t s_perf_frame_times[PERF_SAMPLES] = {0};
+// getFPS: frames presented per second, from the last PERF_SAMPLES periods
+// between endFrame returns, so setTargetFPS's wait counts (a game paced at
+// 30 reports 30 however little each frame works). getFrameTime: the last
+// frame's work in ms, from the previous endFrame's return (or beginFrame,
+// for the first frame) to this endFrame's call, excluding the wait.
+static uint32_t s_perf_periods_us[PERF_SAMPLES] = {0};
 static int s_perf_index = 0;
-static uint64_t s_perf_frame_start_us = 0;
+static uint64_t s_perf_frame_start_us = 0;   // when this frame's work began
+static uint64_t s_perf_last_end_us = 0;      // when the previous endFrame returned
 static uint32_t s_perf_last_frame_time = 0;  // ms, excluding the pacing wait
 static int s_perf_fps = 0;
 static uint32_t s_perf_target_us = 0;        // 0 = unpaced
@@ -18,12 +24,13 @@ static uint64_t perf_now_us(void) { return to_us_since_boot(get_absolute_time())
 
 void perf_init(void) {
     s_perf_frame_start_us = 0;
+    s_perf_last_end_us = 0;
     s_perf_index = 0;
     s_perf_fps = 0;
     s_perf_last_frame_time = 0;
     s_perf_target_us = 0;
     s_perf_next_end_us = 0;
-    memset(s_perf_frame_times, 0, sizeof(s_perf_frame_times));
+    memset(s_perf_periods_us, 0, sizeof(s_perf_periods_us));
 }
 
 void perf_begin_frame(void) {
@@ -33,22 +40,8 @@ void perf_begin_frame(void) {
 
 void perf_end_frame(void) {
     uint64_t now = perf_now_us();
-    if (s_perf_frame_start_us != 0) {
-        uint32_t delta = (uint32_t)((now - s_perf_frame_start_us + 500) / 1000);
-        s_perf_last_frame_time = delta;
-        s_perf_frame_times[s_perf_index] = delta;
-        s_perf_index = (s_perf_index + 1) % PERF_SAMPLES;
-        uint32_t sum = 0;
-        int count = 0;
-        for (int i = 0; i < PERF_SAMPLES; i++) {
-            if (s_perf_frame_times[i] > 0) {
-                sum += s_perf_frame_times[i];
-                count++;
-            }
-        }
-        uint32_t avg = count > 0 ? sum / (uint32_t)count : 0;
-        s_perf_fps = avg > 0 ? (int)(1000 / avg) : 0;
-    }
+    if (s_perf_frame_start_us != 0)
+        s_perf_last_frame_time = (uint32_t)((now - s_perf_frame_start_us + 500) / 1000);
     // Deadline pacing: frame N should end at end(N-1) + target. On time, wait
     // for the deadline; late, restart the schedule from now (never sprint to
     // catch up).
@@ -63,7 +56,23 @@ void perf_end_frame(void) {
         else
             s_perf_next_end_us = now;
     }
-    s_perf_frame_start_us = perf_now_us();
+    uint64_t end = perf_now_us();
+    if (s_perf_last_end_us != 0) {
+        uint64_t period = end - s_perf_last_end_us;
+        s_perf_periods_us[s_perf_index] = period > UINT32_MAX ? UINT32_MAX : (uint32_t)period;
+        s_perf_index = (s_perf_index + 1) % PERF_SAMPLES;
+        uint64_t sum = 0;
+        uint32_t count = 0;
+        for (int i = 0; i < PERF_SAMPLES; i++) {
+            if (s_perf_periods_us[i] > 0) {
+                sum += s_perf_periods_us[i];
+                count++;
+            }
+        }
+        s_perf_fps = sum > 0 ? (int)((1000000ull * count + sum / 2) / sum) : 0;
+    }
+    s_perf_last_end_us = end;
+    s_perf_frame_start_us = end;
 }
 
 int perf_get_fps(void) {

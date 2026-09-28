@@ -40,4 +40,26 @@ T.case("late_frame_resyncs_instead_of_sprinting", function()
     T.ok(d >= 15000, "frame after a stall waited only " .. d .. " us")
 end)
 
+T.case("getFPS_counts_the_pacing_wait", function()
+    perf.setTargetFPS(50)                     -- 20000 us per frame
+    perf.beginFrame()
+    for _ = 1, 40 do perf.endFrame() end      -- no work: the wait is all of each frame
+    local fps, ms = perf.getFPS(), perf.getFrameTime()
+    perf.setTargetFPS(0)
+    T.ok(fps >= 47 and fps <= 53, "paced at 50, getFPS " .. fps)
+    T.ok(ms <= 2, "getFrameTime leaves out the wait: " .. ms)
+end)
+
+T.case("getFPS_unpaced", function()
+    perf.setTargetFPS(0)
+    for _ = 1, 40 do
+        perf.beginFrame()
+        sys.sleep(10)
+        perf.endFrame()
+    end
+    local fps, ms = perf.getFPS(), perf.getFrameTime()
+    T.ok(fps >= 50 and fps <= 101, "10 ms frames, getFPS " .. fps)
+    T.ok(ms >= 9 and ms <= 20, "getFrameTime " .. ms)
+end)
+
 T.done()

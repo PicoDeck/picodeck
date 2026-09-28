@@ -33,7 +33,7 @@ Ends timing a frame and updates FPS calculation. Call at the **end** of your gam
 ---
 
 #### `picocalc.perf.getFPS()`
-Returns the current FPS, averaged over the last 30 frames.
+Returns the frames presented per second, averaged over the last 30 frames: the time from one `endFrame()` to the next, including the wait `setTargetFPS` adds. A game paced at 30 reports 30 however little work its frames take.
 
 - **Parameters:** None
 - **Returns:** (number) Frames per second
@@ -45,7 +45,7 @@ local fps = picocalc.perf.getFPS()
 ---
 
 #### `picocalc.perf.getFrameTime()`
-Returns the last frame's duration in milliseconds.
+Returns the last frame's work in milliseconds: from the previous `endFrame()` (or `beginFrame()`, for the first frame) to this `endFrame()`, without the `setTargetFPS` wait. Compare it with the target's frame period to see the headroom.
 
 - **Parameters:** None
 - **Returns:** (number) Milliseconds

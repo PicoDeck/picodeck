@@ -238,7 +238,6 @@ bool fileplayer_load(fileplayer_t *player, const char *path) {
 }
 
 bool fileplayer_play(fileplayer_t *player, uint8_t repeat_count) {
-    (void)repeat_count;
     if (!player || !atomic_load(&s_initialized)) return false;
 
     mutex_enter_blocking(&s_lock);
@@ -251,6 +250,9 @@ bool fileplayer_play(fileplayer_t *player, uint8_t repeat_count) {
         s_active_player->state = FILEPLAYER_STATE_STOPPED;
     player->state = FILEPLAYER_STATE_PLAYING;
     player->position = 0;  // update() reads at data_offset + position
+    player->repeats = repeat_count;  // 0 plays until stopped
+    player->plays = 0;
+    player->pass_pushed = false;
     s_active_player = player;
     uint32_t rate = player->sample_rate;
     // Start the stream (clears the ring) before Core 1 can push into it.
@@ -455,8 +457,14 @@ static fp_callback_t update_locked(fileplayer_t *p) {
     if (br > 0) {
         push_pcm(p, br);
         p->position += br;
-    } else if (p->loop) {
+        p->pass_pushed = true;
+    } else if (n >= 0 && p->pass_pushed &&
+               (p->loop || p->repeats == 0 || ++p->plays < p->repeats)) {
+        // End of data after a pass that played something: go round again.
+        // A read error (n < 0), or a pass that found no frames at all (an
+        // empty data chunk), finishes instead of rewinding every tick.
         p->position = 0;
+        p->pass_pushed = false;
         cb.fn = p->loop_callback;
         cb.arg = p->loop_callback_arg;
     } else {

@@ -18,6 +18,7 @@ local T = pc.sys.loadlib("picotest")
 
 local THREE = APP_DIR .. "/three_s.wav"
 local ONE = APP_DIR .. "/one_s.wav"
+local EMPTY = APP_DIR .. "/empty.wav"
 
 -- Play until the player stops (or `limit` ms); returns the elapsed ms.
 local function play_ms(fp, limit)
@@ -92,6 +93,54 @@ T.case("stop_and_replay", function()
     T.ok(fp:load(ONE))
     local ms = play_ms(fp, 8000)
     T.ok(ms >= 700, "replayed 1 s WAV finished after " .. ms .. " ms")
+end)
+
+T.case("play_zero_loops_until_stopped", function()
+    local fp = sound.fileplayer()
+    T.ok(fp:load(ONE))
+    fp:play(0)
+    sys.sleep(2500)
+    T.ok(fp:isPlaying(), "play(0) of a 1 s WAV stopped within 2.5 s")
+    fp:stop()
+end)
+
+T.case("play_n_plays_n_times", function()
+    local fp = sound.fileplayer()
+    T.ok(fp:load(ONE))
+    local t0 = sys.getTimeMs()
+    fp:play(2)
+    while fp:isPlaying() and sys.getTimeMs() - t0 < 8000 do sys.sleep(10) end
+    local ms = sys.getTimeMs() - t0
+    T.ok(ms >= 1700 and ms <= 5000, "play(2) of a 1 s WAV took " .. ms .. " ms")
+    fp:stop()
+end)
+
+T.case("play_zero_on_empty_wav_finishes", function()
+    -- A pass that reads nothing must end the play, not rewind forever.
+    local fp = sound.fileplayer()
+    T.ok(fp:load(EMPTY))
+    fp:play(0)
+    local t0 = sys.getTimeMs()
+    while fp:isPlaying() and sys.getTimeMs() - t0 < 1500 do sys.sleep(10) end
+    T.ok(not fp:isPlaying(), "play(0) of an empty WAV never finished")
+    fp:stop()
+end)
+
+T.case("loop_and_finish_callbacks_per_play", function()
+    local fp = sound.fileplayer()
+    T.ok(fp:load(ONE))
+    local loops, finished = 0, false
+    fp:setLoopCallback(function() loops = loops + 1 end)
+    fp:setFinishCallback(function() finished = true end)
+    fp:play(3)
+    local t0 = sys.getTimeMs()
+    while not finished and sys.getTimeMs() - t0 < 6000 do
+        pc.input.update()
+        sys.sleep(10)
+    end
+    T.ok(finished, "the finish callback never fired")
+    T.eq(loops, 2, "loop callbacks for play(3)")
+    fp:stop()
 end)
 
 T.done()

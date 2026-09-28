@@ -41,20 +41,27 @@ static void blit_cell(uint16_t *buf, int buf_w,
   long long r0 = y < cy0 ? cy0 - y : 0, r1 = y + h - 1 > cy1 ? cy1 - y : h - 1;
   long long c0 = x < cx0 ? cx0 - x : 0, c1 = x + w - 1 > cx1 ? cx1 - x : w - 1;
   if (r0 > r1 || c0 > c1) return;
+  const int cs = (int)c0, ce = (int)c1;
   for (int row = (int)r0; row <= (int)r1; row++) {
     // Offset so that dst[col] is cell column col (x + c0 >= cx0 >= 0).
     uint16_t *dst = buf + (size_t)(y + row) * buf_w + (size_t)(x + c0) - c0;
-    const uint8_t *bits = rows ? rows + row * stride : NULL;
-    for (int col = (int)c0; col <= (int)c1; col++) {
-      bool on;
-      if (bits) {
-        on = (bits[col >> 3] & (0x80 >> (col & 7))) != 0;
-      } else {
-        // Hollow box occupying rows 0..h-2 and cols 0..w-2 of the cell.
-        on = row < h - 1 && col < w - 1 &&
-             (row == 0 || row == h - 2 || col == 0 || col == w - 2);
+    if (!rows) {
+      // Hollow box occupying rows 0..h-2 and cols 0..w-2 of the cell.
+      for (int col = cs; col <= ce; col++) {
+        bool on = row < h - 1 && col < w - 1 &&
+                  (row == 0 || row == h - 2 || col == 0 || col == w - 2);
+        if (on) dst[col] = fg;
+        else if (!transparent) dst[col] = bg;
       }
-      if (on) dst[col] = fg;
+      continue;
+    }
+    // A glyph row, a byte of bits at a time: b holds the current byte
+    // shifted so that bit 7 is column col.
+    const uint8_t *bits = rows + row * stride;
+    unsigned b = (unsigned)bits[cs >> 3] << (cs & 7);
+    for (int col = cs; col <= ce; col++, b <<= 1) {
+      if ((col & 7) == 0) b = bits[col >> 3];
+      if (b & 0x80) dst[col] = fg;
       else if (!transparent) dst[col] = bg;
     }
   }

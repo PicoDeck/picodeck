@@ -411,6 +411,9 @@ set_source_files_properties(
     "-DMINIZ_NO_STDIO -DMINIZ_NO_ARCHIVE_WRITING_APIS -DMINIZ_NO_ZLIB_COMPATIBLE_NAMES -include ${CMAKE_SOURCE_DIR}/third_party/miniz_picodeck.h"
 )
 
+# Text rendering (drawText, the HUD of every game): -O2 like the blitters.
+set_source_files_properties(src/fonts/font.c PROPERTIES COMPILE_OPTIONS "-O2")
+
 # gfx3d: -O2 like the display blitters (DISP_HOT), and no FMA contraction so a
 # triangle edge shared by two triangles evaluates bit-identically in both.
 set_source_files_properties(src/os/gfx3d.c PROPERTIES

@@ -4,6 +4,7 @@
 #include "sdcard.h"
 #include "pico/time.h"
 #include "pico/stdlib.h"
+#include "pico/platform.h"
 #include "pico/critical_section.h"
 #include "umm_malloc.h"
 #include "wav.h"
@@ -39,12 +40,12 @@ static struct {
 static critical_section_t s_mix_cs;
 static bool s_mix_cs_ready;
 
-static inline void mix_lock(void) {
+static __force_inline void mix_lock(void) {
     if (s_mix_cs_ready)
         critical_section_enter_blocking(&s_mix_cs);
 }
 
-static inline void mix_unlock(void) {
+static __force_inline void mix_unlock(void) {
     if (s_mix_cs_ready)
         critical_section_exit(&s_mix_cs);
 }
@@ -109,7 +110,7 @@ void sound_init(void) {
  * active player advances through its sample data via a phase accumulator
  * (nearest-neighbor rate conversion). Accumulates into out_l/out_r (int32)
  * — the caller clips to int16 when mixing with other sources. */
-void sound_mixer_process(int32_t *out_l, int32_t *out_r, int frames) {
+void __time_critical_func(sound_mixer_process)(int32_t *out_l, int32_t *out_r, int frames) {
     memset(out_l, 0, frames * sizeof(*out_l));
     memset(out_r, 0, frames * sizeof(*out_r));
 
