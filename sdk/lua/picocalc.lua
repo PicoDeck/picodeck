@@ -867,8 +867,8 @@ function picocalc.sound.sample(path_or_duration) end
 ---The player keeps its sample alive: dropping your own reference to the sample
 ---is safe while the player plays it. A path loads a Sample that belongs to the
 ---player (`getSample()` returns it); it is freed with the player, or once a
----`setSample` replaces it. There are 8 sample slots and 8 player slots, freed
----by the garbage collector.
+---`setSample` replaces it. Samples have no fixed limit; at most 8 sampleplayers
+---exist at once, freed by the garbage collector.
 ---@param sample_or_path? PicoDeckSample|string
 ---@return PicoDeckSamplePlayer
 function picocalc.sound.sampleplayer(sample_or_path) end

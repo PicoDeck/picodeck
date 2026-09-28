@@ -153,6 +153,8 @@ Creates a new Sample object, optionally loading a WAV file immediately.
 
 WAVs must be 8- or 16-bit PCM with 1-2 channels (float, 24/32-bit, ADPCM and more channels are refused); only the first 64 KB of sample data is kept.
 
+Samples have no fixed limit: each lives in PSRAM until it is collected.
+
 - **Parameters:**
   - `path` (string, optional): Absolute path to a WAV file
 - **Returns:** (userdata) Sample object, or `nil, errstr` on failure
@@ -281,6 +283,8 @@ Creates a SamplePlayer, optionally pre-loading a sample.
 
 A SamplePlayer keeps its Sample alive (you may drop your own reference). `sampleplayer(path)` and `sample:play()` create a Sample of their own. Dropping the player returned by `sample:play()` stops that sound when it is collected.
 
+At most 8 SamplePlayers exist at once (the mixer's voices): a 9th returns `nil, errstr` until one is collected. Reuse players and call `setSample`, or keep a pool.
+
 - **Parameters:**
   - `sample_or_path` (userdata or string, optional): A `Sample` object or a WAV file path
 - **Returns:** (userdata) SamplePlayer object, or `nil, errstr` on failure
@@ -399,7 +403,7 @@ player:setRate(1.5)  -- play at 150% speed
 ---
 
 #### `player:setFinishCallback(fn)`
-Sets a callback fired when playback finishes (all repeats completed). Maximum 4 callbacks across all SamplePlayer instances. The callback fires on Core 0 via the Lua instruction hook (slight delay of up to ~256 opcodes).
+Sets a callback fired when playback finishes (all repeats completed). Each SamplePlayer can have one. The callback fires on Core 0 via the Lua instruction hook (slight delay of up to ~256 opcodes).
 
 - **Parameters:**
   - `fn` (function): Callback function (called with no arguments)
@@ -413,7 +417,7 @@ end)
 ---
 
 #### `player:setLoopCallback(fn)`
-Sets a callback fired each time the player loops back to the start. Same cross-core delivery mechanism as `setFinishCallback`.
+Sets a callback fired each time the player loops back to the start. Each SamplePlayer can have one. Same cross-core delivery mechanism as `setFinishCallback`.
 
 - **Parameters:**
   - `fn` (function): Callback function (called with no arguments)

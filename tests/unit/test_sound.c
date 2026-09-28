@@ -13,6 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+size_t umm_fake_live(void);
+
 // audio.c is not linked: sound_player_play only needs the output running.
 static int s_stream_starts;
 void audio_output_ensure_running(void) { s_stream_starts++; }
@@ -76,8 +78,8 @@ static void test_destroy_detaches_every_player(void) {
 
 static void test_player_slots_are_distinct(void) {
   sound_init();
-  sound_player_t *p[SOUND_MAX_SAMPLES];
-  for (int i = 0; i < SOUND_MAX_SAMPLES; i++) {
+  sound_player_t *p[SOUND_MAX_PLAYERS];
+  for (int i = 0; i < SOUND_MAX_PLAYERS; i++) {
     p[i] = sound_player_create();   // no sample set: must still hold a slot
     CHECK(p[i] != NULL);
     for (int j = 0; j < i; j++)
@@ -92,7 +94,7 @@ static void test_player_slots_are_distinct(void) {
   sound_player_set_sample(p[0], s);
   sound_sample_destroy(s);
   CHECK(sound_player_create() == NULL);
-  for (int i = 0; i < SOUND_MAX_SAMPLES; i++)
+  for (int i = 0; i < SOUND_MAX_PLAYERS; i++)
     sound_player_destroy(p[i]);
 }
 
@@ -115,7 +117,7 @@ static void test_player_destroy_leaves_sample(void) {
 
 static void test_sample_slots_recycle(void) {
   sound_init();
-  for (int round = 0; round < 4 * SOUND_MAX_SAMPLES; round++) {
+  for (int round = 0; round < 4 * SOUND_MAX_PLAYERS; round++) {
     sound_sample_t *s = blank(0.01f);
     CHECK(s != NULL);
     sound_player_t *p = sound_player_create();
@@ -188,7 +190,7 @@ static void test_volume_is_0_to_100(void) {
 
 static void test_init_reclaims_everything(void) {
   sound_init();
-  for (int i = 0; i < SOUND_MAX_SAMPLES; i++) {
+  for (int i = 0; i < SOUND_MAX_PLAYERS; i++) {
     sound_player_t *p = sound_player_create();
     sound_sample_t *s = blank(0.01f);
     CHECK(p && s);
@@ -237,6 +239,39 @@ static void test_play_range_is_clamped(void) {
   sound_sample_destroy(s);
 }
 
+// Review #7: samples had the players' cap of 8, calloc'd from the ~2.6 KB
+// SRAM heap. Now each is a umm allocation on a list, freed by sound_init.
+static void test_samples_have_no_fixed_limit(void) {
+  sound_init();
+  enum { N = 64 };
+  sound_sample_t *s[N];
+  for (int i = 0; i < N; i++) {
+    s[i] = sound_sample_create();
+    CHECK(s[i] != NULL);
+    for (int j = 0; j < i; j++)
+      CHECK(s[i] != s[j]);
+  }
+  // Unlink from the head, the middle and the tail of the list.
+  for (int i = 0; i < N; i += 2)
+    sound_sample_destroy(s[i]);
+  sound_sample_destroy(s[N - 1]);
+  for (int i = 0; i < N; i += 2) {
+    s[i] = blank(0.01f);
+    CHECK(s[i] != NULL);
+  }
+  sound_init();  // frees the rest exactly once (ASan: no double free; LSan: no leak)
+}
+
+static void test_sample_structs_come_from_the_umm_heap(void) {
+  sound_init();
+  size_t before = umm_fake_live();
+  sound_sample_t *s = sound_sample_create();
+  CHECK(s != NULL);
+  CHECK_EQ_INT((int)(umm_fake_live() - before), 1);
+  sound_sample_destroy(s);
+  CHECK_EQ_INT((int)(umm_fake_live() - before), 0);
+}
+
 int main(void) {
   test_destroy_detaches_playing_player();
   test_destroy_detaches_every_player();
@@ -247,6 +282,8 @@ int main(void) {
   test_volume_is_0_to_100();
   test_init_reclaims_everything();
   test_play_range_is_clamped();
+  test_samples_have_no_fixed_limit();
+  test_sample_structs_come_from_the_umm_heap();
   CHECK(s_stream_starts > 0);
   return check_report("test_sound");
 }
