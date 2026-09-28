@@ -51,6 +51,10 @@ const char *qoa_strerror(qoa_err_t err);
 // the last is full, so this is exact.
 uint32_t qoa_frame_offset(const qoa_info_t *info, uint32_t index);
 
+// The size field of the frame header at buf (len bytes available): where
+// the next frame starts.  0 when len is shorter than a frame header.
+uint32_t qoa_frame_bytes(const uint8_t *buf, size_t len);
+
 // Decode the frame at buf (len bytes from the frame's start) into out, which
 // must hold QOA_MAX_FRAME_PCM_BYTES.  Returns content frames per channel
 // (frame_samples, or fewer for the last frame), 0 on a bad or truncated

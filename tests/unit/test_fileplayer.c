@@ -32,6 +32,8 @@ static uint64_t s_dropped;    // frames offered with no room (audio lost)
 static int s_starts, s_stops;
 static uint32_t s_rate;
 static int16_t s_last_l;      // value of the most recent frame pushed
+static bool s_arm_first;      // record the next frame pushed in s_first_l
+static int16_t s_first_l;
 
 void audio_start_stream(uint32_t sample_rate) { s_starts++; s_rate = sample_rate; s_ring_used = 0; }
 void audio_stop_stream(void) { s_stops++; }
@@ -42,6 +44,7 @@ void audio_push_samples(const int16_t *samples, int count) {
     s_ring_used++;
     s_pushed++;
     s_last_l = samples[i * 2];
+    if (s_arm_first) { s_first_l = s_last_l; s_arm_first = false; }
   }
 }
 static void drain(uint32_t frames) {
@@ -69,6 +72,22 @@ static void put_wav(const char *path, uint32_t frames, uint16_t channels,
   for (uint32_t i = 0; i < frames * channels; i++) le16(buf + 44 + i * 2, (uint16_t)value);
   sdfake_put(path, (const char *)buf, 44 + data);
   free(buf);
+}
+
+// A QOA file of the interleaved 16-bit `pcm`, `frames` content frames per
+// channel, encoded with the vendored reference encoder.
+static void put_qoa_pcm(const char *path, const int16_t *pcm, uint32_t frames,
+                        uint8_t channels, uint32_t rate) {
+  qoa_desc d;
+  memset(&d, 0, sizeof(d));
+  d.channels = channels;
+  d.samplerate = rate;
+  d.samples = frames;
+  unsigned len = 0;
+  void *q = qoa_encode((const short *)pcm, &d, &len);
+  CHECK(q != NULL);
+  sdfake_put(path, (const char *)q, len);
+  free(q);
 }
 
 // A QOA file of `frames` content frames per channel whose every sample is
@@ -167,6 +186,7 @@ static void test_sd_busy_skips_the_tick(void) {
   for (int i = 0; i < 20; i++) fileplayer_update();
   CHECK_EQ_INT(s_pushed, 0);
   CHECK(fileplayer_is_playing(p));
+  CHECK_EQ_INT(sdfake_blocking_while_busy(), 0);  // Core 1 only try-locks
   sdfake_set_busy(false);
   run(p, 256, 100000);
   CHECK_EQ_INT(s_pushed, 4410);
@@ -283,6 +303,9 @@ static void test_qoa_sd_busy_skips_the_tick(void) {
   for (int i = 0; i < 20; i++) fileplayer_update();
   CHECK_EQ_INT(s_pushed, 0);
   CHECK(fileplayer_is_playing(p));
+  // Core 1 only try-locks the card: no call that would wait for Core 0's
+  // SD mutex (which, held by Core 1 under s_lock, stalls Core 0 too).
+  CHECK_EQ_INT(sdfake_blocking_while_busy(), 0);
   sdfake_set_busy(false);
   run(p, 256, 100000);
   CHECK_EQ_INT(s_pushed, 4410);
@@ -318,6 +341,83 @@ static void test_qoa_seek_and_loop(void) {
   fileplayer_destroy(p);
 }
 
+// A seek lands on its sample, not on the start of the QOA frame holding it:
+// the audio after it is the audio at the offset, and the file's tail still
+// plays. 3 s mono at 22050 Hz: 500 until 2 s, then -2000, and 3000 for the
+// last 2000 samples. 2 s (44100) is 3140 samples into frame 8 (40960).
+static void test_qoa_seek_is_sample_exact(void) {
+  setup();
+  enum { N = 66150, AT = 44100, TAIL = 64150 };
+  int16_t *pcm = malloc(N * 2);
+  for (int i = 0; i < N; i++) pcm[i] = i < AT ? 500 : (i < TAIL ? -2000 : 3000);
+  put_qoa_pcm("/step.qoa", pcm, N, 1, 22050);
+  free(pcm);
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/step.qoa"));
+  CHECK(fileplayer_play(p, 1));
+  for (int i = 0; i < 10; i++) { fileplayer_update(); drain(44); }
+  fileplayer_set_offset(p, 2);
+  uint64_t before = s_pushed;
+  s_arm_first = true;
+  run(p, 44, 100000);
+  CHECK_EQ_INT((int)(s_pushed - before), N - AT);
+  CHECK(s_first_l < -1000);  // the -2000 after 2 s, not the 500 before it
+  CHECK(s_last_l > 2000);    // the file's last samples were delivered
+  fileplayer_destroy(p);
+}
+
+// A QOA file cut short (its header counts more samples than its frames
+// hold, e.g. an interrupted copy) ends where the frames do: play(2) plays
+// what is there twice, as a short WAV does, rather than stopping at the cut.
+static void test_qoa_short_file_ends_at_its_frames(void) {
+  setup();
+  enum { N = 12000 };  // frames of 5120, 5120 and 1760
+  int16_t *pcm = malloc(N * 2);
+  for (int i = 0; i < N; i++) pcm[i] = 900;
+  qoa_desc d;
+  memset(&d, 0, sizeof(d));
+  d.channels = 1;
+  d.samplerate = 22050;
+  d.samples = N;
+  unsigned len = 0;
+  uint8_t *q = qoa_encode((const short *)pcm, &d, &len);
+  CHECK(q != NULL);
+  uint32_t full = 8 + 16 + 8 * 256;              // one full mono frame
+  sdfake_put("/cut.qoa", (const char *)q, 8 + 2 * full);  // drop the tail frame
+  free(q);
+  free(pcm);
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/cut.qoa"));
+  CHECK(fileplayer_play(p, 2));
+  run(p, 44, 100000);
+  CHECK(!fileplayer_is_playing(p));
+  CHECK_EQ_INT(s_pushed, 2 * 2 * 5120);
+  fileplayer_destroy(p);
+}
+
+// The decode scratch is the app's: it is freed at app teardown
+// (fileplayer_reset), not left in the shared PSRAM heap, where a stray
+// block splits the space a later app may need in one piece.
+size_t umm_fake_live(void);
+static void test_qoa_scratch_freed_at_reset(void) {
+  setup();
+  size_t base = umm_fake_live();
+  put_qoa("/a.qoa", 4410, 1, 22050, 7);
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/a.qoa"));
+  CHECK(umm_fake_live() > base);
+  fileplayer_reset();
+  CHECK_EQ_INT((int)umm_fake_live(), (int)base);
+  // A later app loads QOA again: the scratch comes back.
+  p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/a.qoa"));
+  CHECK(fileplayer_play(p, 1));
+  run(p, 44, 100000);
+  CHECK_EQ_INT(s_pushed, 4410);
+  fileplayer_reset();
+  CHECK_EQ_INT((int)umm_fake_live(), (int)base);
+}
+
 int main(void) {
   test_flow_control_plays_every_frame();
   test_mono_and_rate_flow_control();
@@ -329,6 +429,9 @@ int main(void) {
   test_qoa_stereo_at_44100();
   test_qoa_sd_busy_skips_the_tick();
   test_qoa_seek_and_loop();
+  test_qoa_seek_is_sample_exact();
+  test_qoa_scratch_freed_at_reset();
+  test_qoa_short_file_ends_at_its_frames();
   fileplayer_reset();
   sdfake_reset();
   return check_report("test_fileplayer");

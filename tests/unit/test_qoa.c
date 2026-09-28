@@ -160,6 +160,25 @@ static void test_frame_offset(void) {
   free(pcm);
 }
 
+// A frame's own size field: the next frame starts that many bytes on (the
+// last frame is shorter than a full one).
+static void test_frame_bytes(void) {
+  uint32_t frames = 6000;  // one full frame + an 880-sample tail frame
+  int16_t *pcm = make_pcm(frames, 1);
+  unsigned len;
+  uint8_t *q = encode(pcm, frames, 22050, 1, &len);
+  CHECK(q != NULL);
+  qoa_info_t info;
+  CHECK_EQ_INT(qoa_parse(q, len, &info), QOA_OK);
+  CHECK_EQ_U32(qoa_frame_bytes(q + 8, len - 8), info.frame_size);
+  uint32_t tail = 8 + info.frame_size;
+  CHECK_EQ_U32(qoa_frame_bytes(q + tail, len - tail), len - tail);
+  CHECK_EQ_U32(len - tail, 8u + 16u + 8u * 44u);  // 880 samples = 44 slices
+  CHECK_EQ_U32(qoa_frame_bytes(q + 8, 7), 0);     // no whole header
+  free(q);
+  free(pcm);
+}
+
 static void test_decode_bad_frames(void) {
   uint32_t frames = 6000;
   int16_t *pcm = make_pcm(frames, 2);
@@ -192,6 +211,7 @@ static void test_decode_bad_frames(void) {
 }
 
 int main(void) {
+  test_frame_bytes();
   test_parse_roundtrip();
   test_parse_mono();
   test_malformed();

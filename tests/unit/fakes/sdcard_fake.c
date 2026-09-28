@@ -27,6 +27,7 @@ static char        s_dirs[FAKE_DIRS][160];
 static int         s_write_limit = -1;
 static bool        s_busy;
 static int         s_try_reads;
+static int         s_blocking_while_busy;
 static int         s_rename_ok_left = -1;
 static int         s_renames;
 
@@ -62,6 +63,7 @@ void sdfake_reset(void) {
     s_write_limit = -1;
     s_busy = false;
     s_try_reads = 0;
+    s_blocking_while_busy = 0;
     s_rename_ok_left = -1;
     s_renames = 0;
 }
@@ -127,6 +129,7 @@ sdfile_t sdcard_fopen(const char *path, const char *mode) {
 }
 
 int sdcard_fread(sdfile_t fh, void *buf, int len) {
+    if (s_busy) s_blocking_while_busy++;
     fake_handle_t *h = fh;
     if (!h || len <= 0)
         return 0;
@@ -139,6 +142,7 @@ int sdcard_fread(sdfile_t fh, void *buf, int len) {
 
 void sdfake_set_busy(bool busy) { s_busy = busy; }
 int sdfake_try_reads(void) { return s_try_reads; }
+int sdfake_blocking_while_busy(void) { return s_blocking_while_busy; }
 
 int sdcard_try_fread_at(sdfile_t fh, uint32_t offset, void *buf, int len) {
     s_try_reads++;
@@ -168,6 +172,7 @@ int sdcard_fwrite(sdfile_t fh, const void *buf, int len) {
 void sdcard_fclose(sdfile_t fh) { free(fh); }
 
 bool sdcard_fseek(sdfile_t fh, uint32_t offset) {
+    if (s_busy) s_blocking_while_busy++;
     fake_handle_t *h = fh;
     if (!h || offset > h->file->len)
         return false;
@@ -177,7 +182,10 @@ bool sdcard_fseek(sdfile_t fh, uint32_t offset) {
 
 uint32_t sdcard_ftell(sdfile_t fh) { return fh ? (uint32_t)((fake_handle_t *)fh)->pos : 0; }
 
-int sdcard_fsize_handle(sdfile_t fh) { return fh ? (int)((fake_handle_t *)fh)->file->len : -1; }
+int sdcard_fsize_handle(sdfile_t fh) {
+    if (s_busy) s_blocking_while_busy++;
+    return fh ? (int)((fake_handle_t *)fh)->file->len : -1;
+}
 
 int sdcard_fsize(const char *path) {
     fake_file_t *f = lookup(path);

@@ -59,6 +59,8 @@ typedef struct {
     uint32_t qoa_file_pos;    // file offset of the next frame to read
     uint32_t qoa_pcm_done;    // decoded frames already pushed
     uint32_t qoa_pcm_have;    // decoded frames in the scratch
+    uint32_t qoa_skip;        // frames of the next decoded frame before the
+                              // position (a seek lands mid-frame)
 } fileplayer_t;
 
 void fileplayer_init(void);

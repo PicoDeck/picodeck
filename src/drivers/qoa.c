@@ -58,6 +58,12 @@ uint32_t qoa_frame_offset(const qoa_info_t *info, uint32_t index) {
     return info->first_frame_offset + (index / info->frame_samples) * info->frame_size;
 }
 
+uint32_t qoa_frame_bytes(const uint8_t *buf, size_t len) {
+    if (!buf || len < 8)
+        return 0;
+    return be16(buf + 6);
+}
+
 uint32_t qoa_frame_decode(const qoa_info_t *info, const uint8_t *buf,
                           size_t len, int16_t *out) {
     if (!info || !buf || !out)
