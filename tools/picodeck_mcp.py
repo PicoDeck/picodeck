@@ -628,8 +628,12 @@ class HardwareMonitor:
                 if self._cmd_lines is not None:
                     self._cmd_lines.append(line)
 
-    def command(self, cmd: str, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
-        """Send a line command; collect response lines (marker or idle end)."""
+    def command(self, cmd: str, timeout: float = DEFAULT_TIMEOUT,
+                idle: float | None = 1.0) -> list[str]:
+        """Send a line command; collect response lines until an end marker,
+        or `idle` seconds of quiet after some output. idle=None waits for
+        the marker (or the timeout): for commands that go quiet mid-reply,
+        such as unzip inflating a large file."""
         with self._cmd_lock:
             self._cmd_lines = deque()
             try:
@@ -642,7 +646,8 @@ class HardwareMonitor:
                     try:
                         line = self._cmd_lines.popleft()
                     except IndexError:
-                        if lines and time.monotonic() - last_data > 1.0:
+                        if (idle is not None and lines
+                                and time.monotonic() - last_data > idle):
                             break
                         time.sleep(0.02)
                         continue
@@ -910,10 +915,13 @@ def rgb565be_to_png(data: bytes, width: int, height: int) -> bytes:
 
 # ── Hardware helpers ────────────────────────────────────────────────────────────
 
-def do_command_hardware(cmd: str, port: str, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
+def do_command_hardware(cmd: str, port: str, timeout: float = DEFAULT_TIMEOUT,
+                        idle: float | None = 1.0) -> list[str]:
+    """Run a dev command; see HardwareMonitor.command for `idle` (without a
+    monitor the port's read timeout is `timeout`, so there is no idle end)."""
     mon = _monitor_for(port)
     if mon:
-        return mon.command(cmd, timeout)
+        return mon.command(cmd, timeout, idle)
     ser = open_serial(port, timeout)
     try:
         ser.write(f"{cmd}\n".encode())
@@ -2083,9 +2091,12 @@ async def push_app(local_dir: str, app_name: str = "",
     try:
         upload = await asyncio.to_thread(do_put_file_b64, port, data, tmp_zip)
         # Extraction is SD-bound: allow generous headroom for slow cards.
+        # unzip is silent while it inflates each file (a 700 KB file takes
+        # ~1.8 s), so wait for its "Unzipped"/"Error:" line, not for quiet.
         timeout = max(30.0, 10.0 + count * 0.5 + len(data) / (64 * 1024))
         lines = await asyncio.to_thread(
-            do_command_hardware, f"unzip {tmp_zip} /apps/{name}", port, timeout)
+            do_command_hardware, f"unzip {tmp_zip} /apps/{name}", port, timeout,
+            None)
         result = "\n".join(lines[-3:]) if lines else "(no response)"
         await asyncio.to_thread(do_command_hardware, f"rm {tmp_zip}", port, 10.0)
         if any("Unzipped" in ln for ln in lines):

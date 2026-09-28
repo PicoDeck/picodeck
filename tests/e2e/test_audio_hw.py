@@ -260,17 +260,12 @@ def mix_app(target):
     if not FFMPEG:
         pytest.skip("ffmpeg makes the music")
     if APP not in _staged:
-        # push_app's on-device extraction timeout assumes ~64 KB/s; SD
-        # writes on this device run closer to 12 KB/s (project memory:
-        # ref_hw_v2_findings), so the ~420 KB of music + eight blips in
-        # one zip regularly outran the local timeout even though the
-        # on-device extraction went on to finish (confirmed with `ls`
-        # after a "did not complete" error). Stage the music with the
-        # app, then the blips in a second push: `stage_lua_app` writes
-        # the same app.json both times (no extra reboot), and unzip
-        # merges into the existing /apps/audio_mix directory rather than
-        # clearing it, so each push's own payload stays comfortably
-        # under the timeout on its own.
+        # Two pushes, the music with the app and then the blips:
+        # `stage_lua_app` writes the same app.json both times (no extra
+        # reboot) and unzip merges into /apps/audio_mix. (Large pushes
+        # used to report "extraction did not complete" although the files
+        # landed: the serial monitor gave up after 1 s of quiet while
+        # unzip inflated a big file. push_app now waits for "Unzipped".)
         with tempfile.TemporaryDirectory() as tmp:
             music = Path(tmp) / "music.mp3"
             music_mp3(music)

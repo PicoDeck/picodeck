@@ -86,6 +86,7 @@ class FakeDevice:
         self.drop_next_status = 0
         self.putb64 = None   # (path, size, b64 buffer, raw bytes)
         self.reboot_delay = 0.2
+        self.unzip_s = 0.0   # silence between unzip's echo and its reply
 
     # -- helpers --
     def install(self, app: FakeApp, cached=True):
@@ -149,6 +150,14 @@ class FakeDevice:
             if a.dirname.lower() == arg.lower():
                 return a, f"[DEV] Launching app by dir: {arg} ({a.name})"
         return None, f"[DEV] Error: app '{arg}' not found"
+
+    def _later(self, delay: float, lines):
+        def fire():
+            with self.lock:
+                for ln in lines:
+                    self.emit(ln)
+                self.lock.notify_all()
+        threading.Timer(delay, fire).start()
 
     def _command(self, cmd: str):
         self.commands.append(cmd)
@@ -214,8 +223,14 @@ class FakeDevice:
                 names = zf.namelist()
                 for n in names:
                     self.files[f"{dest}/{n}"] = zf.read(n)
-            self.emit(f"[DEV] UNZIP {len(names)}/{len(names)}")
-            self.emit(f"[DEV] Unzipped {len(names)} files (0 skipped)")
+            done = [f"[DEV] UNZIP {len(names)}/{len(names)}",
+                    f"[DEV] Unzipped {len(names)} files (0 skipped)"]
+            if self.unzip_s:
+                # Inflating a large file: the device says nothing meanwhile.
+                self._later(self.unzip_s, done)
+            else:
+                for ln in done:
+                    self.emit(ln)
         elif cmd.startswith("keypress ") or cmd.startswith("keydown ") \
                 or cmd.startswith("keyup "):
             self.keys.append(cmd)
@@ -602,6 +617,18 @@ def test_push_changed_requirements_reboots(hw, dev, tmp_path):
     r = hw.push_app(d)
     assert r["rebooted"], r
     assert dev.apps["req"].requirements == ["http"]
+
+
+def test_push_waits_out_a_quiet_extraction(hw, dev, tmp_path):
+    # unzip echoes its command, then is silent while it inflates a large
+    # file (a 700 KB QOA takes ~1.8 s on the device): the push must wait
+    # for "Unzipped", not give up after a second of quiet.
+    d = _app_dir(tmp_path, "big")
+    dev.install(FakeApp("big", "big", "com.test.big"))
+    dev.unzip_s = 1.6
+    r = hw.push_app(d)
+    assert not r["rebooted"], r
+    assert dev.files["/apps/big/main.lua"] == b"return\n"
 
 
 def test_reboot_is_refused_while_an_app_runs(hw, dev):
