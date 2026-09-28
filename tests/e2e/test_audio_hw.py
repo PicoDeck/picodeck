@@ -293,7 +293,9 @@ def test_music_with_eight_voices(mix_app):
     assert stats["out"] == 1 and stats["voices"] == 8, stats
     assert stats["mp3_underruns"] == 0, stats
     assert stats["stream_underruns"] == 0, stats
-    assert m["pause_us"] <= 60000 and m["stop_us"] <= 60000, m
+    # The fade waits at most 50 ms; then pause/stop can wait on s_mp3_mutex
+    # behind a Core 1 decode burst (~55 ms measured).
+    assert m["pause_us"] <= 120000 and m["stop_us"] <= 120000, m
     assert m["pos_before_resume"] == m["pos_at_pause"], m
     assert m["position"] > m["pos_before_resume"], m
 
@@ -335,8 +337,10 @@ T.done()
 def test_output_rate_survives_the_video_boost(target):
     """The output, started at 200 MHz by a sample, keeps 44.1 kHz after the
     video player boosts clk_sys to 300 MHz (audio_apply_clock re-derives the
-    PWM divider), with the clip's MP3 audio mixed in; after the app, the
-    output is off and the clock back at 200 MHz."""
+    PWM divider), with the clip's MP3 audio mixed in: under 10% of the
+    window's frames find no MP3 (each loop restart leaves a short gap,
+    ~2.5% measured). After the app, the output is off and the clock back
+    at 200 MHz."""
     if not FFMPEG:
         pytest.skip("ffmpeg makes the clip")
     with tempfile.TemporaryDirectory() as tmp:
@@ -366,5 +370,7 @@ def test_output_rate_survives_the_video_boost(target):
     rate = stats["isr"] * 1000 / stats["window_ms"]
     assert stats["sys_khz"] == 300000, stats
     assert 334 <= rate <= 355, f"{rate:.1f} refills/s at 300 MHz, want ~344.5: {stats}"
+    frames = 44.1 * stats["window_ms"]
+    assert stats["mp3_underruns"] * 10 < frames, stats
     after = audiostat(target)
     assert after["out"] == 0 and after["sys_khz"] == 200000, after

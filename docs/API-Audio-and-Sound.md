@@ -571,7 +571,7 @@ Standard playback controls. `play()` starts from the beginning of the file (also
 ---
 
 #### `player:getPosition()` / `player:getLength()`
-`getPosition()` returns the frames played since `play()` (divide by `getSampleRate()` for seconds; it keeps counting across loops). `getLength()` returns `0`: an MP3's length is not known without decoding all of it.
+`getPosition()` returns the frames played since `play()` (divide by `getSampleRate()` for seconds; it keeps counting across loops, and holds while paused); it returns `0` once the MP3 is stopped or has finished. `getLength()` returns `0`: an MP3's length is not known without decoding all of it.
 
 ---
 

@@ -16,12 +16,14 @@
 static critical_section_t s_src_cs;
 static bool s_src_cs_ready;
 
-static inline void src_lock(void) {
+// Forced inline: the render (RAM-resident, in the refill ISR) must not
+// reach them through a flash veneer.
+static __force_inline void src_lock(void) {
   if (s_src_cs_ready)
     critical_section_enter_blocking(&s_src_cs);
 }
 
-static inline void src_unlock(void) {
+static __force_inline void src_unlock(void) {
   if (s_src_cs_ready)
     critical_section_exit(&s_src_cs);
 }

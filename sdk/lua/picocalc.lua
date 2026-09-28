@@ -1074,7 +1074,7 @@ function PicoDeckMp3Player:resume() end
 function PicoDeckMp3Player:isPlaying() end
 
 ---Return the frames played since `play()` (divide by `getSampleRate()` for
----seconds; it keeps counting across loops).
+---seconds; it keeps counting across loops). `0` once stopped or finished.
 ---@return integer
 function PicoDeckMp3Player:getPosition() end
 

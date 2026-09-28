@@ -20,6 +20,9 @@
 #define __in_flash(group)
 #define __scratch_x(group)
 #define __scratch_y(group)
+#ifndef __force_inline
+#define __force_inline inline __attribute__((always_inline))
+#endif
 
 // IO definitions
 #define IO_BANK0_BASE 0x40014000u

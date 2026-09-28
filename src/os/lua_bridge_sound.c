@@ -841,7 +841,7 @@ static int l_sound_mp3player_load(lua_State *L) {
     mp3_player_t *player = check_mp3player(L, 1);
     const char *path = luaL_checkstring(L, 2);
     if (!fs_sandbox_check(L, path, false)) {
-        lua_pushboolean(L, false);
+        lua_pushnil(L);
         lua_pushstring(L, "access denied");
         return 2;
     }

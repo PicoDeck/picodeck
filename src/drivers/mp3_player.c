@@ -63,11 +63,13 @@ static critical_section_t s_stage_cs;
 static atomic_bool s_stage_ready;  // set once: the mixer may run before the first init
 static volatile bool s_mixing = false;
 
-static inline void stage_lock(void) {
+// Forced inline: the mixer (RAM-resident, in the refill ISR) must not
+// reach them through a flash veneer.
+static __force_inline void stage_lock(void) {
     critical_section_enter_blocking(&s_stage_cs);
 }
 
-static inline void stage_unlock(void) {
+static __force_inline void stage_unlock(void) {
     critical_section_exit(&s_stage_cs);
 }
 
@@ -115,13 +117,13 @@ static void fed_ring_read(uint8_t *dst, uint32_t len) {
 }
 
 // ── PCM ring ────────────────────────────────────────────────────────────────
-static inline size_t __time_critical_func(ring_available)(void) {
+static inline size_t ring_available(void) {
     size_t wr = atomic_load_explicit(&s_ring_wr, memory_order_acquire);
     size_t rd = atomic_load_explicit(&s_ring_rd, memory_order_acquire);
     return (wr >= rd) ? (wr - rd) : (PCM_RING_SIZE - rd + wr);
 }
 
-static inline size_t __time_critical_func(ring_free)(void) {
+static inline size_t ring_free(void) {
     return PCM_RING_SIZE - 1 - ring_available();
 }
 
@@ -331,6 +333,8 @@ static void mark_eof(void) {
 // A stream that reached its end finishes once the mixer has played the
 // last staged frame, so isPlaying() stays true until the audio really ends.
 static void finish_if_drained(void) {
+    // pcm_stage_frames unlocked: benign, the mixer only shrinks avail, and
+    // it runs on Core 1 like this update.
     if (!s_eof || ring_available() > 0 || pcm_stage_frames(&s_stage) > 0)
         return;
     detach();
@@ -801,7 +805,6 @@ void mp3_player_set_loop(mp3_player_t *player, bool loop) {
 
 // ── Fed mode API (video player audio) ─────────────────────────────────────────
 
-
 bool mp3_player_start_fed(uint32_t sample_rate, uint16_t channels) {
     if (!s_initialized) {
         if (!mp3_player_init()) return false;
@@ -844,6 +847,9 @@ bool mp3_player_start_fed(uint32_t sample_rate, uint16_t channels) {
     stage_lock();
     s_stage.vol_scale = 256;
     stage_unlock();
+    // From here Core 1's update decodes what the video player feeds and
+    // stages it (playing, not yet mixed): in the content's frame size.
+    stage_format();
 
     printf("[MP3] Fed mode started: %u Hz, %u ch\n",
            (unsigned)sample_rate, (unsigned)channels);
@@ -851,10 +857,17 @@ bool mp3_player_start_fed(uint32_t sample_rate, uint16_t channels) {
     return true;
 }
 
+// Keeps the stage: since start_fed, Core 1's update has been decoding the
+// fed data and moving it into the stage (advancing the PCM ring), so
+// emptying it here would drop that audio (26-100 ms: the sound would lead
+// the picture). Nothing mixes it until attach().
 void mp3_player_start_fed_output(void) {
     if (!s_fed_mode || !s_initialized) return;
     mutex_enter_blocking(&s_mp3_mutex);
-    detach();              // nothing may be mixing while we pre-fill
+    if (s_mixing) {        // already started
+        mutex_exit(&s_mp3_mutex);
+        return;
+    }
     stage_format();
     decode_fill_ring();    // compressed data from the fed ring into the PCM ring
     refill_staging_buf();
@@ -928,6 +941,8 @@ void mp3_player_update(void) {
 
 void __time_critical_func(mp3_player_mix)(int32_t *l, int32_t *r, int frames) {
     if (!atomic_load_explicit(&s_stage_ready, memory_order_acquire))
+        return;
+    if (!s_mixing)         // the common case: no lock taken for nothing
         return;
     stage_lock();
     if (s_mixing)

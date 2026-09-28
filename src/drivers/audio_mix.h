@@ -8,8 +8,9 @@
 // both render it. Every source adds into each AUDIO_OUT_RATE frame: the
 // sample players (sound.c), the MP3 player (mp3_player.c), the PCM stream
 // ring (fileplayer, MOD, the native/Lua stream API) and the square-wave
-// tone; then the sum is clipped and scaled by the master volume. The source API is audio.h's; this file
-// adds what the outputs need. Host-tested in tests/unit/test_audio_mix.c.
+// tone; then the sum is clipped and scaled by the master volume. The
+// source API is audio.h's; this file adds what the outputs need.
+// Host-tested in tests/unit/test_audio_mix.c.
 
 // Once at boot, before anything plays (audio_init calls it).
 void audio_mix_init(void);
