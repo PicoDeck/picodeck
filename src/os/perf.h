@@ -16,10 +16,12 @@ void perf_begin_frame(void);
 // End timing a frame and update FPS calculation. Call at the end of the game loop.
 void perf_end_frame(void);
 
-// Get current FPS (averaged over recent frames).
+// Frames presented per second, averaged over the last 30 frames: the time
+// from one endFrame to the next, including setTargetFPS's wait.
 int perf_get_fps(void);
 
-// Get last frame time in milliseconds.
+// The last frame's work in milliseconds: from the previous endFrame (or
+// beginFrame, for the first frame) to this endFrame, without the pacing wait.
 uint32_t perf_get_frame_time(void);
 
 // Set target FPS for automatic frame pacing (0 = no limit).
