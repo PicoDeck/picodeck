@@ -58,6 +58,9 @@ Subsystem notes for the firmware drivers. The root `CLAUDE.md` holds the cross-c
 - Frame + audio chunk indices sized from the AVI header (cap `VIDEO_MAX_FRAME_INDEX`); beyond the cap playback/seek fall back to sequential chunk scanning.
 - Seeks clamp and never wrap; with loop off the last frame is held (`ended`). Built-in progress OSD drawn into the frame after decode. Hardware-only (the simulator stubs it).
 
+## QMI PSRAM (`qmi_psram.c`)
+- The onboard 8 MB chip on CS1, quad mode; `qmi_psram.h`'s `qmi_psram_timing()` derives CLKDIV/MAX_SELECT/MIN_DESELECT safe at any single clk_sys OR (for a clock change in flight) safe at both ends at once, since a bare "recompute for the new clk_sys" leaves PSRAM running at the OLD divider — beyond its validated SCK — from `set_sys_clock_khz` until something retimes it. `launcher_apply_clock` pre-scales with the latter (`qmi_psram_prescale_timing`) before the switch and retimes with the former (`qmi_psram_update_timing`) after.
+
 ## PIO PSRAM (`pio_psram.c`)
 - Second 8 MB PSRAM on the mainboard, via PIO1 SPI; bus independent of QMI PSRAM/flash XIP. `pio_psram_init()` runs early in `main()`; non-fatal if the chip is absent.
 - Layout (`pio_psram.h`): MP3 PCM ring `0x0000` (32 KB), a video region `0x8000` (256 KB) reserved for the OS but unused (the video frame pool lives in QMI PSRAM), apps from `PIO_PSRAM_APP_BASE` = `0x48000`.
