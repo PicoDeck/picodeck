@@ -47,6 +47,7 @@ typedef struct {
     float rate;
     uint8_t repeats;        // plays asked for by play(); 0 = until stopped
     uint8_t plays;          // plays finished since play()
+    bool pass_pushed;       // this pass through the data pushed audio
 } fileplayer_t;
 
 void fileplayer_init(void);

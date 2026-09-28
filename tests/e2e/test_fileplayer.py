@@ -26,6 +26,7 @@ def _setup(case):
         app = sd / "apps" / APP
         write_wav(app / "three_s.wav", seconds=3.0)
         write_wav(app / "one_s.wav", seconds=1.0)
+        write_wav(app / "empty.wav", seconds=0.0)  # a data chunk with no frames
         (app / "only.flag").write_text(case)
     return setup
 
