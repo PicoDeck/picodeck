@@ -10,7 +10,10 @@
 //   - the gap between consecutive sub-tables with their sizeof(): the
 //     simulator lays its trampoline tables out back to back
 //     (unicorn_build_api_struct), so gap != sizeof means its slot count
-//     drifted from os.h, which shifts every later table and `version`.
+//     drifted from os.h, which shifts every later table and `version`;
+//   - the gamepad table (API version 9, after `version`): read only when
+//     api->version says it is there, as apps must; its buttons (none held)
+//     and the labels of A's two slots (default: F4 and unbound).
 #include "app_abi.h"
 #include "os.h"
 
@@ -27,7 +30,8 @@
     X(soundplayer, picocalc_soundplayer_t)                               \
     X(appconfig, picocalc_appconfig_t) X(crypto, picocalc_crypto_t)      \
     X(graphics, picocalc_graphics_t) X(video, picocalc_video_t)          \
-    X(modplayer, picocalc_modplayer_t) X(zip, picocalc_zip_t)
+    X(modplayer, picocalc_modplayer_t) X(zip, picocalc_zip_t)          \
+    X(gamepad, picocalc_gamepad_t)
 
 typedef struct {
     const char *name;
@@ -53,6 +57,14 @@ void picodeck_main(const PicoCalcAPI *api, const char *app_dir,
         uint32_t gap = i + 1 < n ? (uint32_t)(t[i + 1].addr - t[i].addr) : 0;
         log("PROBE table %s size=%u gap=%u", t[i].name, (unsigned)t[i].size,
             (unsigned)gap);
+    }
+    if (api->version >= 9) {
+        const char *a0 = api->gamepad->getLabel(PAD_A, 0);
+        const char *a1 = api->gamepad->getLabel(PAD_A, 1);
+        log("PROBE gamepad buttons=%u pressed=%u label_a=%s label_a_alt=%s",
+            (unsigned)api->gamepad->getButtons(),
+            (unsigned)api->gamepad->getButtonsPressed(), a0 ? a0 : "-",
+            a1 ? a1 : "-");
     }
     log("PROBE done");
 }

@@ -95,7 +95,7 @@ typedef struct {
 #define BTN_ALT       (1 << 21)   // Alt modifier
 #define BTN_FN        (1 << 22)   // Fn/Symbol modifier
 
-// Gamepad button bitmask values (kbd_get_pad; bit i = pad map button i). Each is
+// Gamepad button bitmask values (picocalc_gamepad_t, API version 9). Each is
 // an alias for keys (primary and alternate slot), which still report as
 // themselves through the BTN_* masks. Defaults: arrows, A=F4, B=F5, X=Delete,
 // Y=Backspace, L=F2, R=F3, Start=F1, Select=Tab.
@@ -129,6 +129,20 @@ typedef struct {
     // Includes full keyboard; use this for text input
     char (*getChar)(void);
 } picocalc_input_t;
+
+// --- Gamepad (API version 9) -------------------------------------------------
+// A logical gamepad read like the input masks (after sys->poll()). Players
+// rebind it; the keys stay readable through picocalc_input_t. Only present
+// when api->version >= 9: the pointer sits after `version` in PicoCalcAPI.
+
+typedef struct {
+    uint32_t (*getButtons)(void);          // PAD_* held
+    uint32_t (*getButtonsPressed)(void);   // PAD_* pressed this frame
+    uint32_t (*getButtonsReleased)(void);  // PAD_* released this frame
+    // Name of the key bound to one PAD_* button ("F4", "Del", "W"), for
+    // on-screen hints. slot 0 = primary, 1 = alternate. NULL if unbound.
+    const char *(*getLabel)(uint32_t pad_button, int slot);
+} picocalc_gamepad_t;
 
 // --- Display ----------------------------------------------------------------
 
@@ -750,6 +764,9 @@ typedef struct PicoCalcAPI {
                                              // 7=video time seek/position, OSD, hasEnded
                                              // 8=TLS verification: http->setInsecure,
                                              //   tcp->connectEx
+                                             // 9=gamepad
+    // --- API version 9: fields after `version` (check it first) ---
+    const picocalc_gamepad_t     *gamepad;     // logical gamepad (PAD_*)
 } PicoCalcAPI;
 
 // The global API instance, populated during os_init()

@@ -41,6 +41,7 @@
 #endif
 #include "drivers/keyboard.h"
 #include "appconfig.h"
+#include "gamepad.h"
 #include "config.h"
 #include "clock.h"
 #include "idle_dim.h"
@@ -468,12 +469,20 @@ static const picocalc_appconfig_t s_appconfig_impl = {
     .getAppId = appconfig_get_app_id,
 };
 
+// -- Gamepad (the keyboard stub's masks, the shared label lookup) --
+
+static const picocalc_gamepad_t s_gamepad_impl = {
+    .getButtons = kbd_get_pad, .getButtonsPressed = kbd_get_pad_pressed,
+    .getButtonsReleased = kbd_get_pad_released, .getLabel = gamepad_get_label,
+};
+
 static void sim_wire_g_api(void) {
     memset(&g_api, 0, sizeof(g_api));
     g_api.soundplayer = &s_soundplayer_impl;
     g_api.http        = &s_http_impl;
     g_api.appconfig   = &s_appconfig_impl;
-    g_api.version     = 8;  // 8 = http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts (matches src/main.c)
+    g_api.version     = 9;  // 9 = gamepad; 8 = http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts (matches src/main.c)
+    g_api.gamepad     = &s_gamepad_impl;
 }
 
 int main(int argc, char** argv) {

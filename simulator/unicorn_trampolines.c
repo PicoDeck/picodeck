@@ -94,6 +94,10 @@ extern uint32_t kbd_get_buttons(void);
 extern uint32_t kbd_get_buttons_pressed(void);
 extern uint32_t kbd_get_buttons_released(void);
 extern char kbd_get_char(void);
+extern uint32_t kbd_get_pad(void);
+extern uint32_t kbd_get_pad_pressed(void);
+extern uint32_t kbd_get_pad_released(void);
+#include "gamepad.h"  // gamepad_get_label (src/os)
 
 // Timing
 extern uint32_t hal_get_time_ms(void);
@@ -665,7 +669,14 @@ enum {
     SLOT_ZIP_EXTRACT_ENTRY,
     SLOT_ZIP_END,
 
-    SLOT_TOTAL_COUNT = SLOT_ZIP_END,
+    // picocalc_gamepad_t (4 functions, API v9): the table after `version`.
+    SLOT_GAMEPAD_GET_BUTTONS = SLOT_ZIP_END,
+    SLOT_GAMEPAD_GET_BUTTONS_PRESSED,
+    SLOT_GAMEPAD_GET_BUTTONS_RELEASED,
+    SLOT_GAMEPAD_GET_LABEL,
+    SLOT_GAMEPAD_END,
+
+    SLOT_TOTAL_COUNT = SLOT_GAMEPAD_END,
 };
 
 // =============================================================================
@@ -1044,6 +1055,29 @@ static void tramp_input_get_buttons_released(uc_engine *uc) {
 
 static void tramp_input_get_char(uc_engine *uc) {
     write_reg(uc, UC_ARM_REG_R0, (uint32_t)(unsigned char)kbd_get_char());
+}
+
+// =============================================================================
+// Gamepad trampoline handlers (API v9)
+// =============================================================================
+
+static void tramp_gamepad_get_buttons(uc_engine *uc) {
+    write_reg(uc, UC_ARM_REG_R0, kbd_get_pad());
+}
+
+static void tramp_gamepad_get_buttons_pressed(uc_engine *uc) {
+    write_reg(uc, UC_ARM_REG_R0, kbd_get_pad_pressed());
+}
+
+static void tramp_gamepad_get_buttons_released(uc_engine *uc) {
+    write_reg(uc, UC_ARM_REG_R0, kbd_get_pad_released());
+}
+
+static void tramp_gamepad_get_label(uc_engine *uc) {
+    uint32_t pad = read_reg(uc, UC_ARM_REG_R0);
+    int slot = (int)read_reg(uc, UC_ARM_REG_R1);
+    const char *label = gamepad_get_label(pad, slot);
+    write_reg(uc, UC_ARM_REG_R0, label ? arena_write_string(uc, label) : 0);
 }
 
 // =============================================================================
@@ -3365,6 +3399,11 @@ void unicorn_tramp_init(uc_engine *uc) {
     s_dispatch[SLOT_ZIP_STAT_INDEX]       = tramp_zip_stat_index;
     s_dispatch[SLOT_ZIP_READ]             = tramp_zip_read;
     s_dispatch[SLOT_ZIP_EXTRACT_ENTRY]    = tramp_zip_extract_entry;
+
+    s_dispatch[SLOT_GAMEPAD_GET_BUTTONS]          = tramp_gamepad_get_buttons;
+    s_dispatch[SLOT_GAMEPAD_GET_BUTTONS_PRESSED]  = tramp_gamepad_get_buttons_pressed;
+    s_dispatch[SLOT_GAMEPAD_GET_BUTTONS_RELEASED] = tramp_gamepad_get_buttons_released;
+    s_dispatch[SLOT_GAMEPAD_GET_LABEL]            = tramp_gamepad_get_label;
 }
 
 void unicorn_tramp_dispatch(uc_engine *uc, uint32_t slot) {
@@ -3407,8 +3446,9 @@ static uint32_t write_func_table(uc_engine *uc, uint32_t base_addr,
 
 void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_base) {
     // Layout: PicoCalcAPI struct at api_base, followed by sub-tables
-    // PicoCalcAPI has 19 pointer fields + 1 uint32_t (version)
-    uint32_t api_struct_size = 20 * 4;  // 19 pointers + version
+    // PicoCalcAPI has 19 pointer fields, 1 uint32_t (version), then the
+    // pointers added after it (gamepad)
+    uint32_t api_struct_size = 21 * 4;  // 19 pointers + version + gamepad
 
     // Sub-tables start after the main struct
     uint32_t sub_base = api_base + api_struct_size;
@@ -3511,6 +3551,11 @@ void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_b
     uint32_t zip_count = SLOT_ZIP_END - SLOT_ZIP_EXTRACT;
     sub_base = write_func_table(uc, sub_base, tramp_base, SLOT_ZIP_EXTRACT, zip_count);
 
+    // picocalc_gamepad_t (4 function pointers, API v9)
+    uint32_t gamepad_addr = sub_base;
+    uint32_t gamepad_count = SLOT_GAMEPAD_END - SLOT_GAMEPAD_GET_BUTTONS;
+    sub_base = write_func_table(uc, sub_base, tramp_base, SLOT_GAMEPAD_GET_BUTTONS, gamepad_count);
+
     printf("[UNICORN] API sub-tables written, total %u bytes at 0x%08x..0x%08x\n",
            sub_base - api_base, api_base, sub_base);
     printf("[UNICORN] Total trampoline slots: %u\n", SLOT_TOTAL_COUNT);
@@ -3537,6 +3582,7 @@ void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_b
     //   const picocalc_modplayer_t *modplayer;  // offset 68
     //   const picocalc_zip_t     *zip;          // offset 72
     //   uint32_t                  version;      // offset 76
+    //   const picocalc_gamepad_t *gamepad;      // offset 80 (API v9)
     // };
     // NOTE: keep this struct (and api_struct_size above) in lockstep with
     // src/os/os.h's `struct PicoCalcAPI` — a mismatch here silently shifts
@@ -3563,7 +3609,8 @@ void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_b
     write32(uc, api_base + 64, video_addr);
     write32(uc, api_base + 68, modplayer_addr);
     write32(uc, api_base + 72, zip_addr);
-    write32(uc, api_base + 76, 8);  // version = 8 (http->setInsecure, tcp->connectEx; 7 = video seek/OSD; matches src/main.c g_api.version)
+    write32(uc, api_base + 76, 9);  // version = 9 (gamepad; 8 = http->setInsecure, tcp->connectEx; matches src/main.c g_api.version)
+    write32(uc, api_base + 80, gamepad_addr);
 
-    printf("[UNICORN] PicoCalcAPI struct at 0x%08x, version=8\n", api_base);
+    printf("[UNICORN] PicoCalcAPI struct at 0x%08x, version=9\n", api_base);
 }

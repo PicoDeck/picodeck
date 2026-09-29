@@ -89,7 +89,7 @@ main()
 - `http` → `picocalc.network.http` (OO connections); `soundplayer` → `picocalc.sound`; `graphics` → `picocalc.graphics.image`; `video` → `picocalc.video`; `modplayer` → `picocalc.modplayer`; `zip` → `picocalc.zip`; `crypto` → `picocalc.crypto` (SHA-256/SHA-1/HMAC/AES-CTR/ECDH).
 - `appconfig` → `picocalc.config` **and** `picocalc.appconfig` (same store, two names).
 - `picocalc.sysconfig` is Lua-only and needs the `"sysconfig"` requirement; there is no `g_api.config`.
-- `g_api.version`: 1 = Phase 1, 2 = Phase 2, 3 = `fs->browse`, 4 = clip rect + mode-7 plane, 5 = zip read-in-place handles, 6 = fonts (setFont/getFont/getFontWidth/getFontHeight/textWidth/loadFont/unloadFont/drawTextTransparent), 7 = video time seek/position, progress OSD, `hasEnded`, 8 = TLS verification: `http->setInsecure`, `tcp->connectEx` (`PCTCP_TLS`/`PCTCP_TLS_INSECURE`).
+- `g_api.version`: 1 = Phase 1, 2 = Phase 2, 3 = `fs->browse`, 4 = clip rect + mode-7 plane, 5 = zip read-in-place handles, 6 = fonts (setFont/getFont/getFontWidth/getFontHeight/textWidth/loadFont/unloadFont/drawTextTransparent), 7 = video time seek/position, progress OSD, `hasEnded`, 8 = TLS verification: `http->setInsecure`, `tcp->connectEx` (`PCTCP_TLS`/`PCTCP_TLS_INSECURE`), 9 = `gamepad` (the first table after `version`: native apps check `version >= 9` before reading it).
 
 > ⚠️ **Config naming**: in Lua, `picocalc.config` (alias `picocalc.appconfig`) is the **per-app** store (`/data/<APP_ID>/config.json`); `picocalc.sysconfig` is the **system-wide** store (`/system/config.json`).
 
