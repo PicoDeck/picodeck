@@ -18,7 +18,7 @@
 // more SRAM than this pool.
 
 static char s_pool[CONFIG_POOL_SIZE];
-static int  s_used = 0;  // bytes of s_pool in use
+static int  s_used = 0;  // bytes of s_pool in use; each key appears once
 
 // The pair after the one at p.
 static char *pair_next(char *p) {
@@ -101,8 +101,15 @@ bool config_load(void) {
         p = flat_json_read_string(p, val, sizeof(val));
 
         // Skip internal metadata key; a pair the pool has no room for is
-        // dropped (logged), later smaller ones may still fit.
+        // dropped (logged), later smaller ones may still fit. A repeated key
+        // replaces the earlier copy (the last one wins, as in JSON), so each
+        // key is in the pool once and config_get/config_set see one value.
         if (key[0] != '\0') {
+            char *dup = pair_find(key);
+            if (dup) {
+                pair_remove(dup);
+                count--;
+            }
             if (pair_append(key, strlen(key), val, strlen(val)))
                 count++;
             else

@@ -224,6 +224,24 @@ static void test_overlong_file_entries(void) {
   CHECK_STR(config_get("after"), "ok");
 }
 
+// A hand-edited file may repeat a key: the last copy wins, as in JSON, and
+// the store keeps one copy, so a later set is what get returns.
+static void test_repeated_key_last_wins(void) {
+  reset();
+  const char *f = "{\"a\":\"1\",\"b\":\"x\",\"a\":\"22\"}";
+  sdfake_put(PATH, f, strlen(f));
+  CHECK(config_load());
+  CHECK_STR(config_get("a"), "22");
+  CHECK_STR(config_get("b"), "x");
+  config_set("a", "333");  // a different length: moves the pair
+  CHECK_STR(config_get("a"), "333");
+  config_set("a", NULL);
+  CHECK(config_get("a") == NULL);
+  CHECK_STR(config_get("b"), "x");
+  CHECK(config_save());
+  CHECK_STR(sdfake_get(PATH, NULL), "{\"b\":\"x\"}");
+}
+
 static void test_load_tolerates(void) {
   reset();
   // Whitespace, a non-string value (skipped), empty key (skipped).
@@ -354,6 +372,7 @@ int main(void) {
   test_round_trip_full_store();
   test_key_escapes_round_trip();
   test_overlong_file_entries();
+  test_repeated_key_last_wins();
   test_load_tolerates();
   test_save_failures();
   test_brightness_parse();
