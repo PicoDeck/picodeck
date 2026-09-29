@@ -28,6 +28,9 @@ T.case("drawScaled_rejects_bad_scales", guarded(function()
     T.raises(function() i:drawScaled(0, 0, 0/0) end, "scale multiplier")
     T.raises(function() i:drawScaled(0, 0, math.huge) end, "scale multiplier")
     T.raises(function() i:drawScaled(0, 0, 1e6) end, "scale multiplier")
+    -- past TGX's 4096 px rasteriser limit
+    T.raises(function() img(96, 96):drawScaled(0, 0, 50) end, "scale multiplier")
+    T.raises(function() img(64, 64):drawScaled(0, 0, 65) end, "scale multiplier")
     T.raises(function() i:drawScaled(0, 0, 1, math.huge) end, "NaN or infinite")
 end))
 
@@ -43,7 +46,7 @@ T.case("drawScaled_large_zoom_still_works", guarded(function()
     i:drawScaled(-1000, -1000, 200)      -- 1600 px, nearly all off-screen
     i:drawScaled(0, 0, 0.5, 0.3)
     i:drawScaled(0, 0, 1e-3)
-    img(320, 320):drawScaled(-100, -100, 50)  -- 16000 px, under the cap
+    img(64, 64):drawScaled(-100, -100, 64)    -- 4096 px, exactly the cap
 end))
 
 T.case("drawScaledNN_rejects_bad_scales", guarded(function()
@@ -52,6 +55,7 @@ T.case("drawScaledNN_rejects_bad_scales", guarded(function()
     T.raises(function() i:drawScaledNN(0, 0, -1) end, "scale multiplier")
     T.raises(function() i:drawScaledNN(0, 0, 20000) end, "scale multiplier")
     i:drawScaledNN(0, 0, 3)
+    i:drawScaledNN(-5000, -5000, 2000)     -- 16000 px, clipped span only
 end))
 
 -- ── #42 drawStretched srcRect ───────────────────────────────────────────────
@@ -62,6 +66,8 @@ T.case("drawStretched_srcRect_forms", guarded(function()
     i:drawStretched(0, 0, 16, 16, { x = 2 })       -- omitted fields default
     i:drawStretched(0, 0, 16, 16, { 2, 2 })        -- positional, w/h default
     i:drawStretched(0, 0, 16, 16)
+    i:draw(0, 0, false, { 2, 2, 4, 4 })    -- img:draw shares the parser
+    i:draw(0, 0, false, { x = 2, y = 2, w = 4, h = 4 })
 end))
 
 T.case("drawStretched_srcRect_errors_name_the_parameter", guarded(function()
@@ -71,6 +77,7 @@ T.case("drawStretched_srcRect_errors_name_the_parameter", guarded(function()
     T.raises(function() i:drawStretched(0, 0, 16, 16, { y = 0/0 }) end, "srcRect%.y")
     T.raises(function() i:drawStretched(0, 0, 16, 16, { x = 0, h = {} }) end, "srcRect%.h")
     T.raises(function() i:drawStretched(0, 0, 16, 16, 5) end, "table expected")
+    T.raises(function() i:draw(0, 0, false, { x = "a" }) end, "srcRect%.x")
 end))
 
 -- ── #41 font.new messages ───────────────────────────────────────────────────

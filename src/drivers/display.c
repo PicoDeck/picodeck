@@ -699,6 +699,10 @@ void display_draw_image_scaled(int x, int y, int img_w, int img_h,
     }
   }
 
+  // TGX takes the rotation in degrees; the bounding box above and the Lua API
+  // use radians.
+  const float angle_deg = angle * (180.0f / (float)M_PI);
+
   // Use masked version if transparency is enabled, otherwise use regular
   // version.  The clip is passed through (converted from the driver's
   // inclusive bounds to the decoder's half-open rect) so TGX renders into a
@@ -708,13 +712,13 @@ void display_draw_image_scaled(int x, int y, int img_w, int img_h,
                                  s_clip_x0, s_clip_y0,
                                  s_clip_x1 + 1, s_clip_y1 + 1,
                                  data, img_w, img_h, (int)cx, (int)cy,
-                                 scale, angle, transparent_color);
+                                 scale, angle_deg, transparent_color);
   } else {
     tgx_draw_image_scaled(fb, FB_WIDTH, FB_HEIGHT,
                           s_clip_x0, s_clip_y0,
                           s_clip_x1 + 1, s_clip_y1 + 1,
                           data, img_w, img_h, (int)cx, (int)cy,
-                          scale, angle);
+                          scale, angle_deg);
   }
 
   // Byte-swap back only the affected region

@@ -26,9 +26,7 @@ int font_registry_load(const char *path);
 // string naming the cause: "no free font slot", "cannot read file" or "not a
 // valid .pfn font". *why is left untouched on success.
 int font_registry_load_ex(const char *path, const char **why);
-
-// True when every loaded-font slot is in use.
-bool font_registry_full(void);
+#define FONT_REGISTRY_WHY_FULL "no free font slot"
 
 // Free one loaded slot. No-op for built-ins and empty slots.
 void font_registry_unload(int id);

@@ -31,12 +31,6 @@ const pc_font_t *font_registry_get(int id) {
   return &s_loaded[i];
 }
 
-bool font_registry_full(void) {
-  for (int i = 0; i < LOADED_SLOTS; i++)
-    if (!s_live[i]) return false;
-  return true;
-}
-
 int font_registry_load(const char *path) {
   return font_registry_load_ex(path, NULL);
 }
@@ -50,10 +44,9 @@ int font_registry_load_ex(const char *path, const char **why) {
     if (!s_live[i]) { slot = i; break; }
   }
   if (slot < 0) {
-    printf("[FONT] WARNING: load %s refused: all %d font slots are in use "
-           "(display.loadFont and graphics.font.new share them)\n",
+    printf("[FONT] WARNING: load %s refused: all %d font slots are in use\n",
            path, LOADED_SLOTS);
-    *why = "no free font slot";
+    *why = FONT_REGISTRY_WHY_FULL;
     return -1;
   }
   int len = 0;

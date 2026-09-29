@@ -277,7 +277,7 @@ static int l_display_loadFont(lua_State *L) {
   int id = font_registry_load_ex(path, &why);
   if (id < 0) {
     lua_pushnil(L);
-    if (font_registry_full())
+    if (strcmp(why, FONT_REGISTRY_WHY_FULL) == 0)
       lua_pushfstring(L, "font registry full (all %d loaded-font slots are in "
                          "use; display.loadFont and graphics.font.new share "
                          "them): %s", FONT_REGISTRY_LOADED, path);

@@ -44,6 +44,8 @@ d.clear(d.BLACK)
 im:drawStretched(0, 0, 8, 8, { 2, 0, 2, 2 })                 -- positional: the blue half
 im:drawStretched(20, 0, 8, 8, { x = 2, y = 0, w = 2, h = 2 }) -- named: the same
 im:drawStretched(40, 0, 8, 8)                                 -- whole image: red | blue
+im:draw(60, 0, false, { 2, 0, 2, 2 })                         -- img:draw positional: blue 2x2
+im:draw(70, 0, false, { x = 2, y = 0, w = 2, h = 2 })         -- named: the same
 d.flush()
 pc.sys.log("SRC READY")
 while true do
@@ -76,4 +78,6 @@ def test_positional_src_rect_matches_named(simulator):
         assert is_blue(px(x, 4)), f"positional x={x}: {px(x, 4)}"
     for x in (21, 26):                     # named srcRect: all blue
         assert is_blue(px(x, 4)), f"named x={x}: {px(x, 4)}"
+    for x in (60, 61, 70, 71):             # img:draw srcRect, both forms
+        assert is_blue(px(x, 1)), f"img:draw x={x}: {px(x, 1)}"
     assert is_red(px(41, 4)) and is_blue(px(46, 4))   # no srcRect: whole image

@@ -578,7 +578,7 @@ Post-processing effects applied to the entire framebuffer. Draw your scene first
 
 All effects operate on the back buffer and do not block DMA — they can overlap with the previous frame's transfer for maximum throughput.
 
-`applyEffect(name, ...)` takes an effect name and that effect's arguments. It accepts eleven names, which are ten distinct passes (`"fade"` is an alias of `"tint"`); any other name raises `unknown effect: <name>`. Numeric arguments are integers that clamp to their range instead of raising, so out-of-range values never error. A missing required argument (`r`, `g`, `b`, the image, the LUT) raises an argument error.
+`applyEffect(name, ...)` takes an effect name and that effect's arguments. It accepts eleven names, which are ten distinct passes (`"fade"` is an alias of `"tint"`); any other name raises `unknown effect: <name>`. Numeric arguments are integers that clamp to their range, so a merely out-of-range value never errors; NaN, infinity and values beyond ±2^24 still raise an argument error. A missing required argument (`r`, `g`, `b`, the image, the LUT) raises an argument error.
 
 | Name | Arguments (defaults) | Repeated calls |
 |---|---|---|
@@ -592,7 +592,7 @@ All effects operate on the back buffer and do not block DMA — they can overlap
 | `"palette"` | `lut`: table of 1-256 RGB565 values | Re-maps the already-mapped colours |
 | `"dither"` | `[levels]` (4), clamped to 2-32 | Re-quantises the already-dithered frame |
 | `"scanline"` | `[intensity]` (128) | Compounds: odd rows keep halving toward black |
-| `"posterize"` | `[levels]` (4), clamped to 2-32 | Re-quantises the already-posterized frame |
+| `"posterize"` | `[levels]` (4), clamped to 2-32 | Idempotent (levels 2-32) |
 
 Every effect rewrites the pixels already in the back buffer, so an effect applied again to the same frame, without redrawing the scene first, works on its own output. This is why `darken` or `brighten` called every frame on a frame you do not redraw converges to black or white within a second. Draw the scene, apply the effect once, then `flush()` each frame.
 
@@ -693,7 +693,7 @@ picocalc.display.applyEffect("blend", overlay, 100)
 Remaps all framebuffer colors through a lookup table. Each pixel's RGB channels are quantized to an 8-bit index (3 bits red, 3 bits green, 2 bits blue: `index = (r3 << 5) | (g3 << 2) | b2`) and replaced with LUT entry `index + 1` (Lua arrays are 1-based). A table shorter than 256 entries uses its last entry for every higher index.
 
 - **Parameters:**
-  - `lut` (table): Array of 1-256 RGB565 color values; anything else raises an error
+  - `lut` (table): Array of 1-256 RGB565 color values; an empty or longer table raises an error, and an entry that is not a number becomes 0 (black)
 
 ```lua
 -- Create a 256-entry grayscale palette
@@ -861,7 +861,7 @@ Sets the background color for graphics operations.
 ---
 
 #### `picocalc.graphics.setTransparentColor(color)`
-Sets the global colour key for image and sprite drawing. Pixels exactly equal to this colour are not drawn, by every image draw call (see [`img:setTransparentColor`](#imagesettransparentcolorcolor)). It is a colour key, not alpha, and applies only to images and sprites that have no key of their own.
+Sets the global colour key for image and sprite drawing. Pixels exactly equal to this colour are not drawn, by every image draw call (see [`img:setTransparentColor`](#imgsettransparentcolorcolor)). It is a colour key, not alpha, and applies only to images and sprites that have no key of their own.
 
 - **Parameters:**
   - `color` (number or nil): RGB565 color value, or `nil` (or `0`) to disable the key.
@@ -1323,7 +1323,7 @@ Draws the image (or a sub-rectangle of it) to the framebuffer.
   - `x` (number): Destination X coordinate
   - `y` (number): Destination Y coordinate
   - `flipOpts` (boolean or table, optional): If `true`, flips horizontally. If table: `{flipX=bool, flipY=bool}`
-  - `srcRect` (table, optional): Source sub-rectangle `{x=int, y=int, w=int, h=int}`
+  - `srcRect` (table, optional): Source sub-rectangle, named `{x=int, y=int, w=int, h=int}` or positional `{x, y, w, h}`; a missing field defaults to `0, 0, image width, image height`. A non-number field raises an error naming it (`srcRect.x`).
 - **Returns:** None
 
 ```lua
@@ -1384,8 +1384,8 @@ Draws the image scaled by a **multiplier** and optionally rotated. `(x, y)` is t
 - **Parameters:**
   - `x` (number): Destination X coordinate
   - `y` (number): Destination Y coordinate
-  - `scale` (number): Scale multiplier (1.0 = original size, 2.0 = double, 0.5 = half). Must be finite and greater than 0, and the larger image edge times `scale` must not exceed 16384 px (about 51 screens, so a zoom that is mostly off-screen still works: a 96 px sprite at 100x is 9600 px). Anything else raises an error that says `scale` is a multiplier.
-  - `angle` (number, optional): Rotation angle in radians, finite. Defaults to 0.
+  - `scale` (number): Scale multiplier (1.0 = original size, 2.0 = double, 0.5 = half). Must be finite and greater than 0, and the larger image edge times `scale` must not exceed 4096 px (the limit of the rasteriser that draws it; a 64 px sprite at 64x is 4096 px, and a zoom that is mostly off-screen works up to that size). Anything else, including a destination size passed as the scale, raises an error that says `scale` is a multiplier. Use `drawScaledNN` for larger integer zooms.
+  - `angle` (number, optional): Rotation angle in radians (clockwise), finite. Defaults to 0.
 - **Returns:** None
 
 ```lua
