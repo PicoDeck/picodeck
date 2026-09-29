@@ -339,6 +339,7 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_bridge_gamepad.c
     ${PICODECK_ROOT}/src/os/gamepad.c
     ${PICODECK_ROOT}/src/os/gamepad_map.c
+    ${PICODECK_ROOT}/src/os/gamepad_edit.c
     ${PICODECK_ROOT}/src/os/lua_bridge_sys.c
     ${PICODECK_ROOT}/src/os/lua_bridge_fs.c
     ${PICODECK_ROOT}/src/os/lua_bridge_config.c
