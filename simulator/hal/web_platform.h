@@ -1,6 +1,11 @@
 #ifndef WEB_PLATFORM_H
 #define WEB_PLATFORM_H
 
+// The web build's platform seam: the simulator core calls these from its wait
+// points when compiled with Emscripten, and the web project implements them
+// (web_platform.c in the directory PICODECK_WEB_DIR names; see
+// simulator/CLAUDE.md, "Web build seam"). Only __EMSCRIPTEN__ code uses them.
+
 #include <stdint.h>
 
 // Run the simulated Core 1 service loop if its 5 ms period has elapsed.

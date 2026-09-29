@@ -10,7 +10,7 @@
 #ifndef __EMSCRIPTEN__
 #include <execinfo.h>
 #else
-#include "web/web_platform.h"
+#include "hal/web_platform.h"
 #endif
 #include <fcntl.h>
 #include "hal/hal_display.h"

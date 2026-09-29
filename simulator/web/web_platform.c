@@ -16,7 +16,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include "web_platform.h"
+#include "hal/web_platform.h"
 #include "sim_socket.h"  // sim_socket_notify* stubs below
 
 extern void hal_audio_update(void);
