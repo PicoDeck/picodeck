@@ -631,6 +631,19 @@ def test_push_waits_out_a_quiet_extraction(hw, dev, tmp_path):
     assert dev.files["/apps/big/main.lua"] == b"return\n"
 
 
+def test_push_waits_for_unzipped_when_the_echo_holds_a_marker(hw, dev, tmp_path):
+    # The device echoes "[DEV] Command: unzip ... /apps/pong": the word
+    # "pong" in the echo is not the reply. The push must wait for "Unzipped".
+    d = _app_dir(tmp_path, "pong")
+    dev.install(FakeApp("pong", "pong", "com.test.pong"))
+    dev.unzip_s = 1.6
+    r = hw.push_app(d)
+    assert not r["rebooted"], r
+    assert dev.files["/apps/pong/main.lua"] == b"return\n"
+    assert not any(c.startswith("rm /apps/pong") for c in dev.commands[-2:]), \
+        dev.commands
+
+
 def test_reboot_is_refused_while_an_app_runs(hw, dev):
     dev.install(FakeApp("spin", "Spin", "com.test.spin", hold=True))
     hw.launch_app("spin")

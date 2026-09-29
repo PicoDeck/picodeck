@@ -653,9 +653,7 @@ class HardwareMonitor:
                         continue
                     last_data = time.monotonic()
                     lines.append(line)
-                    if line.startswith("[DEV] ") and any(
-                        kw in line for kw in _CMD_END_MARKERS
-                    ):
+                    if _is_cmd_end(line):
                         break
                 return lines
             finally:
@@ -689,6 +687,15 @@ class HardwareMonitor:
 # Response lines that terminate a dev command exchange.
 _CMD_END_MARKERS = ["pong", "Total:", "Error:", "Launching", "Rebooting",
                     "Unknown", "Status:", "Created:", "Unzipped", "Deleted:"]
+
+
+def _is_cmd_end(line: str) -> bool:
+    """True for a reply line that ends a command exchange. The firmware's
+    own `[DEV] Command: <cmd>` echo never does: its arguments can hold a
+    marker word (an app named `pong`)."""
+    return (line.startswith("[DEV] ")
+            and not line.startswith("[DEV] Command:")
+            and any(kw in line for kw in _CMD_END_MARKERS))
 
 _hw_monitors: dict[str, HardwareMonitor] = {}
 _hw_monitors_lock = threading.Lock()
@@ -934,9 +941,7 @@ def do_command_hardware(cmd: str, port: str, timeout: float = DEFAULT_TIMEOUT,
                 break
             line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
             lines.append(line)
-            if line.startswith("[DEV] ") and any(
-                kw in line for kw in _CMD_END_MARKERS
-            ):
+            if _is_cmd_end(line):
                 break
         return lines
     finally:
