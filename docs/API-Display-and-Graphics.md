@@ -443,15 +443,17 @@ local charHeight = picocalc.display.getFontHeight()
 ---
 
 #### `picocalc.display.loadFont(path)`
-Loads a `.pfn` bitmap font from an absolute SD path and returns a font id for use with `setFont`. The path is sandbox-checked exactly like image loading. Loaded fonts occupy ids 4..11 (at most 8 loaded at a time, on top of the 4 built-ins) and each may be up to roughly 128 KB in PSRAM. Every font loaded by an app is automatically freed when the app exits, or earlier via `unloadFont`. See [Custom fonts](#custom-fonts) below for the `.pfn` format and the `tools/mkfont.py` build tool.
+Loads a `.pfn` bitmap font from an absolute SD path and returns a font id for use with `setFont`. The path is sandbox-checked exactly like image loading. Loaded fonts occupy ids 4..11 (at most 8 loaded at a time, on top of the 4 built-ins) and each may be up to roughly 128 KB in PSRAM. **`display.loadFont` and `graphics.font.new(path)` share the same 8 slots**: loading four fonts with each uses them all. Every font loaded by an app is automatically freed when the app exits, or earlier via `unloadFont`. See [Custom fonts](#custom-fonts) below for the `.pfn` format and the `tools/mkfont.py` build tool.
 
 - **Parameters:**
   - `path` (string): Absolute path to a `.pfn` file
-- **Returns:** (number or nil) Font id (4-11) on success, `nil` on sandbox denial or load failure (missing file, bad magic, size mismatch, no free slot). Never raises.
+- **Returns:** (number or nil, string) Font id (4-11) on success. On failure `nil` and an error string naming the cause: sandbox denial (`access denied`), a missing or unreadable file, a bad `.pfn`, or `font registry full` when all 8 slots are in use (the OS also logs a `[FONT] WARNING` line to the serial log). Never raises. The Lua failure value is `nil`; the native `loadFont` returns `-1`.
 
 ```lua
-local id = picocalc.display.loadFont(APP_DIR .. "/fonts/custom.pfn")
-if id then
+local id, err = picocalc.display.loadFont(APP_DIR .. "/fonts/custom.pfn")
+if not id then
+    picocalc.sys.log("font: " .. err)
+else
     picocalc.display.setFont(id)
     picocalc.display.drawText(10, 10, "Custom!", picocalc.display.WHITE)
 end
@@ -547,7 +549,7 @@ end
 | `picocalc.display.FONT_SCIENTIFICA` | 2 | Scientifica: monospace 6x12, includes box-drawing glyphs 0x80-0x9F |
 | `picocalc.display.FONT_SCIENTIFICA_BOLD` | 3 | Scientifica Bold: monospace 6x12, includes box-drawing glyphs 0x80-0x9F |
 
-Ids 4-11 are reserved for fonts loaded at runtime with `loadFont`/`graphics.font.new` — see [Custom fonts](#custom-fonts).
+Ids 4-11 are reserved for fonts loaded at runtime with `loadFont`/`graphics.font.new`, which share those 8 slots — see [Custom fonts](#custom-fonts).
 
 A byte outside a font's `first..last` range draws as a hollow box rather than a substitute glyph.
 
@@ -576,6 +578,26 @@ Post-processing effects applied to the entire framebuffer. Draw your scene first
 
 All effects operate on the back buffer and do not block DMA — they can overlap with the previous frame's transfer for maximum throughput.
 
+`applyEffect(name, ...)` takes an effect name and that effect's arguments. It accepts eleven names, which are ten distinct passes (`"fade"` is an alias of `"tint"`); any other name raises `unknown effect: <name>`. Numeric arguments are integers that clamp to their range instead of raising, so out-of-range values never error. A missing required argument (`r`, `g`, `b`, the image, the LUT) raises an argument error.
+
+| Name | Arguments (defaults) | Repeated calls |
+|---|---|---|
+| `"invert"` | none | Self-inverse: twice restores the frame |
+| `"darken"` | `factor` (128): 0 = black, 255 = no change | Compounds toward black |
+| `"brighten"` | `factor` (128): 0 = no change, 255 = white | Compounds toward white |
+| `"tint"` | `r, g, b, [strength]` (128) | Compounds toward the tint colour |
+| `"fade"` | `r, g, b, [factor]` (128), same as `"tint"` | Compounds toward the target colour |
+| `"grayscale"` | none | Idempotent |
+| `"blend"` | `image, [alpha]` (128) | Compounds toward the image |
+| `"palette"` | `lut`: table of 1-256 RGB565 values | Re-maps the already-mapped colours |
+| `"dither"` | `[levels]` (4), clamped to 2-32 | Re-quantises the already-dithered frame |
+| `"scanline"` | `[intensity]` (128) | Compounds: odd rows keep halving toward black |
+| `"posterize"` | `[levels]` (4), clamped to 2-32 | Re-quantises the already-posterized frame |
+
+Every effect rewrites the pixels already in the back buffer, so an effect applied again to the same frame, without redrawing the scene first, works on its own output. This is why `darken` or `brighten` called every frame on a frame you do not redraw converges to black or white within a second. Draw the scene, apply the effect once, then `flush()` each frame.
+
+Effects are whole-buffer: none of them honour the clip rect ([`setClipRect`](#picocalcdisplaysetcliprectx-y-w-h)), and none can be limited to a rectangle. To keep part of the screen unaffected, apply the effect, then redraw that part afterwards.
+
 #### `picocalc.display.applyEffect("invert")`
 Bitwise-inverts all pixels. The fastest effect (~0.3ms).
 
@@ -589,7 +611,7 @@ picocalc.display.applyEffect("invert")
 Darkens the framebuffer by blending each pixel toward black.
 
 - **Parameters:**
-  - `factor` (number, optional): 0 = fully black, 255 = no change. Default: 128.
+  - `factor` (number, optional): 0 = fully black, 255 = no change. Default: 128. Cumulative: each call multiplies what is already on screen.
 
 ```lua
 picocalc.display.applyEffect("darken", 200)  -- slight darken
@@ -602,7 +624,7 @@ picocalc.display.applyEffect("darken", 64)   -- heavy darken
 Brightens the framebuffer by blending each pixel toward white.
 
 - **Parameters:**
-  - `factor` (number, optional): 0 = no change, 255 = fully white. Default: 128.
+  - `factor` (number, optional): 0 = no change, 255 = fully white. Default: 128. Cumulative, like `darken`.
 
 ```lua
 picocalc.display.applyEffect("brighten", 80)
@@ -654,7 +676,7 @@ picocalc.display.applyEffect("grayscale")
 ---
 
 #### `picocalc.display.applyEffect("blend", image, alpha)`
-Alpha-blends an image onto the framebuffer. The image is drawn at (0, 0) and clipped to the screen.
+Alpha-blends an image onto the framebuffer. The image is drawn at (0, 0) and clipped to the screen, over the whole image regardless of the clip rect. The image's colour key is ignored: every pixel is blended.
 
 - **Parameters:**
   - `image` (userdata): Image object from `picocalc.graphics.image.load()` or `.new()`
@@ -668,10 +690,10 @@ picocalc.display.applyEffect("blend", overlay, 100)
 ---
 
 #### `picocalc.display.applyEffect("palette", lut)`
-Remaps all framebuffer colors through a lookup table. Each pixel's RGB channels are quantized to an 8-bit index (3 bits red, 3 bits green, 2 bits blue) and replaced with the corresponding LUT entry.
+Remaps all framebuffer colors through a lookup table. Each pixel's RGB channels are quantized to an 8-bit index (3 bits red, 3 bits green, 2 bits blue: `index = (r3 << 5) | (g3 << 2) | b2`) and replaced with LUT entry `index + 1` (Lua arrays are 1-based). A table shorter than 256 entries uses its last entry for every higher index.
 
 - **Parameters:**
-  - `lut` (table): Array of 1-256 RGB565 color values
+  - `lut` (table): Array of 1-256 RGB565 color values; anything else raises an error
 
 ```lua
 -- Create a 256-entry grayscale palette
@@ -801,7 +823,7 @@ API version 6 (`api->version >= 6`) adds the font system to the same vtable. `PC
 | `getFontWidth` | `int (*)(void)` — max advance of the active font |
 | `getFontHeight` | `int (*)(void)` |
 | `textWidth` | `int (*)(const char *text)` — real width in the active font |
-| `loadFont` | `int (*)(const char *path)` — slot id, or -1 on failure |
+| `loadFont` | `int (*)(const char *path)` — slot id, or **-1** on failure (missing file, bad `.pfn`, or all 8 slots in use; the reason goes to the serial log). The Lua `display.loadFont` returns `nil, errstr` instead. |
 | `unloadFont` | `void (*)(int font_id)` |
 | `drawTextTransparent` | `int (*)(int x, int y, const char *text, uint16_t fg)` |
 
@@ -839,10 +861,10 @@ Sets the background color for graphics operations.
 ---
 
 #### `picocalc.graphics.setTransparentColor(color)`
-Sets the global transparent color for image and sprite drawing. Pixels matching this color will not be drawn.
+Sets the global colour key for image and sprite drawing. Pixels exactly equal to this colour are not drawn, by every image draw call (see [`img:setTransparentColor`](#imagesettransparentcolorcolor)). It is a colour key, not alpha, and applies only to images and sprites that have no key of their own.
 
 - **Parameters:**
-  - `color` (number or nil): RGB565 color value, or `nil` to disable transparency.
+  - `color` (number or nil): RGB565 color value, or `nil` (or `0`) to disable the key.
 - **Returns:** None
 
 ---
@@ -1355,13 +1377,15 @@ img:drawTiled(0, 30, 200, 100)
 ---
 
 #### `img:drawScaled(x, y, scale [, angle])`
-Draws the image scaled and optionally rotated.
+Draws the image scaled by a **multiplier** and optionally rotated. `(x, y)` is the top-left corner of the unrotated result.
+
+`scale` is a multiplier, **not** a destination size: `img:drawScaled(x, y, 182, 90)` is a 182x zoom, not "182 by 90 pixels", and is rejected. The native `graphics->drawScaled(img, x, y, dst_w, dst_h)` takes a destination size; the Lua method does not. To draw at an exact `w` x `h` from Lua use [`drawStretched`](#imagedrawstretchedx-y-w-h--srcrect).
 
 - **Parameters:**
   - `x` (number): Destination X coordinate
   - `y` (number): Destination Y coordinate
-  - `scale` (number): Scale factor (1.0 = original size, 2.0 = double)
-  - `angle` (number, optional): Rotation angle in radians. Defaults to 0.
+  - `scale` (number): Scale multiplier (1.0 = original size, 2.0 = double, 0.5 = half). Must be finite and greater than 0, and the larger image edge times `scale` must not exceed 16384 px (about 51 screens, so a zoom that is mostly off-screen still works: a 96 px sprite at 100x is 9600 px). Anything else raises an error that says `scale` is a multiplier.
+  - `angle` (number, optional): Rotation angle in radians, finite. Defaults to 0.
 - **Returns:** None
 
 ```lua
@@ -1376,10 +1400,12 @@ Draws the image scaled using nearest-neighbor interpolation. Faster and sharper 
 
 Samples source pixels exactly for any scale (older firmware sampled the wrong column at non-power-of-two scales, e.g. every third column at scale 3).
 
+`scale` is an integer multiplier, like `drawScaled`'s, not a destination size. It must be at least 1 and the larger image edge times `scale` must not exceed 16384 px; otherwise the call raises the same "scale multiplier" error as `drawScaled`.
+
 - **Parameters:**
   - `x` (number): Destination X coordinate
   - `y` (number): Destination Y coordinate
-  - `scale` (number): Integer scale factor (e.g., 2 for 2x size)
+  - `scale` (number): Integer scale multiplier (e.g., 2 for 2x size)
 - **Returns:** None
 
 ```lua
@@ -1394,12 +1420,36 @@ Draws the image (or the `srcRect` part of it) stretched to exactly `w` × `h` pi
 - **Parameters:**
   - `x`, `y` (number): Top-left corner on screen
   - `w`, `h` (number): Destination size; `0` or less draws nothing
-  - `srcRect` (table, optional): `{x=, y=, w=, h=}` source rectangle; clamped to the image
+  - `srcRect` (table, optional): source rectangle, named `{ x = 16, y = 0, w = 16, h = 8 }` or positional `{ 16, 0, 16, 8 }` (x, y, w, h); clamped to the image. A named field wins over the same array slot; a missing field defaults to `0, 0, image width, image height`. A field that is not a number raises an error naming it (`srcRect.x`).
 - **Returns:** None
 
 ```lua
 sheet:drawStretched(100, 80, 48, 24, { x = 16, y = 0, w = 16, h = 8 })  -- one frame, 3x
+sheet:drawStretched(100, 80, 48, 24, { 16, 0, 16, 8 })                  -- the same, positional
 ```
+
+---
+
+#### `img:setTransparentColor(color)`
+Sets this image's colour key. Pixels that exactly equal `color` are skipped when the image is drawn. This is a colour key, not alpha: there is no blending, so a PNG's alpha channel is not kept (a transparent PNG pixel decodes as black) and anti-aliased edge pixels that are not exactly the key colour show as an opaque fringe. Use a flat key colour that appears nowhere else in the art, such as magenta (`display.rgb(255, 0, 255)`).
+
+`0` (or `nil`) means no key, so black (`0x0000`) can never be keyed. An image with no key falls back to the global key set with [`graphics.setTransparentColor`](#picocalcgraphicssettransparentcolorcolor); an image key overrides it.
+
+The key is honoured by every image draw call: `img:draw`, `drawAnchored`, `drawTiled`, `drawScaled`, `drawScaledNN` and `drawStretched`. Sprites have their own key (`sprite:setTransparentColor`) with the same fall-back to the global one. `applyEffect("blend", img)` ignores it.
+
+- **Parameters:**
+  - `color` (number or nil): RGB565 value, or `nil`/`0` to clear
+- **Returns:** None
+
+```lua
+sheet:setTransparentColor(picocalc.display.rgb(255, 0, 255))
+sheet:draw(40, 40)   -- magenta pixels are skipped
+```
+
+---
+
+#### `img:getTransparentColor()`
+- **Returns:** (number or nil) The image's own colour key, or `nil` when it has none (the global key, if any, still applies).
 
 ---
 
@@ -2367,7 +2417,11 @@ Creates a new font object, either from one of the four built-in fonts or by load
 
 - **Parameters:**
   - `nameOrPath` (string): One of the built-in names `"6x8"`, `"8x12"`, `"scientifica"`, `"scientifica-bold"`, or an absolute path to a `.pfn` file inside the app's sandbox
-- **Returns:** (userdata) Font object. **Raises a Lua error** (never returns `nil`) if the path is outside the sandbox or the file fails to load (missing, bad magic, size mismatch, no free slot).
+- **Returns:** (userdata) Font object. **Raises a Lua error** (never returns `nil`); the message names the real problem:
+  - a bare name that is not a built-in (no `/`, not ending in `.pfn`): `no such built-in font 'x' (built-ins: ...)`
+  - a path (contains `/` or ends in `.pfn`) outside the sandbox: `access denied: <path>`
+  - a path that cannot be loaded (missing, bad magic, size mismatch): `failed to load font <path>: <reason>`
+  - all 8 loaded-font slots in use: `font registry full (...)`. The slots are shared with `picocalc.display.loadFont`; built-in names never use one.
 
 A font object created from a path owns a loaded font slot (see [Custom fonts](#custom-fonts)) and frees it automatically when the object is garbage-collected. Every font an app has loaded, whether via `font.new(path)` or `picocalc.display.loadFont`, is also freed when the app exits, so leaving objects to the garbage collector is safe.
 

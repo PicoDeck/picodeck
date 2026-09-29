@@ -1,0 +1,7 @@
+{
+    "id": "net.picodeck.gfx_api_test",
+    "name": "Graphics API Test",
+    "description": "E2E fixture: drawScaled argument checks, srcRect forms, font registry errors",
+    "version": "1.0",
+    "author": "PicoDeck E2E"
+}
