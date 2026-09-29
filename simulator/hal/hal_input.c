@@ -117,6 +117,7 @@ static struct {
     {SDLK_F2, BTN_F2},
     {SDLK_F3, BTN_F3},
     {SDLK_F4, BTN_F4},
+    {SDLK_F5, BTN_F5},  // the gamepad's default B
     {SDLK_TAB, BTN_TAB},
     {SDLK_BACKSPACE, BTN_BACKSPACE},
     {SDLK_DELETE, BTN_DEL},
@@ -400,6 +401,13 @@ void hal_input_discard_pending(void) {
     g_btn_unread_seq = 0;
     g_btn_pending_seq = 0;
     pthread_mutex_unlock(&s_input_mutex);
+}
+
+uint32_t hal_input_injected_down(void) {
+    pthread_mutex_lock(&s_input_mutex);
+    uint32_t down = g_injected_click | g_injected_latched;
+    pthread_mutex_unlock(&s_input_mutex);
+    return down;
 }
 
 void hal_input_note_menu_injected(void) {

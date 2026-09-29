@@ -95,6 +95,23 @@ typedef struct {
 #define BTN_ALT       (1 << 21)   // Alt modifier
 #define BTN_FN        (1 << 22)   // Fn/Symbol modifier
 
+// Gamepad button bitmask values (kbd_get_pad; bit i = pad map button i). Each is
+// an alias for keys (primary and alternate slot), which still report as
+// themselves through the BTN_* masks. Defaults: arrows, A=F4, B=F5, X=Delete,
+// Y=Backspace, L=F2, R=F3, Start=F1, Select=Tab.
+#define PAD_UP        (1 << 0)
+#define PAD_DOWN      (1 << 1)
+#define PAD_LEFT      (1 << 2)
+#define PAD_RIGHT     (1 << 3)
+#define PAD_A         (1 << 4)
+#define PAD_B         (1 << 5)
+#define PAD_X         (1 << 6)
+#define PAD_Y         (1 << 7)
+#define PAD_L         (1 << 8)
+#define PAD_R         (1 << 9)
+#define PAD_START     (1 << 10)
+#define PAD_SELECT    (1 << 11)
+
 // Built-in font ids for display->setFont (API version 6)
 #define PC_FONT_6X8               0
 #define PC_FONT_8X12              1

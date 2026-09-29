@@ -20,6 +20,8 @@
 //   - a key-down set        (input.isKeyDown, any keycode incl. letters)
 //   - the button masks      (a press+release inside one poll is held for one
 //                            poll, so getButtons()/getButtonsPressed() see it)
+//   - the gamepad masks     (PAD_*: keys resolved through the pad map, same
+//                            rules as the button masks; see "Gamepad" below)
 // A HOLD item is a repeat of a press already seen, never a fresh press edge.
 // =============================================================================
 
@@ -62,6 +64,11 @@ typedef struct {
   uint8_t char_pushed;
 } kbd_input_t;
 
+// Gamepad masks (PAD_* bits), kept by the button masks' rules.
+typedef struct {
+  uint16_t curr, prev, tapped, deferred; // as in kbd_buttons_t
+} kbd_pad_t;
+
 // Button masks as kbd_poll maintains them.
 typedef struct {
   uint32_t curr;     // held now
@@ -69,6 +76,7 @@ typedef struct {
   uint32_t tapped;   // got a fresh PRESSED during this poll
   uint32_t deferred; // pressed and released inside this poll: released next
   bool in_bg;        // background polls ran since the last foreground poll
+  kbd_pad_t pad;     // the gamepad, polled (and cleared) with the buttons
 } kbd_buttons_t;
 
 // ── Keycode helpers ──────────────────────────────────────────────────────────
@@ -170,6 +178,129 @@ static inline void kbd_keyset_set(kbd_keyset_t *s, uint8_t key) {
 static inline void kbd_keyset_clear(kbd_keyset_t *s, uint8_t key) {
   key = kbd_key_fold(key);
   s->bits[key >> 5] &= ~(1u << (key & 31));
+}
+
+// ── Gamepad ──────────────────────────────────────────────────────────────────
+// Every key transition, whatever its source, reaches the gamepad as a FIFO
+// state (PRESSED / HOLD / RELEASED) for one keycode, resolved through the pad
+// map (kbd_padmap_t in keyboard.h): kbd_fifo_apply_pad for STM32 items,
+// kbd_pad_event for decoded events (the simulator), kbd_inject_* for injected
+// keys. The masks follow the button masks' rules:
+//   PRESSED  press edge; a press+release inside one poll reads as held for
+//            that poll and released at the next (tapped / deferred);
+//   HOLD     held without a press edge when the button was not held (a key
+//            pressed before kbd_clear_state or a map change);
+//   RELEASED released only once no key bound to that button is still in the
+//            key-down set, so the primary and alternate keys overlap cleanly.
+// A key the map does not hold changes nothing; kbd_clear_state and a map
+// change drop the whole gamepad state, so a missed release cannot outlive
+// the next system menu or app exit.
+
+// The PAD_* bit key is bound to (0 when unbound). At most one: gamepad_map.c
+// keeps one button per key.
+static inline uint16_t kbd_pad_lookup(const kbd_padmap_t *m, uint8_t key) {
+  if (!m || !key)
+    return 0;
+  key = kbd_key_fold(key);
+  for (int b = 0; b < KBD_PAD_BUTTONS; b++)
+    for (int s = 0; s < KBD_PAD_SLOTS; s++)
+      if (m->key[b][s] && kbd_key_fold(m->key[b][s]) == key)
+        return (uint16_t)(1u << b);
+  return 0;
+}
+
+// The PAD_* bits of the keys behind a BTN_* mask (injected buttons).
+static inline uint16_t kbd_pad_from_buttons(const kbd_padmap_t *m,
+                                            uint32_t buttons) {
+  uint16_t pad = 0;
+  for (uint32_t b = 1; b && b <= buttons; b <<= 1)
+    if (buttons & b)
+      pad |= kbd_pad_lookup(m, kbd_button_to_keycode(b));
+  return pad;
+}
+
+// True while a key bound to pad button index `b` is in the key-down set.
+static inline bool kbd_pad_key_down(const kbd_padmap_t *m,
+                                    const kbd_keyset_t *down, int b) {
+  for (int s = 0; m && s < KBD_PAD_SLOTS; s++)
+    if (m->key[b][s] && kbd_keyset_test(down, m->key[b][s]))
+      return true;
+  return false;
+}
+
+static inline void kbd_pad_begin_poll(kbd_pad_t *p) {
+  p->prev = p->curr;
+  p->curr &= (uint16_t)~p->deferred;
+  p->deferred = 0;
+  p->tapped = 0;
+}
+
+static inline void kbd_pad_press(kbd_pad_t *p, uint16_t bits) {
+  p->curr |= bits;
+  p->tapped |= bits;
+  p->deferred &= (uint16_t)~bits;
+}
+
+// Held, but not a fresh press edge.
+static inline void kbd_pad_hold(kbd_pad_t *p, uint16_t bits) {
+  bits &= (uint16_t)~p->curr;
+  p->curr |= bits;
+  p->prev |= bits;
+}
+
+// Release the buttons of `bits` that no bound key in `down` still holds. Call
+// after the releasing key has left `down`.
+static inline void kbd_pad_release(kbd_pad_t *p, const kbd_padmap_t *m,
+                                   const kbd_keyset_t *down, uint16_t bits) {
+  for (int b = 0; b < KBD_PAD_BUTTONS; b++) {
+    uint16_t bit = (uint16_t)(1u << b);
+    if (!(bits & bit) || kbd_pad_key_down(m, down, b))
+      continue;
+    if ((p->tapped & bit) && !(p->prev & bit))
+      p->deferred |= bit;
+    else
+      p->curr &= (uint16_t)~bit;
+  }
+}
+
+// One key transition (KBD_FIFO_* state), after the key-down set is updated.
+static inline void kbd_pad_key(kbd_pad_t *p, const kbd_padmap_t *m,
+                               const kbd_keyset_t *down, uint8_t state,
+                               uint8_t key) {
+  uint16_t bit = kbd_pad_lookup(m, key);
+  if (!bit)
+    return;
+  if (state == KBD_FIFO_PRESSED)
+    kbd_pad_press(p, bit);
+  else if (state == KBD_FIFO_HOLD)
+    kbd_pad_hold(p, bit);
+  else if (state == KBD_FIFO_RELEASED)
+    kbd_pad_release(p, m, down, bit);
+}
+
+// A decoded event (the simulator's path): down = press (a repeat-flagged down
+// = HOLD), up = release; char events change nothing.
+static inline void kbd_pad_event(kbd_pad_t *p, const kbd_padmap_t *m,
+                                 const kbd_keyset_t *down, kbd_event_t e) {
+  uint8_t state = KBD_FIFO_IDLE;
+  if (e.type == KBD_EV_DOWN)
+    state = (e.flags & KBD_EVF_REPEAT) ? KBD_FIFO_HOLD : KBD_FIFO_PRESSED;
+  else if (e.type == KBD_EV_UP)
+    state = KBD_FIFO_RELEASED;
+  kbd_pad_key(p, m, down, state, e.key);
+}
+
+// The idle-dim wake swallow for the gamepad (see kbd_buttons_swallow; before
+// = the pad right after kbd_poll_begin).
+static inline void kbd_pad_swallow(kbd_pad_t *p, bool bg_run, kbd_pad_t before) {
+  if (!bg_run) {
+    p->curr &= p->prev;
+    p->deferred = 0;
+    return;
+  }
+  p->curr &= (uint16_t)(before.curr | (p->prev & ~before.prev));
+  p->deferred &= before.curr;
+  p->tapped &= before.curr;
 }
 
 // ── Event queue ──────────────────────────────────────────────────────────────
@@ -289,6 +420,7 @@ static inline void kbd_buttons_begin_poll(kbd_buttons_t *b) {
   b->curr &= ~b->deferred;
   b->deferred = 0;
   b->tapped = 0;
+  kbd_pad_begin_poll(&b->pad);
 }
 
 // Start of a foreground (kbd_poll, the app's input.update) or background
@@ -428,6 +560,15 @@ static inline uint8_t kbd_fifo_apply(kbd_input_t *in, kbd_buttons_t *b,
   }
 }
 
+// What kbd_poll runs for each FIFO item: kbd_fifo_apply, then the gamepad.
+static inline uint8_t kbd_fifo_apply_pad(kbd_input_t *in, kbd_buttons_t *b,
+                                         const kbd_padmap_t *m, uint8_t state,
+                                         uint8_t key) {
+  uint8_t raw = kbd_fifo_apply(in, b, state, key);
+  kbd_pad_key(&b->pad, m, &in->down, state, key);
+  return raw;
+}
+
 // ── Injected input (dev commands) ────────────────────────────────────────────
 // The bookkeeping keyboard.c keeps for keypress/keydown/keyup injection, as
 // pure functions over the button masks so the host test runs the same code.
@@ -435,22 +576,28 @@ static inline uint8_t kbd_fifo_apply(kbd_input_t *in, kbd_buttons_t *b,
 //   active   one-shots published and held for at least hold_ms of wall time
 //   held     keys latched by keydown until kbd_release_buttons (keyup)
 //   ch       a char injected with kbd_inject_char, until getChar reads it
+//   pad_tap  gamepad buttons of injected chars, tapped by the next poll
+// The gamepad follows injected buttons through their BTN_* bits
+// (kbd_pad_from_buttons): held while active or latched, released on retire
+// or keyup.
 typedef struct {
   uint32_t pending;
   uint32_t active;
   uint32_t active_since_ms;
   uint32_t held;
   char ch;
+  uint16_t pad_tap;
 } kbd_inject_t;
 
 // Every kbd_poll, after kbd_poll_begin: retire the active one-shot once it
 // has been held for hold_ms (a release edge), publish a pending one (a press
 // edge) unless one was retired in this very poll (so a re-injected key reads
-// released for at least one poll), then fold injected keys into curr.
-// A background poll neither retires nor publishes.
+// released for at least one poll), tap the injected chars' gamepad buttons
+// (held for this poll, released at the next), then fold injected keys into
+// curr and the gamepad. A background poll neither retires nor publishes.
 static inline void kbd_inject_poll(kbd_inject_t *j, kbd_buttons_t *b,
-                                   kbd_input_t *in, bool bg, uint32_t now_ms,
-                                   uint32_t hold_ms) {
+                                   kbd_input_t *in, const kbd_padmap_t *m,
+                                   bool bg, uint32_t now_ms, uint32_t hold_ms) {
   bool retired_now = false;
   if (!bg && j->active && (now_ms - j->active_since_ms >= hold_ms)) {
     uint32_t retired = j->active & ~j->held;
@@ -458,6 +605,7 @@ static inline void kbd_inject_poll(kbd_inject_t *j, kbd_buttons_t *b,
     j->active = 0;
     retired_now = true;
     kbd_input_button_events(in, retired, KBD_EV_UP, b->curr);
+    kbd_pad_release(&b->pad, m, &in->down, kbd_pad_from_buttons(m, retired));
   }
   if (!bg && !retired_now && !j->active && j->pending) {
     j->active = j->pending;
@@ -466,7 +614,20 @@ static inline void kbd_inject_poll(kbd_inject_t *j, kbd_buttons_t *b,
     kbd_input_button_events(in, j->active & ~b->curr, KBD_EV_DOWN,
                             b->curr | j->active);
   }
+  if (!bg && j->pad_tap) {
+    kbd_pad_press(&b->pad, j->pad_tap);
+    kbd_pad_release(&b->pad, m, &in->down, j->pad_tap);
+    j->pad_tap = 0;
+  }
   b->curr |= j->active | j->held;
+  b->pad.curr |= kbd_pad_from_buttons(m, j->active | j->held);
+}
+
+// kbd_inject_char: the gamepad button bound to the char's key (if any) is
+// tapped by the next foreground poll.
+static inline void kbd_inject_pad_char(kbd_inject_t *j, const kbd_padmap_t *m,
+                                       char c) {
+  j->pad_tap |= kbd_pad_lookup(m, (uint8_t)c);
 }
 
 // After kbd_clear_state has zeroed the masks: an injected key that is down
@@ -477,15 +638,22 @@ static inline void kbd_inject_poll(kbd_inject_t *j, kbd_buttons_t *b,
 // the injection itself opened would answer. A pending injection is left to
 // be published (with its edge) by the next poll: it was queued for whatever
 // is about to be shown. A char not yet read is dropped.
-static inline void kbd_inject_after_clear(kbd_inject_t *j, kbd_buttons_t *b) {
+// The gamepad buttons of those keys likewise, and an injected char's pending
+// gamepad tap goes with the char.
+static inline void kbd_inject_after_clear(kbd_inject_t *j, kbd_buttons_t *b,
+                                          const kbd_padmap_t *m) {
   b->curr = b->prev = j->active | j->held;
+  b->pad.curr = b->pad.prev = kbd_pad_from_buttons(m, j->active | j->held);
   j->ch = 0;
+  j->pad_tap = 0;
 }
 
 // Drop the one-shots (pending and active) for good: the key that woke the
 // dimmed screen, or input discarded before a modal. The keydown latch stays.
-static inline void kbd_inject_drop_oneshots(kbd_inject_t *j, kbd_buttons_t *b) {
+static inline void kbd_inject_drop_oneshots(kbd_inject_t *j, kbd_buttons_t *b,
+                                            const kbd_padmap_t *m) {
   b->curr &= ~j->active;
+  b->pad.curr &= (uint16_t)~kbd_pad_from_buttons(m, j->active & ~j->held);
   j->active = 0;
   j->active_since_ms = 0;
   j->pending = 0;
@@ -500,12 +668,15 @@ static inline void kbd_inject_hold(kbd_inject_t *j, kbd_buttons_t *b,
 }
 
 // keyup: release latched buttons, and active/pending one-shots of the same
-// keys (else the next poll's fold would resurrect them).
+// keys (else the next poll's fold would resurrect them). Their gamepad
+// buttons are released too, unless another key bound to them is down.
 static inline void kbd_inject_release(kbd_inject_t *j, kbd_buttons_t *b,
-                                      kbd_input_t *in, uint32_t buttons) {
+                                      kbd_input_t *in, const kbd_padmap_t *m,
+                                      uint32_t buttons) {
   j->held &= ~buttons;
   j->active &= ~buttons;
   j->pending &= ~buttons;
   kbd_input_button_events(in, buttons, KBD_EV_UP, b->curr & ~buttons);
   b->curr &= ~buttons;
+  kbd_pad_release(&b->pad, m, &in->down, kbd_pad_from_buttons(m, buttons));
 }

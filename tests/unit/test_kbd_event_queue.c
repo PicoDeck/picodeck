@@ -484,7 +484,8 @@ static void test_bg_wake_swallow_keeps_earlier_edges(void) {
 
 // ── Injected input across kbd_clear_state ────────────────────────────────────
 // keyboard.c's kbd_clear_state: zero the masks and the input state, then
-// kbd_inject_after_clear. The injection state itself survives.
+// kbd_inject_after_clear. The injection state itself survives. No pad map
+// here: the gamepad side is tests/unit/test_gamepad.c's.
 static kbd_inject_t inj;
 #define HOLD_MS 80
 
@@ -492,12 +493,12 @@ static void clear_state(void) {
   memset(&btn, 0, sizeof(btn));
   kbd_input_clear(&in);
   raw = 0;
-  kbd_inject_after_clear(&inj, &btn);
+  kbd_inject_after_clear(&inj, &btn, NULL);
 }
 
 static void fg_poll(uint32_t now) {
   poll_start(false);
-  kbd_inject_poll(&inj, &btn, &in, false, now, HOLD_MS);
+  kbd_inject_poll(&inj, &btn, &in, NULL, false, now, HOLD_MS);
 }
 
 // (a) An injected Enter opens a modal, which clears the keyboard while the
@@ -535,7 +536,7 @@ static void test_inject_held_across_clear(void) {
   fg_poll(20);
   CHECK_EQ_U32(pressed(), 0);
   CHECK_EQ_U32(btn.curr, BTN_ENTER);
-  kbd_inject_release(&inj, &btn, &in, BTN_ENTER);  // takes effect at once
+  kbd_inject_release(&inj, &btn, &in, NULL, BTN_ENTER);  // at once
   CHECK_EQ_U32(btn.curr, 0);
   CHECK_EQ_U32(released(), BTN_ENTER);
   fg_poll(30);

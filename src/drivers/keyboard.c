@@ -50,7 +50,8 @@ _Static_assert(KBD_POLL_MAX_ITEMS * 2 <= KBD_EVENT_QUEUE_LEN,
 // ── Internal state
 // ────────────────────────────────────────────────────────────
 
-// Button masks (held / previous poll / tap bookkeeping, see kbd_event_queue.h)
+// Button and gamepad masks (held / previous poll / tap bookkeeping, see
+// kbd_event_queue.h). 28 bytes.
 static kbd_buttons_t s_btn;
 // Event queue, key-down and unseen-press sets and getChar backlog. 140 bytes
 // of SRAM: 16 four-byte events, two 256-bit key sets, 4 backlog chars and
@@ -77,6 +78,10 @@ static bool s_screenshot_pressed =
 // The bookkeeping (pending / active / held / char) and its arithmetic are in
 // kbd_event_queue.h (kbd_inject_*), host-tested in test_kbd_event_queue.c.
 static kbd_inject_t s_inj;
+
+// The gamepad's key bindings (24 bytes; the masks live in s_btn.pad).
+// src/os/gamepad.c installs the effective map at every app launch.
+static kbd_padmap_t s_padmap = KBD_PAD_DEFAULT_MAP;
 
 // ── Public API
 // ────────────────────────────────────────────────────────────────
@@ -178,6 +183,7 @@ static void kbd_poll_impl(bool bg) {
   bool bg_run = bg || s_btn.in_bg;  // this poll is part of a background run
   kbd_poll_begin(&s_btn, bg, &s_last_raw_key);
   uint32_t curr_before = s_btn.curr, prev_before = s_btn.prev;
+  kbd_pad_t pad_before = s_btn.pad;
   uint8_t raw_before = s_last_raw_key;
   if (!bg)
     s_last_char = 0;
@@ -202,7 +208,8 @@ static void kbd_poll_impl(bool bg) {
   // delivery independent of how many times kbd_poll() happens to run.
   // A one-shot is retired only after a full poll-to-poll cycle in which a
   // re-injected key reads released (kbd_inject_poll).
-  kbd_inject_poll(&s_inj, &s_btn, &s_in, bg, now_ms, KBD_INJECT_HOLD_MS);
+  kbd_inject_poll(&s_inj, &s_btn, &s_in, &s_padmap, bg, now_ms,
+                  KBD_INJECT_HOLD_MS);
 
   // Decode up to KBD_POLL_MAX_ITEMS raw FIFO items the bus engine (kbd_i2c.c)
   // has read since the last poll, in FIFO order (kbd_fifo_apply): nothing
@@ -226,7 +233,7 @@ static void kbd_poll_impl(bool bg) {
     else
       printf("[KBD] %s 0x%02X\n", state_str, keycode);
 #endif
-    uint8_t raw = kbd_fifo_apply(&s_in, &s_btn, state, keycode);
+    uint8_t raw = kbd_fifo_apply_pad(&s_in, &s_btn, &s_padmap, state, keycode);
     if (raw) {
       s_last_raw_key = raw;
       new_key = true;
@@ -256,6 +263,7 @@ static void kbd_poll_impl(bool bg) {
       // Drop this poll's fresh press edges (in a background run, only this
       // poll's: earlier polls of the run stay for the app).
       kbd_buttons_swallow(&s_btn, bg_run, curr_before, prev_before);
+      kbd_pad_swallow(&s_btn.pad, bg_run, pad_before);
       s_last_raw_key = bg_run ? raw_before : 0;
       // ...and this poll's queued presses and chars. Releases of keys that
       // were down before this poll stay, so a key the app saw go down still
@@ -274,7 +282,7 @@ static void kbd_poll_impl(bool bg) {
       // that reads as a brand new rising edge, leaking the "swallowed" wake
       // press to the app one poll late. Dropping active/pending here matches
       // the pre-hold behavior, where a swallowed wake press was gone for good.
-      kbd_inject_drop_oneshots(&s_inj, &s_btn);
+      kbd_inject_drop_oneshots(&s_inj, &s_btn, &s_padmap);
     }
   }
   // One char per poll, oldest first: a second key in the same poll is kept
@@ -301,6 +309,24 @@ uint32_t kbd_get_buttons_pressed(void) {
 uint32_t kbd_get_buttons_released(void) {
   return (~s_btn.curr & s_btn.prev);
 }
+
+uint32_t kbd_get_pad(void) { return s_btn.pad.curr; }
+
+uint32_t kbd_get_pad_pressed(void) {
+  return (uint32_t)(s_btn.pad.curr & ~s_btn.pad.prev);
+}
+
+uint32_t kbd_get_pad_released(void) {
+  return (uint32_t)(s_btn.pad.prev & ~s_btn.pad.curr);
+}
+
+void kbd_set_pad_map(const kbd_padmap_t *map) {
+  s_padmap = *map;
+  memset(&s_btn.pad, 0, sizeof(s_btn.pad));
+  s_inj.pad_tap = 0;
+}
+
+const kbd_padmap_t *kbd_get_pad_map(void) { return &s_padmap; }
 
 bool kbd_poll_event(kbd_event_t *out) { return kbd_evq_pop(&s_in.q, out); }
 
@@ -350,7 +376,7 @@ void kbd_discard_pending(void) {
   // one-shot injections: none of it was typed at whatever is about to be
   // shown.
   kbd_i2c_discard();
-  kbd_inject_drop_oneshots(&s_inj, &s_btn);
+  kbd_inject_drop_oneshots(&s_inj, &s_btn, &s_padmap);
   s_inj.ch = 0;
   kbd_clear_state();  // a keydown latch stays held, without an edge
 }
@@ -364,8 +390,9 @@ void kbd_clear_state(void) {
   // Enter that opened the modal calling this — or a keydown latch) stays
   // held with no press edge, and its retire/keyup still releases it; a
   // pending injection is published, with its edge, by the next poll; an
-  // unread injected char is dropped. See kbd_inject_after_clear.
-  kbd_inject_after_clear(&s_inj, &s_btn);
+  // unread injected char is dropped. See kbd_inject_after_clear. The
+  // gamepad (in s_btn) goes with the buttons, likewise.
+  kbd_inject_after_clear(&s_inj, &s_btn, &s_padmap);
 }
 
 void kbd_inject_buttons(uint32_t buttons) {
@@ -397,11 +424,12 @@ void kbd_hold_buttons(uint32_t buttons) {
 void kbd_release_buttons(uint32_t buttons) {
   // Also retires active/pending one-shots of the same keys: otherwise the
   // next poll's fold (kbd_inject_poll) would resurrect them.
-  kbd_inject_release(&s_inj, &s_btn, &s_in, buttons);
+  kbd_inject_release(&s_inj, &s_btn, &s_in, &s_padmap, buttons);
 }
 
 void kbd_inject_char(char c) {
   s_inj.ch = c;
+  kbd_inject_pad_char(&s_inj, &s_padmap, c);
   // The event queue sees a tap of that key, as the simulator's does.
   uint8_t mods = kbd_mods_from_buttons(s_btn.curr);
   kbd_event_t e = {KBD_EV_DOWN, (uint8_t)c, 0, mods};
