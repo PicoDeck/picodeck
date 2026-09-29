@@ -428,7 +428,8 @@ static pchttp_t http_newConn_w(const char *server, uint16_t port, bool use_ssl) 
     if (!c) return NULL;
     strncpy(c->server, server, HTTP_SERVER_MAX - 1);
     c->server[HTTP_SERVER_MAX - 1] = '\0';
-    c->port = port; c->use_ssl = use_ssl;
+    c->port = port ? port : (use_ssl ? 443 : 80);  // 0 = scheme default
+    c->use_ssl = use_ssl;
     return (pchttp_t)c;
 }
 static void http_get_w(pchttp_t c, const char *path, const char *extra_hdrs) { http_get((http_conn_t *)c, path, extra_hdrs); }
