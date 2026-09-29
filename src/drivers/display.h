@@ -194,9 +194,10 @@ void display_save_buffers(uint16_t *dst);
 // it was (mid-frame drawing included). Only the contents and roles come
 // back, not which physical buffer holds each (re-fetch
 // display_get_back_buffer(), as after any flush). Limit: an app that
-// presents with display_flush_rows() (no swap) shows its back buffer, not
-// its front; after a restore the panel shows the saved front, a stale frame
-// for such an app, until its next display_flush_rows().
+// presents only with display_flush_rows() (no swap) shows its back buffer,
+// not its front; after a restore the panel shows the saved front, stale for
+// such an app: the rows it flushes again come back, and any row it never
+// flushes again stays stale.
 void display_restore_buffers(const uint16_t *src);
 
 // Returns a read-only pointer to the raw framebuffer (320×320 RGB565,

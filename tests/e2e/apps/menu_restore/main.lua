@@ -10,10 +10,16 @@
 -- A menu item "Quit fixture" calls sys.exit() from inside the menu callback.
 -- mem.txt records the PSRAM heap's free bytes at start, so a test can tell
 -- whether an earlier run leaked.
+-- On the device the idle dimmer must stay off: the injected menu key does
+-- not count as activity, so on a dimmed screen the next key (the Esc meant
+-- for the menu) would only wake the screen. The timer is reset at start and
+-- on every loop pass, so however slow a run is, the dimmer never fires.
 local pc = picocalc
 local d = pc.display
 local input = pc.input
 local sys = pc.sys
+
+sys.resetIdleTimer()
 
 collectgarbage("collect")
 local f = pc.fs.open(pc.fs.appPath("mem.txt"), "w")
@@ -29,6 +35,7 @@ d.flush()
 sys.log("MR:READY")
 
 while true do
+    sys.resetIdleTimer()
     input.update()
     local pressed = input.getButtonsPressed()
     if (pressed & input.BTN_ENTER) ~= 0 then

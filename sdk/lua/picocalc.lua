@@ -486,6 +486,9 @@ function picocalc.sys.getVersion() end
 function picocalc.sys.applyUpdate(path) end
 
 ---Register a custom item in the system-menu overlay (max 4 per app).
+---The callback runs after the menu has closed and given the app its screen back
+---(both framebuffers, when memory for the copy is available); what it draws
+---shows at the app's next flush, and it may call `sys.exit()`.
 ---@param label string Menu item text
 ---@param callback fun() Called when the item is selected
 function picocalc.sys.addMenuItem(label, callback) end
