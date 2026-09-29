@@ -1624,7 +1624,7 @@ Sets the sprite's image.
   - `image` (userdata): Image object
   - `flip` (boolean, optional): Enable horizontal flip
   - `scale` (number, optional): Scale factor
-  - `yscale` (number, optional): Y scale factor (defaults to scale)
+  - `yscale` (number, optional): Y scale factor (only applied when given; it does not default to `scale`, unlike `sprite:setScale`)
 - **Returns:** None
 
 ```lua
@@ -1718,10 +1718,10 @@ Checks if the sprite is visible.
 ---
 
 #### `sprite:setCenter(x, y)`
-Sets the sprite's rotation/scale center point.
+Stores a center offset in whole pixels. It is stored only: drawing does not use it.
 
 - **Parameters:**
-  - `x`, `y` (number): Center point relative to sprite origin
+  - `x`, `y` (integer): Center point relative to sprite origin (rounded to an integer)
 - **Returns:** None
 
 ```lua
@@ -1733,7 +1733,7 @@ sprite:setCenter(16, 16)  -- Center of a 32x32 sprite
 #### `sprite:getCenter()`
 Gets the sprite's center point.
 
-- **Returns:** (number, number) `centerX, centerY`
+- **Returns:** (integer, integer) `centerX, centerY`
 
 ---
 
@@ -2303,7 +2303,7 @@ Returns the bounds of a specific frame.
 
 ```lua
 local frame = ss:getFrame(0)
-print(frame.x, frame.y, frame.w, frame.h)
+print(frame[1], frame[2], frame[3], frame[4])  -- x, y, w, h
 ```
 
 ---
@@ -2388,7 +2388,7 @@ end
 
 ### Animator Properties
 
-Read/write fields: `easingAmplitude` (number, default 1), `easingPeriod` (number, default 0), `repeatCount` (integer, default 1) and `reverses` (boolean, default false: play back to `from` after reaching `to`).
+Read/write fields: `repeatCount` (integer, default 1), `reverses` (boolean, default false: play back to `from` after reaching `to`), and `easingAmplitude` / `easingPeriod` (numbers, defaults 1 and 0). The last two are stored but no easing curve uses them yet.
 
 ---
 

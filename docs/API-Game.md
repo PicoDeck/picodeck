@@ -87,15 +87,16 @@ Get the current zoom factor.
 
 ---
 
-#### `camera:setTarget(target)`
-Follow an object. The target must provide a `getPosition()` method returning `x, y`.
+#### `camera:setTarget(x, y [, lag])`
+Follow a world position: `camera:update(dt)` eases the camera towards it. Call it again each frame to track a moving object.
 
 - **Parameters:**
-  - `target` (table): Object with a `getPosition()` method
+  - `x`, `y` (number): World position to follow
+  - `lag` (number, optional): Smoothing time constant in seconds (default 0.15)
 - **Returns:** None
 
 ```lua
-camera:setTarget(player)
+camera:setTarget(player.x, player.y)
 ```
 
 ---
@@ -108,14 +109,14 @@ Stop following the current target.
 
 ---
 
-#### `camera:setBounds(x, y, w, h)`
-Constrain the camera to a world rectangle — the camera will not scroll outside it.
+#### `camera:setBounds(minX, minY, maxX, maxY)`
+Constrain the camera to a world rectangle — the camera will not scroll outside it. The arguments are two corners, not a size.
 
 - **Parameters:**
-  - `x` (number): Left edge of the world
-  - `y` (number): Top edge of the world
-  - `w` (number): World width
-  - `h` (number): World height
+  - `minX` (number): Left edge of the world
+  - `minY` (number): Top edge of the world
+  - `maxX` (number): Right edge of the world
+  - `maxY` (number): Bottom edge of the world
 - **Returns:** None
 
 ```lua
@@ -136,40 +137,40 @@ Remove the world bounds constraint.
 Get the current world bounds.
 
 - **Parameters:** None
-- **Returns:** (number, number, number, number) `x, y, w, h`
+- **Returns:** (number, number, number, number) `minX, minY, maxX, maxY`, or nothing at all when the camera is unbounded
 
 ---
 
-#### `camera:shake(amplitude, duration_ms)`
+#### `camera:shake(amplitude, duration)`
 Shake the camera on both axes.
 
 - **Parameters:**
   - `amplitude` (number): Shake intensity in pixels
-  - `duration_ms` (number): Shake duration in milliseconds
+  - `duration` (number): Shake duration, counted down by the `dt` given to `camera:update(dt)` (seconds when `dt` is)
 - **Returns:** None
 
 ```lua
-camera:shake(4, 300)  -- rumble for 300 ms
+camera:shake(4, 0.3)  -- rumble for 0.3 s
 ```
 
 ---
 
-#### `camera:shakeX(amplitude, duration_ms)`
+#### `camera:shakeX(amplitude, duration)`
 Shake the camera horizontally only.
 
 - **Parameters:**
   - `amplitude` (number): Shake intensity in pixels
-  - `duration_ms` (number): Shake duration in milliseconds
+  - `duration` (number): Shake duration in `camera:update(dt)` units (seconds)
 - **Returns:** None
 
 ---
 
-#### `camera:shakeY(amplitude, duration_ms)`
+#### `camera:shakeY(amplitude, duration)`
 Shake the camera vertically only.
 
 - **Parameters:**
   - `amplitude` (number): Shake intensity in pixels
-  - `duration_ms` (number): Shake duration in milliseconds
+  - `duration` (number): Shake duration in `camera:update(dt)` units (seconds)
 - **Returns:** None
 
 ---
@@ -206,14 +207,15 @@ Convert screen coordinates to world coordinates.
 
 ---
 
-#### `camera:update()`
+#### `camera:update(dt)`
 Advance target following and screen shake. Call once per frame.
 
-- **Parameters:** None
+- **Parameters:**
+  - `dt` (number): Seconds since the last update
 - **Returns:** None
 
 ```lua
-camera:update()
+camera:update(1 / 30)
 ```
 
 ---
@@ -335,12 +337,12 @@ Call `draw()` on the current scene. Call once per frame.
 
 ---
 
-#### `picocalc.game.scene.objectPool(name [, factory])`
+#### `picocalc.game.scene.objectPool(name, factory)`
 Get (or create) the per-scene object pool with the given name.
 
 - **Parameters:**
   - `name` (string): Pool name
-  - `factory` (function, optional): Factory used to create the pool's objects
+  - `factory` (function): Factory used to create the pool's objects (required)
 - **Returns:** (table) The object pool
 
 ```lua

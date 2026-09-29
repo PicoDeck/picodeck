@@ -132,20 +132,37 @@ NOT_READERS = {"luaL_checkstack", "lua_getfield", "lua_geti", "lua_gettable",
 CALL_RE = re.compile(r"\b(\w+)\s*\(\s*L\s*\)")
 GETTOP_RE = re.compile(r"lua_gettop\s*\(\s*L\s*\)\s*(>=|>|==|<)\s*(\d+)")
 RETURN_RE = re.compile(r"\breturn\s+([^;]+);")
+RAISE_RE = re.compile(r"(?:luaL_error|luaL_argerror|luaL_typeerror|lua_error|"
+                      r"luaL_argexpected)\b")
+
+
+LEX_RE = re.compile(r"""//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'""", re.S)
 
 
 def strip_comments(src: str) -> str:
-    src = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), src, flags=re.S)
-    return re.sub(r"//[^\n]*", "", src)
+    """Drop comments, leaving string and char literals alone (a `//` inside a
+    string is not a comment)."""
+    def sub(m):
+        t = m.group(0)
+        return t if t[0] in "\"'" else "\n" * t.count("\n")
+    return LEX_RE.sub(sub, src)
+
+
+def blank_literals(src: str) -> str:
+    """Same length, string and char contents replaced by spaces, so a brace
+    inside a literal is not counted."""
+    return LEX_RE.sub(lambda m: m.group(0)[0] + " " * (len(m.group(0)) - 2) + m.group(0)[0]
+                      if m.group(0)[0] in "\"'" else m.group(0), src)
 
 
 def c_functions(src: str) -> dict[str, str]:
     """Function name -> body, for every function definition."""
     out = {}
-    for m in re.finditer(r"^[A-Za-z_][\w \t\*]*?\b(\w+)\s*\([^;{}]*\)\s*\{", src, re.M):
+    blank = blank_literals(src)
+    for m in re.finditer(r"^[A-Za-z_][\w \t\*]*?\b(\w+)\s*\([^;{}]*\)\s*\{", blank, re.M):
         i, depth = m.end(), 1
-        while i < len(src) and depth:
-            depth += {"{": 1, "}": -1}.get(src[i], 0)
+        while i < len(blank) and depth:
+            depth += {"{": 1, "}": -1}.get(blank[i], 0)
             i += 1
         out[m.group(1)] = src[m.end():i]
     return out
@@ -159,15 +176,33 @@ def reg_tables(src: str) -> dict[str, list[tuple[str, str]]]:
     return tables
 
 
-def analyse_c(body: str, method: bool, funcs: dict[str, str] | None = None,
-              _depth: int = 0) -> dict:
+def own_returns(body: str, funcs: dict[str, str], seen: frozenset = frozenset()) -> set:
+    """Literal return counts of `body` itself (not of helpers it calls).
+    `return callee(L);` takes the callee's; anything else non-literal is None."""
+    rets = set()
+    for expr in RETURN_RE.findall(body):
+        expr = expr.strip()
+        m = re.fullmatch(r"(\w+)\s*\(\s*L\s*\)", expr)
+        if RAISE_RE.match(expr):
+            continue  # raises: returns nothing to the caller
+        if m and m.group(1) in funcs and m.group(1) not in seen:
+            rets |= own_returns(funcs[m.group(1)], funcs, seen | {m.group(1)})
+        else:
+            rets.add(int(expr) if re.fullmatch(r"\d+", expr) else None)
+    return rets
+
+
+def analyse_c(body: str, method: bool,
+              funcs: dict[str, str] | None = None) -> dict:
     """Argument and return facts of one bridge function.
 
     A callee taking only `L` (a delegating wrapper or a shared helper) is read
-    as if inlined; a `return callee(L);` then has no literal return count.
+    for its arguments as if inlined.
     """
+    funcs = funcs or {}
+    own = body
     for callee in set(CALL_RE.findall(body)):
-        if funcs and callee in funcs and _depth < 3:
+        if callee in funcs:
             body = body + "\n" + funcs[callee]
     hi = hard = nonopt = 0
     reads = [(n, int(i)) for n, i in READ_RE.findall(body)
@@ -188,13 +223,31 @@ def analyse_c(body: str, method: bool, funcs: dict[str, str] | None = None,
             hard = max(hard, n)
     for op, n in GETTOP_RE.findall(body):
         hi = max(hi, int(n) if op != "<" else 0)
-    rets = set()
-    for expr in RETURN_RE.findall(body):
-        expr = expr.strip()
-        rets.add(int(expr) if re.fullmatch(r"\d+", expr) else None)
     off = 1 if method else 0
     return {"total": max(hi - off, 0), "required": max(hard - off, 0),
-            "nonopt": max(nonopt - off, 0), "returns": rets}
+            "nonopt": max(nonopt - off, 0), "returns": own_returns(own, funcs)}
+
+
+def _return_count(line: str) -> int:
+    """`---@return T name` is one return. `---@return a x, b y` (top-level
+    commas, every part exactly a type and a name) is N; a comma in a
+    description is not a second return."""
+    if not line.startswith("---@return"):
+        return 0
+    body = line[len("---@return"):].strip()
+    parts, depth, cur = [], 0, ""
+    for ch in body:
+        depth += ch in "<{(["
+        depth -= ch in ">})]"
+        if ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    if len(parts) > 1 and all(len(p.split()) == 2 for p in parts):
+        return len(parts)
+    return 1
 
 
 def parse_stub(text: str) -> dict[str, dict]:
@@ -226,7 +279,7 @@ def parse_stub(text: str) -> dict[str, dict]:
             nreq += 1
         out[f"{owner}.{name}"] = {
             "line": i + 1, "total": len(params), "required": nreq,
-            "returns": sum(1 for b in block if b.startswith("---@return")),
+            "returns": sum(_return_count(b) for b in block),
             "params": params}
     return out
 
@@ -259,7 +312,8 @@ def check(stub_text: str, bridge_dir: Path = BRIDGE_DIR) -> list[str]:
             if owner.startswith("picocalc."):
                 problems.append(f"stub line {s['line']}: {key}: {owner} is not a "
                                 "table the bridge registers (moved or renamed?); "
-                                "a new table needs an OWNERS entry")
+                                "a new table needs an OWNERS entry in "
+                                "tools/check_lua_stub.py")
             continue
         b = bridge.get(key)
         where = f"stub line {s['line']}: {key}({', '.join(s['params'])})"

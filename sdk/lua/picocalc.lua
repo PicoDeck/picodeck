@@ -925,6 +925,7 @@ function PicoDeckSample:getSubsample(start_frame, end_frame) end
 ---@param vol? integer Volume 0–100 (default 100; larger values clamp to 100)
 ---@param rightvol? integer Right volume (ignored — mono PWM)
 ---@param rate? number Playback rate multiplier (default 1.0)
+---@return PicoDeckSamplePlayer player The player that is playing the sample (raises if none is free)
 function PicoDeckSample:playAt(when, vol, rightvol, rate) end
 
 -- ── PicoDeckSamplePlayer methods ────────────────────────────────────────────────
@@ -1576,10 +1577,10 @@ picocalc.graphics.image = {}
 ---@class PicoDeckImage : userdata
 local PicoDeckImage = {}
 
----Load an image from the SD card (BMP, JPEG, PNG, GIF).
+---Load an image from the SD card (BMP, JPEG, PNG, GIF). Raises on failure
+---(access denied, missing or undecodable file); it never returns nil.
 ---@param path string
----@return PicoDeckImage? img
----@return string? error
+---@return PicoDeckImage img
 function picocalc.graphics.image.load(path) end
 
 ---Load a sub-region of an image from the SD card.
@@ -1588,21 +1589,21 @@ function picocalc.graphics.image.load(path) end
 ---@param y integer Source y offset
 ---@param w integer Region width
 ---@param h integer Region height
----@return PicoDeckImage?
+---@return PicoDeckImage img Raises on failure
 function picocalc.graphics.image.loadRegion(path, x, y, w, h) end
 
 ---Load and scale an image from the SD card.
 ---@param path string
 ---@param w integer Target width
 ---@param h integer Target height
----@return PicoDeckImage?
+---@return PicoDeckImage img Raises on failure
 function picocalc.graphics.image.loadScaled(path, w, h) end
 
 ---Load an image from a Lua string (in-memory buffer). Format is auto-detected
 ---from magic bytes (BMP, JPEG, PNG, GIF).
 ---@param data string|userdata Raw encoded image bytes, or a qmibuf
 ---@param length? integer With a qmibuf: how many bytes of it to decode (default: all)
----@return PicoDeckImage?
+---@return PicoDeckImage img Raises on an unsupported or corrupt buffer
 function picocalc.graphics.image.loadFromBuffer(data, length) end
 
 ---Create a blank (black) image of the given dimensions.
@@ -1613,7 +1614,7 @@ function picocalc.graphics.image.new(width, height) end
 
 ---Return metadata for an image file without decoding pixels (header only).
 ---@param path string
----@return { width: integer, height: integer, format: string }?
+---@return { width: integer, height: integer, format: string } info Raises on an unreadable file
 function picocalc.graphics.image.getInfo(path) end
 
 ---Return a list of supported image format strings (e.g. `{"BMP", "JPEG", ...}`).
@@ -1798,8 +1799,8 @@ function picocalc.graphics.sprite.addEmptyCollisionSprite(x, y, w, h) end
 
 ---@param image PicoDeckImage|nil `nil` clears the image
 ---@param flip? boolean Horizontal flip
----@param scale? number
----@param scale_y? number Defaults to `scale`
+---@param scale? number Only applied when given
+---@param scale_y? number Only applied when given (unlike `setScale`, it does not default to `scale`)
 function PicoDeckSprite:setImage(image, flip, scale, scale_y) end
 
 ---@return PicoDeckImage?
@@ -1835,12 +1836,13 @@ function PicoDeckSprite:setVisible(visible) end
 ---@return boolean
 function PicoDeckSprite:isVisible() end
 
----@param ax number 0–1 (horizontal anchor: 0 = left, 0.5 = centre, 1 = right)
----@param ay number 0–1 (vertical anchor)
-function PicoDeckSprite:setCenter(ax, ay) end
+---Store a centre offset in whole pixels (stored only: drawing does not use it).
+---@param cx integer Rounded to an integer (0.5 reads back as 1)
+---@param cy integer
+function PicoDeckSprite:setCenter(cx, cy) end
 
----@return number ax
----@return number ay
+---@return integer cx
+---@return integer cy
 function PicoDeckSprite:getCenter() end
 
 ---@return integer[] point `{cx, cy}`: one table, not two values
@@ -1869,10 +1871,11 @@ function PicoDeckSprite:setScaleNN(nn) end
 ---@param color integer|nil RGB565
 function PicoDeckSprite:setTransparentColor(color) end
 
----@param degrees number
+---Set the rotation. The angle is in radians.
+---@param radians number
 ---@param scale? number Also sets the scale
 ---@param scale_y? number Also sets the vertical scale
-function PicoDeckSprite:setRotation(degrees, scale, scale_y) end
+function PicoDeckSprite:setRotation(radians, scale, scale_y) end
 
 ---@return number
 function PicoDeckSprite:getRotation() end
@@ -1990,7 +1993,7 @@ function PicoDeckSprite:allOverlappingSprites() end
 ---Clear the stencil mask.
 function PicoDeckSprite:clearStencil() end
 
----Set an ordered-dither stencil pattern of the given density.
+---Set an ordered-dither stencil pattern of the given density (stored only: drawing does not apply it).
 ---@param level number 0 (nothing drawn) to 1 (everything drawn); other values clamp
 function PicoDeckSprite:setStencilPattern(level) end
 
@@ -2228,8 +2231,8 @@ function PicoDeckBlinker:update() end
 picocalc.graphics.animation.animator = {}
 
 ---@class PicoDeckAnimator : userdata
----@field easingAmplitude number Amplitude for the easing curve (default 1)
----@field easingPeriod number Period for the easing curve (default 0)
+---@field easingAmplitude number Stored and readable, but no easing curve uses it yet (default 1)
+---@field easingPeriod number Stored and readable, but no easing curve uses it yet (default 0)
 ---@field repeatCount integer Times the animation runs (default 1)
 ---@field reverses boolean Play back to `from` after reaching `to` (default false)
 local PicoDeckAnimator = {}
@@ -2579,11 +2582,12 @@ function PicoDeckCamera:setTarget(x, y, lag) end
 function PicoDeckCamera:clearTarget() end
 
 ---Constrain the camera to a world-space rectangle.
----@param x integer
----@param y integer
----@param w integer
----@param h integer
-function PicoDeckCamera:setBounds(x, y, w, h) end
+---Constrain the camera. The arguments are two corners, not a size.
+---@param min_x number
+---@param min_y number
+---@param max_x number
+---@param max_y number
+function PicoDeckCamera:setBounds(min_x, min_y, max_x, max_y) end
 
 ---Remove world bounds.
 function PicoDeckCamera:clearBounds() end
@@ -2596,20 +2600,21 @@ function PicoDeckCamera:clearBounds() end
 ---@return number max_y
 function PicoDeckCamera:getBounds() end
 
----Apply a full-screen shake effect for `duration_ms` milliseconds.
----@param amplitude integer Pixels of shake
----@param duration_ms integer
-function PicoDeckCamera:shake(amplitude, duration_ms) end
+---Apply a full-screen shake effect. The duration counts down in the `dt`
+---passed to `update(dt)`, so it is in seconds when `dt` is.
+---@param amplitude number Pixels of shake
+---@param duration number
+function PicoDeckCamera:shake(amplitude, duration) end
 
 ---Apply a horizontal shake.
----@param amplitude integer
----@param duration_ms integer
-function PicoDeckCamera:shakeX(amplitude, duration_ms) end
+---@param amplitude number
+---@param duration number In `update(dt)` units (seconds)
+function PicoDeckCamera:shakeX(amplitude, duration) end
 
 ---Apply a vertical shake.
----@param amplitude integer
----@param duration_ms integer
-function PicoDeckCamera:shakeY(amplitude, duration_ms) end
+---@param amplitude number
+---@param duration number In `update(dt)` units (seconds)
+function PicoDeckCamera:shakeY(amplitude, duration) end
 
 ---Cancel an active shake.
 function PicoDeckCamera:stopShake() end

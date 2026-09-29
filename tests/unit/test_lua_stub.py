@@ -83,3 +83,22 @@ def test_optional_marked_required_is_caught():
     fixed = "---@param factory fun(): any Factory function for new objects"
     problems = cls.check(STUB.replace(fixed, "---@param factory? fun(): any Factory"))
     assert any("objectPool" in p for p in problems)
+
+
+def test_raising_returns_do_not_hide_the_real_return_count():
+    # l_sample_playAt: `return luaL_error(...)` on failure, `return 1` on success.
+    fixed = "---@return PicoDeckSamplePlayer player The player that is playing the sample (raises if none is free)\n"
+    assert STUB.count(fixed) == 1
+    assert any("playAt" in p for p in cls.check(STUB.replace(fixed, "")))
+
+
+def test_one_line_return_list_counts_each_value():
+    assert cls._return_count("---@return integer w, integer h") == 2
+    assert cls._return_count("---@return string? error `\"a\"`, `\"b\"` or `\"c\"`") == 1
+    assert cls._return_count("---@return {a: integer, b: integer} t") == 1
+
+
+def test_c_scanning_ignores_braces_and_comment_markers_in_literals():
+    src = 'static int f(lua_State *L) {\n  puts("}} // x");\n  return 1;\n}\nint g(void) { return 2; }\n'
+    fns = cls.c_functions(cls.strip_comments(src))
+    assert "return 1;" in fns["f"] and "return 2" not in fns["f"] and "g" in fns
