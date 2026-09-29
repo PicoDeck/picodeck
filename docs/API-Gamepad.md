@@ -35,8 +35,14 @@ Arrows, Enter, Esc, Tab, Backspace, Delete, Space, F1–F5, the letters A–Z, a
 The keyboard reports some keys differently while Shift or Alt is held, and the gamepad allows for it:
 
 - **Shift** turns F1–F5 into F6–F10, Delete into End, Tab into Home, Enter into Insert, Esc into Brk and Up/Down into PgUp/PgDn. The gamepad reads these as the original key, so a button held while Shift goes down still releases. Shift+F5 (F10) and Shift+Esc (Brk) keep their system meaning (system menu, screenshot) and never press a button.
-- **Shift** silences Left, Right, Backspace and Space, and **Alt** silences B and Space and turns I into Insert. If Shift or Alt goes down while one of these is held, its button is released at once; keep holding the key and the button comes back at the key's next repeat after the modifier is up.
-- A key pressed within a few milliseconds after Shift comes up may miss its press (Left, Right, Backspace, Space, Enter). No button stays held, with one exception: Enter released at the same moment as Shift while Alt is still held stays held until the system menu opens or the app exits.
+- **Shift** silences Left, Right, Backspace and Space, and **Alt** silences B and Space and turns I into Insert. If Shift or Alt goes down while one of these is held, its button is released at once, and while Alt is held B, I and Space do not press their button; keep holding the key and the button comes back at the key's next repeat after the modifier is up.
+- Enter pressed while Shift is held gives a short press, then reads as held from its first repeat.
+- A key pressed within a few milliseconds after Shift comes up may miss its press (Left, Right, Backspace, Space, Enter).
+
+A button can stay held in two cases, until the system menu opens, the app exits or it calls `picocalc.input.clearState()`:
+
+- Enter released at the same moment as Shift while Alt is still held.
+- B, I or Space held while the keyboard's num lock is on. Pressing Left Shift and Alt together turns num lock on; it then acts as if Alt were held, and it stays on until Shift is pressed on its own. The gamepad cannot see it.
 
 Not bindable: the system menu key (F10) and Brk, which belong to the OS; F6–F9, which are Shift+F1–F4; digits and symbols, which Shift turns into other symbols; Shift, Alt and Sym, which change the other keys.
 
