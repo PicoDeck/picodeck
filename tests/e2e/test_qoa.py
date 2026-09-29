@@ -24,6 +24,7 @@ def _setup(case):
         write_qoa(app / "three_s.qoa", seconds=3.0, rate=22050)
         write_qoa(app / "one_s.qoa", seconds=1.0, rate=22050)
         write_qoa(app / "stereo_s.qoa", seconds=1.0, rate=44100, channels=2)
+        write_qoa(app / "three_ch.qoa", seconds=0.25, rate=22050, channels=3)
         (app / "only.flag").write_text(case)
     return setup
 

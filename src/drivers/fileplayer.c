@@ -35,25 +35,29 @@ static atomic_bool s_initialized;
 static fileplayer_t s_players[FILEPLAYER_MAX_INSTANCES];
 static fileplayer_t *s_active_player = NULL;
 static uint8_t *s_wav_buffer = NULL;
-static volatile bool s_underflow = false;
 
 // Parse the header window at the start of f (RIFF chunk walk in wav.c).
 // The window buffer comes from PSRAM, not the 4 KB main stack.
-static bool parse_wav_header(sdfile_t f, int file_size, wav_info_t *info) {
+static bool parse_wav_header(sdfile_t f, int file_size, wav_info_t *info,
+                             const char **why) {
     uint8_t *hdr = (uint8_t *)umm_malloc(WAV_HEADER_WINDOW);
-    if (!hdr)
+    if (!hdr) {
+        *why = "out of memory";
         return false;
+    }
     int n = sdcard_fread(f, hdr, WAV_HEADER_WINDOW);
     wav_err_t err = n > 0 ? wav_parse(hdr, (size_t)n, info) : WAV_ERR_NOT_WAV;
     umm_free(hdr);
     if (err != WAV_OK) {
         printf("fileplayer: %s\n", wav_strerror(err));
+        *why = wav_strerror(err);
         return false;
     }
     // The streaming path converts 16-bit PCM only.
     if (info->bits_per_sample != 16) {
         printf("fileplayer: %u-bit WAV not supported (16-bit only)\n",
                info->bits_per_sample);
+        *why = "only 16-bit WAV can be streamed";
         return false;
     }
     // Clamp a data chunk that claims more than the file holds.
@@ -96,12 +100,13 @@ static fileplayer_type_t detect_file_type(sdfile_t f) {
 }
 
 // Parse the QOA header window at the start of f.
-static bool parse_qoa_header(sdfile_t f, qoa_info_t *info) {
+static bool parse_qoa_header(sdfile_t f, qoa_info_t *info, const char **why) {
     uint8_t hdr[QOA_HEADER_WINDOW];
     int n = sdcard_fread(f, hdr, sizeof(hdr));
     qoa_err_t err = n > 0 ? qoa_parse(hdr, (size_t)n, info) : QOA_ERR_NOT_QOA;
     if (err != QOA_OK) {
         printf("fileplayer: %s\n", qoa_strerror(err));
+        *why = qoa_strerror(err);
         return false;
     }
     return true;
@@ -146,7 +151,6 @@ void fileplayer_reset(void) {
         files[i] = s_players[i].file;
     memset(s_players, 0, sizeof(s_players));
     s_active_player = NULL;
-    s_underflow = false;
     mutex_exit(&s_lock);
     if (stream)
         audio_stop_stream();
@@ -206,13 +210,24 @@ void fileplayer_destroy(fileplayer_t *player) {
 }
 
 bool fileplayer_load(fileplayer_t *player, const char *path) {
-    if (!player || !path || !atomic_load(&s_initialized)) return false;
+    return fileplayer_load_err(player, path, NULL);
+}
+
+bool fileplayer_load_err(fileplayer_t *player, const char *path,
+                         const char **reason) {
+    const char *why = "cannot play file";
+    if (reason) *reason = why;
+    if (!player || !path || !atomic_load(&s_initialized)) {
+        if (reason) *reason = "fileplayer unavailable";
+        return false;
+    }
 
     // Open and parse outside the lock (SD work can take milliseconds; Core
     // 1 keeps streaming another player meanwhile).
     sdfile_t f = sdcard_fopen(path, "rb");
     if (!f) {
         printf("fileplayer: failed to open %s\n", path);
+        if (reason) *reason = "cannot open file";
         return false;
     }
 
@@ -220,13 +235,15 @@ bool fileplayer_load(fileplayer_t *player, const char *path) {
     wav_info_t info;
     qoa_info_t qinfo;
     bool ok = false;
-    if (type == FILEPLAYER_TYPE_MP3)
+    if (type == FILEPLAYER_TYPE_MP3) {
         printf("fileplayer: MP3 file detected, use sound.mp3player() instead\n");
+        why = "MP3 is not supported here (use mp3player)";
+    }
     else if (type == FILEPLAYER_TYPE_QOA) {
         // A QOA player reports virtual 16-bit PCM: data_size/position are
         // counted as if the decoded PCM were the file, so the position,
         // offset and flow-control code is shared with WAV.
-        ok = parse_qoa_header(f, &qinfo);
+        ok = parse_qoa_header(f, &qinfo, &why);
         if (ok) {
             // A copy cut short plays its whole frames (and loops, like a
             // short WAV); the cut frame is not playable.
@@ -234,6 +251,7 @@ bool fileplayer_load(fileplayer_t *player, const char *path) {
             qinfo.samples = qoa_samples_in(&qinfo, size > 0 ? (uint32_t)size : 0);
             if (qinfo.samples == 0) {
                 printf("fileplayer: %s\n", qoa_strerror(QOA_ERR_TRUNCATED));
+                why = qoa_strerror(QOA_ERR_TRUNCATED);
                 ok = false;
             }
         }
@@ -244,9 +262,10 @@ bool fileplayer_load(fileplayer_t *player, const char *path) {
             info.data_offset = qinfo.first_frame_offset;
             info.data_size = qinfo.samples * info.block_align;
         }
-    } else if (type != FILEPLAYER_TYPE_WAV)
+    } else if (type != FILEPLAYER_TYPE_WAV) {
         printf("fileplayer: unknown file format\n");
-    else if (!parse_wav_header(f, sdcard_fsize_handle(f), &info))
+        why = "unknown file format (not WAV or QOA)";
+    } else if (!parse_wav_header(f, sdcard_fsize_handle(f), &info, &why))
         printf("fileplayer: failed to parse WAV\n");
     else
         ok = true;
@@ -284,8 +303,10 @@ bool fileplayer_load(fileplayer_t *player, const char *path) {
         sdcard_fclose(old);
     if (!ok) {
         sdcard_fclose(f);
+        if (reason) *reason = why;
         return false;
     }
+    if (reason) *reason = NULL;
 
     printf("fileplayer: loaded %s (%lu Hz, %s, %u ch, %lu samples)\n",
            path, (unsigned long)info.sample_rate,
@@ -312,6 +333,8 @@ bool fileplayer_play(fileplayer_t *player, uint8_t repeat_count) {
     player->repeats = repeat_count;  // 0 plays until stopped
     player->plays = 0;
     player->pass_pushed = false;
+    player->under_armed = false;
+    player->underran = false;
     s_active_player = player;
     uint32_t rate = player->sample_rate;
     // Start the stream (clears the ring) before Core 1 can push into it.
@@ -341,8 +364,10 @@ void fileplayer_pause(fileplayer_t *player) {
 void fileplayer_resume(fileplayer_t *player) {
     if (!player || !atomic_load(&s_initialized)) return;
     mutex_enter_blocking(&s_lock);
-    if (player->state == FILEPLAYER_STATE_PAUSED && s_active_player == player)
+    if (player->state == FILEPLAYER_STATE_PAUSED && s_active_player == player) {
         player->state = FILEPLAYER_STATE_PLAYING;
+        player->under_armed = false;  // the ring drained while paused
+    }
     mutex_exit(&s_lock);
 }
 
@@ -359,6 +384,11 @@ uint32_t fileplayer_get_position(const fileplayer_t *player) {
 uint32_t fileplayer_get_length(const fileplayer_t *player) {
     if (!player) return 0;
     return player->length;
+}
+
+uint32_t fileplayer_get_sample_rate(const fileplayer_t *player) {
+    if (!player || !player->file) return 0;
+    return player->sample_rate;
 }
 
 void fileplayer_set_volume(fileplayer_t *player, uint8_t left, uint8_t right) {
@@ -378,10 +408,12 @@ void fileplayer_get_volume(const fileplayer_t *player, uint8_t *left, uint8_t *r
 }
 
 void fileplayer_set_loop_range(fileplayer_t *player, uint32_t start, uint32_t end) {
-    if (!player) return;
+    if (!player || !atomic_load(&s_initialized)) return;
+    mutex_enter_blocking(&s_lock);
     player->loop = true;
     player->loop_start = start;
     player->loop_end = end;
+    mutex_exit(&s_lock);
 }
 
 void fileplayer_set_finish_callback(fileplayer_t *player, int (*cb)(void *), void *arg) {
@@ -421,8 +453,10 @@ uint32_t fileplayer_get_offset(const fileplayer_t *player) {
 }
 
 void fileplayer_set_stop_on_underrun(fileplayer_t *player, bool flag) {
-    if (!player) return;
+    if (!player || !atomic_load(&s_initialized)) return;
+    mutex_enter_blocking(&s_lock);
     player->stop_on_underrun = flag;
+    mutex_exit(&s_lock);
 }
 
 void fileplayer_set_rate(fileplayer_t *player, float rate) {
@@ -443,10 +477,10 @@ float fileplayer_get_rate(const fileplayer_t *player) {
  * floor(F * rate) * block_align bytes. Reading more (as the old code did,
  * 4 KB every tick at SD speed) only made audio_push_samples drop what did
  * not fit while position raced to EOF: a long WAV "finished" in seconds. */
-static uint32_t bytes_that_fit(const fileplayer_t *p) {
+static uint32_t bytes_that_fit(const fileplayer_t *p, uint32_t limit) {
     float rate = p->rate < 0.1f ? 0.1f : p->rate;
     uint32_t in_frames = (uint32_t)((float)audio_ring_free() * rate);
-    uint32_t remaining = p->position < p->data_size ? p->data_size - p->position : 0;
+    uint32_t remaining = p->position < limit ? limit - p->position : 0;
     uint32_t n = FILEPLAYER_READ_MAX;
     if (n / p->block_align > in_frames) n = in_frames * p->block_align;
     if (n > remaining) n = remaining;
@@ -485,19 +519,76 @@ typedef struct {
     void *arg;
 } fp_callback_t;
 
+/* Loop range. setLoopRange(start, end) is in seconds; the pass runs to
+ * `end`, then continues from `start` (the first pass starts wherever the
+ * player is, normally 0). Both become frame-aligned byte positions in the
+ * (virtual, for QOA) PCM the position counts, clamped to the data; an end of
+ * 0 is the end of the data, and an empty or reversed range loops the whole
+ * file. Without a range a pass runs to the end of the data and wraps to 0.
+ * QOA wraps through qoa_reposition_locked(), the seek's machinery: sample
+ * exact, but the decoder drops the frames before `start` inside its QOA
+ * frame (up to 5119) at every wrap, so a start on a frame boundary
+ * (multiples of 5120 samples) wraps cheapest. */
+static void loop_bounds(const fileplayer_t *p, uint32_t *start, uint32_t *end) {
+    uint32_t size = p->data_size - p->data_size % p->block_align;
+    *start = 0;
+    *end = size;
+    if (!p->loop)
+        return;
+    uint64_t unit = (uint64_t)p->sample_rate * p->block_align;
+    uint64_t s = (uint64_t)p->loop_start * unit;
+    uint64_t e = p->loop_end ? (uint64_t)p->loop_end * unit : size;
+    if (e > size) e = size;
+    if (s < e) {
+        *start = (uint32_t)s;
+        *end = (uint32_t)e;
+    }
+}
+
+// Where this pass stops: the loop end, or the end of the data for a player
+// that is already past it (a seek beyond the range plays out the file).
+static uint32_t pass_limit(const fileplayer_t *p) {
+    uint32_t start, end;
+    loop_bounds(p, &start, &end);
+    return p->position <= end ? end : p->data_size;
+}
+
+// Where the next pass starts.
+static uint32_t wrap_position(const fileplayer_t *p) {
+    uint32_t start, end;
+    loop_bounds(p, &start, &end);
+    return start;
+}
+
+/* Underruns. The stream ring's count (audio_mix.c) is global; a player
+ * compares it tick to tick. The ring is legitimately empty from play() or
+ * resume() until the first push, so the check is armed by a push. Returns
+ * true when the stream starved since the previous tick (and latches
+ * p->underran). A count that went down was reset (audiostat reset). */
+static bool underrun_check_locked(fileplayer_t *p) {
+    uint32_t u = 0;
+    audio_stream_debug(NULL, &u, NULL);
+    bool hit = p->under_armed && u > p->under_base;
+    p->under_base = u;
+    if (hit)
+        p->underran = true;
+    return hit;
+}
+
 // One streaming step for the active player p (s_lock held).
 static fp_callback_t update_locked(fileplayer_t *p) {
     fp_callback_t cb = {NULL, NULL};
 
     // Stop on underrun if configured
-    if (s_underflow && p->stop_on_underrun) {
+    if (underrun_check_locked(p) && p->stop_on_underrun) {
         if (stop_locked(p))
             audio_stop_stream();
         return cb;
     }
 
-    uint32_t remaining = p->position < p->data_size ? p->data_size - p->position : 0;
-    uint32_t to_read = bytes_that_fit(p);
+    uint32_t limit = pass_limit(p);
+    uint32_t remaining = p->position < limit ? limit - p->position : 0;
+    uint32_t to_read = bytes_that_fit(p, limit);
     if (remaining >= p->block_align &&
         (to_read == 0 || (to_read < FILEPLAYER_READ_MIN && to_read < remaining)))
         return cb;  // ring (nearly) full: wait for the DMA to drain it
@@ -518,12 +609,13 @@ static fp_callback_t update_locked(fileplayer_t *p) {
         push_pcm(p, (const int16_t *)s_wav_buffer, br);
         p->position += br;
         p->pass_pushed = true;
+        p->under_armed = true;
     } else if (n >= 0 && p->pass_pushed &&
                (p->loop || p->repeats == 0 || ++p->plays < p->repeats)) {
         // End of data after a pass that played something: go round again.
         // A read error (n < 0), or a pass that found no frames at all (an
         // empty data chunk), finishes instead of rewinding every tick.
-        p->position = 0;
+        p->position = wrap_position(p);
         p->pass_pushed = false;
         cb.fn = p->loop_callback;
         cb.arg = p->loop_callback_arg;
@@ -546,7 +638,7 @@ static fp_callback_t update_locked(fileplayer_t *p) {
 static fp_callback_t qoa_update_locked(fileplayer_t *p) {
     fp_callback_t cb = {NULL, NULL};
 
-    if (s_underflow && p->stop_on_underrun) {
+    if (underrun_check_locked(p) && p->stop_on_underrun) {
         if (stop_locked(p))
             audio_stop_stream();
         return cb;
@@ -557,10 +649,10 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
     const uint32_t chunk = sizeof(pcm) / p->block_align;
     bool read = false, eof = false;
     uint32_t decoded = 0;  // this tick, dropped (seek) frames included
+    uint32_t limit = pass_limit(p);  // the loop end, or the end of the data
     for (;;) {
-        uint32_t remaining =
-            p->position < p->data_size ? p->data_size - p->position : 0;
-        uint32_t budget = bytes_that_fit(p);  // virtual PCM bytes
+        uint32_t remaining = p->position < limit ? limit - p->position : 0;
+        uint32_t budget = bytes_that_fit(p, limit);  // virtual PCM bytes
         if (remaining == 0 ||
             (budget < FILEPLAYER_READ_MIN && budget < remaining))
             break;  // done, or the ring is (nearly) full: next tick
@@ -627,15 +719,16 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
             push_pcm(p, pcm + from * p->channels, frames * p->block_align);
             p->position += frames * p->block_align;
             p->pass_pushed = true;
+            p->under_armed = true;
         }
     }
 
     // End of data (every frame delivered, or the file ended early): loop or
     // finish, as WAV does.
-    if (p->position >= p->data_size || eof) {
+    if (p->position >= limit || eof) {
         if (p->pass_pushed &&
             (p->loop || p->repeats == 0 || ++p->plays < p->repeats)) {
-            p->position = 0;
+            p->position = wrap_position(p);
             qoa_reposition_locked(p);
             p->pass_pushed = false;
             cb.fn = p->loop_callback;
@@ -666,6 +759,13 @@ void fileplayer_update(void) {
         cb.fn(cb.arg);
 }
 
-bool fileplayer_did_underrun(void) {
-    return s_underflow;
+// Clears on read, as documented ("since the last check"). Core 0 takes the
+// lock blocking, like every other field update.
+bool fileplayer_did_underrun(fileplayer_t *player) {
+    if (!player || !atomic_load(&s_initialized)) return false;
+    mutex_enter_blocking(&s_lock);
+    bool hit = player->underran;
+    player->underran = false;
+    mutex_exit(&s_lock);
+    return hit;
 }

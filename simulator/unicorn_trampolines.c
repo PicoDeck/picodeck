@@ -190,7 +190,7 @@ extern bool fileplayer_is_playing(const fileplayer_t *player);
 extern void fileplayer_set_volume(fileplayer_t *player, uint8_t left, uint8_t right);
 extern uint32_t fileplayer_get_offset(const fileplayer_t *player);
 extern void fileplayer_set_offset(fileplayer_t *player, uint32_t seconds);
-extern bool fileplayer_did_underrun(void);
+extern bool fileplayer_did_underrun(fileplayer_t *player);
 
 // MP3 player (from sim_audio.c)
 extern mp3_player_t *mp3_player_create(void);
@@ -2212,8 +2212,8 @@ static void tramp_snd_fp_set_offset(uc_engine *uc) {
 
 static void tramp_snd_fp_did_underrun(uc_engine *uc) {
     uint32_t handle = read_reg(uc, UC_ARM_REG_R0);
-    (void)handle;  // fileplayer_did_underrun is global
-    write_reg(uc, UC_ARM_REG_R0, fileplayer_did_underrun() ? 1 : 0);
+    fileplayer_t *fp = handle_unwrap(handle);
+    write_reg(uc, UC_ARM_REG_R0, fp && fileplayer_did_underrun(fp) ? 1 : 0);
 }
 
 static void tramp_snd_fp_free(uc_engine *uc) {

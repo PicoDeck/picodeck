@@ -39,14 +39,20 @@ typedef struct {
     uint32_t data_offset;   // file offset of the data chunk
     uint32_t data_size;     // bytes of sample data
     uint16_t block_align;   // bytes per frame
-    bool loop;
-    uint32_t loop_start;
-    uint32_t loop_end;
+    bool loop;              // setLoopRange() was called: loop until stopped
+    uint32_t loop_start;    // seconds into the data
+    uint32_t loop_end;      // seconds; 0 = the end of the data
     int (*finish_callback)(void *);
     void *finish_callback_arg;
     int (*loop_callback)(void *);
     void *loop_callback_arg;
     bool stop_on_underrun;
+    // Underrun tracking (Core 1 under s_lock): the stream's underrun count
+    // as of the last tick, and whether it is trusted yet (the ring is
+    // legitimately empty until the first push after play() or resume()).
+    uint32_t under_base;
+    bool under_armed;
+    bool underran;          // sticky until didUnderrun() reads it or play()
     float rate;
     uint8_t repeats;        // plays asked for by play(); 0 = until stopped
     uint8_t plays;          // plays finished since play()
@@ -69,6 +75,11 @@ void fileplayer_reset(void);
 fileplayer_t *fileplayer_create(void);
 void fileplayer_destroy(fileplayer_t *player);
 bool fileplayer_load(fileplayer_t *player, const char *path);
+// As fileplayer_load; on failure *reason (if not NULL) points at a static
+// string saying why the file cannot be played.
+bool fileplayer_load_err(fileplayer_t *player, const char *path,
+                         const char **reason);
+uint32_t fileplayer_get_sample_rate(const fileplayer_t *player);
 bool fileplayer_play(fileplayer_t *player, uint8_t repeat_count);
 void fileplayer_stop(fileplayer_t *player);
 void fileplayer_pause(fileplayer_t *player);
@@ -89,4 +100,6 @@ void fileplayer_set_rate(fileplayer_t *player, float rate);
 float fileplayer_get_rate(const fileplayer_t *player);
 
 void fileplayer_update(void);
-bool fileplayer_did_underrun(void);
+// True if the stream starved while this player was playing since the last
+// call (or play()); reading clears it.
+bool fileplayer_did_underrun(fileplayer_t *player);

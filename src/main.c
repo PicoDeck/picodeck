@@ -1176,8 +1176,7 @@ static void sp_filePlayerSetOffset(pcfileplayer_t fp, uint32_t pos) {
 }
 
 static bool sp_filePlayerDidUnderrun(pcfileplayer_t fp) {
-    (void)fp;
-    return fileplayer_did_underrun();
+    return fileplayer_did_underrun((fileplayer_t *)fp);
 }
 
 static void sp_filePlayerFree(pcfileplayer_t fp) {
