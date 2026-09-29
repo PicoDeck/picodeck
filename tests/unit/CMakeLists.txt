@@ -123,6 +123,9 @@ picodeck_unit_test(test_appconfig SOURCES ${SRC}/os/appconfig.c ${SD_FAKE}
 # Gamepad bindings: key names, the one-button-per-key rule, the JSON files.
 picodeck_unit_test(test_gamepad_map SOURCES ${SRC}/os/gamepad_map.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
+# The Settings -> Controls page's state (system_menu.c draws it).
+picodeck_unit_test(test_gamepad_edit SOURCES ${SRC}/os/gamepad_edit.c
+                ${SRC}/os/gamepad_map.c ${SD_FAKE} INCLUDES ${SD_INCLUDES})
 picodeck_unit_test(test_app_files SOURCES ${SRC}/os/app_identity.c
                 ${SRC}/os/app_manifest.c ${SRC}/os/appconfig.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
