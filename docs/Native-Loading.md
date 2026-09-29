@@ -63,7 +63,7 @@ void picodeck_main(const PicoCalcAPI *api,
     const picocalc_sys_t     *s = api->sys;
 
     while (true) {
-        s->poll();  // REQUIRED: polls keyboard, fires pending callbacks,
+        s->poll();  // REQUIRED: polls keyboard, feeds the watchdog,
                     // handles system menu (Sym key)
 
         if (s->shouldExit())  // User selected "Exit App" from system menu
@@ -80,6 +80,8 @@ void picodeck_main(const PicoCalcAPI *api,
 ```
 
 **Important**: You must call `s->poll()` each frame and check `s->shouldExit()` to properly handle the system menu exit. Returning from `picodeck_main` returns control to the launcher.
+
+Lua has no `shouldExit()`: the bridge handles the system menu's "Exit App" itself and unwinds the script, so a Lua app just loops (or returns from `main.lua` to exit). Do not carry the call over when porting a native app to Lua; `picocalc.sys.shouldExit` is nil.
 
 ### The API Surface
 

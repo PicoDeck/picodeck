@@ -35,7 +35,8 @@ void picodeck_main(const PicoCalcAPI *api,
 
     // ── Draw + flush in a loop ────────────────────────────────────────────────
     // display_flush() is non-blocking: DMA starts and the function returns
-    // before the LCD has received the frame (~65 ms for 320x320 at 25 MHz).
+    // before the LCD has received the frame (a full 320x320 frame takes about
+    // 15.6 ms at the 100 MHz PIO SPI clock; the next flush waits for it).
     // Core 1 WiFi polling races those SPI pins, so a single flush can be
     // corrupted.  Redrawing every iteration (same pattern as Lua apps) keeps
     // the display stable — any bad frame is overwritten on the very next pass.
@@ -60,6 +61,8 @@ void picodeck_main(const PicoCalcAPI *api,
         d->flush();
 
         s->poll();
+        if (s->shouldExit())  // "Exit App" chosen from the system menu
+            break;
         if (api->input->getButtonsPressed() || api->input->getChar())
             break;
     }
