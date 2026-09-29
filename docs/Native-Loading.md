@@ -121,6 +121,14 @@ The `PicoCalcAPI` struct contains pointers to all OS subsystems. The full type d
 | `api->modplayer` | `picocalc_modplayer_t` | MOD tracker music playback |
 | `api->zip` | `picocalc_zip_t` | ZIP archive extraction |
 
+#### Version 9 additions (`api->version >= 9`)
+
+| Pointer | Type | Description |
+|---------|------|-------------|
+| `api->gamepad` | `picocalc_gamepad_t` | Logical gamepad (`PAD_*` buttons aliased to keys; see [API Gamepad](API-Gamepad.md)) |
+
+`api->gamepad` sits after `version` in `PicoCalcAPI`, so older firmware does not have the field at all: check `api->version >= 9` before reading it.
+
 #### Version detection
 
 The `api->version` field indicates which additions are present:
@@ -133,6 +141,7 @@ The `api->version` field indicates which additions are present:
 - `6` — fonts (`setFont`/`getFont`/`getFontWidth`/`getFontHeight`/`textWidth`/`loadFont`/`unloadFont`/`drawTextTransparent`)
 - `7` — video time seek/position, progress OSD, `hasEnded`
 - `8` — TLS verification: `http->setInsecure`, `tcp->connectEx` (`PCTCP_TLS`, `PCTCP_TLS_INSECURE`)
+- `9` — `api->gamepad` (`getButtons`/`getButtonsPressed`/`getButtonsReleased`/`getLabel`, `PAD_*`)
 
 ```c
 if (api->version >= 2) {

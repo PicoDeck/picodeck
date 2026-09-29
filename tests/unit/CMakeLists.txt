@@ -75,6 +75,8 @@ picodeck_unit_test(test_audio_ring INCLUDES ${SRC}/drivers)
 # The MP3 staging buffer as a mixer source (header-only, like audio_ring.h).
 picodeck_unit_test(test_pcm_stage INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_event_queue INCLUDES ${SRC}/drivers)
+# The gamepad layer of the same decode (keys -> PAD_* through the pad map).
+picodeck_unit_test(test_kbd_pad INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_bus SOURCES ${SRC}/drivers/kbd_bus.c INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_pio_psram_range INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_pio_psram_xip INCLUDES ${SRC}/drivers)
@@ -117,6 +119,9 @@ set(SD_INCLUDES ${PICODECK_ROOT}/simulator/stubs ${SRC}/drivers)
 picodeck_unit_test(test_config SOURCES ${SRC}/os/config.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
 picodeck_unit_test(test_appconfig SOURCES ${SRC}/os/appconfig.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES})
+# Gamepad bindings: key names, the one-button-per-key rule, the JSON files.
+picodeck_unit_test(test_gamepad_map SOURCES ${SRC}/os/gamepad_map.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
 picodeck_unit_test(test_app_files SOURCES ${SRC}/os/app_identity.c
                 ${SRC}/os/app_manifest.c ${SRC}/os/appconfig.c ${SD_FAKE}

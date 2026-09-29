@@ -78,14 +78,15 @@ def probe(sim_module):
     lines = [t for t in lines if t.startswith("PROBE ")]
     assert lines and lines[-1] == "PROBE done", (
         "the probe did not log its layout:\n" + "\n".join(lines))
+    table_lines = [t for t in lines[2:-1] if t.startswith("PROBE table ")]
     tables = {}
-    for t in lines[2:-1]:
+    for t in table_lines:
         m = re.fullmatch(r"PROBE table (\w+) size=(\d+) gap=(\d+)", t)
         assert m, lines
         tables[m.group(1)] = (int(m.group(2)), int(m.group(3)))
     return {"lines": lines, "tables": tables,
             "order": [re.match(r"PROBE table (\w+)", t).group(1)
-                      for t in lines[2:-1]]}
+                      for t in table_lines]}
 
 
 def test_api_version_matches_main_c(probe):
@@ -110,6 +111,19 @@ def test_api_struct_matches_os_h(probe):
         "src/os/os.h: rebuild it (make -C tests/e2e/native) and check "
         "sdk/native/os.h (python3 tools/check_native_abi.py)")
     assert probe["order"] == TABLES, probe["order"]
+
+
+def test_api_gamepad_table(probe):
+    """API version 9 appends the gamepad table after `version`: a native app
+    that checks api->version >= 9 reaches it, nothing is held at launch, and
+    getLabel reports the default binding of A (F4, alternate unbound). The
+    label is a permanent string, as the device's flash one: kept from
+    startup, it still reads F4 after 10000 more getLabel calls."""
+    assert abi.api_version() >= 9
+    lines = [t for t in probe["lines"] if t.startswith("PROBE gamepad ")]
+    assert lines == ["PROBE gamepad buttons=0 pressed=0 label_a=F4 "
+                     "label_a_alt=-",
+                     "PROBE gamepad kept label_a=F4"], probe["lines"]
 
 
 @pytest.mark.parametrize("table", [

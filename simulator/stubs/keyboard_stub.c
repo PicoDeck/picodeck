@@ -35,6 +35,10 @@ static bool s_screenshot_pressed = false;
 // stages events as keys are typed/injected; kbd_poll moves them in here, so
 // pollEvent sees them only after input.update(), as on hardware.
 static kbd_input_t s_in;
+// The gamepad: the firmware's masks and map, driven by the same staged
+// events (kbd_pad_event), so it resolves keys exactly as the device does.
+static kbd_pad_t s_pad;
+static kbd_padmap_t s_padmap = KBD_PAD_DEFAULT_MAP;
 
 // Key mapping from SDL to keyboard keycodes
 static struct {
@@ -68,6 +72,8 @@ void kbd_poll(void) {
     extern void web_yield_if_due(void);
     web_yield_if_due();
 #endif
+    kbd_pad_begin_poll(&s_pad);
+
     // Pull pending events from the Wayland socket into SDL's internal queue.
     // Must be called before SDL_PollEvent to avoid blocking on compositor I/O.
     SDL_PumpEvents();
@@ -112,10 +118,12 @@ void kbd_poll(void) {
         s_screenshot_pressed = true;
     }
     
-    // Staged key events, in order, into the app-facing queue.
+    // Staged key events, in order, into the app-facing queue and the gamepad.
     kbd_event_t ev;
-    while (hal_input_pop_event(&ev))
+    while (hal_input_pop_event(&ev)) {
         kbd_input_accept(&s_in, ev);
+        kbd_pad_event(&s_pad, &s_padmap, ev);
+    }
 
     // Get character input
     s_last_char = hal_input_get_char();
@@ -175,6 +183,27 @@ uint32_t kbd_get_buttons_pressed(void) {
 
 uint32_t kbd_get_buttons_released(void) {
     return s_buttons_released;
+}
+
+uint32_t kbd_get_pad(void) {
+    return s_pad.curr;
+}
+
+uint32_t kbd_get_pad_pressed(void) {
+    return (uint32_t)(s_pad.curr & ~s_pad.prev);
+}
+
+uint32_t kbd_get_pad_released(void) {
+    return (uint32_t)(s_pad.prev & ~s_pad.curr);
+}
+
+void kbd_set_pad_map(const kbd_padmap_t *map) {
+    s_padmap = *map;
+    memset(&s_pad, 0, sizeof(s_pad));
+}
+
+const kbd_padmap_t *kbd_get_pad_map(void) {
+    return &s_padmap;
 }
 
 bool kbd_poll_event(kbd_event_t *out) {
@@ -242,6 +271,11 @@ void kbd_clear_state(void) {
     s_last_char = 0;
     s_raw_key = 0;
     kbd_input_clear(&s_in);
+    // An injected key still down keeps its gamepad button held, without a
+    // press edge; its retire/keyup event releases it (as on the device).
+    memset(&s_pad, 0, sizeof(s_pad));
+    s_pad.down = kbd_pad_slots_from_buttons(&s_padmap, hal_input_injected_down());
+    s_pad.curr = s_pad.prev = kbd_pad_buttons_of(s_pad.down);
 }
 
 void kbd_discard_pending(void) {

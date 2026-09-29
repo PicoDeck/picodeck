@@ -133,8 +133,9 @@ static void test_hold_after_clear_is_not_a_press(void) {
 // edge at all. It now reads as held (with a press edge) for that poll and is
 // released at the next.
 // The STM32 may repeat HOLD. A key held across a clear stays quiet on every
-// HOLD (not just the first) until it is released and pressed again: a 'y'
-// held from typing when ui_confirm opens can never answer it.
+// HOLD (not just the first) until it is released and pressed again. (On the
+// device only F-keys, Esc, modifiers and shifted codes repeat as HOLD; a
+// held letter repeats as PRESSED: see src/drivers/CLAUDE.md.)
 static void test_repeated_hold_after_clear_stays_quiet(void) {
   reset();
   begin_poll();
@@ -269,10 +270,27 @@ static void test_injected_button_events(void) {
   CHECK(!kbd_evq_pop(&in.q, NULL)); // UP was never down
 }
 
+// Delete is its own key (Shift+Delete sends End): a press and release are
+// BTN_DEL edges, with down/up events under its keycode.
+static void test_delete_key_is_btn_del(void) {
+  reset();
+  begin_poll();
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, KEY_DEL);
+  CHECK_EQ_U32(pressed(), BTN_DEL);
+  CHECK(kbd_keyset_test(&in.down, KEY_DEL));
+  begin_poll();
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_RELEASED, KEY_DEL);
+  CHECK_EQ_U32(released(), BTN_DEL);
+  CHECK_EV(pop(), KBD_EV_DOWN, KEY_DEL, 0, 0);
+  CHECK_EV(pop(), KBD_EV_UP, KEY_DEL, 0, 0);
+  CHECK(!kbd_evq_pop(&in.q, NULL));
+}
+
 static void test_keycode_button_map(void) {
   CHECK_EQ_U32(kbd_keycode_to_button(KEY_MOD_SHR), BTN_SHIFT);
   CHECK_EQ_INT(kbd_button_to_keycode(BTN_SHIFT), KEY_MOD_SHL);
   CHECK_EQ_INT(kbd_button_to_keycode(BTN_F9), KEY_F9);
+  CHECK_EQ_INT(kbd_button_to_keycode(BTN_DEL), KEY_DEL); // injected "del"
   CHECK_EQ_U32(kbd_keycode_to_button('a'), 0);
   CHECK_EQ_U32(kbd_buttons_from_mods(kbd_mods_from_buttons(0xFFFFFFFFu)),
                KBD_MOD_BUTTONS);
@@ -467,7 +485,8 @@ static void test_bg_wake_swallow_keeps_earlier_edges(void) {
 
 // ── Injected input across kbd_clear_state ────────────────────────────────────
 // keyboard.c's kbd_clear_state: zero the masks and the input state, then
-// kbd_inject_after_clear. The injection state itself survives.
+// kbd_inject_after_clear. The injection state itself survives. No pad map
+// here: the gamepad side is tests/unit/test_kbd_pad.c's.
 static kbd_inject_t inj;
 #define HOLD_MS 80
 
@@ -475,12 +494,12 @@ static void clear_state(void) {
   memset(&btn, 0, sizeof(btn));
   kbd_input_clear(&in);
   raw = 0;
-  kbd_inject_after_clear(&inj, &btn);
+  kbd_inject_after_clear(&inj, &btn, NULL);
 }
 
 static void fg_poll(uint32_t now) {
   poll_start(false);
-  kbd_inject_poll(&inj, &btn, &in, false, now, HOLD_MS);
+  kbd_inject_poll(&inj, &btn, &in, NULL, false, now, HOLD_MS);
 }
 
 // (a) An injected Enter opens a modal, which clears the keyboard while the
@@ -518,7 +537,7 @@ static void test_inject_held_across_clear(void) {
   fg_poll(20);
   CHECK_EQ_U32(pressed(), 0);
   CHECK_EQ_U32(btn.curr, BTN_ENTER);
-  kbd_inject_release(&inj, &btn, &in, BTN_ENTER);  // takes effect at once
+  kbd_inject_release(&inj, &btn, &in, NULL, BTN_ENTER);  // at once
   CHECK_EQ_U32(btn.curr, 0);
   CHECK_EQ_U32(released(), BTN_ENTER);
   fg_poll(30);
@@ -567,6 +586,7 @@ int main(void) {
   test_char_backlog_drops_oldest();
   test_drop_newest_keeps_ups();
   test_injected_button_events();
+  test_delete_key_is_btn_del();
   test_keycode_button_map();
   test_bg_tap_reaches_next_foreground_poll();
   test_bg_tap_inside_one_background_poll();

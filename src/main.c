@@ -508,6 +508,7 @@ void __attribute__((naked)) isr_hardfault(void) {
 #include "os/crashlog.h"
 #include "os/crypto.h"
 #include "os/file_browser.h"
+#include "os/gamepad.h"
 #include "os/idle_dim.h"
 #include "os/launcher.h"
 #include "os/lua_psram_alloc.h"
@@ -591,6 +592,14 @@ static picocalc_input_t s_input_impl = {
     .getButtonsPressed = kbd_get_buttons_pressed,
     .getButtonsReleased = kbd_get_buttons_released,
     .getChar = kbd_get_char,
+};
+
+// const: flash, not SRAM (the pointer after `version` in g_api).
+static const picocalc_gamepad_t s_gamepad_impl = {
+    .getButtons = kbd_get_pad,
+    .getButtonsPressed = kbd_get_pad_pressed,
+    .getButtonsReleased = kbd_get_pad_released,
+    .getLabel = gamepad_get_label,
 };
 
 static int display_get_width_fn(void) { return FB_WIDTH; }
@@ -2068,7 +2077,8 @@ int main(void) {
   g_api.video       = &s_video_impl;
   g_api.modplayer   = &s_modplayer_impl;
   g_api.zip         = &s_zip_impl;
-  g_api.version     = 8;  // 8 = TLS verify: http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts; 5 = zip handles
+  g_api.version     = 9;  // 9 = gamepad; 8 = TLS verify: http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts; 5 = zip handles
+  g_api.gamepad     = &s_gamepad_impl;
   // fs wired after SD card init
 
   // Bring up the QMI PSRAM in quad (QPI) mode before any PSRAM pointers are

@@ -344,7 +344,7 @@ function picocalc.display.rgb(r, g, b) end
 ---@field BTN_F9        integer Function key 9
 ---@field BTN_BACKSPACE integer Backspace
 ---@field BTN_TAB       integer Tab
----@field BTN_DEL       integer Delete (Fn+Backspace)
+---@field BTN_DEL       integer Delete key
 ---@field BTN_SHIFT     integer Shift modifier
 ---@field BTN_CTRL      integer Ctrl modifier
 ---@field BTN_ALT       integer Alt modifier
@@ -426,6 +426,50 @@ function picocalc.input.pollEvent() end
 ---@param k string|integer
 ---@return boolean
 function picocalc.input.isKeyDown(k) end
+
+-- =============================================================================
+-- picocalc.gamepad
+-- =============================================================================
+
+---A logical gamepad whose buttons are aliases for keys: a bound key still
+---reports as itself through `picocalc.input`. Players rebind it: the global
+---map is `/system/gamepad.json`, a per-game override `/data/<APP_ID>/gamepad.json`,
+---both read when the app starts. Updated by `picocalc.input.update()`. Absent on firmware before API version 9: check
+---`if picocalc.gamepad then`.
+---@class picocalc.gamepad
+---@field PAD_UP     integer Up (default: Up arrow)
+---@field PAD_DOWN   integer Down (default: Down arrow)
+---@field PAD_LEFT   integer Left (default: Left arrow)
+---@field PAD_RIGHT  integer Right (default: Right arrow)
+---@field PAD_A      integer A (default: F4)
+---@field PAD_B      integer B (default: F5)
+---@field PAD_X      integer X (default: Delete)
+---@field PAD_Y      integer Y (default: Backspace)
+---@field PAD_L      integer L (default: F2)
+---@field PAD_R      integer R (default: F3)
+---@field PAD_START  integer Start (default: F1)
+---@field PAD_SELECT integer Select (default: Tab)
+picocalc.gamepad = {}
+
+---Bitmask of held gamepad buttons (PAD_* constants).
+---@return integer bitmask
+function picocalc.gamepad.getButtons() end
+
+---Bitmask of gamepad buttons pressed *this frame*. A tap shorter than a frame
+---still gives one press edge (and a release edge the next frame).
+---@return integer bitmask
+function picocalc.gamepad.getButtonsPressed() end
+
+---Bitmask of gamepad buttons released *this frame*.
+---@return integer bitmask
+function picocalc.gamepad.getButtonsReleased() end
+
+---Name of the key bound to a button, for on-screen hints ("F4", "Del", "W"),
+---or `nil` when that slot is unbound.
+---@param btn integer One PAD_* constant
+---@param slot? integer 0 = primary (default), 1 = alternate
+---@return string|nil
+function picocalc.gamepad.getLabel(btn, slot) end
 
 -- =============================================================================
 -- picocalc.sys
