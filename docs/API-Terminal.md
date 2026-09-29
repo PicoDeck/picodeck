@@ -282,6 +282,27 @@ Block until a printable character is typed. Returns the character as a string.
 
 ---
 
+## Differences from the native terminal API
+
+`picocalc.terminal` covers almost all of the native `picocalc_terminal_t` (`sdk/native/terminal.h`, 42 entries). Every native call has a Lua method of the same name except these:
+
+| Native call | In Lua |
+|-------------|--------|
+| `create` / `free` | `picocalc.terminal.new(...)`; the collector frees the object (there is no `free` method) |
+| `putChar(term, c)` | none: use `term:write(c)` |
+| `getScrollbackLineColors(term, line, fg, bg)` | none: scrollback colours are not readable |
+| `logicalToVisual`, `visualToLogical` | none: no logical/visual row mapping |
+| `calculateLineWraps` | none: only `getVisualRowCount()` |
+
+Same name, different shape:
+
+- `getScrollbackLine`: native fills a `uint16_t` cell array for a 0-based `line`; Lua takes a 1-based line and returns a plain string (characters only, no colours).
+- `setCursorVisible` and `setCursorBlink` are global: one setting shared by every terminal. The native entries take no `terminal_t*`; the Lua methods are called on an object as usual but the setting still applies to all terminals.
+
+Lua-only methods: `setFont`/`getFont`, `setCell`/`getCell`, `setCellColors`, `setRowColors`, and the input helpers `waitForAnyKey`, `waitForKey`, `readKey`, `readChar`, `waitForChar`.
+
+---
+
 ## Complete example
 
 ```lua
