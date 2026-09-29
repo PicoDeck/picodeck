@@ -235,6 +235,12 @@ void display_set_pixel(int x, int y, uint16_t color) {
     }
 }
 
+// Mirror of the firmware's display_get_pixel (host order here, no unswap).
+uint16_t display_get_pixel(int x, int y) {
+    if (x < 0 || x >= 320 || y < 0 || y >= 320) return 0;
+    return display_get_back_buffer()[y * 320 + x];
+}
+
 void display_draw_line(int x0, int y0, int x1, int y1, uint16_t color) {
     // Bresenham clipped to the visible steps (shared with the firmware).
     disp_clip_t c = cur_clip();

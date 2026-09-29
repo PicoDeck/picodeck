@@ -1,0 +1,2 @@
+{ "id": "net.picodeck.pixels_test", "name": "Pixels Test",
+  "description": "image pixel access and display.getPixel fixture", "version": "1.0", "author": "PicoDeck" }

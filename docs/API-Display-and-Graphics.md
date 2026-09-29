@@ -44,6 +44,24 @@ picocalc.display.setPixel(160, 160, picocalc.display.WHITE)
 
 ---
 
+#### `picocalc.display.getPixel(x, y)`
+Reads a pixel of the frame being drawn (the back buffer). The value is the RGB565 colour you drew it with: the screen stores pixels byte-swapped (panel order), and the call swaps them back, so `getPixel` returns exactly what `setPixel` or `fillRect` was given. The clip rect does not apply to reads.
+
+`flush()` swaps the two framebuffers, so right after a `flush()` the back buffer holds the frame before last, not the one on screen. Read before you flush.
+
+- **Parameters:**
+  - `x` (number): X coordinate (0-319)
+  - `y` (number): Y coordinate (0-319)
+- **Returns:** (number) RGB565 color value
+- **Errors:** If `(x, y)` is off-screen
+
+```lua
+picocalc.display.fillRect(10, 10, 4, 4, 0x1234)
+print(picocalc.display.getPixel(11, 11) == 0x1234)  -- true
+```
+
+---
+
 #### `picocalc.display.fillRect(x, y, width, height, color)`
 Draws a filled rectangle.
 
@@ -317,7 +335,7 @@ picocalc.display.fillVLineGradient(160, 0, 319, picocalc.display.BLUE, picocalc.
 ---
 
 #### `picocalc.display.drawTexturedColumn(x, y0, y1, image, texX, texY0, texY1)`
-Draw a vertical column of pixels sampled from a texture image. Useful for raycasting renderers.
+Draw a vertical column of pixels sampled from a texture image. Useful for raycasting renderers. The texture may be loaded or generated at runtime (see [Pixel Access](#pixel-access)).
 
 - **Parameters:**
   - `x` (number): Screen X coordinate
@@ -369,7 +387,7 @@ Restore the clip rectangle to the full screen.
 ---
 
 #### `picocalc.display.drawPlane(image, camX, camY, camZ, [angle], [horizonY], [scale])`
-Render a Mode 7-style perspective ground plane (SNES F-Zero / Mario Kart floor). The camera sits at `(camX, camY)` in texture space, `camZ` units above the plane, facing `angle` radians (0 = toward +Y in texture space). Rows below `horizonY` are filled. Power-of-two texture dimensions (64/128/256) wrap seamlessly; other sizes clamp at the edges. Respects the clip rect.
+Render a Mode 7-style perspective ground plane (SNES F-Zero / Mario Kart floor). The camera sits at `(camX, camY)` in texture space, `camZ` units above the plane, facing `angle` radians (0 = toward +Y in texture space). Rows below `horizonY` are filled. Power-of-two texture dimensions (64/128/256) wrap seamlessly; other sizes clamp at the edges. Respects the clip rect. The texture may be loaded or generated at runtime (see [Pixel Access](#pixel-access)).
 
 - **Parameters:**
   - `image` (userdata): Ground texture image
@@ -1410,6 +1428,88 @@ Creates a deep copy of the image.
 
 ```lua
 local backup = img:copy()
+```
+
+---
+
+### Pixel Access
+
+Read and write an image's pixels to build textures, palettes, lookup tables or sprite sheets at runtime, for example a generated floor for `display.drawPlane` or wall for `display.drawTexturedColumn`. Start from `image.new(w, h)` (all black) or any loaded image.
+
+> **Byte order.** A colour is the same plain RGB565 number everywhere in Lua: `getPixel` returns and `setPixel` takes the value `fillRect`, `display.rgb` and the colour constants use (`0xF800` is red). The screen stores pixels byte-swapped (panel order), but images do not, and drawing an image does the swap, so you never see panel order from Lua.
+>
+> The bulk strings of `getPixels` / `setPixels` are **row-major, two bytes per pixel, little-endian RGB565**: pixel `(x, y)` of a `w`-wide rectangle is `string.unpack("<I2", s, 1 + 2 * (y * w + x))`, and `string.pack("<I2", color)` encodes one. This is the image's own memory layout, so the bulk calls copy without converting. Always write the `<`: without it `string.pack` uses the machine's byte order.
+
+Coordinates and sizes round like every other quantity; colours must be integers. Coordinates outside the image raise an error (nothing is clipped). A pixel set to the transparent colour is skipped when the image is drawn, exactly as for a loaded image; `drawPlane` and `drawTexturedColumn` draw every pixel.
+
+Each call costs a Lua-to-C call: for more than a few pixels, build a string and use `setPixels`. A bulk string lives on the Lua heap like any other (a whole 256×256 image is 128 KB), so work in rows or tiles on large images.
+
+#### `img:getPixel(x, y)`
+Returns the colour of one pixel.
+
+- **Parameters:**
+  - `x` (number): 0 to width - 1
+  - `y` (number): 0 to height - 1
+- **Returns:** (number) RGB565 color value
+- **Errors:** If `(x, y)` is outside the image
+
+---
+
+#### `img:setPixel(x, y, color)`
+Sets one pixel.
+
+- **Parameters:**
+  - `x` (number): 0 to width - 1
+  - `y` (number): 0 to height - 1
+  - `color` (number): RGB565 color value
+- **Returns:** None
+- **Errors:** If `(x, y)` is outside the image
+
+```lua
+local img = picocalc.graphics.image.new(16, 16)
+img:setPixel(8, 8, picocalc.display.rgb(255, 255, 0))
+```
+
+---
+
+#### `img:getPixels([x, y, w, h])`
+Returns the pixels of the rectangle (default: the whole image) as a string of `w * h * 2` bytes, row-major little-endian RGB565.
+
+- **Parameters:**
+  - `x`, `y`, `w`, `h` (number, optional): Rectangle inside the image; give all four or none. A zero width or height returns `""`.
+- **Returns:** (string) Pixel data
+- **Errors:** If the rectangle is not inside the image
+
+```lua
+local s = img:getPixels(0, 0, 4, 1)           -- the first 4 pixels of row 0
+local c = string.unpack("<I2", s, 1 + 2 * 3)  -- pixel (3, 0)
+```
+
+---
+
+#### `img:setPixels(data [, x, y, w, h])`
+Writes the rectangle (default: the whole image) from a string of exactly `w * h * 2` bytes, row-major little-endian RGB565 (the format `getPixels` returns).
+
+- **Parameters:**
+  - `data` (string): Pixel data
+  - `x`, `y`, `w`, `h` (number, optional): Rectangle inside the image; give all four or none
+- **Returns:** None
+- **Errors:** If `data` is not a string of exactly `w * h * 2` bytes, or the rectangle is not inside the image
+
+```lua
+-- A 64x64 checkerboard floor for mode 7
+local A, B = picocalc.display.rgb(40, 120, 40), picocalc.display.rgb(30, 90, 30)
+local rows = {}
+for y = 0, 63 do
+    local row = {}
+    for x = 0, 63 do
+        row[x + 1] = string.pack("<I2", ((x // 8 + y // 8) % 2 == 0) and A or B)
+    end
+    rows[y + 1] = table.concat(row)
+end
+local floor = picocalc.graphics.image.new(64, 64)
+floor:setPixels(table.concat(rows))
+picocalc.display.drawPlane(floor, 32, 32, 20.0, 0, 120, 40.0)
 ```
 
 ---

@@ -46,6 +46,10 @@ void display_apply_clock(void);
 // Call display_flush() to push to screen
 void display_clear(uint16_t color);
 void display_set_pixel(int x, int y, uint16_t color);
+// The colour at (x, y) in the back buffer (the frame being drawn) in host
+// RGB565 order, i.e. with the framebuffer's byte swap undone; 0 off-screen.
+// Reads ignore the clip rect.
+uint16_t display_get_pixel(int x, int y);
 void display_fill_rect(int x, int y, int w, int h, uint16_t color);
 void display_draw_rect(int x, int y, int w, int h, uint16_t color);
 void display_draw_line(int x0, int y0, int x1, int y1, uint16_t color);

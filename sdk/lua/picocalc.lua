@@ -70,6 +70,14 @@ function picocalc.display.clear(color) end
 ---@param color integer RGB565 colour
 function picocalc.display.setPixel(x, y, color) end
 
+---Read a pixel of the frame being drawn (the back buffer), as the RGB565
+---value it was drawn with (the panel byte swap is undone). After `flush()`
+---the back buffer holds the frame before last. Raises off-screen.
+---@param x integer 0-319
+---@param y integer 0-319
+---@return integer color RGB565 colour
+function picocalc.display.getPixel(x, y) end
+
 ---Fill a solid rectangle.
 ---@param x integer
 ---@param y integer
@@ -1691,6 +1699,39 @@ function PicoDeckImage:getTransparentColor() end
 ---Return metadata for this image.
 ---@return { width: integer, height: integer, transparentColor?: integer, storage: string }
 function PicoDeckImage:getMetadata() end
+
+---Return the RGB565 colour of pixel (x, y) (the same value `setPixel` and
+---`display.fillRect` take: images are not byte-swapped). Raises outside the image.
+---@param x integer 0 to width - 1
+---@param y integer 0 to height - 1
+---@return integer color
+function PicoDeckImage:getPixel(x, y) end
+
+---Set pixel (x, y) to an RGB565 colour. Raises outside the image.
+---@param x integer 0 to width - 1
+---@param y integer 0 to height - 1
+---@param color integer RGB565 colour
+function PicoDeckImage:setPixel(x, y, color) end
+
+---Return the pixels of a rectangle (default: the whole image) as w*h*2 bytes,
+---row-major little-endian RGB565: `string.unpack("<I2", s, 1 + 2*(y*w + x))`.
+---Give all four of x, y, w, h or none; the rectangle must lie inside the image.
+---@param x? integer
+---@param y? integer
+---@param w? integer
+---@param h? integer
+---@return string pixels
+function PicoDeckImage:getPixels(x, y, w, h) end
+
+---Write a rectangle (default: the whole image) from exactly w*h*2 bytes of
+---row-major little-endian RGB565 (`string.pack("<I2", color)` per pixel), the
+---format `getPixels` returns. The rectangle must lie inside the image.
+---@param data string
+---@param x? integer
+---@param y? integer
+---@param w? integer
+---@param h? integer
+function PicoDeckImage:setPixels(data, x, y, w, h) end
 
 -- ── Sprite ────────────────────────────────────────────────────────────────────
 
