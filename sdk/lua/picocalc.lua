@@ -1266,8 +1266,8 @@ function PicoDeckHttpConn:setHeadersReadCallback(fn) end
 ---@param fn fun(conn: PicoDeckHttpConn)
 function PicoDeckHttpConn:setRequestCompleteCallback(fn) end
 
----Register a callback fired when the connection is closed or fails.
----@param fn fun(conn: PicoDeckHttpConn)
+---Register a callback fired when the request fails (not after a successful response). Called with no arguments; read getError() inside it, since the connection is released afterwards.
+---@param fn fun()
 function PicoDeckHttpConn:setConnectionClosedCallback(fn) end
 
 -- =============================================================================
