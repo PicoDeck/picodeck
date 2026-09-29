@@ -74,6 +74,8 @@ set_source_files_properties(${PICODECK_ROOT}/third_party/qoa/qoa.c
 picodeck_unit_test(test_audio_ring INCLUDES ${SRC}/drivers)
 # The MP3 staging buffer as a mixer source (header-only, like audio_ring.h).
 picodeck_unit_test(test_pcm_stage INCLUDES ${SRC}/drivers)
+# The video player's audio chunk index: sizing and growth (header-only).
+picodeck_unit_test(test_avi_index INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_event_queue INCLUDES ${SRC}/drivers)
 # The gamepad layer of the same decode (keys -> PAD_* through the pad map).
 picodeck_unit_test(test_kbd_pad INCLUDES ${SRC}/drivers)
@@ -168,6 +170,31 @@ picodeck_unit_test(test_fileplayer SOURCES ${SRC}/drivers/fileplayer.c
                 ${PICODECK_ROOT}/third_party/qoa/qoa.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES} ${PICODECK_ROOT}/third_party)
 target_link_libraries(test_fileplayer PRIVATE pthread)
+# The MP3 player's fed mode (the video player's audio: its loop point) over
+# libmad, built as the simulator builds it. Third-party: no sanitizers (its
+# synthesis reads D[][] across a row, which -fsanitize=bounds reports), no
+# warnings.
+set(LIBMAD_DIR ${PICODECK_ROOT}/third_party/libmad)
+add_library(libmad_host STATIC ${LIBMAD_DIR}/bit.c ${LIBMAD_DIR}/fixed.c
+            ${LIBMAD_DIR}/frame.c ${LIBMAD_DIR}/huffman.c ${LIBMAD_DIR}/layer3.c
+            ${LIBMAD_DIR}/stream.c ${LIBMAD_DIR}/synth.c ${LIBMAD_DIR}/timer.c
+            ${LIBMAD_DIR}/version.c)
+target_include_directories(libmad_host PUBLIC ${LIBMAD_DIR})
+target_compile_definitions(libmad_host PRIVATE FPM_64BIT HAVE_STDINT_H=1
+            SIZEOF_INT=4 SIZEOF_LONG=${CMAKE_SIZEOF_VOID_P} SIZEOF_LONG_LONG=8
+            NDEBUG=1 OPT_SPEED=1 OPT_SSO=1 PROGMEM=)
+target_compile_options(libmad_host PRIVATE -O2 -w)
+picodeck_unit_test(test_mp3_fed SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES})
+target_link_libraries(test_mp3_fed PRIVATE libmad_host)
+# The pico/critical_section.h stub leaves a parameter unused.
+target_compile_options(test_mp3_fed PRIVATE -Wno-unused-parameter)
+# ...and its decode loop at the ends of the input buffer (no frame lost
+# where a refill ends), from a file (the SD fake) and fed.
+picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES})
+target_link_libraries(test_mp3_refill PRIVATE libmad_host)
+target_compile_options(test_mp3_refill PRIVATE -Wno-unused-parameter)
 # The MOD player (mod_player.c + pocketmod): Core 0 load/free vs Core 1
 # update on two threads.
 picodeck_unit_test(test_mod_player SOURCES ${SRC}/drivers/mod_player.c ${SD_FAKE}
