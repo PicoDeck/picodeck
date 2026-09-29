@@ -317,14 +317,14 @@ static bool build_frame_index(video_priv_t *priv, video_player_t *player) {
         return false;
     }
 
-    // Allocate audio index if audio stream present
+    // Allocate audio index if audio stream present (at most what the movi
+    // list can hold; the frame-count estimate if the header's count won't fit)
     if (priv->has_audio) {
-        uint32_t acap = avi_audio_index_capacity(cap, priv->audio_strh_length,
-                                                 priv->audio_strh_sample_size);
-        priv->audio_index.count = 0;
-        priv->audio_index.entries = (avi_index_entry_t *)umm_malloc(
-            acap * sizeof(avi_index_entry_t));
-        priv->audio_index.capacity = priv->audio_index.entries ? acap : 0;
+        uint32_t movi = priv->movi_size >= 8 ? priv->movi_size : 0;
+        avi_index_alloc(&priv->audio_index,
+                        avi_audio_index_capacity(cap, priv->audio_strh_length,
+                                                 priv->audio_strh_sample_size, movi),
+                        avi_audio_index_fallback(cap, movi), umm_realloc);
         // Non-fatal if alloc fails — video still works without audio
         if (!priv->audio_index.entries) {
             printf("[VIDEO] Warning: could not allocate audio index\n");
