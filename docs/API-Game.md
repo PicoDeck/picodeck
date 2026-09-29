@@ -505,7 +505,6 @@ picocalc.game.scene.switch("play")
 
 while true do
     picocalc.game.scene.update()
-    picocalc.game.scene.draw()
-    picocalc.display.flush()  -- paces the loop; no sleep needed
+    picocalc.game.scene.draw()  -- play:draw() flushes, which paces the loop
 end
 ```
