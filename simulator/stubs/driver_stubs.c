@@ -218,6 +218,25 @@ void display_flush_region(int y0, int y1) {
            (size_t)(y1 - y0 + 1) * 320 * sizeof(uint16_t));
 }
 
+// Mirror of display_push_rect: copy the rectangle from the back buffer into
+// the GRAM analog and re-present (no swap, s_last_presented unchanged).
+void display_push_rect(int x, int y, int w, int h) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > 320) w = 320 - x;
+    if (y + h > 320) h = 320 - y;
+    if (w <= 0 || h <= 0) return;
+
+    uint16_t* back = display_get_back_buffer();
+    for (int r = y; r < y + h; r++)
+        memcpy(&s_gram[r * 320 + x], &back[r * 320 + x],
+               (size_t)w * sizeof(uint16_t));
+    present_gram();
+}
+
+// No flush DMA here: every flush has finished when it returns.
+void display_wait_for_flush(void) {}
+
 void display_apply_clock(void) {}
 
 void display_clear(uint16_t color) {

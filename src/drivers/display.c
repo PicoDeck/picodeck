@@ -1067,6 +1067,27 @@ void display_flush_rows(int y0, int y1) {
   // Non-blocking: no buffer swap — caller uses display_flush() for that.
 }
 
+void display_push_rect(int x, int y, int w, int h) {
+  if (x < 0) { w += x; x = 0; }
+  if (y < 0) { h += y; y = 0; }
+  if (x + w > FB_WIDTH) w = FB_WIDTH - x;
+  if (y + h > FB_HEIGHT) h = FB_HEIGHT - y;
+  if (w <= 0 || h <= 0) return;
+
+  display_wait_for_flush();
+  lcd_set_window(x, y, x + w - 1, y + h - 1);
+  lcd_cs_low();
+  lcd_dc_data();
+  // Bytes as stored: the framebuffer is already in panel byte order.
+  for (int r = y; r < y + h; r++) {
+    const uint8_t *p = (const uint8_t *)&s_framebuffer[r * FB_WIDTH + x];
+    for (int i = 0; i < w * 2; i++)
+      pio_spi_write8(p[i]);
+  }
+  lcd_spi_wait_idle();
+  lcd_cs_high();
+}
+
 void display_set_brightness(uint8_t brightness) {
   // Backlight is controlled by the STM32 keyboard MCU (kbd_set_backlight).
   // This function is a no-op on PicoCalc v2.0.

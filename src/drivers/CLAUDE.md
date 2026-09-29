@@ -11,6 +11,7 @@ Subsystem notes for the firmware drivers. The root `CLAUDE.md` holds the cross-c
 - Image blits run one of four specialised loops (opaque/keyed × flip/no-flip); a colour key of 0 means opaque. Native `drawImageNN` clips once and draws the visible part of a scaled block that straddles the clip edge. `drawScaledNN` samples column/row `d * src / dst` exactly (remainder DDA), identically in firmware and simulator.
 - The image blitters build at `-O2` (`DISP_HOT`); the rest is `-Os`. They are not RAM-resident: `__not_in_flash_func` on the partial blit costs ~0.9 KB of SRAM, most of the link headroom.
 - Built-in 6×8 bitmap font for ASCII 0x20–0x7E. `display_darken()` copies front → back buffer (darkened) for the system menu overlay.
+- `display_push_rect(x, y, w, h)` sends one rectangle of the back buffer to the same place on the panel as a blocking window write (CPU-fed PIO, no DMA, no swap; it waits out an in-flight flush first). The OS overlay (`src/os/os_overlay.c`) uses it for a toast or the FPS counter outside the rows of a `flushRows`/`flushRegion`; the simulator copies the rectangle into its GRAM analog. Like the partial flushes it writes GRAM rows, so it lands at a scrolled position under a non-zero scroll offset (the overlay skips it then).
 
 ## WiFi / network stack (`wifi.c`, `http.c`, `tcp.c`)
 - CYW43 on SPI1; CMake defines `WIFI_ENABLED=1` for WiFi boards and all CYW43 code is `#ifdef WIFI_ENABLED` guarded.
