@@ -26,7 +26,9 @@ BOX_W, BOX_H = 52, 12
 CORNERS = {"tr": (262, 22), "tl": (6, 22), "br": (262, 302), "bl": (6, 302)}
 BG = (0, 0, 255)                     # 0x001F, the fixtures' background
 NUMBER_INKS = {(0, 255, 0), (255, 255, 0), (255, 0, 0)}
-DASH_INK = (132, 130, 132)           # COLOR_GRAY, "FPS: --"
+# COLOR_GRAY, "FPS: --", as the simulator's screenshot widens RGB565
+# (x * 255 / 31, x * 255 / 63, truncating: sim_socket_handler.c).
+DASH_INK = (131, 129, 131)
 TOAST_BG = (41, 40, 41)              # TOAST_COLOR_INFO, RGB565(40, 40, 40)
 
 # Toast geometry (ui_widget_toast at y 280): "TOAST" is 30px wide + 2x8
