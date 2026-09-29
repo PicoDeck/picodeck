@@ -1,7 +1,0 @@
-{
-    "id": "net.picodeck.menu_restore",
-    "name": "Menu Restore",
-    "description": "E2E fixture: two framebuffers of different colours, drawn once; the system menu must give both back",
-    "version": "1.0",
-    "author": "PicoDeck E2E"
-}
