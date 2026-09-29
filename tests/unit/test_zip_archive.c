@@ -50,6 +50,16 @@ static void test_read(void) {
   CHECK(n < 0 && n != -1);
   CHECK((unsigned char)buf[0] == 0x55);
 
+  // Zero capacity: too small for a non-empty entry, buffer untouched.
+  memset(buf, 0x55, sizeof(buf));
+  CHECK_EQ_INT(zip_archive_read(z, idx, buf, 0), PCZIP_ERR_TOO_SMALL);
+  CHECK((unsigned char)buf[0] == 0x55);
+  // An empty entry reads as 0 bytes, with any capacity including 0.
+  int eidx = zip_archive_locate(z, "empty.txt");
+  CHECK(eidx >= 0);
+  CHECK_EQ_INT(zip_archive_read(z, eidx, buf, sizeof(buf)), 0);
+  CHECK_EQ_INT(zip_archive_read(z, eidx, buf, 0), 0);
+
   // Genuine errors stay -1: bad index, NULL buffer, bad handle.
   CHECK_EQ_INT(zip_archive_read(z, 99, buf, sizeof(buf)), -1);
   CHECK_EQ_INT(zip_archive_read(z, -1, buf, sizeof(buf)), -1);

@@ -44,6 +44,7 @@
 #define ZIP_MAX_TOTAL_UNCOMP   (256u * 1024u * 1024u) // total uncompressed bytes
 #define ZIP_MAX_READ_MEM       (4u * 1024u * 1024u)   // single in-memory read
 #define ZIP_ERR_MAX            96                     // error string buffer
+#define ZIP_READ_TOO_SMALL     (-2)   // zip_reader_read_to_buf: entry > buf_cap
 
 // ── Types ────────────────────────────────────────────────────────────────────
 

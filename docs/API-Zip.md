@@ -55,7 +55,7 @@ At most **4 archives** may be open at once per app. An archive is closed by `:cl
 - **Parameters:**
   - `path` (string): Path to the ZIP file
 - **Returns:** (userdata or nil, string) Archive object, or `nil, errorString` on failure
-- **Errors:** `"permission denied"`, `"too many open archives (max 4)"`, or an engine message for a missing, truncated or over-limit archive. (`picocalc.zip.list` opens an archive only for the call and does not count towards the 4.)
+- **Errors:** `"permission denied"`, `"too many open archives (max 4)"`, or `"open failed"` (the file cannot be opened) or `"bad zip"` (not a valid archive). (`picocalc.zip.list` opens an archive only for the call and does not count towards the 4.)
 
 ```lua
 local ar, err = picocalc.zip.open(APP_DIR .. "/assets.zip")
@@ -68,7 +68,7 @@ if not ar then error(err) end
 
 The archive object returned by `picocalc.zip.open()` is the Lua surface for random access, and it is addressed **by entry name**: there are no entry indexes, no `locate` and no `statIndex`, and `ar:read` returns a string rather than filling a caller buffer. (The C API works by index; see [the C-to-Lua mapping](#c-to-lua-mapping).) Use it as `ar:method(...)`.
 
-Errors come in two kinds. A **runtime failure** (missing entry, bad archive, permission, size cap) is reported in the return values: `nil, errorString` from the query and read methods, `false, errorString` from the extract methods. **Misuse** raises a Lua error: calling any method on a closed archive raises `archive is closed` (except `:close()`, which is a no-op when already closed), and a missing or wrongly typed argument raises the usual argument error.
+Errors come in two kinds. A **runtime failure** (missing entry, bad archive, permission, size cap) is reported in the return values, per method: `ar:read` gives `nil, errorString`, `ar:extract` and `ar:extractAll` give `false, errorString`, `ar:exists` gives `false` and `ar:size` gives a bare `nil`; `ar:list` cannot fail. **Misuse** raises a Lua error: calling any method on a closed archive raises `archive is closed` (except `:close()`, which is a no-op when already closed), and a missing or wrongly typed argument raises the usual argument error.
 
 #### `ar:list()`
 List the archive's file entries (directory entries are skipped). Same result shape as `picocalc.zip.list`.

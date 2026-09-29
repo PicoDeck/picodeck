@@ -119,8 +119,10 @@ picodeck_unit_test(test_appconfig SOURCES ${SRC}/os/appconfig.c ${SD_FAKE}
 picodeck_unit_test(test_app_files SOURCES ${SRC}/os/app_identity.c
                 ${SRC}/os/app_manifest.c ${SRC}/os/appconfig.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
-file(WRITE "${CMAKE_BINARY_DIR}/generated/miniz/miniz_export.h"
-    "#ifndef MINIZ_EXPORT_H\n#define MINIZ_EXPORT_H\n#define MINIZ_EXPORT\n#endif\n")
+if(NOT EXISTS "${CMAKE_BINARY_DIR}/generated/miniz/miniz_export.h")
+    file(WRITE "${CMAKE_BINARY_DIR}/generated/miniz/miniz_export.h"
+        "#ifndef MINIZ_EXPORT_H\n#define MINIZ_EXPORT_H\n#define MINIZ_EXPORT\n#endif\n")
+endif()
 # The g_api.zip entry points over the real zip engine and miniz (host malloc).
 picodeck_unit_test(test_zip_archive SOURCES ${SRC}/os/zip_archive.c
                 ${SRC}/os/zip_util.c ${SRC}/os/zip_name.c
