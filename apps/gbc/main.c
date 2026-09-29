@@ -85,7 +85,7 @@ static void menu_cb_load_rom(void *user)   { (void)user; s_req_load_rom = true; 
 static void menu_cb_save_state(void *user) { (void)user; s_req_save_state = true; }
 static void menu_cb_load_state(void *user) { (void)user; s_req_load_state = true; }
 
-// Transient status text drawn in the 16px top bar (right of the FPS text).
+// Transient status text drawn in the 16px top bar.
 static char     s_notice[24];
 static uint32_t s_notice_until;
 static int s_notice_scrub;
@@ -228,9 +228,9 @@ static void apply_loaded_state(void) {
 // paced to native GB speed (59.73 Hz).  With peanut_gb frame_skip=1 the
 // emulator renders LCD lines every other frame, so 2 frames per flush
 // shows every rendered frame at ~30 Hz while game logic runs at 60 Hz.
-// The flushRows DMA (304 rows ≈ 15.6 ms at 100 MHz PIO SPI) overlaps the
-// next frame's emulation.  The FPS counter reports GAME frames/second —
-// 60 means the game runs at native speed.
+// The flush DMA overlaps the next frame's emulation.  perf is ticked per
+// GAME frame, so the OS FPS counter (system menu -> Settings -> Show FPS)
+// reports game frames/second: 60 means the game runs at native speed.
 #define GB_FRAMES_PER_FLUSH 2
 #define GB_FRAME_US 16742u  // 59.73 Hz
 // Set GBC_PROFILE to 1 to log per-phase timing over serial.
@@ -251,11 +251,6 @@ static int run_game(char *rom_path, int rom_path_len) {
     int exit_reason = RUN_EXIT;
 
     sys->log("[GBC] entering main loop\n");
-
-    // FPS counter — updates once per second in the 16px top bar
-    uint32_t fps_last_time = sys->getTimeMs();
-    int fps_frame_count = 0;
-    char fps_str[16] = "FPS: --";
 
     bool running = true;
 #if GBC_PROFILE
@@ -325,6 +320,7 @@ static int run_game(char *rom_path, int rom_path_len) {
             PROF_ADD(t_poll, t0);
         }
         for (int f = 0; f < GB_FRAMES_PER_FLUSH && running; f++) {
+            api->perf->beginFrame();
             s_gb.direct.joypad_bits.a      = (s_input.buttons & BTN_F4)    ? 0 : 1;
             s_gb.direct.joypad_bits.b      = (s_input.buttons & BTN_F5)    ? 0 : 1;
             s_gb.direct.joypad_bits.select = (s_input.buttons & BTN_F1)    ? 0 : 1;
@@ -366,6 +362,7 @@ static int run_game(char *rom_path, int rom_path_len) {
                 next_frame_us = now_us;
             }
             while (sys->getTimeUs() < next_frame_us) { /* spin */ }
+            api->perf->endFrame();  // no target FPS: paced above
         }
 
         if (running) {
@@ -386,36 +383,10 @@ static int run_game(char *rom_path, int rom_path_len) {
 #endif
 
         if (running) {
-            // FPS counter — update once per second; counts GAME frames
-            fps_frame_count += GB_FRAMES_PER_FLUSH;
-            uint32_t now = sys->getTimeMs();
-            uint32_t elapsed = now - fps_last_time;
-            if (elapsed >= 1000) {
-                int fps = (fps_frame_count * 1000) / elapsed;
-                // Simple itoa into fps_str
-                fps_str[0]='F'; fps_str[1]='P'; fps_str[2]='S';
-                fps_str[3]=':'; fps_str[4]=' ';
-                if (fps >= 100) {
-                    fps_str[5] = '0' + (fps / 100);
-                    fps_str[6] = '0' + ((fps / 10) % 10);
-                    fps_str[7] = '0' + (fps % 10);
-                    fps_str[8] = '\0';
-                } else if (fps >= 10) {
-                    fps_str[5] = '0' + (fps / 10);
-                    fps_str[6] = '0' + (fps % 10);
-                    fps_str[7] = '\0';
-                } else {
-                    fps_str[5] = '0' + fps;
-                    fps_str[6] = '\0';
-                }
-                fps_frame_count = 0;
-                fps_last_time = now;
-            }
-            // Draw in the 16px black bar above the GBC image
-            d->drawText(2, 4, fps_str, 0x07E0, 0x0000);
-
-            // Transient notice right of the FPS counter; drawing blanks
-            // after expiry scrubs both swap buffers over two frames.
+            // The 16px black bar above the GBC image, cleared every frame
+            // (the file browser leaves its header in one swap buffer), and
+            // the transient notice in it.
+            d->fillRect(0, 0, 320, 16, 0x0000);
             if (s_notice[0]) {
                 bool active = sys->getTimeMs() < s_notice_until;
                 d->drawText(120, 4,
