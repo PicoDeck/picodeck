@@ -414,7 +414,7 @@ typedef struct {
     // Initiate POST request. body/body_len may be 0/NULL. Non-blocking.
     void  (*post)(pchttp_t c, const char *path, const char *extra_hdrs,
                   const char *body, uint32_t body_len);
-    // Read up to len bytes of response body. Returns bytes read or -1 on error.
+    // Read up to len bytes of response body. Returns bytes read (0 if none).
     int      (*read)(pchttp_t c, uint8_t *buf, uint32_t len);
     // Returns bytes available in the receive buffer.
     uint32_t (*available)(pchttp_t c);
@@ -424,7 +424,7 @@ typedef struct {
     int   (*getStatus)(pchttp_t c);
     // Last error string, or NULL if no error.
     const char* (*getError)(pchttp_t c);
-    // Progress: sets *received and *total (0 if unknown). Returns total.
+    // Progress: sets *received and *total (-1 if unknown). Returns total.
     int   (*getProgress)(pchttp_t c, int *received, int *total);
     // Configuration — call before get()/post().
     void  (*setKeepAlive)(pchttp_t c, bool keep_alive);
