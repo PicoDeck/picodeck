@@ -158,3 +158,34 @@ def test_corrupt_bindings_files_mean_defaults(simulator):
     assert _keys(sim, ["f4"], r"^GP:RELEASE a$", mark) == [
         "GP:PRESS a", "GP:RELEASE a"], _texts(sim, mark)
     _finish(sim, seq)
+
+
+CLEAR_BEFORE_POLL = """
+local pc = picocalc
+local gp, input, log = pc.gamepad, pc.input, pc.sys.log
+log("GC:READY")
+pc.sys.sleep(700)        -- the test injects F4 now; nothing polls it yet
+input.clearState()       -- a clear before any poll read the injection
+local pad, btn = false, false
+for _ = 1, 30 do
+    input.update()
+    pad = pad or (gp.getButtonsPressed() & gp.PAD_A) ~= 0
+    btn = btn or (input.getButtonsPressed() & input.BTN_F4) ~= 0
+    pc.sys.sleep(16)
+end
+log("GC:PRESSED pad=" .. tostring(pad) .. " btn=" .. tostring(btn))
+"""
+
+
+def test_injection_pending_at_a_clear_keeps_its_press(simulator):
+    """A click injected but not yet read by a poll when the keyboard state is
+    cleared is published, with its press edge, by the next poll: on the
+    gamepad as on BTN_* (the device's pending one-shot)."""
+    sim = simulator
+    stage_lua_app(Path(sim.sd_card_path), "gamepad_clear", CLEAR_BEFORE_POLL)
+    seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
+    sim.launch_app("gamepad_clear")
+    sim.wait_for_log(r"^GC:READY$", timeout=10, since_seq=seq)
+    sim.keypress("f4")
+    line = sim.wait_for_log(r"^GC:PRESSED ", timeout=10, since_seq=seq)
+    assert line == "GC:PRESSED pad=true btn=true", _texts(sim, seq)

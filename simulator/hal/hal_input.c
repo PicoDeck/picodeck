@@ -32,6 +32,10 @@ static uint32_t g_injected_click = 0;    // one-shot injection(s), held >= HAL_I
 static uint32_t g_injected_click_since_ms = 0; // wall time g_injected_click was last (re)published
 static uint32_t g_injected_click_pending = 0;  // same-button re-injection queued while still active
 static uint32_t g_injected_latched = 0;  // held injections, released only by hal_input_release_buttons
+// Clicks a poll has read (hal_input_read_buttons): the device's "active"
+// one-shots. A click injected since the last read is the device's "pending"
+// one, which kbd_clear_state leaves to be published with its edge.
+static uint32_t g_injected_click_read = 0;
 static char g_char_buffer[256];
 static int g_char_head = 0;
 static int g_char_tail = 0;
@@ -247,6 +251,7 @@ void hal_input_read_buttons(uint32_t* out_buttons, uint32_t* out_pressed) {
     // enables modifier chords. One-shot (click) injections retire on their
     // own wall-clock hold below, not on every read.
     retire_and_publish_injected_click_locked(hal_get_time_ms());
+    g_injected_click_read = g_injected_click;
     if (out_buttons) *out_buttons = g_buttons;
     if (out_pressed) *out_pressed = g_buttons_pressed;
     g_buttons_pressed = 0;
@@ -270,6 +275,7 @@ void hal_input_inject_buttons(uint32_t buttons) {
         g_buttons_pressed |= fresh;
         stage_buttons_locked(newly_down, KBD_EV_DOWN);
         g_injected_click |= fresh;
+        g_injected_click_read &= ~fresh;  // not read by a poll yet
         g_injected_click_since_ms = hal_get_time_ms();
     }
     if (already_active) {
@@ -405,7 +411,7 @@ void hal_input_discard_pending(void) {
 
 uint32_t hal_input_injected_down(void) {
     pthread_mutex_lock(&s_input_mutex);
-    uint32_t down = g_injected_click | g_injected_latched;
+    uint32_t down = (g_injected_click & g_injected_click_read) | g_injected_latched;
     pthread_mutex_unlock(&s_input_mutex);
     return down;
 }
