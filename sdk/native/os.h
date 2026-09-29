@@ -193,9 +193,13 @@ typedef struct {
     void     (*reboot)(void);
     // Battery level 0-100 (from STM32 via I2C). -1 only before the first
     // reading (a few seconds after boot); on USB power it keeps the last
-    // level: isUSBPowered() tells USB power.
+    // level.
     int      (*getBatteryPercent)(void);
-    // True if connected to USB power
+    // True if connected to USB power (reads GP24, the Pico 2's VBUS sense).
+    // Not reliable on Pico W-family boards, including the PicoCalc's
+    // Pimoroni Pico Plus 2 W: GP24 belongs to the wireless chip there, so
+    // this currently reads false even on USB power. A fix (reading VBUS
+    // through the CYW43) is pending.
     bool     (*isUSBPowered)(void);
     // Add an item to the system menu overlay (max 4 items per app)
     // callback is called when the item is selected in the menu, after the

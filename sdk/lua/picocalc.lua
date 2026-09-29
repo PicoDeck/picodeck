@@ -429,8 +429,8 @@ function picocalc.sys.getTimeMs() end
 ---@return integer
 function picocalc.sys.getTimeUs() end
 
----Return battery charge (0–100), or -1 before the first reading (a few seconds
----after boot). On USB power it keeps the last level; `isUSBPowered()` tells USB power.
+---Return battery charge (0–100), or -1 only before the first reading (a few
+---seconds after boot). On USB power it keeps the last level read.
 ---Result is cached for ~5 seconds to avoid slow I²C reads.
 ---@return integer
 function picocalc.sys.getBattery() end
@@ -449,7 +449,10 @@ function picocalc.sys.exit() end
 ---Reboot the device via the watchdog timer. Never returns.
 function picocalc.sys.reboot() end
 
----Return `true` if USB power is connected (GP24 VBUS sense).
+---Return `true` if USB power is connected (GP24 VBUS sense). Not reliable on
+---Pico W-family boards, including the PicoCalc's Pimoroni Pico Plus 2 W: GP24
+---belongs to the wireless chip there, so this currently reads `false` even on
+---USB power. A fix (reading VBUS through the CYW43) is pending.
 ---@return boolean
 function picocalc.sys.isUSBPowered() end
 

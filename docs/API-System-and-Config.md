@@ -59,13 +59,11 @@ picocalc.sys.sleep(100)  -- Sleep for 100ms
 Returns the battery charge level. The level is read from the keyboard controller in the background every 5 seconds (paused while the app goes a second without `input.update()` or `sys.sleep()`); this returns the latest reading without waiting.
 
 - **Parameters:** None
-- **Returns:** (number) Battery percentage (0-100), or -1 before the first reading (a few seconds after boot). On USB power it keeps returning the last level read; use `picocalc.sys.isUSBPowered()` to tell USB power.
+- **Returns:** (number) Battery percentage (0-100), or -1 only before the first reading (a few seconds after boot). On USB power it keeps returning the last level read.
 
 ```lua
 local battery = picocalc.sys.getBattery()
-if picocalc.sys.isUSBPowered() then
-    print("USB power")
-elseif battery >= 0 then
+if battery >= 0 then
     print("Battery: " .. battery .. "%")
 end
 ```
@@ -77,6 +75,11 @@ Checks if the device is powered via USB (GP24 VBUS sense).
 
 - **Parameters:** None
 - **Returns:** (boolean) `true` when USB power is connected
+
+> Not reliable for USB detection: GP24 is the Pico 2's VBUS sense pin, but on
+> Pico W-family boards, including the PicoCalc's Pimoroni Pico Plus 2 W, that
+> pin belongs to the wireless chip, so this currently reads `false` even on
+> USB power. A fix (reading VBUS through the CYW43) is pending.
 
 ---
 
