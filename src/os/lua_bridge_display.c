@@ -1,5 +1,5 @@
 #include "lua_bridge_internal.h"
-#include "toast.h"
+#include "os_overlay.h"
 #include "../fonts/font_registry.h"
 
 // ── picocalc.display.* ───────────────────────────────────────────────────────
@@ -16,6 +16,18 @@ static int l_display_setPixel(lua_State *L) {
   uint16_t c = l_checkcolor(L, 3);
   display_set_pixel(x, y, c);
   return 0;
+}
+
+// getPixel(x, y): the colour at (x, y) in the frame being drawn (the back
+// buffer) as the RGB565 value setPixel takes (the driver undoes the panel
+// byte swap). Off-screen coordinates raise; the clip rect does not apply.
+static int l_display_getPixel(lua_State *L) {
+  int x = (int)lb_checkint(L, 1);
+  int y = (int)lb_checkint(L, 2);
+  if (x < 0 || x >= FB_WIDTH || y < 0 || y >= FB_HEIGHT)
+    return luaL_error(L, "pixel (%d, %d) outside the screen", x, y);
+  lua_pushinteger(L, display_get_pixel(x, y));
+  return 1;
 }
 
 static int l_display_fillRect(lua_State *L) {
@@ -173,7 +185,7 @@ static int l_display_drawPlane(lua_State *L) {
 bool s_screenshot_pending = false;
 
 static int l_display_flush(lua_State *L) {
-  toast_draw();
+  os_overlay_draw(OS_PRESENT_FLUSH, 0, FB_HEIGHT - 1);  // toast, Show FPS
   display_flush();
   if (s_screenshot_pending) {
     s_screenshot_pending = false;
@@ -189,14 +201,15 @@ static int l_display_flush(lua_State *L) {
 }
 
 // flushRows(y0, y1) — push rows y0..y1 (inclusive) of the current draw buffer
-// to the panel WITHOUT swapping buffers.  Mirrors l_display_flush's
-// screenshot-pending hook so MCP screenshots still fire while an app sits in a
-// partial-update idle loop.  toast_draw() is deliberately NOT mirrored: toasts
-// render on full flushes only — painting one here would smear it into an
-// arbitrary row band and it would never be cleanly erased.
+// to the panel WITHOUT swapping buffers.  Mirrors l_display_flush's overlay
+// pass and screenshot-pending hook so MCP screenshots still fire while an app
+// sits in a partial-update idle loop.  The overlay pass draws only into the
+// rows sent and pushes an overlay outside them as a small window (see
+// os_overlay.h), so it never smears into the app's draw buffer.
 static int l_display_flushRows(lua_State *L) {
   int y0 = (int)lb_checkint(L, 1);
   int y1 = (int)lb_checkint(L, 2);
+  os_overlay_draw(OS_PRESENT_ROWS, y0, y1);
   display_flush_rows(y0, y1);
   if (s_screenshot_pending) {
     s_screenshot_pending = false;
@@ -208,11 +221,12 @@ static int l_display_flushRows(lua_State *L) {
 
 // flushRegion(y0, y1) — like flush() but only transfers rows y0..y1.  Swaps
 // buffers and re-syncs the flushed band into the new back buffer (see
-// display_flush_region).  Same screenshot hook, same no-toast rule as
+// display_flush_region).  Same overlay pass and screenshot hook as
 // flushRows.
 static int l_display_flushRegion(lua_State *L) {
   int y0 = (int)lb_checkint(L, 1);
   int y1 = (int)lb_checkint(L, 2);
+  os_overlay_draw(OS_PRESENT_REGION, y0, y1);
   display_flush_region(y0, y1);
   if (s_screenshot_pending) {
     s_screenshot_pending = false;
@@ -262,17 +276,30 @@ static int l_display_getFontHeight(lua_State *L) {
   return 1;
 }
 
-// loadFont(path) -> id | nil. Sandbox-checked like image loading. Freed at
-// app exit by the launcher, or earlier via unloadFont.
+// loadFont(path) -> id | nil, errstr. Sandbox-checked like image loading. Freed
+// at app exit by the launcher, or earlier via unloadFont. The 8 loaded-font
+// slots are shared with graphics.font.new; a full registry is logged by
+// font_registry_load_ex and reported here. (The native loadFont returns -1.)
 static int l_display_loadFont(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
   if (!fs_sandbox_check(L, path, false)) {
     lua_pushnil(L);
-    return 1;
+    lua_pushfstring(L, "access denied: %s", path);
+    return 2;
   }
-  int id = font_registry_load(path);
-  if (id < 0) lua_pushnil(L);
-  else lua_pushinteger(L, id);
+  const char *why = "load failed";
+  int id = font_registry_load_ex(path, &why);
+  if (id < 0) {
+    lua_pushnil(L);
+    if (strcmp(why, FONT_REGISTRY_WHY_FULL) == 0)
+      lua_pushfstring(L, "font registry full (all %d loaded-font slots are in "
+                         "use; display.loadFont and graphics.font.new share "
+                         "them): %s", FONT_REGISTRY_LOADED, path);
+    else
+      lua_pushfstring(L, "%s: %s", why, path);
+    return 2;
+  }
+  lua_pushinteger(L, id);
   return 1;
 }
 
@@ -386,6 +413,7 @@ static int l_display_fillVLineGradient(lua_State *L) {
 static const luaL_Reg l_display_lib[] = {
     {"clear", l_display_clear},
     {"setPixel", l_display_setPixel},
+    {"getPixel", l_display_getPixel},
     {"fillRect", l_display_fillRect},
     {"drawRect", l_display_drawRect},
     {"drawLine", l_display_drawLine},

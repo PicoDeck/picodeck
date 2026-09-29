@@ -70,6 +70,32 @@ else
     log("GT BLINKER_ERR " .. tostring(berr))
 end
 
+-- animator.new(duration, from, to [, easing [, delay]]): the userdata is not an
+-- argument, a nil easing is absent, and a delay holds the start value.
+local function try(name, fn)
+    local aok, a, b = pcall(fn)
+    if aok then log("GT " .. name .. "_OK " .. tostring(a) .. " " .. tostring(b))
+    else log("GT " .. name .. "_ERR " .. tostring(a)) end
+end
+local anim = gfx.animation.animator
+try("ANIM4", function()
+    local a = anim.new(100, 0, 100, "cubicOut")
+    pc.sys.sleep(250)
+    return a:currentValue(), a:ended()
+end)
+try("ANIMNIL", function()
+    local a = anim.new(100, 0, 100, nil)
+    pc.sys.sleep(250)
+    return a:currentValue(), a:ended()
+end)
+try("ANIMDELAY", function()
+    local a = anim.new(200, 10, 90, "linear", 400)
+    local held = a:currentValue()
+    local p = a:progress()
+    pc.sys.sleep(700)
+    return held .. "/" .. p, a:currentValue() .. "/" .. tostring(a:ended())
+end)
+
 log("GT DONE")
 -- Hold the frame for pixel probes until ESC.
 local input = pc.input

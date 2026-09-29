@@ -1,0 +1,2 @@
+{ "id": "net.picodeck.timer_test", "name": "Timer Test",
+  "description": "getTimeUs and perf pacing fixture", "version": "1.0", "author": "PicoDeck" }

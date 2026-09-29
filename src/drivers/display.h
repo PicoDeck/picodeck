@@ -46,6 +46,10 @@ void display_apply_clock(void);
 // Call display_flush() to push to screen
 void display_clear(uint16_t color);
 void display_set_pixel(int x, int y, uint16_t color);
+// The colour at (x, y) in the back buffer (the frame being drawn) in host
+// RGB565 order, i.e. with the framebuffer's byte swap undone; 0 off-screen.
+// Reads ignore the clip rect.
+uint16_t display_get_pixel(int x, int y);
 void display_fill_rect(int x, int y, int w, int h, uint16_t color);
 void display_draw_rect(int x, int y, int w, int h, uint16_t color);
 void display_draw_line(int x0, int y0, int x1, int y1, uint16_t color);
@@ -125,6 +129,15 @@ void display_draw_image_scaled_nn(int x, int y, const uint16_t *data,
                                   int src_w, int src_h, int dst_w, int dst_h,
                                   uint16_t transparent_color);
 
+// Nearest-neighbour stretch of the source rect (sx, sy, sw, sh) of an
+// img_w x img_h image to dst_w x dst_h at (x, y). The source rect is clamped
+// to the image; nothing is drawn if it (or the destination) is empty.
+// transparent_color 0 falls back to the global key, as the other blits do.
+void display_draw_image_stretched(int x, int y, int dst_w, int dst_h,
+                                  const uint16_t *data, int img_w, int img_h,
+                                  int sx, int sy, int sw, int sh,
+                                  uint16_t transparent_color);
+
 // Draw an integer-scaled image using nearest-neighbor, optimised for speed.
 // No transparency, no bounds check per pixel (pre-clamped).
 // Ideal for emulator framebuffer blits (e.g. 160x144 @ 2x).
@@ -161,6 +174,13 @@ void display_sync_back_region(int y0, int y1);
 // partial screen updates (status bars, emulator viewports, etc.).
 void display_flush_rows(int y0, int y1);
 
+// Push the rectangle (x, y, w, h) of the back buffer to the same place on the
+// panel as one blocking window write (no swap, no DMA; ~0.1 ms for 52x12).
+// Waits out any in-flight flush first. Clipped to the screen. The OS overlay
+// (os_overlay.c) updates its counter/toast outside a partial flush's rows
+// with it.
+void display_push_rect(int x, int y, int w, int h);
+
 // Block until any in-flight DMA flush completes.
 // Does NOT swap buffers or start a new transfer.
 void display_wait_for_flush(void);
@@ -172,6 +192,24 @@ void display_set_brightness(uint8_t brightness);
 // Used by the system menu to create a translucent darkened overlay effect.
 // Call before drawing the menu panel, then call display_flush().
 void display_darken(void);
+
+// Copies both framebuffers into dst (2 * FB_WIDTH * FB_HEIGHT pixels): the
+// front buffer (on the panel) first, then the back buffer. Waits for any
+// flush in flight first. The system menu saves the app's screen with it
+// before display_darken() and gives it back with display_restore_buffers().
+void display_save_buffers(uint16_t *dst);
+
+// Puts back what display_save_buffers saved: the saved front buffer is
+// presented on the panel and becomes the front buffer again, and the saved
+// back buffer becomes the back buffer again, so an app resumes exactly where
+// it was (mid-frame drawing included). Only the contents and roles come
+// back, not which physical buffer holds each (re-fetch
+// display_get_back_buffer(), as after any flush). Limit: an app that
+// presents only with display_flush_rows() (no swap) shows its back buffer,
+// not its front; after a restore the panel shows the saved front, stale for
+// such an app: the rows it flushes again come back, and any row it never
+// flushes again stays stale.
+void display_restore_buffers(const uint16_t *src);
 
 // Returns a read-only pointer to the raw framebuffer (320×320 RGB565,
 // big-endian). Pixels are byte-swapped relative to the RGB565() macro — un-swap

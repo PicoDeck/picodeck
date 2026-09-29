@@ -2,14 +2,16 @@
 title: "API Input"
 ---
 
-Keyboard and button input functions.
+Keyboard and button input functions. For games, the [gamepad](API-Gamepad.md) (`picocalc.gamepad`) gives the same edges on buttons players can rebind; the keys behind it still report here.
 
 ## picocalc.input
 
 ### Functions
 
 #### `picocalc.input.update()`
-Polls the keyboard for new input events. **Call once per frame** before reading button or character state.
+Takes the keyboard events that arrived since the last call. **Call once per frame** before reading button or character state. The keyboard controller is read in the background (every 10 ms, or back to back while keys are coming), so `update()` does not wait on it and a key reaches it within ~22 ms. The exception: after a failed controller transaction, `update()` runs the ~12 ms bus recovery (at most every 100 ms once failures persist).
+
+If neither `update()` nor `picocalc.sys.sleep()` has run for a second, the controller is left alone until the next call. Keys pressed meanwhile wait in the controller and arrive, in order, from the call after that one.
 
 `update()` also services HTTP/TCP/sound callbacks, the system menu and dev commands.
 
@@ -157,7 +159,7 @@ True while a key is held. `k` is a one-character string (`"w"`; letters
 ignore case) or an integer keycode as `pollEvent` reports it. Updated by
 `update()`. Reliable for buttons (arrows, Enter, Esc, F-keys, modifiers);
 letters and shifted symbols depend on the keyboard reporting their release
-(pending hardware confirmation). `clearState()` clears a key that sticks.
+(letters confirmed on the device: Z and X held and released in a game; shifted symbols still pending hardware confirmation). `clearState()` clears a key that sticks.
 
 ---
 

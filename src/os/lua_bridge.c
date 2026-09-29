@@ -122,6 +122,18 @@ lua_Integer lb_optint_at(lua_State *L, int idx, int arg, const char *what,
   return lua_isnoneornil(L, idx) ? def : lb_toint(L, idx, arg, what);
 }
 
+// Real-valued arguments (world coordinates, angles, scales): any finite
+// number; NaN and infinities are argument errors.
+float lb_checkfloat(lua_State *L, int idx) {
+  lua_Number n = luaL_checknumber(L, idx);
+  if (!isfinite(n)) lb_argfail(L, idx, NULL, "number is NaN or infinite");
+  return (float)n;
+}
+
+float lb_optfloat(lua_State *L, int idx, float def) {
+  return lua_isnoneornil(L, idx) ? def : lb_checkfloat(L, idx);
+}
+
 // ── Registration
 // ──────────────────────────────────────────────────────────────
 
@@ -171,11 +183,21 @@ void lb_register_type(lua_State *L, const char *mtname,
 // lua_bridge_exit_reset once the app's VM has returned.
 static bool s_exit_requested = false;
 
-// Instructions between two count-hook calls. Each call is a few flag reads
-// unless the full service pass is due (see lua_service below). The count
-// adapts (menu_lua_hook) so the hook fires about every LUA_HOOK_TARGET_US of
-// wall time: up to LUA_HOOK_COUNT_MAX in compute-bound code (the old fixed
-// 256 cost ~10-25% of VM time), down to LUA_HOOK_COUNT_MIN in apps that spend
+// The Lua thread executing on Core 0: the main thread, or the coroutine that
+// lua_corolib.c resumed into. Written only by Core 0 thread code.
+static lua_State *volatile s_running_L = NULL;
+
+void lua_bridge_set_running(lua_State *L) { s_running_L = L; }
+
+// Instructions between two count-hook calls of the SYNCHRONOUS count hook
+// (the simulator, the web build, and firmware's rare "no alarm slot"
+// fallback — see lua_bridge_hook_start below). Firmware's normal timer-armed
+// hook always installs a count of 1 (the 1 ms timer re-arms it), so this
+// adaptive count never applies there. Each call is a few flag reads unless
+// the full service pass is due (see lua_service below). The count adapts
+// (menu_lua_hook) so the hook fires about every LUA_HOOK_TARGET_US of wall
+// time: up to LUA_HOOK_COUNT_MAX in compute-bound code (the old fixed 256
+// cost ~10-25% of VM time), down to LUA_HOOK_COUNT_MIN in apps that spend
 // their time in C calls (a draw loop runs a few instructions per frame, so a
 // large fixed count would delay exit_app and dev commands by seconds).
 #define LUA_HOOK_COUNT_MIN 128
@@ -188,15 +210,59 @@ static bool s_exit_requested = false;
 // Longest gap between two full service passes while the hook fires.
 #define LUA_SERVICE_PERIOD_US 5000u
 
-// Wall time of the last hook call, any thread (Core 0). The count itself is
-// per thread (lua_newthread copies it; lua_sethook sets only the running
-// thread's), so the hook reads it back with lua_gethookcount.
+// Wall time of the last hook call, any thread (Core 0). Only maintained by
+// the synchronous count hook's adaptive rescale below: firmware's normal
+// timer-armed hook never updates it. The count itself is per thread
+// (lua_newthread copies it; lua_sethook sets only the running thread's), so
+// the hook reads it back with lua_gethookcount.
 static uint32_t s_last_hook_us = 0;
 
 static void menu_lua_hook(lua_State *L, lua_Debug *ar);
 
 static void lua_bridge_install_hook(lua_State *L, int count) {
   lua_sethook(L, menu_lua_hook, LUA_MASKCOUNT, count);
+}
+
+// With any count hook installed, Lua 5.4 calls luaG_traceexec before EVERY
+// instruction (vmfetch's `trap`), whatever the count: on the device that
+// tax was ~60% of VM time (P0: an empty loop 491 ns/iter with it, 189
+// without). So on firmware the VM runs hook-free and a 1 ms Core 0 repeating
+// timer arms a count-1 hook on the running thread (lua_sethook is async-safe:
+// Lua's own lua.c arms its SIGINT stop the same way); menu_lua_hook services
+// and disarms it. The simulator and the web build have no Core 0 interrupt (a
+// host thread calling lua_sethook would race the VM), so they keep the
+// adaptive synchronous count hook.
+#ifndef PICODECK_SIMULATOR
+#define LUA_BRIDGE_ASYNC_HOOK 1
+static volatile bool s_async_active = false;  // an app's VM is running
+static repeating_timer_t s_arm_timer;
+static bool s_arm_timer_started = false;
+
+static bool lua_bridge_arm_cb(repeating_timer_t *t) {
+  (void)t;
+  lua_State *L = s_running_L;
+  if (s_async_active && L)
+    lua_sethook(L, menu_lua_hook, LUA_MASKCOUNT, 1);
+  return true;
+}
+#else
+#define LUA_BRIDGE_ASYNC_HOOK 0
+#endif
+
+// Called once per app, as the last step of registration.
+static void lua_bridge_hook_start(lua_State *L) {
+  s_running_L = L;
+#if LUA_BRIDGE_ASYNC_HOOK
+  lua_sethook(L, NULL, 0, 0);
+  if (!s_arm_timer_started)  // default alarm pool: created on Core 0
+    s_arm_timer_started =
+        add_repeating_timer_us(-1000, lua_bridge_arm_cb, NULL, &s_arm_timer);
+  s_async_active = s_arm_timer_started;
+  if (s_async_active)
+    return;
+  printf("[LUA] no alarm slot for the service timer: synchronous hook\n");
+#endif
+  lua_bridge_install_hook(L, LUA_HOOK_COUNT);
 }
 
 bool lua_bridge_exit_requested(void) { return s_exit_requested; }
@@ -212,13 +278,18 @@ void lua_bridge_raise_exit(lua_State *L) {
   // counts are per thread, so a raise from a coroutine that was created
   // before the first one (or never ran since) arms that thread too. The main
   // thread as well: a coroutine that raised is dead once resume returns, and
-  // the thread that resumed it has its own count.
-  if (lua_gethookcount(L) != 1)
+  // the thread that resumed it has its own count. Check the mask too, not
+  // just the count: a hook disarmed mid-way (count already 1, but mask 0 —
+  // e.g. the async timer's window between menu_lua_hook disarming it and the
+  // next 1 ms re-arm) must be re-armed immediately rather than waiting for
+  // the timer.
+  if (lua_gethookcount(L) != 1 || !(lua_gethookmask(L) & LUA_MASKCOUNT))
     lua_bridge_install_hook(L, 1);
   lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
   lua_State *main = lua_tothread(L, -1);
   lua_pop(L, 1);
-  if (main && main != L && lua_gethookcount(main) != 1)
+  if (main && main != L &&
+      (lua_gethookcount(main) != 1 || !(lua_gethookmask(main) & LUA_MASKCOUNT)))
     lua_bridge_install_hook(main, 1);
   lua_pushlightuserdata(L, &lua_bridge_exit_tag);
   lua_error(L);
@@ -230,19 +301,27 @@ void lua_bridge_raise_exit(lua_State *L) {
 void lua_bridge_exit_reset(lua_State *L) {
   s_exit_requested = false;
   dev_commands_clear_exit();
+#if LUA_BRIDGE_ASYNC_HOOK
+  // The VM is about to close (or has): stop arming it. lua_close's __gc
+  // handlers run under the synchronous count hook installed below.
+  s_async_active = false;
+#endif
   if (L)
     lua_bridge_install_hook(L, LUA_HOOK_COUNT);
 }
 
 // ── Service pass (see lua_bridge.h) ─────────────────────────────────────────
-// The count hook fires every LUA_HOOK_COUNT instructions. It always does the
-// cheap part (watchdog, exit request, Sym press: flag reads) and runs the
-// full pass (HTTP/TCP slot scans, sound callbacks, the serial dev-command
-// poll, which takes the stdio mutex and TinyUSB on firmware, reboot flags,
-// screenshots, low-memory GC) only when work was flagged pending or
-// LUA_SERVICE_PERIOD_US has passed since the last full pass. The period is
-// the latency bound for anything that does not flag itself (HTTP/TCP
-// events, serial dev commands on firmware).
+// The count hook fires every LUA_HOOK_COUNT instructions on the synchronous
+// hook (simulator, web build, firmware's no-alarm-slot fallback); on
+// firmware's normal timer-armed hook it fires as a count-1 hook about once
+// every 1 ms instead (the arming timer, see lua_bridge_hook_start). Either
+// way, it always does the cheap part (watchdog, exit request, Sym press:
+// flag reads) and runs the full pass (HTTP/TCP slot scans, sound callbacks,
+// the serial dev-command poll, which takes the stdio mutex and TinyUSB on
+// firmware, reboot flags, screenshots, low-memory GC) only when work was
+// flagged pending or LUA_SERVICE_PERIOD_US has passed since the last full
+// pass. The period is the latency bound for anything that does not flag
+// itself (HTTP/TCP events, serial dev commands on firmware).
 volatile bool g_lua_service_pending = false;
 static uint32_t s_last_full_pass_us = 0;
 
@@ -280,6 +359,7 @@ static void lua_service_full(lua_State *L) {
     crashlog_clear_running(); // intentional — not an unclean exit
     stdio_flush();
     sleep_ms(100);
+    kbd_prepare_reset();
     watchdog_reboot(0, 0, 0);
   }
   if (dev_commands_wants_reboot_flash()) {
@@ -287,6 +367,7 @@ static void lua_service_full(lua_State *L) {
     crashlog_clear_running();
     stdio_flush();
     sleep_ms(100);
+    kbd_prepare_reset();
     reset_usb_boot(0, 0);
   }
   if (dev_commands_wants_reboot_ota()) {
@@ -336,10 +417,21 @@ void lua_bridge_service(lua_State *L) { lua_service(L, true); }
 
 void lua_bridge_service_poll(lua_State *L) { lua_service(L, false); }
 
-// Instruction-count hook: fires every LUA_HOOK_COUNT Lua opcodes (every
-// opcode once an exit was requested).
+// Instruction-count hook. On the synchronous hook (simulator, web build,
+// firmware's no-alarm-slot fallback) it fires every LUA_HOOK_COUNT Lua
+// opcodes, adaptively rescaled (every opcode once an exit was requested). On
+// firmware's normal timer-armed hook it always fires as a count-1 hook: the
+// 1 ms timer (lua_bridge_arm_cb) re-arms it, so it services once and disarms
+// until the next tick.
 static void menu_lua_hook(lua_State *L, lua_Debug *ar) {
   (void)ar;
+#if LUA_BRIDGE_ASYNC_HOOK
+  if (s_async_active && !s_exit_requested) {
+    lua_sethook(L, NULL, 0, 0);  // disarm first: the timer re-arms in 1 ms
+    lua_service(L, false);
+    return;
+  }
+#endif
   if (!s_exit_requested) {
     // Rescale the count when the gap since the last call is off target by
     // more than 2x either way (so a steady app is left alone).
@@ -422,6 +514,7 @@ void lua_bridge_register(lua_State *L) {
   lua_setglobal(L, "dofile");
   lua_pushnil(L);
   lua_setglobal(L, "loadfile");
+  lua_bridge_require_init(L);
   printf("[LUA] registering table...\n");
   luaL_requiref(L, "table", luaopen_table, 1);
   lua_pop(L, 1);
@@ -440,7 +533,7 @@ void lua_bridge_register(lua_State *L) {
 #endif
   lua_pop(L, 1);
   printf("[LUA] registering coroutine...\n");
-  luaL_requiref(L, LUA_COLIBNAME, luaopen_coroutine, 1);
+  luaL_requiref(L, LUA_COLIBNAME, luaopen_picodeck_coroutine, 1);
   lua_pop(L, 1);
   printf("[LUA] registering utf8...\n");
   luaL_requiref(L, LUA_UTF8LIBNAME, luaopen_utf8, 1);
@@ -458,6 +551,8 @@ void lua_bridge_register(lua_State *L) {
   lua_bridge_display_init(L);
   printf("[LUA] registering input...\n");
   lua_bridge_input_init(L);
+  printf("[LUA] registering gamepad...\n");
+  lua_bridge_gamepad_init(L);
   printf("[LUA] registering sys...\n");
   lua_bridge_sys_init(L);
   printf("[LUA] registering fs...\n");
@@ -476,6 +571,8 @@ void lua_bridge_register(lua_State *L) {
   lua_bridge_graphics_init(L);
   printf("[LUA] registering 3D extensions...\n");
   lua_bridge_register_3d(L);
+  printf("[LUA] registering gfx3d...\n");
+  lua_bridge_gfx3d_init(L);
   printf("[LUA] registering ui...\n");
   lua_bridge_ui_init(L);
   printf("[LUA] registering audio...\n");
@@ -503,10 +600,7 @@ void lua_bridge_register(lua_State *L) {
   // Set as global
   lua_setglobal(L, "picocalc");
 
-  // Install instruction-count hook for menu button interception.
-  // Fires every LUA_HOOK_COUNT Lua opcodes to catch menu button presses
-  // even during tight loops, without requiring apps to poll input.
-  lua_bridge_install_hook(L, LUA_HOOK_COUNT);
+  lua_bridge_hook_start(L);
   printf("[LUA] lua_bridge_register complete\n");
 }
 

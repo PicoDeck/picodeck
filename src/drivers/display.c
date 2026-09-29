@@ -26,6 +26,7 @@
 // 16 KB XIP cache.
 #define DISP_HOT __attribute__((optimize("O2")))
 #include "display_clip.h"
+#include "display_raster.h"
 
 // ── Framebuffer ──────────────────────────────────────────────────────────────
 // Placed in internal SRAM smoothly now that the Lua heap has been relocated
@@ -377,6 +378,13 @@ void display_set_pixel(int x, int y, uint16_t color) {
   s_framebuffer[y * FB_WIDTH + x] = be;
 }
 
+uint16_t display_get_pixel(int x, int y) {
+  if (x < 0 || x >= FB_WIDTH || y < 0 || y >= FB_HEIGHT)
+    return 0;
+  uint16_t be = s_framebuffer[y * FB_WIDTH + x];
+  return (uint16_t)((be >> 8) | (be << 8));
+}
+
 void display_fill_rect(int x, int y, int w, int h, uint16_t color) {
   // Clipped once in int64 (x + w cannot overflow); full-width bands use
   // 32-bit stores.
@@ -568,6 +576,16 @@ void display_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2,
                      fb_color(color));
 }
 
+void display_get_raster_target(display_raster_target_t *t) {
+  t->fb = s_framebuffer;
+  t->stride = FB_WIDTH;
+  t->clip_x0 = s_clip_x0;
+  t->clip_y0 = s_clip_y0;
+  t->clip_x1 = s_clip_x1;
+  t->clip_y1 = s_clip_y1;
+  t->swap = true;
+}
+
 // Text goes through the shared renderer in src/fonts/font.c. The hardware
 // framebuffer is byte-swapped, so colors are swapped here; the clip rect is
 // the driver's own.
@@ -669,11 +687,13 @@ void display_draw_image_scaled(int x, int y, int img_w, int img_h,
     if (ty > max_y) max_y = ty;
   }
 
-  // Clamp to framebuffer bounds
-  int bx = (int)floorf(min_x);
-  int by = (int)floorf(min_y);
-  int bw = (int)ceilf(max_x - min_x);
-  int bh = (int)ceilf(max_y - min_y);
+  // Clamp to framebuffer bounds. TGX rasterises with its own rounding and can
+  // touch one row/column past the exact float box, so pad it by 1 px a side:
+  // a pixel it writes outside the swapped region keeps the wrong byte order.
+  int bx = (int)floorf(min_x) - 1;
+  int by = (int)floorf(min_y) - 1;
+  int bw = (int)ceilf(max_x - min_x) + 3;
+  int bh = (int)ceilf(max_y - min_y) + 3;
   if (bx < 0) bx = 0;
   if (by < 0) by = 0;
   if (bx + bw > FB_WIDTH) bw = FB_WIDTH - bx;
@@ -688,6 +708,10 @@ void display_draw_image_scaled(int x, int y, int img_w, int img_h,
     }
   }
 
+  // TGX takes the rotation in degrees; the bounding box above and the Lua API
+  // use radians.
+  const float angle_deg = angle * (180.0f / (float)M_PI);
+
   // Use masked version if transparency is enabled, otherwise use regular
   // version.  The clip is passed through (converted from the driver's
   // inclusive bounds to the decoder's half-open rect) so TGX renders into a
@@ -696,14 +720,14 @@ void display_draw_image_scaled(int x, int y, int img_w, int img_h,
     tgx_draw_image_scaled_masked(fb, FB_WIDTH, FB_HEIGHT,
                                  s_clip_x0, s_clip_y0,
                                  s_clip_x1 + 1, s_clip_y1 + 1,
-                                 data, img_w, img_h, (int)cx, (int)cy,
-                                 scale, angle, transparent_color);
+                                 data, img_w, img_h, cx, cy,
+                                 scale, angle_deg, transparent_color);
   } else {
     tgx_draw_image_scaled(fb, FB_WIDTH, FB_HEIGHT,
                           s_clip_x0, s_clip_y0,
                           s_clip_x1 + 1, s_clip_y1 + 1,
-                          data, img_w, img_h, (int)cx, (int)cy,
-                          scale, angle);
+                          data, img_w, img_h, cx, cy,
+                          scale, angle_deg);
   }
 
   // Byte-swap back only the affected region
@@ -767,6 +791,21 @@ DISP_HOT void display_draw_image_scaled_nn(int x, int y, const uint16_t *data,
   disp_clip_t c = cur_clip();
   disp_blit_scaled(s_framebuffer, FB_WIDTH, &c, x, y, data, src_w, src_h,
                    dst_w, dst_h, transparent_color, true);
+}
+
+DISP_HOT void display_draw_image_stretched(int x, int y, int dst_w, int dst_h,
+                                           const uint16_t *data, int img_w,
+                                           int img_h, int sx, int sy, int sw,
+                                           int sh, uint16_t transparent_color) {
+  if (sx < 0) { sw += sx; sx = 0; }
+  if (sy < 0) { sh += sy; sy = 0; }
+  if (sw > img_w - sx) sw = img_w - sx;
+  if (sh > img_h - sy) sh = img_h - sy;
+  if (sw <= 0 || sh <= 0) return;
+  uint16_t key = transparent_color ? transparent_color : s_transparent_color;
+  disp_clip_t c = cur_clip();
+  disp_blit_scaled_rect(s_framebuffer, FB_WIDTH, &c, x, y, data, img_w, sx, sy,
+                        sw, sh, dst_w, dst_h, key, true);
 }
 
 void display_set_transparent_color(uint16_t color) {
@@ -1041,6 +1080,27 @@ void display_flush_rows(int y0, int y1) {
   // Non-blocking: no buffer swap — caller uses display_flush() for that.
 }
 
+void display_push_rect(int x, int y, int w, int h) {
+  if (x < 0) { w += x; x = 0; }
+  if (y < 0) { h += y; y = 0; }
+  if (x + w > FB_WIDTH) w = FB_WIDTH - x;
+  if (y + h > FB_HEIGHT) h = FB_HEIGHT - y;
+  if (w <= 0 || h <= 0) return;
+
+  display_wait_for_flush();
+  lcd_set_window(x, y, x + w - 1, y + h - 1);
+  lcd_cs_low();
+  lcd_dc_data();
+  // Bytes as stored: the framebuffer is already in panel byte order.
+  for (int r = y; r < y + h; r++) {
+    const uint8_t *p = (const uint8_t *)&s_framebuffer[r * FB_WIDTH + x];
+    for (int i = 0; i < w * 2; i++)
+      pio_spi_write8(p[i]);
+  }
+  lcd_spi_wait_idle();
+  lcd_cs_high();
+}
+
 void display_set_brightness(uint8_t brightness) {
   // Backlight is controlled by the STM32 keyboard MCU (kbd_set_backlight).
   // This function is a no-op on PicoCalc v2.0.
@@ -1074,6 +1134,25 @@ void display_darken(void) {
     front[i] = darkened;
     back[i] = darkened;
   }
+}
+
+void display_save_buffers(uint16_t *dst) {
+  const size_t n = FB_WIDTH * FB_HEIGHT;
+  display_wait_for_flush();
+  memcpy(dst, s_framebuffers[1 - s_back_buffer_idx], n * sizeof(uint16_t));
+  memcpy(dst + n, s_framebuffers[s_back_buffer_idx], n * sizeof(uint16_t));
+}
+
+void display_restore_buffers(const uint16_t *src) {
+  const size_t n = FB_WIDTH * FB_HEIGHT;
+  display_wait_for_flush();
+  // The saved front goes into the back buffer, and the flush swaps and
+  // presents it: it is the front buffer again, and on the panel.
+  memcpy(s_framebuffers[s_back_buffer_idx], src, n * sizeof(uint16_t));
+  display_flush();
+  // The saved back goes into the new back buffer. The DMA just started
+  // reads only the front, so this copy can run alongside it.
+  memcpy(s_framebuffers[s_back_buffer_idx], src + n, n * sizeof(uint16_t));
 }
 
 // =============================================================================

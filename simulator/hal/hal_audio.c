@@ -56,3 +56,9 @@ int hal_audio_buffer_space(void) {
     // Return approximate queue space
     return AUDIO_BUFFER_SIZE - SDL_GetQueuedAudioSize(s_audio_dev) / sizeof(int16_t);
 }
+
+// Frames SDL has queued and not yet played.
+uint32_t hal_audio_queued_frames(void) {
+    if (!s_audio_dev) return 0;
+    return SDL_GetQueuedAudioSize(s_audio_dev) / (sizeof(int16_t) * AUDIO_CHANNELS);
+}

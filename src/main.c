@@ -28,6 +28,9 @@ void display_flush(void);
 const char* launcher_get_running_app_name(void);
 uint32_t    launcher_get_app_uptime_ms(void);
 
+// kbd_i2c_halt(): hardfault_c stops the keyboard bus engine before resetting.
+#include "drivers/kbd_i2c.h"
+
 // Linker symbols for the main stack limits (see boot2/memmap_*.ld)
 extern uint32_t __StackTop;    // initial SP (stack grows DOWN from here)
 extern uint32_t __StackBottom; // lowest valid address (4KB below StackTop)
@@ -120,6 +123,10 @@ static uint32_t native_addr_to_elf_vaddr(uint32_t addr) {
 #define BOOT_MAX_RETRIES 3
 
 static void __attribute__((used)) hardfault_c(uint32_t *frame, uint32_t exc_return) {
+  // First, so Core 0's keyboard bus engine is off the bus well before the
+  // reset below (see the comment there).
+  kbd_i2c_halt();
+
   // ARM exception frame layout (8 words pushed by hardware on entry):
   //   frame[0]=R0, [1]=R1, [2]=R2, [3]=R3,
   //   [4]=R12, [5]=LR(EXC), [6]=PC(fault), [7]=xPSR
@@ -411,6 +418,13 @@ static void __attribute__((used)) hardfault_c(uint32_t *frame, uint32_t exc_retu
   // Reboot explicitly — watchdog scratch already has the crash data (saved
   // at the top of this function).  On next boot, crash_log_save() writes it
   // to /system/crashlog.txt.
+  // The keyboard bus (an STM32 transaction cut mid-byte can lock its I2C
+  // slave until a power cycle): kbd_prepare_reset() cannot run here (it
+  // waits on the engine's interrupts), and need not. A Core 0 fault freezes
+  // the engine, whose interrupts cannot preempt HardFault; the 3 s wait
+  // above lets a transfer already queued in the I2C block finish on its own.
+  // A Core 1 fault leaves Core 0 running the engine: kbd_i2c_halt() at the
+  // top let it finish the transaction in flight (~6 ms) and start no other.
   watchdog_reboot(0, 0, 0);
 
   // Fallback if reboot doesn't fire immediately.
@@ -485,6 +499,7 @@ void __attribute__((naked)) isr_hardfault(void) {
 #include "drivers/wifi.h"
 #include "drivers/rng.h"
 #include "fonts/font_registry.h"
+#include "core1_stats.h"
 #include "hardware.h"
 #include "os/app_identity.h"
 #include "os/appconfig.h"
@@ -493,6 +508,7 @@ void __attribute__((naked)) isr_hardfault(void) {
 #include "os/crashlog.h"
 #include "os/crypto.h"
 #include "os/file_browser.h"
+#include "os/gamepad.h"
 #include "os/idle_dim.h"
 #include "os/launcher.h"
 #include "os/lua_psram_alloc.h"
@@ -500,6 +516,7 @@ void __attribute__((naked)) isr_hardfault(void) {
 #include "os/ota_update.h"
 #include "os/perf.h"
 #include "os/system_menu.h"
+#include "os/os_overlay.h"
 #include "os/toast.h"
 #include "os/terminal.h"
 #include "os/terminal_render.h"
@@ -514,12 +531,23 @@ void __attribute__((naked)) isr_hardfault(void) {
 
 PicoCalcAPI g_api;
 
-// Wrapper that composites toast notifications before flushing to display.
-// Assigned to g_api.display->flush so all callers (Lua, native, launcher)
-// see toasts without modifying their render loops.
-static void display_flush_with_toasts(void) {
-    toast_draw();
+// Native presents: the OS overlay pass (toast, Show FPS counter; see
+// os_overlay.h) runs before each, as in the Lua bridge. Only native apps
+// reach these through g_api.display; the launcher and the system menu call
+// display_flush() directly.
+static void display_flush_with_overlay(void) {
+    os_overlay_draw(OS_PRESENT_FLUSH, 0, FB_HEIGHT - 1);
     display_flush();
+}
+
+static void display_flush_rows_with_overlay(int y0, int y1) {
+    os_overlay_draw(OS_PRESENT_ROWS, y0, y1);
+    display_flush_rows(y0, y1);
+}
+
+static void display_flush_region_with_overlay(int y0, int y1) {
+    os_overlay_draw(OS_PRESENT_REGION, y0, y1);
+    display_flush_region(y0, y1);
 }
 
 // Native TCP: allocate a slot, then queue the connect.  (connect used to be
@@ -566,6 +594,14 @@ static picocalc_input_t s_input_impl = {
     .getChar = kbd_get_char,
 };
 
+// const: flash, not SRAM (the pointer after `version` in g_api).
+static const picocalc_gamepad_t s_gamepad_impl = {
+    .getButtons = kbd_get_pad,
+    .getButtonsPressed = kbd_get_pad_pressed,
+    .getButtonsReleased = kbd_get_pad_released,
+    .getLabel = gamepad_get_label,
+};
+
 static int display_get_width_fn(void) { return FB_WIDTH; }
 static int display_get_height_fn(void) { return FB_HEIGHT; }
 static picocalc_display_t s_display_impl = {
@@ -577,13 +613,13 @@ static picocalc_display_t s_display_impl = {
     .drawCircle = display_draw_circle,
     .fillCircle = display_fill_circle,
     .drawText = display_draw_text,
-    .flush = display_flush_with_toasts,
+    .flush = display_flush_with_overlay,
     .getWidth = display_get_width_fn,
     .getHeight = display_get_height_fn,
     .setBrightness = display_set_brightness,
     .drawImageNN = display_draw_image_nn,
-    .flushRows = display_flush_rows,
-    .flushRegion = display_flush_region,
+    .flushRows = display_flush_rows_with_overlay,
+    .flushRegion = display_flush_region_with_overlay,
     .getBackBuffer = display_get_back_buffer,
     .effectInvert = display_effect_invert,
     .effectDarken = display_effect_darken,
@@ -624,6 +660,7 @@ static uint64_t sys_getTimeUs(void) {
 }
 static void sys_reboot(void) {
   crashlog_clear_running(); // intentional — not an unclean exit
+  kbd_prepare_reset();
   watchdog_enable(1, true);
   for (;;)
     tight_loop_contents();
@@ -662,7 +699,8 @@ void core0_heartbeat(void) {
 // Pending app launch from serial command
 static const char* s_pending_launch = NULL;
 
-// Native-app tick: poll keyboard, fire pending C HTTP callbacks, and
+// Native-app tick: poll keyboard, feed the watchdog, reap released
+// HTTP/TCP slots (no HTTP callbacks for native apps), and
 // check the Sym (Menu) key to show the system menu overlay.
 static void sys_poll(void) {
   kbd_poll();
@@ -688,6 +726,7 @@ static void sys_poll(void) {
     crashlog_clear_running(); // intentional — not an unclean exit
     stdio_flush();
     sleep_ms(100);
+    kbd_prepare_reset();
     watchdog_reboot(0, 0, 0);
   }
   if (dev_commands_wants_reboot_flash()) {
@@ -695,6 +734,7 @@ static void sys_poll(void) {
     crashlog_clear_running();
     stdio_flush();
     sleep_ms(100);
+    kbd_prepare_reset();
     reset_usb_boot(0, 0);
   }
   if (dev_commands_wants_reboot_ota()) {
@@ -967,7 +1007,7 @@ static pchttp_t http_newConn_w(const char *server, uint16_t port, bool use_ssl) 
     // Copy server hostname and port/ssl into the connection slot
     strncpy(c->server, server, HTTP_SERVER_MAX - 1);
     c->server[HTTP_SERVER_MAX - 1] = '\0';
-    c->port    = port;
+    c->port    = port ? port : (use_ssl ? 443 : 80);  // 0 = scheme default
     c->use_ssl = use_ssl;
     return (pchttp_t)c;
 }
@@ -1158,8 +1198,7 @@ static void sp_filePlayerSetOffset(pcfileplayer_t fp, uint32_t pos) {
 }
 
 static bool sp_filePlayerDidUnderrun(pcfileplayer_t fp) {
-    (void)fp;
-    return fileplayer_did_underrun();
+    return fileplayer_did_underrun((fileplayer_t *)fp);
 }
 
 static void sp_filePlayerFree(pcfileplayer_t fp) {
@@ -1175,6 +1214,8 @@ static void sp_mp3PlayerLoad(pcmp3player_t mp, const char *path) {
 }
 
 static void sp_mp3PlayerPlay(pcmp3player_t mp, uint8_t repeat_count) {
+    // 0 = loop until stopped, any other count plays once (as Lua's play()).
+    mp3_player_set_loop((mp3_player_t *)mp, repeat_count == 0);
     mp3_player_play((mp3_player_t *)mp, repeat_count);
 }
 
@@ -1578,10 +1619,30 @@ _Atomic(void (*)(void)) g_native_audio_callback = NULL;
 static repeating_timer_t s_core1_timer;
 static volatile bool s_core1_tick_pending = false;
 
+// core1_stats.h. Core 1 writes these (Core 0 only asks for a reset, which
+// Core 1 carries out at its next tick); Core 0 reads them unlocked.
+static volatile uint32_t s_tick_count, s_tick_over, s_tick_missed, s_tick_max_us;
+static volatile uint64_t s_tick_window_t0_us;
+static volatile bool s_tick_reset_req;
+
 static bool core1_timer_callback(repeating_timer_t *rt) {
   (void)rt;
+  if (s_core1_tick_pending)
+    s_tick_missed++;  // the previous tick has not started: this one merges into it
   s_core1_tick_pending = true;
   return true;
+}
+
+void core1_get_tick_stats(core1_tick_stats_t *out) {
+  out->window_ms = (uint32_t)((time_us_64() - s_tick_window_t0_us) / 1000);
+  out->ticks = s_tick_count;
+  out->over = s_tick_over;
+  out->missed = s_tick_missed;
+  out->max_us = s_tick_max_us;
+}
+
+void core1_reset_tick_stats(void) {
+  s_tick_reset_req = true;
 }
 
 // Doorbell ISR: Core 0 rings WIFI_IPC_DOORBELL after pushing to the IPC
@@ -1657,6 +1718,12 @@ static void core1_entry(void) {
 
     if (s_core1_tick_pending) {
       s_core1_tick_pending = false;
+      if (s_tick_reset_req) {
+        s_tick_count = s_tick_over = s_tick_missed = s_tick_max_us = 0;
+        s_tick_window_t0_us = time_us_64();
+        s_tick_reset_req = false;
+      }
+      uint32_t tick_t0 = time_us_32();
 
       core1_relay_watchdog();
 
@@ -1769,6 +1836,13 @@ static void core1_entry(void) {
                  (unsigned long)ring_used);
         }
       }
+
+      uint32_t tick_us = time_us_32() - tick_t0;
+      s_tick_count++;
+      if (tick_us > 1000)
+        s_tick_over++;
+      if (tick_us > s_tick_max_us)
+        s_tick_max_us = tick_us;
     }
 
     __wfi();
@@ -2003,7 +2077,8 @@ int main(void) {
   g_api.video       = &s_video_impl;
   g_api.modplayer   = &s_modplayer_impl;
   g_api.zip         = &s_zip_impl;
-  g_api.version     = 8;  // 8 = TLS verify: http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts; 5 = zip handles
+  g_api.version     = 9;  // 9 = gamepad; 8 = TLS verify: http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts; 5 = zip handles
+  g_api.gamepad     = &s_gamepad_impl;
   // fs wired after SD card init
 
   // Bring up the QMI PSRAM in quad (QPI) mode before any PSRAM pointers are
@@ -2286,6 +2361,7 @@ int main(void) {
   printf("[MAIN] launcher_run returned, rebooting\n");
   crashlog_write("OS ERROR", "OS", "launcher", "launcher_run returned");
   stdio_flush();
+  kbd_prepare_reset();
   watchdog_reboot(0, 0, 0);
   while (true)
     tight_loop_contents();

@@ -30,6 +30,7 @@
 #include "ota_update.h"
 #include "app_stack.h"
 #include "crashlog.h"
+#include "../drivers/keyboard.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -163,6 +164,9 @@ static void __no_inline_not_in_flash_func(ota_write_and_reboot)(
 
     // Clear scratch registers and reboot into new firmware.
     // Cannot call watchdog_reboot() (flash-resident) — use direct reset.
+    // No kbd_prepare_reset() here: interrupts are masked for this whole
+    // routine (see the header comment), so the bus engine could not finish a
+    // transaction anyway. The caller pauses it before the write begins.
     watchdog_hw->scratch[0] = 0; // clear boot counter
     watchdog_hw->scratch[OTA_SCRATCH_IDX] = 0; // clear OTA flag
 
@@ -335,6 +339,11 @@ bool ota_apply_update(void) {
     printf("[OTA] Starting flash write (%lu bytes)...\n", (unsigned long)total);
     stdio_flush();
 
+    // Pause the keyboard bus here, in task context, before the write
+    // sequence masks interrupts for good (see ota_write_and_reboot's header
+    // comment) — it cannot be paused from inside that routine.
+    kbd_prepare_reset();
+
     // This call never returns
     ota_write_and_reboot(fw_buf, total);
 
@@ -385,9 +394,12 @@ bool ota_trigger_update(const char *bin_path, const char **out_err) {
     printf("[OTA] Triggering update: %d bytes, rebooting...\n", size);
     stdio_flush();
 
-    // Set OTA magic and reboot
+    // Set OTA magic and reboot. Single helper for both triggers (the
+    // `reboot-ota` dev command and sys.applyUpdate's confirm), so
+    // kbd_prepare_reset() belongs here once rather than at each caller.
     watchdog_hw->scratch[OTA_SCRATCH_IDX] = OTA_MAGIC;
     sleep_ms(100);
+    kbd_prepare_reset();
     watchdog_reboot(0, 0, 0);
 
     // Unreachable

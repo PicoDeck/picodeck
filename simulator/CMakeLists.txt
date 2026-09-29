@@ -336,6 +336,10 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_bridge.c
     ${PICODECK_ROOT}/src/os/lua_bridge_display.c
     ${PICODECK_ROOT}/src/os/lua_bridge_input.c
+    ${PICODECK_ROOT}/src/os/lua_bridge_gamepad.c
+    ${PICODECK_ROOT}/src/os/gamepad.c
+    ${PICODECK_ROOT}/src/os/gamepad_map.c
+    ${PICODECK_ROOT}/src/os/gamepad_edit.c
     ${PICODECK_ROOT}/src/os/lua_bridge_sys.c
     ${PICODECK_ROOT}/src/os/lua_bridge_fs.c
     ${PICODECK_ROOT}/src/os/lua_bridge_config.c
@@ -343,10 +347,17 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_bridge_appconfig.c
     ${PICODECK_ROOT}/src/os/lua_bridge_perf.c
     ${PICODECK_ROOT}/src/os/perf.c
+    ${PICODECK_ROOT}/src/os/fps_counter.c
     ${PICODECK_ROOT}/src/os/lua_bridge_graphics.c
     ${PICODECK_ROOT}/src/os/lua_bridge_3d.c
+    ${PICODECK_ROOT}/src/os/gfx3d.c
+    ${PICODECK_ROOT}/src/os/lua_bridge_gfx3d.c
+    ${PICODECK_ROOT}/src/os/module_path.c
+    ${PICODECK_ROOT}/src/os/lua_bridge_require.c
+    ${PICODECK_ROOT}/src/os/lua_corolib.c
     ${PICODECK_ROOT}/src/os/lua_bridge_ui.c
     ${PICODECK_ROOT}/src/os/toast.c
+    ${PICODECK_ROOT}/src/os/os_overlay.c
     ${PICODECK_ROOT}/src/os/lua_bridge_audio.c
     ${PICODECK_ROOT}/src/os/lua_bridge_sound.c
     ${PICODECK_ROOT}/src/os/lua_bridge_repl.c
@@ -376,7 +387,11 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_bridge_json.c
     ${PICODECK_ROOT}/src/drivers/mod_player.c
     ${PICODECK_ROOT}/src/drivers/fileplayer.c
+    ${PICODECK_ROOT}/src/drivers/audio_mix.c
+    ${PICODECK_ROOT}/src/drivers/sound.c
+    ${PICODECK_ROOT}/src/drivers/mp3_player.c
     ${PICODECK_ROOT}/src/drivers/wav.c
+    ${PICODECK_ROOT}/src/drivers/qoa.c
     ${PICODECK_ROOT}/third_party/miniz/miniz.c
     ${PICODECK_ROOT}/third_party/miniz/miniz_tinfl.c
     ${PICODECK_ROOT}/third_party/miniz/miniz_tdef.c
@@ -437,6 +452,9 @@ add_executable(picodeck_simulator
     ${SIM_PLATFORM_SOURCES}
     ${PICODECK_CORE_SOURCES}
 )
+
+set_source_files_properties(${PICODECK_ROOT}/src/os/gfx3d.c PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
 
 target_include_directories(picodeck_simulator PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

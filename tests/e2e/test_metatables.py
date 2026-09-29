@@ -44,6 +44,7 @@ TYPES = {
     "fileplayer": ("pc.sound.fileplayer()", ("audio",)),
     "mp3player": ("pc.sound.mp3player()", ("audio",)),
     "fs_file": ("pc.fs.open(pc.fs.appPath('f.txt'), 'w')", ()),
+    "gfx3d_mesh": ("pc.gfx3d.newMesh({0,0,0, 1,0,0, 0,1,0}, {1,2,3}, 0)", ()),
 }
 
 PRELUDE = """

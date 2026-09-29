@@ -1,0 +1,7 @@
+{
+    "id": "net.picodeck.perf_pacing_test",
+    "name": "Perf Pacing Test",
+    "description": "E2E fixture: paces itself with setTargetFPS(5) and exits without resetting it",
+    "version": "1.0",
+    "author": "PicoDeck E2E"
+}

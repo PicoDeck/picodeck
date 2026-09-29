@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <math.h>
 #include <string.h>
 
 // Extra attributes for the image blitters' loops. The firmware (built -Os)
@@ -303,6 +304,81 @@ static inline void disp_fill_triangle(uint16_t *fb, int stride,
 #undef DISP_TRI_ROWS
 }
 
+// ── Span fill and the float-vertex triangle (gfx3d) ─────────────────────────
+
+// Fill row[x0..x1] (inclusive, already clipped) with v; 32-bit stores for the
+// aligned middle.
+static inline void disp_span16(uint16_t *row, int x0, int x1, uint16_t v) {
+  if (x1 < x0) return;
+  uint16_t *p = row + x0;
+  int n = x1 - x0 + 1;
+  if ((uintptr_t)p & 2u) {
+    *p++ = v;
+    n--;
+  }
+  uint32_t v2 = ((uint32_t)v << 16) | v;
+  uint32_t *q = (uint32_t *)(void *)p;
+  for (; n >= 2; n -= 2) *q++ = v2;
+  if (n) *(uint16_t *)(void *)q = v;
+}
+
+// Smallest integer >= v, clamped to [lo, hi] (NaN gives lo).
+static inline int disp_ceil_px(float v, int lo, int hi) {
+  if (!(v > (float)lo)) return lo;
+  if (v >= (float)hi) return hi;
+  return (int)ceilf(v);
+}
+
+// x of the edge from its upper end (xt, yt) to (xb, yb) at height yc.
+static inline float disp_edge_x(float xt, float yt, float xb, float yb,
+                                float yc) {
+  return xt + (yc - yt) * ((xb - xt) / (yb - yt));
+}
+
+// Flat triangle with float vertices. A pixel is filled when its centre
+// (px + 0.5, py + 0.5) is inside, or exactly on a left or top edge (top-left
+// rule): two triangles that share an edge fill each pixel along it exactly
+// once. Every edge is evaluated only from its upper end point (lower y, then
+// lower x), so both triangles compute bit-identical x for a shared edge.
+// Non-finite vertices draw nothing; rows and spans are clamped to the clip,
+// so any coordinates cost O(visible pixels). `v` is in framebuffer order.
+static inline void disp_fill_tri_f(uint16_t *fb, int stride,
+                                   const disp_clip_t *c, float x0, float y0,
+                                   float x1, float y1, float x2, float y2,
+                                   uint16_t v) {
+  if (!isfinite(x0) || !isfinite(y0) || !isfinite(x1) || !isfinite(y1) ||
+      !isfinite(x2) || !isfinite(y2))
+    return;
+  if (c->x1 < c->x0 || c->y1 < c->y0) return;
+  float t;
+#define DISP_TRI_SWAPF(xa, ya, xb, yb) \
+  do { t = xa; xa = xb; xb = t; t = ya; ya = yb; yb = t; } while (0)
+  if (y1 < y0 || (y1 == y0 && x1 < x0)) DISP_TRI_SWAPF(x0, y0, x1, y1);
+  if (y2 < y0 || (y2 == y0 && x2 < x0)) DISP_TRI_SWAPF(x0, y0, x2, y2);
+  if (y2 < y1 || (y2 == y1 && x2 < x1)) DISP_TRI_SWAPF(x1, y1, x2, y2);
+#undef DISP_TRI_SWAPF
+  if (!(y2 > y0)) return;  // zero height
+  const int ya = disp_ceil_px(y0 - 0.5f, c->y0, c->y1 + 1);
+  const int yb = disp_ceil_px(y2 - 0.5f, c->y0, c->y1 + 1);  // exclusive
+  for (int py = ya; py < yb; py++) {
+    const float yc = (float)py + 0.5f;
+    float xl = disp_edge_x(x0, y0, x2, y2, yc);
+    float xr = yc < y1 ? disp_edge_x(x0, y0, x1, y1, yc)
+                       : disp_edge_x(x1, y1, x2, y2, yc);
+    // A sub-triangle with zero height on this side (e.g. x1==x2 with
+    // y1==y2, dividing 0/0 in disp_edge_x) yields NaN: nothing to fill.
+    if (xl != xl || xr != xr) continue;
+    if (xr < xl) {
+      t = xl;
+      xl = xr;
+      xr = t;
+    }
+    const int xa = disp_ceil_px(xl - 0.5f, c->x0, c->x1 + 1);
+    const int xe = disp_ceil_px(xr - 0.5f, c->x0, c->x1 + 1);  // exclusive
+    if (xe > xa) disp_span16(fb + (size_t)py * stride, xa, xe - 1, v);
+  }
+}
+
 // ── Blitters ────────────────────────────────────────────────────────────────
 
 // Integer nearest-neighbour upscale: each source pixel becomes a scale x scale
@@ -419,31 +495,33 @@ DISP_HOT static inline void disp_blit(uint16_t *fb, int stride, const disp_clip_
   }
 }
 
-// Nearest-neighbour scale of a whole src_w x src_h image to dst_w x dst_h at
-// (x, y), skipping `key` pixels (0 = opaque). Destination pixel (dx, dy) of
-// the unclipped rect samples source (dx*src_w/dst_w, dy*src_h/dst_h) — exact
-// integer division, stepped with a remainder DDA across each row.
-DISP_HOT static inline void disp_blit_scaled(uint16_t *fb, int stride,
-                                    const disp_clip_t *c, int x, int y,
-                                    const uint16_t *data, int src_w, int src_h,
-                                    int dst_w, int dst_h, uint16_t key,
-                                    bool swap) {
-  if (!data || src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0) return;
+// Nearest-neighbour stretch of the source rect (sx, sy, sw, sh) of an
+// img_w-wide image to dst_w x dst_h at (x, y), skipping `key` pixels (0 =
+// opaque). Destination pixel (dx, dy) of the unclipped rect samples source
+// (sx + dx*sw/dst_w, sy + dy*sh/dst_h) — exact integer division, stepped with
+// a remainder DDA across each row. The source rect must lie inside the image
+// (callers clamp).
+DISP_HOT static inline void disp_blit_scaled_rect(
+    uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
+    const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,
+    int dst_w, int dst_h, uint16_t key, bool swap) {
+  if (!data || img_w <= 0 || sw <= 0 || sh <= 0 || dst_w <= 0 || dst_h <= 0)
+    return;
   disp_span_t s;
   if (!disp_clip_rect(c, x, y, dst_w, dst_h, &s)) return;
-  const int64_t q = src_w / dst_w, rm = src_w % dst_w;
-  const int64_t col_start = s.skip_x * src_w / dst_w;
-  const int64_t acc_start = s.skip_x * src_w % dst_w;
+  const int64_t q = sw / dst_w, rm = sw % dst_w;
+  const int64_t col_start = s.skip_x * sw / dst_w;
+  const int64_t acc_start = s.skip_x * sw % dst_w;
   uint16_t *row = fb + (size_t)s.y * stride + s.x;
   int64_t prev = -1;
   for (int r = 0; r < s.h; r++, row += stride) {
-    const int64_t src_row = (s.skip_y + r) * src_h / dst_h;
+    const int64_t src_row = (s.skip_y + r) * sh / dst_h;
     if (!key && src_row == prev) {  // opaque: an upscaled row repeats
       memcpy(row, row - stride, (size_t)s.w * sizeof(uint16_t));
       continue;
     }
     prev = src_row;
-    const uint16_t *sp = data + (size_t)src_row * src_w;
+    const uint16_t *sp = data + (size_t)(sy + src_row) * img_w + sx;
     int64_t col = col_start, acc = acc_start;
     for (int i = 0; i < s.w; i++) {
       uint16_t v = sp[col];
@@ -453,6 +531,17 @@ DISP_HOT static inline void disp_blit_scaled(uint16_t *fb, int stride,
       if (acc >= dst_w) { acc -= dst_w; col++; }
     }
   }
+}
+
+// Nearest-neighbour scale of a whole src_w x src_h image (see above).
+DISP_HOT static inline void disp_blit_scaled(uint16_t *fb, int stride,
+                                    const disp_clip_t *c, int x, int y,
+                                    const uint16_t *data, int src_w, int src_h,
+                                    int dst_w, int dst_h, uint16_t key,
+                                    bool swap) {
+  if (src_h <= 0) return;
+  disp_blit_scaled_rect(fb, stride, c, x, y, data, src_w, 0, 0, src_w, src_h,
+                        dst_w, dst_h, key, swap);
 }
 
 #endif  // DISPLAY_CLIP_H

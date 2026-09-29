@@ -55,7 +55,7 @@ Dev commands while an app runs (`src/dev_commands.c`, `lua_bridge.c`, native `sy
 ### Tests
 - **E2E (simulator)**: `SDL_VIDEODRIVER=dummy pytest tests/e2e -n auto` (see `tests/e2e/README.md`; config and markers in the repo-level `pytest.ini`). Runs against `build_sim/picodeck_simulator`; `PICODECK_SIM_BINARY` (or `--simulator-path`) selects another build: `make simulator-asan` (`build_sim_asan/`, enables `asan_only` tests), `make simulator-tsan`, `make simulator-net` / `-net-asan` / `-net-tsan` (`build_sim_net/`…, the firmware network stack; enables `firmware_net` tests). Virtual time and `--real-umm` are described in `simulator/CLAUDE.md`. Lua fixture apps report through `tests/e2e/lib/picotest.lua` (staged as `/system/lib/picotest.lua`).
 - **E2E (hardware)**: `--target hw:/dev/serial/by-id/<PicoDeck device>` runs the `hardware`/`both` tests on a real PicoCalc through `tests/e2e/hw_target.py` (they skip, allow-listed, on the simulator).
-- **Unit**: `make test-unit` (host C tests: `tests/unit/CMakeLists.txt` → `build_unit/`, ctest, ASan+UBSan; covers the pure modules `elf_plan`, `fs_path`, `app_manifest`, `config`/`appconfig` over an in-memory SD fake, `wav`, `audio_ring`, `zip_name`, `text_wrap`, `lua_numfmt` vs glibc, fonts), `python3 -m pytest tests/unit`, `make test-lua`.
+- **Unit**: `make test-unit` (host C tests: `tests/unit/CMakeLists.txt` → `build_unit/`, ctest, ASan+UBSan; covers the pure modules `elf_plan`, `fs_path`, `app_manifest`, `config`/`appconfig` over an in-memory SD fake, `wav`, `qoa`, `audio_ring`, `zip_name`, `text_wrap`, `lua_numfmt` vs glibc, fonts), `python3 -m pytest tests/unit`, `make test-lua`.
 - **Fuzz**: `make fuzz` runs the libFuzzer targets in `tests/fuzz/` (clang; `FUZZ_TARGETS=`, `FUZZ_SECONDS=`). CI runs them nightly (`.github/workflows/fuzz.yml`) and the unit job on every push (`unit.yml`). There is no linter.
 
 ## Architecture
@@ -88,8 +88,9 @@ main()
 - `display`, `input`, `fs`, `sys`, `wifi`, `audio`, `tcp`, `ui` → `picocalc.<same>`. Lua input also has `pollEvent()` (ordered `{type="down"|"up"|"char", key, char, mods, button, repeat}` events, nil when empty) and `isKeyDown(k)`; Lua TCP sockets are `picocalc.tcp.new(host, port, tls)` objects.
 - `http` → `picocalc.network.http` (OO connections); `soundplayer` → `picocalc.sound`; `graphics` → `picocalc.graphics.image`; `video` → `picocalc.video`; `modplayer` → `picocalc.modplayer`; `zip` → `picocalc.zip`; `crypto` → `picocalc.crypto` (SHA-256/SHA-1/HMAC/AES-CTR/ECDH).
 - `appconfig` → `picocalc.config` **and** `picocalc.appconfig` (same store, two names).
+- `gamepad` → `picocalc.gamepad`: `PAD_*` buttons aliased to keys (primary + alternate slot; the keys still report through `input`), resolved in the shared keyboard decode (`src/drivers/CLAUDE.md`); key names and the bindings files (`/system/gamepad.json`, per app `/data/<id>/gamepad.json`, loaded at every launch) in `src/os/gamepad_map.c` (`src/os/CLAUDE.md`).
 - `picocalc.sysconfig` is Lua-only and needs the `"sysconfig"` requirement; there is no `g_api.config`.
-- `g_api.version`: 1 = Phase 1, 2 = Phase 2, 3 = `fs->browse`, 4 = clip rect + mode-7 plane, 5 = zip read-in-place handles, 6 = fonts (setFont/getFont/getFontWidth/getFontHeight/textWidth/loadFont/unloadFont/drawTextTransparent), 7 = video time seek/position, progress OSD, `hasEnded`, 8 = TLS verification: `http->setInsecure`, `tcp->connectEx` (`PCTCP_TLS`/`PCTCP_TLS_INSECURE`).
+- `g_api.version`: 1 = Phase 1, 2 = Phase 2, 3 = `fs->browse`, 4 = clip rect + mode-7 plane, 5 = zip read-in-place handles, 6 = fonts (setFont/getFont/getFontWidth/getFontHeight/textWidth/loadFont/unloadFont/drawTextTransparent), 7 = video time seek/position, progress OSD, `hasEnded`, 8 = TLS verification: `http->setInsecure`, `tcp->connectEx` (`PCTCP_TLS`/`PCTCP_TLS_INSECURE`), 9 = `gamepad` (the first table after `version`: native apps check `version >= 9` before reading it).
 
 > ⚠️ **Config naming**: in Lua, `picocalc.config` (alias `picocalc.appconfig`) is the **per-app** store (`/data/<APP_ID>/config.json`); `picocalc.sysconfig` is the **system-wide** store (`/system/config.json`).
 
@@ -102,7 +103,7 @@ main()
 ### Lua Bridge (`src/os/lua_bridge*.c`)
 - One file per `picocalc.*` module, coordinated by `lua_bridge.c`. Functions are `static int l_<module>_<fn>(lua_State *L)` wrappers in `luaL_Reg` tables passed to `register_subtable()`; integer constants (button codes, colour names) are pushed with `lua_pushinteger` / `lua_setfield`.
 - Every userdata type registers with `lb_register_type()` (methods in a separate `__index` table, locked metatable), and each `__gc` leaves its object dead so a resurrected object is rejected. Check userdata with `luaL_checkudata`/`luaL_testudata`, never `lua_touserdata`.
-- Lua 5.4.7 with a restricted stdlib: `base`, `table`, `string`, `math`, `coroutine`, `utf8`. Blocked: `io`, `os`, `package`, `debug`; `dofile`/`loadfile` removed. `load` is text-only (bytecode rejected), as are app `main.lua` and `sys.loadlib`.
+- Lua 5.4.7 with a restricted stdlib: `base`, `table`, `string`, `math`, `coroutine`, `utf8`. Blocked: `io`, `os`, `package`, `debug`; `dofile`/`loadfile` removed. `load` is text-only (bytecode rejected), as are app `main.lua` and `sys.loadlib`. Apps load their own modules with the sandboxed global `require` (`lua_bridge_require.c`).
 - Numbers: `lua_Integer` is 32-bit and `lua_Number` is `float` (integers exact only to 2^24). Bridge quantity arguments (coordinates, sizes, durations, volumes) round floats to nearest; identifiers (handles, enums, colours, masks, byte counts, ports) require exact integers. Compile-time config lives in `cmake/picodeck_lua.cmake`.
 
 ### Drivers: rules that apply everywhere
@@ -113,7 +114,7 @@ main()
 
 ### System Menu (`src/os/system_menu.c`)
 - Triggered by the Sym key; detected via `kbd_consume_menu_press()` in the Lua count hook.
-- Overlays the current framebuffer (darkened with `display_darken()`).
+- Overlays the current framebuffer (darkened with `display_darken()`) and gives the app both framebuffers back when it closes; app item callbacks run after that (`src/os/CLAUDE.md`).
 - Apps and OS register items with `system_menu_add_item()` / `picocalc.sys.addMenuItem()`.
 
 ### Memory Map
@@ -193,7 +194,7 @@ Native apps receive `PicoCalcAPI *api` as their entry point argument. Call `api-
 
 `make simulator` builds `build_sim/picodeck_simulator` (SDL2 + Unicorn Engine for native ELF apps). What it does not model, in brief (full list in `simulator/CLAUDE.md`):
 - `picocalc.crypto` is absent; `picocalc.video` is stubbed; TLS verification, the SNTP clock gate and the TRNG are firmware-only.
-- Display, sample mixer and MP3 player are separate simulator implementations (`stubs/driver_stubs.c`, `sim_audio.c`): keep them in step with the firmware, and confirm colour and timing on hardware.
+- The display is a separate simulator implementation (`stubs/driver_stubs.c`): keep it in step with the firmware, and confirm colour and timing on hardware. Audio runs the firmware mixer; `sim_audio.c` is only its output.
 - Networking is libcurl unless you build `make simulator-net` (the firmware stack on Mongoose, no TLS).
 - `umm_*` is a counting allocator: largest-block and fragmentation figures need `--real-umm`.
 

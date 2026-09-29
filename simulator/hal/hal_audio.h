@@ -21,4 +21,7 @@ int hal_audio_push_samples(const int16_t* samples, int count);
 // Get audio buffer space available
 int hal_audio_buffer_space(void);
 
+// Frames SDL has queued and not yet played.
+uint32_t hal_audio_queued_frames(void);
+
 #endif // HAL_AUDIO_H

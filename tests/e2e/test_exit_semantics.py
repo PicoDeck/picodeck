@@ -99,6 +99,7 @@ while true do pcall(picocalc.sys.sleep, 1000) end
     _assert_exited(_exit_and_wait(simulator))
 
 
+@pytest.mark.sd(fixtures=[], reserve=2)  # stages exit_first and exit_second
 def test_next_app_runs_normally_after_swallowed_exit(simulator):
     """The request is per app: the runner clears it, so the next app is not
     killed by the previous app's exit."""

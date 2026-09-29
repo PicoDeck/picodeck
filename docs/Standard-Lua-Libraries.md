@@ -2,7 +2,7 @@
 title: "Standard Lua Libraries"
 ---
 
-The following Lua 5.4 standard libraries are available:
+Apps run on **Lua 5.4** (5.4.7, `third_party/lua-5.4`), built without the `LUA_COMPAT_*` options. The following standard libraries are available:
 
 | Library | Description |
 |---------|-------------|
@@ -16,6 +16,41 @@ The following Lua 5.4 standard libraries are available:
 **Not available** (for sandboxing): `io`, `os`, `package`, `debug`. The base
 functions `dofile` and `loadfile` are removed. `load` accepts text chunks only
 (bytecode is rejected), as do app `main.lua` files and `sys.loadlib`.
+
+### Names removed since Lua 5.1-5.3
+
+Code written for older Lua fails at run time, not at load, with `attempt to call a nil value`. Replace:
+
+| Old | Lua 5.4 |
+|-----|---------|
+| `unpack(t)` | `table.unpack(t)` |
+| `math.atan2(y, x)` | `math.atan(y, x)` |
+| `math.pow(x, y)` | `x ^ y` |
+| `math.log10(x)` | `math.log(x, 10)` |
+| `math.cosh`, `sinh`, `tanh`, `frexp`, `ldexp` | none (`sinh`, `cosh`, `tanh` can be written with `math.exp`) |
+| `bit32.*` | none: use the bitwise operators (`&`, `\|`, `~`, `<<`, `>>`) |
+| `loadstring(s)` | `load(s)` |
+| `setfenv`, `getfenv` | none: pass an environment as `load`'s fourth argument |
+| `table.getn(t)` | `#t` |
+| `table.maxn`, `table.foreach`, `table.foreachi`, `string.gfind` | none |
+
+Integers are 32-bit here; see the number notes below.
+
+### `require(name)`
+
+Loads a Lua module that ships with your app, once. `package` stays unavailable; this `require` is PicoDeck's own, sandboxed and text-only.
+
+- `name` is a dotted module name, such as `"track"` or `"src.physics"`. Parts are separated by `.` and each part is 1–64 characters of `A-Z a-z 0-9 _ -`. It may not start with `.`, and the whole name is at most 128 bytes.
+- `"src.physics"` is searched as `APP_DIR .. "/src/physics.lua"`, then `/system/lib/src/physics.lua`.
+- The file runs once, with the module name and its path as `...`. Its first return value is cached and returned by every later `require` of the same name; a module that returns nothing caches `true`.
+- A module that requires itself, directly or through a cycle, raises `require: circular require of '<name>'`. A module whose loading raised may be required again.
+- Bytecode is rejected, as for `load`.
+
+```lua
+local physics = require("src.physics")
+```
+
+---
 
 ## Numbers
 

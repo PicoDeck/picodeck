@@ -310,7 +310,9 @@ if err then print("HTTP error: " .. err) end
 #### `conn:getProgress()`
 Returns download progress.
 
-- **Returns:** (number, number) `bytesReceived, totalBytes` — `totalBytes` is `-1` if unknown (no `Content-Length` header or chunked encoding)
+- **Returns:** (number, number) `bytesReceived, totalBytes` — `totalBytes` is `-1` if unknown (headers not yet received, no `Content-Length` header or chunked encoding)
+
+This differs from the native `http->getProgress(conn, &received, &total)`, which writes both values through pointers and *returns only the total*. See [Lua and native HTTP](#lua-and-native-http).
 
 ```lua
 local received, total = conn:getProgress()
@@ -378,60 +380,111 @@ Called each time new body data arrives. `fn` receives no arguments; use `conn:re
 Called once when all response headers have been received. Use `conn:getResponseStatus()` and `conn:getResponseHeaders()` inside this callback.
 
 #### `conn:setRequestCompleteCallback(fn)`
-Called when the response body is fully received.
+Called when the response body is fully received. This is the Lua replacement for the native `http->isComplete()`; the connection stays open afterwards, so you can still `read()` what is buffered, then call `conn:close()`.
 
 #### `conn:setConnectionClosedCallback(fn)`
-Called when the connection closes, either cleanly or due to an error. Check `conn:getError()` to distinguish.
+Called when the request fails (connect error, timeout, reset, a body cut short, out of memory). It does not fire after a successful response. Read `conn:getError()` inside the callback: once it returns, the connection is released (`conn:get`, `post` and the `set*` methods raise `http: connection is closed`; `getError`, `getResponseStatus`, `getResponseHeaders` and `read` return `nil`, `getBytesAvailable` returns `0`, `getProgress` returns `0, -1`).
 
 ---
 
-### HTTP Example
+### Lua and native HTTP
+
+The native `picocalc_http_t` (`sdk/native/os.h`) is polled: call `http->get()`, then each frame test `http->isComplete()`, drain with `available()`/`read()`, and read the outcome with `getStatus()`/`getError()`. Native apps get no callbacks. Lua has no `isComplete()`; completion arrives through `setRequestCompleteCallback`, and failure through `setConnectionClosedCallback`. Callbacks fire from `picocalc.sys.sleep` and the app's instruction hook, so a loop that calls `sleep` sees them.
+
+| Native | Lua |
+|--------|-----|
+| `newConn(server, port, use_ssl)` (`port` 0 = default) | `http.new(server [, port [, usessl]])` |
+| `get`/`post` return nothing | `conn:get`/`conn:post` return `true`, or `false, errstr` |
+| `available(c)` | `conn:getBytesAvailable()` |
+| `read(c, buf, len)` returns the byte count (0 if none) | `conn:read([length])` returns a string, or `nil` when empty |
+| `getStatus(c)` (0 = not yet) | `conn:getResponseStatus()` (`nil` = not yet) |
+| `getProgress(c, &received, &total)` returns `total` | `conn:getProgress()` returns `received, total` |
+| `isComplete(c)` | none: use `setRequestCompleteCallback` |
+
+Native-only, with no Lua equivalent: `isComplete`. Lua-only: `getResponseHeaders`, the four `set*Callback` methods.
+
+A polling flow in Lua:
 
 ```lua
--- Check WiFi is up
-if picocalc.network.getStatus() ~= picocalc.network.kStatusConnected then
-    print("Not connected")
-    return
-end
-
 local conn = picocalc.network.http.new("httpbin.org")
-local body = ""
+local parts, done, failure = {}, false, nil
 
-conn:setHeadersReadCallback(function()
-    print("Status: " .. conn:getResponseStatus())
-end)
+conn:setRequestCompleteCallback(function() done = true end)
+conn:setConnectionClosedCallback(function() failure = conn:getError() or "closed" end)
 
-conn:setRequestCallback(function()
-    local chunk = conn:read()
-    if chunk then body = body .. chunk end
-end)
+if not conn:get("/bytes/2048") then return end
 
-conn:setRequestCompleteCallback(function()
-    print("Done. Body length: " .. #body)
-    conn:close()
-end)
-
-conn:setConnectionClosedCallback(function()
-    local err = conn:getError()
-    if err then print("Error: " .. err) end
-end)
-
-conn:get("/get")
-
--- Keep looping until the request completes
-local done = false
-conn:setRequestCompleteCallback(function()
-    print("Done. Body length: " .. #body)
-    done = true
-end)
-
-while not done do
+while not done and not failure do
+    -- Drain whatever has arrived.
+    while conn:getBytesAvailable() > 0 do
+        parts[#parts + 1] = conn:read()
+    end
+    local received, total = conn:getProgress()   -- total is -1 while unknown
     picocalc.input.update()
     if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then
         conn:close()
         return
     end
-    picocalc.sys.sleep(16)
+    picocalc.sys.sleep(16)   -- fires the callbacks
 end
+
+if failure then
+    print("HTTP failed: " .. failure)   -- the connection is already released
+    return
+end
+
+-- Body bytes that arrived after the last drain are still buffered.
+while conn:getBytesAvailable() > 0 do parts[#parts + 1] = conn:read() end
+print(conn:getResponseStatus(), #table.concat(parts))
 conn:close()
+```
+
+---
+
+### HTTP Example
+
+Check that WiFi is up, then run the polling flow from [Lua and native HTTP](#lua-and-native-http):
+
+```lua
+if picocalc.network.getStatus() ~= picocalc.network.kStatusConnected then
+    print("Not connected")
+    return
+end
+```
+
+Alternatively, drain the body in `setRequestCallback` instead of the loop:
+
+```lua
+local conn = picocalc.network.http.new("httpbin.org")
+local body, done, failure = "", false, nil
+
+conn:setHeadersReadCallback(function()
+    print("Status: " .. conn:getResponseStatus())
+end)
+conn:setRequestCallback(function()
+    local chunk = conn:read()
+    if chunk then body = body .. chunk end
+end)
+conn:setRequestCompleteCallback(function() done = true end)
+conn:setConnectionClosedCallback(function()
+    failure = conn:getError() or "closed"
+end)
+
+if not conn:get("/get") then return end
+
+while not done and not failure do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then
+        conn:close()
+        return
+    end
+    picocalc.sys.sleep(16)   -- fires the callbacks
+end
+
+if failure then
+    print("Error: " .. failure)   -- the connection is already released
+else
+    print("Done. Body length: " .. #body)
+    conn:close()
+end
 ```

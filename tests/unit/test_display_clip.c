@@ -434,6 +434,169 @@ static void test_blit_scaled(void) {
   CHECK_EQ_INT(bad, 0);
 }
 
+// Sub-rect stretch: destination (dx, dy) of the unclipped rect samples source
+// (sx + dx*sw/dw, sy + dy*sh/dh) of an img_w-wide image.
+static void test_blit_scaled_rect_matches_reference(void) {
+  enum { IW = 23, IH = 17 };
+  uint16_t img[IW * IH];
+  for (int i = 0; i < IW * IH; i++) img[i] = (uint16_t)(1 + (i * 37) % 997);
+  int bad = 0;
+  for (int i = 0; i < 4000; i++) {
+    disp_clip_t c = random_clip();
+    int sx = rnd(0, IW - 1), sy = rnd(0, IH - 1);
+    int sw = rnd(1, IW - sx), sh = rnd(1, IH - sy);
+    int dw = rnd(1, 90), dh = rnd(1, 90), x = rnd(-60, 60), y = rnd(-60, 60);
+    uint16_t key = (i % 3 == 0) ? img[(sy * IW) + sx] : 0;
+    reset(0);
+    disp_blit_scaled_rect(screen(s_got), CW, &c, x, y, img, IW, sx, sy, sw, sh,
+                          dw, dh, key, false);
+    uint16_t *w = screen(s_want);
+    for (int dy = 0; dy < dh; dy++)
+      for (int dx = 0; dx < dw; dx++) {
+        int px = x + dx, py = y + dy;
+        if (px < c.x0 || px > c.x1 || py < c.y0 || py > c.y1) continue;
+        uint16_t v = img[(sy + dy * sh / dh) * IW + sx + dx * sw / dw];
+        if (!key || v != key) w[py * CW + px] = v;
+      }
+    if (!same("scaled rect") && bad++ < 5)
+      printf("  rect src %d,%d %dx%d dst %d,%d %dx%d\n", sx, sy, sw, sh, x, y, dw, dh);
+  }
+  CHECK_EQ_INT(bad, 0);
+}
+
+// ── disp_fill_tri_f (gfx3d's rasteriser) ────────────────────────────────────
+static float frnd(float lo, float hi) {
+  return lo + (hi - lo) * (float)rnd(0, 1000000) / 1000000.0f;
+}
+
+// Signed doubled area of (a, b, p): > 0 when p is left of a->b (y down).
+static double edge_fn(double ax, double ay, double bx, double by, double px,
+                      double py) {
+  return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+}
+
+// Pixels whose centre is > 0.01 px inside every edge must be filled; > 0.01
+// px outside any edge must not; nothing outside the clip is ever written.
+static void test_tri_f_inside_outside_and_clip(void) {
+  int bad = 0;
+  for (int i = 0; i < 3000; i++) {
+    disp_clip_t c = random_clip();
+    float r = (i % 10 == 0) ? 3000.0f : 70.0f;
+    float x0 = frnd(-r, r), y0 = frnd(-r, r), x1 = frnd(-r, r);
+    float y1 = frnd(-r, r), x2 = frnd(-r, r), y2 = frnd(-r, r);
+    reset(0);
+    disp_fill_tri_f(screen(s_got), CW, &c, x0, y0, x1, y1, x2, y2, 0x1234);
+    double area = edge_fn(x0, y0, x1, y1, x2, y2);
+    double s = area < 0 ? -1.0 : 1.0;
+    double l0 = hypot(x1 - x0, y1 - y0), l1 = hypot(x2 - x1, y2 - y1);
+    double l2 = hypot(x0 - x2, y0 - y2);
+    for (int py = -OY; py < CH - OY; py++)
+      for (int px = -OX; px < CW - OX; px++) {
+        uint16_t got = s_got[(py + OY) * CW + px + OX];
+        bool in_clip = px >= c.x0 && px <= c.x1 && py >= c.y0 && py <= c.y1;
+        double cx = px + 0.5, cy = py + 0.5;
+        double e0 = s * edge_fn(x0, y0, x1, y1, cx, cy);
+        double e1 = s * edge_fn(x1, y1, x2, y2, cx, cy);
+        double e2 = s * edge_fn(x2, y2, x0, y0, cx, cy);
+        bool surely_in = area != 0 && e0 > 0.01 * l0 && e1 > 0.01 * l1 &&
+                         e2 > 0.01 * l2;
+        bool surely_out = e0 < -0.01 * l0 || e1 < -0.01 * l1 || e2 < -0.01 * l2;
+        if ((!in_clip && got) || (in_clip && surely_in && !got) ||
+            (surely_out && got)) {
+          if (bad++ < 5)
+            printf("  tri_f px %d,%d got %d (in_clip %d in %d out %d)\n", px, py,
+                   (int)got, (int)in_clip, (int)surely_in, (int)surely_out);
+        }
+      }
+  }
+  CHECK_EQ_INT(bad, 0);
+}
+
+static int s_cover[CW * CH];
+
+// A jittered grid split into triangles (diagonals alternating): every screen
+// pixel is filled exactly once — shared edges neither crack nor overlap.
+static void test_tri_f_shared_edges_fill_once(void) {
+  enum { N = 6 };
+  for (int trial = 0; trial < 60; trial++) {
+    float gx[N + 1][N + 1], gy[N + 1][N + 1];
+    for (int j = 0; j <= N; j++)
+      for (int i = 0; i <= N; i++) {
+        bool border = i == 0 || j == 0 || i == N || j == N;
+        gx[j][i] = -5.0f + 10.0f * (float)i + (border ? 0.0f : frnd(-3.0f, 3.0f));
+        gy[j][i] = -3.0f + 7.0f * (float)j + (border ? 0.0f : frnd(-2.0f, 2.0f));
+      }
+    memset(s_cover, 0, sizeof s_cover);
+    disp_clip_t c = {0, 0, SW - 1, SH - 1};
+    for (int j = 0; j < N; j++)
+      for (int i = 0; i < N; i++) {
+        float ax = gx[j][i], ay = gy[j][i], bx = gx[j][i + 1], by = gy[j][i + 1];
+        float cx = gx[j + 1][i + 1], cy = gy[j + 1][i + 1];
+        float dx = gx[j + 1][i], dy = gy[j + 1][i];
+        float t[2][6];
+        if ((i + j + trial) & 1) {
+          float a[6] = {ax, ay, bx, by, cx, cy}, b[6] = {ax, ay, cx, cy, dx, dy};
+          memcpy(t[0], a, sizeof a);
+          memcpy(t[1], b, sizeof b);
+        } else {
+          float a[6] = {ax, ay, bx, by, dx, dy}, b[6] = {bx, by, cx, cy, dx, dy};
+          memcpy(t[0], a, sizeof a);
+          memcpy(t[1], b, sizeof b);
+        }
+        for (int k = 0; k < 2; k++) {
+          reset(0);
+          disp_fill_tri_f(screen(s_got), CW, &c, t[k][0], t[k][1], t[k][2],
+                          t[k][3], t[k][4], t[k][5], 1);
+          for (int p = 0; p < CW * CH; p++) s_cover[p] += s_got[p] != 0;
+        }
+      }
+    int bad = 0;
+    for (int y = 0; y < SH; y++)
+      for (int x = 0; x < SW; x++)
+        if (s_cover[(y + OY) * CW + x + OX] != 1) bad++;
+    CHECK_EQ_INT(bad, 0);
+  }
+}
+
+static void test_tri_f_degenerate_and_huge(void) {
+  disp_clip_t c = {0, 0, SW - 1, SH - 1};
+  reset(0);
+  disp_fill_tri_f(screen(s_got), CW, &c, 1, 5, 30, 5, 12, 5, 7);   // zero height
+  disp_fill_tri_f(screen(s_got), CW, &c, 1, 1, 9, 9, 17, 17, 7);   // collinear
+  disp_fill_tri_f(screen(s_got), CW, &c, NAN, 1, 9, 9, 1, 17, 7);
+  disp_fill_tri_f(screen(s_got), CW, &c, 1, 1, INFINITY, 9, 1, 17, 7);
+  // A near-horizontal sliver with a huge x span: the edge slope overflows to
+  // inf and 0 * inf (yc exactly at the top vertex's y) yields NaN — the row
+  // must be skipped, not filled across the whole clip (Minor #3).
+  disp_fill_tri_f(screen(s_got), CW, &c, 300.0f, 0.5f, 310.0f,
+                  nextafterf(0.5f, 1.0f), 1e32f, nextafterf(0.5f, 1.0f), 7);
+  CHECK(same("degenerate tri_f"));
+  // Huge: covers the whole clip, finishes fast.
+  reset(0);
+  disp_fill_tri_f(screen(s_got), CW, &c, -1e9f, -1e9f, 1e9f, -1e9f, 0.0f, 1e9f, 9);
+  for (int y = 0; y < SH; y++)
+    for (int x = 0; x < SW; x++) screen(s_want)[y * CW + x] = 9;
+  CHECK(same("huge tri_f"));
+  // Empty clip: nothing.
+  disp_clip_t e = {0, 0, -1, -1};
+  reset(0);
+  disp_fill_tri_f(screen(s_got), CW, &e, 0, 0, 40, 0, 0, 30, 5);
+  CHECK(same("empty clip tri_f"));
+}
+
+static void test_span16(void) {
+  for (int a = 0; a < 8; a++)
+    for (int b = a; b < 20; b++) {
+      uint16_t row[24] = {0}, want[24] = {0};
+      disp_span16(row, a, b, 0xBEEF);
+      for (int i = a; i <= b; i++) want[i] = 0xBEEF;
+      CHECK(memcmp(row, want, sizeof row) == 0);
+    }
+  uint16_t row[4] = {1, 2, 3, 4};
+  disp_span16(row, 2, 1, 9);  // empty
+  CHECK(row[1] == 2 && row[2] == 3);
+}
+
 int main(void) {
   test_clip_rect();
   test_lines_match_reference();
@@ -446,5 +609,10 @@ int main(void) {
   test_blit_partial();
   test_copy_row_alignments();
   test_blit_scaled();
+  test_blit_scaled_rect_matches_reference();
+  test_tri_f_inside_outside_and_clip();
+  test_tri_f_shared_edges_fill_once();
+  test_tri_f_degenerate_and_huge();
+  test_span16();
   return check_report("test_display_clip");
 }

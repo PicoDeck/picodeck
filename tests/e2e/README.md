@@ -108,8 +108,10 @@ and builds the device's traps in:
   `load_failed`, `device_rebooted` when uptime goes back). Log lines
   (`get_log_lines`, `wait_for_log`) are advisory.
 - **The launcher caches `app.json` at boot.** `push_app` reboots when the
-  pushed manifest (id, name, requirements, `min_psram_kb`) differs from the
-  card's, or `list` does not show the app.
+  pushed manifest (id, name, requirements, `min_psram_kb`,
+  `system_clock_khz`) differs from the card's, or `list` does not show the
+  app, then polls `list` for up to 20 s (`rescan_timeout`): a `list` straight
+  after the reboot can miss an app the launcher shows a few seconds later.
 - **Dev commands while an app runs.** `reboot` and `reboot-flash` are
   honoured mid-app (a Lua app's instruction hook / `sys.sleep`, a native
   app's `sys->poll`; a native app that never polls leaves them latched for
@@ -186,6 +188,7 @@ which the firmware loader writes).
   of `simulator/assets/sd_card`: `apps/hello`, every `tests/e2e/apps/*` fixture,
   and `system/lib/*.lua` plus `picotest.lua`. Stage more with
   `@pytest.mark.sd(extra=["apps/foo", ("path/in/repo", "sd/dest")])`.
+  The launcher keeps at most `MAX_APPS` apps: see "App cap" below.
 - `sim_factory`: start additional simulators (`sim_factory(sd_path, **kwargs)`).
 - `lua_suite`: run a test-kit app once in its own simulator and return its
   cases (use from a module-scoped fixture).
@@ -204,6 +207,41 @@ hook. Its health goes into `LuaRun.problems` instead: if the simulator dies
 mid-run, `run_lua_app` returns outcome `simulator_died` with the crash log,
 exit status, sanitizer lines and stderr tail as problems, and every case id
 (`check_case`, `assert_*`) fails with that evidence.
+
+## App cap
+
+The launcher keeps at most `MAX_APPS` (64, `src/os/launcher.c`) apps, in
+directory order, and drops the rest with `[LAUNCHER] WARNING: app cap (64)
+reached, ignoring '<dir>'`. Directory order depends on the host filesystem
+(tmpfs lists new entries first, ext4 and btrfs do not), so a test on an
+over-full card passes on one filesystem and fails on another. The cap is a
+device memory decision (the app table lives in PSRAM): do not raise it and do
+not add a simulator-only cap.
+
+The default card holds `apps/hello` plus every `tests/e2e/apps/*` fixture, and
+must leave one slot under the cap free: many tests stage a single app without a
+marker, so `test_sd_card.py` fails a new fixture app that would use that slot,
+before a hundred tests fail on health checks. A test that stages apps at
+runtime (`stage_lua_app`, `stage_native_app`, copying an app in) asks for room:
+
+```python
+@pytest.mark.sd(fixtures=["fs_test"], reserve=3)   # per-test card
+def test_x(simulator, test_sd_card): ...
+
+sim_module_factory(setup=..., fixtures=[], reserve=20)   # module-scoped
+lua_suite("fs_test", setup=..., fixtures=["fs_test"], reserve=2)
+```
+
+`fixtures` lists the fixture apps the test launches (`[]` = only `apps/hello`;
+omitted = all of them); `reserve` is how many apps the test stages. Two guards
+fail with an explanation, on every filesystem:
+
+- `build_sd_card` raises when the card, plus `reserve`, would exceed `MAX_APPS`
+  (read from `launcher.c`). Adding a fixture app past the cap trips
+  `test_sd_card.py::test_default_card_holds_every_fixture_and_fits_the_cap`.
+- A simulator whose launcher logged the drop warning is unhealthy: the
+  after-test health check (and `stop_and_check`) fails naming the fix, so a test
+  that stages more than it declared cannot pass by luck of directory order.
 
 ## Quarantined flaky tests
 

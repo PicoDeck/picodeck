@@ -58,6 +58,10 @@
         "page": "Global-Variables-and-Permissions.md"
       },
       {
+        "label": "API 3D",
+        "page": "API-3D.md"
+      },
+      {
         "label": "API Audio and Sound",
         "page": "API-Audio-and-Sound.md"
       },
@@ -76,6 +80,10 @@
       {
         "label": "API Game",
         "page": "API-Game.md"
+      },
+      {
+        "label": "API Gamepad",
+        "page": "API-Gamepad.md"
       },
       {
         "label": "API Input",

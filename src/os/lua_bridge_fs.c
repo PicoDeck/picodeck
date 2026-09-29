@@ -150,11 +150,36 @@ static int l_fs_close(lua_State *L) {
   return 0;
 }
 
+// fs.seek(h, offset [, whence]) / h:seek(...) -> ok.  whence is "set" (the
+// default: offset from the start, must be >= 0), "cur" or "end" (offset from
+// the current position / the end of the file, negative allowed).  The
+// resulting position is computed in 64 bits and must lie in [0, INT_MAX];
+// anything else is an argument error, never a wrapped seek.  Returns true on
+// success (unchanged), false if the seek failed.  A position past the end is
+// the SD driver's business: FatFS clamps a read handle to the end and extends
+// a write handle.
 static int l_fs_seek(lua_State *L) {
+  static const char *const whences[] = {"set", "cur", "end", NULL};
   lua_fs_file_t *h = check_file(L, 1);
   lua_Integer offset = luaL_checkinteger(L, 2);
-  luaL_argcheck(L, offset >= 0, 2, "negative offset");
-  lua_pushboolean(L, sdcard_fseek(h->f, (uint32_t)offset));
+  int whence = luaL_checkoption(L, 3, "set", whences);
+  int64_t base = 0;
+  if (whence == 0) {
+    luaL_argcheck(L, offset >= 0, 2, "negative offset");
+  } else if (whence == 1) {
+    base = (int64_t)sdcard_ftell(h->f);
+  } else {
+    int size = sdcard_fsize_handle(h->f);
+    if (size < 0) {
+      lua_pushboolean(L, false);
+      return 1;
+    }
+    base = size;
+  }
+  int64_t target = base + (int64_t)offset;
+  luaL_argcheck(L, target >= 0, 2, "position before start of file");
+  luaL_argcheck(L, target <= INT_MAX, 2, "position out of range");
+  lua_pushboolean(L, sdcard_fseek(h->f, (uint32_t)target));
   return 1;
 }
 

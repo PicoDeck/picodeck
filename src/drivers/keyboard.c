@@ -1,9 +1,10 @@
 #include "keyboard.h"
 #include "kbd_event_queue.h"
+#include "kbd_i2c.h"
+#include "kbd_bus.h"
 #include "../hardware.h"
 #include "../os/idle_dim.h"
 #include "../os/os.h"
-#include "wifi.h"
 
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
@@ -12,14 +13,27 @@
 #include <stdio.h>
 #include <string.h>
 
+_Static_assert(KBD_BUS_FIFO_IDLE == KBD_FIFO_IDLE, "kbd_bus.h idle state");
+
 // The STM32 uses a STOP-based protocol (not repeated-start):
 //   1. Write register address as a complete transaction (nostop=false)
 //   2. Wait for the STM32 to prepare its response
 //   3. Read in a separate transaction
-// pelrun/uf2loader used sleep_ms(16), but that's too slow for 60fps apps.
-// Testing shows 1ms is reliable and gives us ~60 FPS.
+// Only kbd_init()'s boot probe still does this blocking dance (everything
+// after it runs through the bus engine, kbd_i2c.c). pelrun/uf2loader used
+// sleep_ms(16); 1ms is reliable and keeps the probe's ~5s budget short.
 #define KBD_REG_DELAY_MS 1
-#define KBD_I2C_TIMEOUT_US 5000  // 5ms — ample for 100kHz I2C; 50ms was causing ~150ms stalls per frame on failure
+#define KBD_I2C_TIMEOUT_US 5000  // 5ms per probe transfer (a 1-2 byte
+                                 // transfer takes 2-3 ms at 10 kHz); used only
+                                 // by kbd_init()'s boot probe (50ms once caused
+                                 // ~150ms stalls per probe step on failure)
+
+// At most this many FIFO items are decoded per poll, so one poll's worth of
+// events always fits the event queue (see kbd_poll_impl); the rest wait in
+// the bus engine's ring, and once that fills, in the STM32 FIFO itself.
+#define KBD_POLL_MAX_ITEMS 8
+_Static_assert(KBD_POLL_MAX_ITEMS * 2 <= KBD_EVENT_QUEUE_LEN,
+              "one poll's events must fit the queue");
 
 // Minimum wall-clock duration an injected one-shot button stays "active"
 // before kbd_poll() auto-releases it. Some apps call kbd_poll() more than
@@ -36,7 +50,8 @@
 // ── Internal state
 // ────────────────────────────────────────────────────────────
 
-// Button masks (held / previous poll / tap bookkeeping, see kbd_event_queue.h)
+// Button and gamepad masks (held / previous poll / tap bookkeeping, see
+// kbd_event_queue.h). 36 bytes.
 static kbd_buttons_t s_btn;
 // Event queue, key-down and unseen-press sets and getChar backlog. 140 bytes
 // of SRAM: 16 four-byte events, two 256-bit key sets, 4 backlog chars and
@@ -49,8 +64,6 @@ static bool s_menu_pressed =
     false; // set on BTN_MENU rising edge; cleared by kbd_consume_menu_press()
 static bool s_screenshot_pressed =
     false; // set on KEY_BRK press; cleared by kbd_consume_screenshot_press()
-static int s_i2c_fail_count = 0;      // consecutive kbd_poll() I2C failures
-static uint32_t s_i2c_backoff_ms = 0; // when to next attempt recovery
 
 // Injected input (dev commands). Injection happens asynchronously — the
 // dev-command pump runs from the Lua debug hook, at an arbitrary point in the
@@ -66,111 +79,16 @@ static uint32_t s_i2c_backoff_ms = 0; // when to next attempt recovery
 // kbd_event_queue.h (kbd_inject_*), host-tested in test_kbd_event_queue.c.
 static kbd_inject_t s_inj;
 
+// The gamepad's key bindings (24 bytes; the masks live in s_btn.pad).
+// src/os/gamepad.c installs the effective map at every app launch.
+static kbd_padmap_t s_padmap = KBD_PAD_DEFAULT_MAP;
+
 // ── Public API
 // ────────────────────────────────────────────────────────────────
 
-// ── I2C helpers
-// ───────────────────────────────────────────────────────────────
-
-// Recover the I2C bus from a stuck state by:
-//   1. De-initing the I2C peripheral to release GPIO control
-//   2. Pulsing SCL 9 times to clock out any partial byte the STM32 is stuck in
-//   3. Issuing an explicit STOP if SDA is still stuck low
-//   4. Re-initing the I2C peripheral
-// Safe to call during kbd_init() (before first i2c_init) and at runtime.
-void kbd_recover_i2c_bus(void) {
-  // Release the I2C peripheral so we can drive the pins manually.
-  i2c_deinit(KBD_I2C_PORT);
-
-  // SDA as floating input (pulled high) — no START generated during SCL pulses.
-  gpio_init(KBD_PIN_SDA);
-  gpio_set_dir(KBD_PIN_SDA, GPIO_IN);
-  gpio_pull_up(KBD_PIN_SDA);
-  sleep_us(200);
-
-  // Pre-load SCL HIGH before driving it as an output.
-  gpio_init(KBD_PIN_SCL);
-  gpio_put(KBD_PIN_SCL, 1);
-  gpio_set_dir(KBD_PIN_SCL, GPIO_OUT);
-  sleep_us(50);
-
-  // 9 clock pulses — clocks out any partial byte in the STM32's shift register.
-  for (int i = 0; i < 9; i++) {
-    gpio_put(KBD_PIN_SCL, 0);
-    sleep_us(50);
-    gpio_put(KBD_PIN_SCL, 1);
-    sleep_us(50);
-  }
-
-  // If SDA is still stuck low after clocking, issue an explicit STOP.
-  // CRITICAL: SCL must go LOW before SDA goes LOW — SDA falling while SCL
-  // is HIGH generates a START condition, which would confuse the STM32.
-  if (!gpio_get(KBD_PIN_SDA)) {
-    gpio_set_dir(KBD_PIN_SDA, GPIO_OUT);
-    gpio_put(KBD_PIN_SCL, 0);
-    sleep_us(50); // SCL low first
-    gpio_put(KBD_PIN_SDA, 0);
-    sleep_us(50); // SDA low (SCL is low — no START)
-    gpio_put(KBD_PIN_SCL, 1);
-    sleep_us(50); // SCL high
-    gpio_put(KBD_PIN_SDA, 1);
-    sleep_us(50); // SDA high while SCL high → STOP
-    gpio_set_dir(KBD_PIN_SDA, GPIO_IN);
-    gpio_pull_up(KBD_PIN_SDA);
-  }
-
-  // Check final bus state — log if still stuck (helps diagnose STM32 issues).
-  bool sda_free = gpio_get(KBD_PIN_SDA);
-  bool scl_free = gpio_get(KBD_PIN_SCL);
-  if (!sda_free || !scl_free)
-    printf("[KBD] bus recovery: SDA=%s SCL=%s after 9-clock sequence\n",
-           sda_free ? "high" : "LOW-STUCK", scl_free ? "high" : "LOW-STUCK");
-
-  // Give the STM32 time to recognise the bus-free condition before we
-  // re-assert a START.  Without this pause the STM32 may miss the STOP.
-  sleep_ms(10);
-
-  // Re-initialize the I2C peripheral and restore GPIO functions.
-  i2c_init(KBD_I2C_PORT, KBD_I2C_BAUD);
-  gpio_set_function(KBD_PIN_SDA, GPIO_FUNC_I2C);
-  gpio_set_function(KBD_PIN_SCL, GPIO_FUNC_I2C);
-  gpio_pull_up(KBD_PIN_SDA);
-  gpio_pull_up(KBD_PIN_SCL);
-}
-
-// Write register address (with STOP), wait, then read `len` bytes.
-// The STM32 does NOT support repeated-start — nostop must be false.
-// On any failure, calls kbd_recover_i2c_bus() so the STM32 is not left
-// mid-transaction (which would cause a Repeated START corruption on the next
-// kbd_poll() call).
-static bool i2c_read_reg(uint8_t reg, uint8_t *buf, size_t len,
-                         uint32_t delay_ms) {
-  int ret = i2c_write_timeout_us(KBD_I2C_PORT, KBD_I2C_ADDR, &reg, 1, false,
-                                 KBD_I2C_TIMEOUT_US);
-  if (ret != 1) {
-    kbd_recover_i2c_bus();
-    return false;
-  }
-  sleep_ms(delay_ms);
-  ret = i2c_read_timeout_us(KBD_I2C_PORT, KBD_I2C_ADDR, buf, len, false,
-                            KBD_I2C_TIMEOUT_US);
-  if (ret != (int)len) {
-    // Write succeeded — STM32 prepared its response and is waiting for us to
-    // read it. Aborting without a STOP leaves the STM32 mid-transaction.
-    // The 9-clock recovery clocks out the waiting bytes and issues a STOP.
-    kbd_recover_i2c_bus();
-    return false;
-  }
-  return true;
-}
-
-// Write a value to a register (reg address OR'd with WRITE_MASK).
-static bool i2c_write_reg(uint8_t reg, uint8_t val) {
-  uint8_t buf[2] = {(uint8_t)(reg | KBD_WRITE_MASK), val};
-  int ret = i2c_write_timeout_us(KBD_I2C_PORT, KBD_I2C_ADDR, buf, 2, false,
-                                 KBD_I2C_TIMEOUT_US);
-  return ret == 2;
-}
+// Clear a stuck bus (9 clocks + STOP) and re-init I2C1 at KBD_I2C_BAUD; the
+// bus engine is paused around it (kbd_i2c_recover). Safe during kbd_init().
+void kbd_recover_i2c_bus(void) { kbd_i2c_recover(); }
 
 bool kbd_init(void) {
   // ── Step 1: Unconditional bus clear ───────────────────────────────────────
@@ -240,6 +158,10 @@ bool kbd_init(void) {
     printf("[KBD] FAILED — STM32 never responded in 5s\n");
   }
 
+  // From here on every STM32 transaction goes through the asynchronous bus
+  // engine; it retries (and backs off) if the controller did not answer.
+  kbd_i2c_start();
+
   return ok;
 }
 
@@ -261,6 +183,7 @@ static void kbd_poll_impl(bool bg) {
   bool bg_run = bg || s_btn.in_bg;  // this poll is part of a background run
   kbd_poll_begin(&s_btn, bg, &s_last_raw_key);
   uint32_t curr_before = s_btn.curr, prev_before = s_btn.prev;
+  kbd_pad_t pad_before = s_btn.pad;
   uint8_t raw_before = s_last_raw_key;
   if (!bg)
     s_last_char = 0;
@@ -285,45 +208,21 @@ static void kbd_poll_impl(bool bg) {
   // delivery independent of how many times kbd_poll() happens to run.
   // A one-shot is retired only after a full poll-to-poll cycle in which a
   // re-injected key reads released (kbd_inject_poll).
-  kbd_inject_poll(&s_inj, &s_btn, &s_in, bg, now_ms, KBD_INJECT_HOLD_MS);
+  kbd_inject_poll(&s_inj, &s_btn, &s_in, &s_padmap, bg, now_ms,
+                  KBD_INJECT_HOLD_MS);
 
-  // Poll REG_FIF (0x09) directly — up to 8 events per frame.
-  // Each read returns 2 bytes: [state, keycode].
-  // Loop ends when state==IDLE (no more queued events).
-  // After repeated failures, skip the I2C attempt entirely until the backoff
-  // window expires — prevents 5ms timeouts from dominating the frame budget.
-  bool poll_ok = false;
-  if (s_i2c_fail_count > 5 && now_ms < s_i2c_backoff_ms) {
-    // Bus is struggling — skip this frame entirely to keep display responsive
-    goto done_polling;
-  }
-
-  // Rate-limit the I2C transaction: at 10 kHz each FIFO read costs ~5-6 ms,
-  // so polling every frame would eat a third of a 60 fps frame budget.
-  // 20 Hz sampling is still fine for human input (the STM32 queues events in
-  // its FIFO between polls); skipped calls still refresh edge-detection state
-  // above.
-  {
-    static uint32_t s_next_i2c_ms = 0;
-    if (now_ms < s_next_i2c_ms)
-      goto done_polling;
-    s_next_i2c_ms = now_ms + 50;
-  }
-  // Every item is decoded in FIFO order (kbd_fifo_apply): nothing between
-  // two polls is lost to "net state". A key pressed and released inside one
-  // poll reads as held for this poll; a HOLD is a repeat, never a new press.
-  for (int i = 0; i < 8; i++) {
-    uint8_t event[2] = {0, 0};
-    if (!i2c_read_reg(KBD_REG_FIF, event, 2, KBD_REG_DELAY_MS))
-      break;
-    poll_ok = true;
-
-    uint8_t state = event[0];
-    uint8_t keycode = event[1];
-
-    if (state == KBD_FIFO_IDLE)
-      break; // FIFO empty
-
+  // Decode up to KBD_POLL_MAX_ITEMS raw FIFO items the bus engine (kbd_i2c.c)
+  // has read since the last poll, in FIFO order (kbd_fifo_apply): nothing
+  // between two polls is lost to "net state". A key pressed and released
+  // inside one poll reads as held for this poll; a HOLD is a repeat, never a
+  // new press. The engine reads the STM32 from interrupts, so this never
+  // waits on the 10 kHz bus; the service pass first runs a bus recovery if a
+  // transaction failed. Anything past the cap stays in the ring (and, once
+  // that fills, in the STM32) for the next poll.
+  kbd_i2c_service();
+  uint8_t state, keycode;
+  for (int i = 0; i < KBD_POLL_MAX_ITEMS && kbd_i2c_pop(&state, &keycode);
+       i++) {
 #ifdef KBD_DEBUG
     const char *state_str = state == KBD_FIFO_PRESSED    ? "PRESS"
                             : state == KBD_FIFO_HOLD     ? "HOLD"
@@ -334,8 +233,7 @@ static void kbd_poll_impl(bool bg) {
     else
       printf("[KBD] %s 0x%02X\n", state_str, keycode);
 #endif
-
-    uint8_t raw = kbd_fifo_apply(&s_in, &s_btn, state, keycode);
+    uint8_t raw = kbd_fifo_apply_pad(&s_in, &s_btn, &s_padmap, state, keycode);
     if (raw) {
       s_last_raw_key = raw;
       new_key = true;
@@ -345,26 +243,6 @@ static void kbd_poll_impl(bool bg) {
     if (state == KBD_FIFO_PRESSED && keycode == KEY_BRK)
       s_screenshot_pressed = true;
   }
-
-  // Track consecutive I2C failures for diagnostics.
-  if (!poll_ok) {
-    s_i2c_fail_count++;
-    if (s_i2c_fail_count == 5)
-      printf("[KBD] warning: %d consecutive I2C failures (wifi=%d)\n",
-             s_i2c_fail_count, wifi_get_status());
-    // After 10 failures, back off 100ms before the next recovery attempt.
-    // Shorter than original 500ms to keep keyboard responsive during WiFi
-    // connect, which can cause transient I2C glitches on the power rail.
-    if (s_i2c_fail_count > 10)
-      s_i2c_backoff_ms = to_ms_since_boot(get_absolute_time()) + 100;
-  } else {
-    if (s_i2c_fail_count > 10)
-      printf("[KBD] I2C recovered after %d failures\n", s_i2c_fail_count);
-    s_i2c_fail_count = 0;
-    s_i2c_backoff_ms = 0;
-  }
-
-done_polling:;
 
   // Intercept BTN_MENU: detect rising edge, flag it for the OS, hide from apps.
   if ((s_btn.curr & BTN_MENU) && !(s_btn.prev & BTN_MENU))
@@ -385,6 +263,7 @@ done_polling:;
       // Drop this poll's fresh press edges (in a background run, only this
       // poll's: earlier polls of the run stay for the app).
       kbd_buttons_swallow(&s_btn, bg_run, curr_before, prev_before);
+      kbd_pad_swallow(&s_btn.pad, bg_run, pad_before);
       s_last_raw_key = bg_run ? raw_before : 0;
       // ...and this poll's queued presses and chars. Releases of keys that
       // were down before this poll stay, so a key the app saw go down still
@@ -403,7 +282,7 @@ done_polling:;
       // that reads as a brand new rising edge, leaking the "swallowed" wake
       // press to the app one poll late. Dropping active/pending here matches
       // the pre-hold behavior, where a swallowed wake press was gone for good.
-      kbd_inject_drop_oneshots(&s_inj, &s_btn);
+      kbd_inject_drop_oneshots(&s_inj, &s_btn, &s_padmap);
     }
   }
   // One char per poll, oldest first: a second key in the same poll is kept
@@ -431,6 +310,24 @@ uint32_t kbd_get_buttons_released(void) {
   return (~s_btn.curr & s_btn.prev);
 }
 
+uint32_t kbd_get_pad(void) { return s_btn.pad.curr; }
+
+uint32_t kbd_get_pad_pressed(void) {
+  return (uint32_t)(s_btn.pad.curr & ~s_btn.pad.prev);
+}
+
+uint32_t kbd_get_pad_released(void) {
+  return (uint32_t)(s_btn.pad.prev & ~s_btn.pad.curr);
+}
+
+void kbd_set_pad_map(const kbd_padmap_t *map) {
+  s_padmap = *map;
+  memset(&s_btn.pad, 0, sizeof(s_btn.pad));
+  s_inj.pad_tap = 0;
+}
+
+const kbd_padmap_t *kbd_get_pad_map(void) { return &s_padmap; }
+
 bool kbd_poll_event(kbd_event_t *out) { return kbd_evq_pop(&s_in.q, out); }
 
 bool kbd_is_key_down(uint8_t keycode) {
@@ -439,44 +336,24 @@ bool kbd_is_key_down(uint8_t keycode) {
 
 void kbd_flush_events(void) { kbd_evq_clear(&s_in.q); }
 
-static bool s_charging = false;  // bit 7 of the last good battery read
+int kbd_get_battery_percent(void) { return kbd_i2c_battery(); }
 
-int kbd_get_battery_percent(void) {
-  static int s_cached_val = -1;
-  static uint32_t s_last_ms = 0;
-  uint32_t now = to_ms_since_boot(get_absolute_time());
-
-  if (s_btn.curr != 0 && s_cached_val != -1) {
-    return s_cached_val;
-  }
-
-  if (s_last_ms == 0 || now - s_last_ms >= 5000) {
-    uint8_t val[2] = {0, 0}; // STM32 I2C firmware preps 2 bytes
-    if (!i2c_read_reg(KBD_REG_BAT, val, 2, KBD_REG_DELAY_MS)) {
-      s_last_ms = now - 3000; // back off 2s before retry (avoids hammering I2C every frame on failure)
-      return s_cached_val;
-    }
-    s_cached_val = (int)(val[1] & 0x7F);
-    s_charging = (val[1] & 0x80) != 0;
-    s_last_ms = now;
-  }
-  return s_cached_val;
-}
-
-bool kbd_is_charging(void) { return s_charging; }
+bool kbd_is_charging(void) { return kbd_i2c_charging(); }
 
 void kbd_set_backlight(uint8_t brightness) {
-  i2c_write_reg(KBD_REG_BL, brightness);
+  kbd_i2c_set_backlight(brightness);
 }
 
-void kbd_apply_clock(void) {
-  // Re-initialize I2C with the same baud rate.
-  // i2c_init uses clk_peri to calculate internal dividers.
-  i2c_init(KBD_I2C_PORT, KBD_I2C_BAUD);
-  gpio_set_function(KBD_PIN_SDA, GPIO_FUNC_I2C);
-  gpio_set_function(KBD_PIN_SCL, GPIO_FUNC_I2C);
-  gpio_pull_up(KBD_PIN_SDA);
-  gpio_pull_up(KBD_PIN_SCL);
+void kbd_apply_clock(void) { kbd_i2c_apply_clock(); }
+
+void kbd_pause_bus(void) { kbd_i2c_pause(); }
+
+void kbd_resume_bus(void) { kbd_i2c_resume(); }
+
+void kbd_prepare_reset(void) { kbd_i2c_pause(); }
+
+void kbd_set_poll_interval_ms(uint32_t ms) {
+  kbd_i2c_set_interval_us(ms * 1000u);
 }
 
 bool kbd_consume_menu_press(void) {
@@ -492,19 +369,14 @@ bool kbd_consume_screenshot_press(void) {
 }
 
 void kbd_discard_pending(void) {
-  // Everything the STM32 queued while nobody polled, what background polls
-  // (sys.sleep) already decoded into the queue, backlog and button masks
-  // (kbd_clear_state below drops it), plus pending/active one-shot
-  // injections: none of it was typed at whatever is about to be shown.
-  // Bounded: the FIFO holds 31 events.
-  for (int i = 0; i < 40; i++) {
-    uint8_t event[2] = {0, 0};
-    if (!i2c_read_reg(KBD_REG_FIF, event, 2, KBD_REG_DELAY_MS))
-      break;
-    if (event[0] == KBD_FIFO_IDLE)
-      break;
-  }
-  kbd_inject_drop_oneshots(&s_inj, &s_btn);
+  // Everything the STM32 queued before this call (the bus engine drops it:
+  // see kbd_bus_discard) and everything already read into its ring, what
+  // background polls (sys.sleep) already decoded into the queue, backlog and
+  // button masks (kbd_clear_state below drops it), plus pending/active
+  // one-shot injections: none of it was typed at whatever is about to be
+  // shown.
+  kbd_i2c_discard();
+  kbd_inject_drop_oneshots(&s_inj, &s_btn, &s_padmap);
   s_inj.ch = 0;
   kbd_clear_state();  // a keydown latch stays held, without an edge
 }
@@ -518,8 +390,9 @@ void kbd_clear_state(void) {
   // Enter that opened the modal calling this — or a keydown latch) stays
   // held with no press edge, and its retire/keyup still releases it; a
   // pending injection is published, with its edge, by the next poll; an
-  // unread injected char is dropped. See kbd_inject_after_clear.
-  kbd_inject_after_clear(&s_inj, &s_btn);
+  // unread injected char is dropped. See kbd_inject_after_clear. The
+  // gamepad (in s_btn) goes with the buttons, likewise.
+  kbd_inject_after_clear(&s_inj, &s_btn, &s_padmap);
 }
 
 void kbd_inject_buttons(uint32_t buttons) {
@@ -551,11 +424,12 @@ void kbd_hold_buttons(uint32_t buttons) {
 void kbd_release_buttons(uint32_t buttons) {
   // Also retires active/pending one-shots of the same keys: otherwise the
   // next poll's fold (kbd_inject_poll) would resurrect them.
-  kbd_inject_release(&s_inj, &s_btn, &s_in, buttons);
+  kbd_inject_release(&s_inj, &s_btn, &s_in, &s_padmap, buttons);
 }
 
 void kbd_inject_char(char c) {
   s_inj.ch = c;
+  kbd_inject_pad_char(&s_inj, &s_padmap, c);
   // The event queue sees a tap of that key, as the simulator's does.
   uint8_t mods = kbd_mods_from_buttons(s_btn.curr);
   kbd_event_t e = {KBD_EV_DOWN, (uint8_t)c, 0, mods};

@@ -7,9 +7,10 @@
 extern "C" {
 #endif
 
-// Frame/audio indices are sized from the AVI header's frame count, capped
-// here (8 bytes per entry; audio index is 1.5x).  Beyond the cap playback
-// falls back to sequential chunk scanning.
+// The frame index is sized from the AVI header's frame count, capped here
+// (8 bytes per entry).  Beyond the cap playback falls back to sequential
+// chunk scanning.  The audio index covers the same stretch of the file and
+// grows to hold every audio chunk in it (avi_index.h).
 #define VIDEO_MAX_FRAME_INDEX 65536
 
 #define VIDEO_BUFFER_POOL_SIZE 3

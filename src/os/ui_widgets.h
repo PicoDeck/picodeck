@@ -59,6 +59,9 @@ void ui_widget_divider(int x, int y, int w, uint16_t color);
 
 // Toast notification bar (bg_color=0 uses default UW_TOAST_BG)
 void ui_widget_toast(int y, const char *text, uint16_t bg_color);
+// The x, width and height ui_widget_toast(y, text, ...) covers, in the
+// current font (x is negative for text wider than the screen).
+void ui_widget_toast_rect(const char *text, int *x, int *w, int *h);
 
 // Button with centered label
 void ui_widget_button(int x, int y, int w,

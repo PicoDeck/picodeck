@@ -125,6 +125,9 @@ int zip_archive_read(pczip_t z, int idx, void *buf, uint32_t buf_cap) {
     char err[ZIP_ERR_MAX];
     int n = zip_reader_read_to_buf(&s->zr, idx, buf, buf_cap, err);
     if (n < 0) printf("[ZIP] read idx %d: %s\n", idx, err);
+    // A too-small buffer keeps its own code so a caller can tell it from a
+    // failed read; still negative, so `n < 0` callers stay safe.
+    if (n == ZIP_READ_TOO_SMALL) return PCZIP_ERR_TOO_SMALL;
     return n;
 }
 

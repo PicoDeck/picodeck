@@ -107,8 +107,9 @@ include(${CMAKE_SOURCE_DIR}/cmake/picodeck_lua.cmake)
 picodeck_patch_luaconf(${LUA_DIR})
 target_compile_definitions(lua PUBLIC ${PICODECK_LUA_DEFINITIONS})
 target_sources(lua PRIVATE ${PICODECK_LUA_SOURCES})  # picodeck_lua_sprintf (float formatting)
-# No signals, no OS-level stuff
-target_compile_options(lua PRIVATE -Os)
+# -O2, not -Os: hook-free, the VM gains ~10% on bytecode and 20-45% on C-call
+# paths at -O2 for +23 KB of flash (P0, specs/2026-09-27-p0-lua-perf-findings.md).
+target_compile_options(lua PRIVATE -O2)
 
 # ── FatFS ─────────────────────────────────────────────────────────────────────
 # Option A: Use pico-extras (recommended):
@@ -249,6 +250,10 @@ add_executable(picodeck
     src/os/lua_bridge.c
     src/os/lua_bridge_display.c
     src/os/lua_bridge_input.c
+    src/os/lua_bridge_gamepad.c
+    src/os/gamepad.c
+    src/os/gamepad_map.c
+    src/os/gamepad_edit.c
     src/os/lua_bridge_sys.c
     src/os/lua_bridge_fs.c
     src/os/lua_bridge_network.c
@@ -258,11 +263,18 @@ add_executable(picodeck
     src/os/lua_bridge_appconfig.c
     src/os/lua_bridge_perf.c
     src/os/perf.c
+    src/os/fps_counter.c
     src/os/lua_bridge_graphics.c
     src/os/lua_bridge_3d.c
+    src/os/gfx3d.c
+    src/os/lua_bridge_gfx3d.c
+    src/os/module_path.c
+    src/os/lua_bridge_require.c
+    src/os/lua_corolib.c
     src/os/lua_bridge_ui.c
     src/os/ui_widgets.c
     src/os/toast.c
+    src/os/os_overlay.c
     src/os/text_wrap.c
     src/os/lua_bridge_audio.c
     src/os/lua_bridge_sound.c
@@ -312,12 +324,16 @@ add_executable(picodeck
     src/drivers/image_api.c
     src/drivers/image_preload.c
     src/drivers/audio.c
+    src/drivers/audio_mix.c
     src/drivers/sound.c
     src/drivers/fileplayer.c
+    src/drivers/qoa.c
     src/drivers/wav.c
     src/drivers/mp3_player.c
     src/drivers/video_player.cpp
     src/drivers/keyboard.c
+    src/drivers/kbd_bus.c
+    src/drivers/kbd_i2c.c
     src/drivers/sdcard.c
     src/drivers/wifi.c
     src/drivers/rng.c
@@ -401,6 +417,14 @@ set_source_files_properties(
     PROPERTIES COMPILE_FLAGS
     "-DMINIZ_NO_STDIO -DMINIZ_NO_ARCHIVE_WRITING_APIS -DMINIZ_NO_ZLIB_COMPATIBLE_NAMES -include ${CMAKE_SOURCE_DIR}/third_party/miniz_picodeck.h"
 )
+
+# Text rendering (drawText, the HUD of every game): -O2 like the blitters.
+set_source_files_properties(src/fonts/font.c PROPERTIES COMPILE_OPTIONS "-O2")
+
+# gfx3d: -O2 like the display blitters (DISP_HOT), and no FMA contraction so a
+# triangle edge shared by two triangles evaluates bit-identically in both.
+set_source_files_properties(src/os/gfx3d.c PROPERTIES
+    COMPILE_OPTIONS "-O2;-ffp-contract=off;-Wdouble-promotion")
 
 # ── PIO PSRAM Bulk Transfer (improved driver with 16-bit counters) ─────────────
 # Supports up to 8187 bytes per transaction (vs 27 bytes in polpo library).

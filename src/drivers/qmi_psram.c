@@ -18,16 +18,10 @@
 #include "hardware/xip_cache.h"
 #include <stdio.h>
 
-#define SEC_TO_FS 1000000000000000ll
-
-// tCEM: max CS-low 8 us; the MAX_SELECT field is in units of 64 sys clocks:
-// 8000 ns * 1e6 fs/ns / 64 = 125e6 fs per unit.
-static const uint32_t MAX_SELECT_FS64 = 125000000u;
-// tCPH: min CS-high 50 ns (datasheet 18 ns; 50 ns keeps SparkFun's margin).
-static const uint32_t MIN_DESELECT_FS = 50000000u;
-// APS6404L-3SQR is rated 109 MHz at 3.3 V; cap at 84 MHz for margin on this
-// board (the same chip already showed marginal behaviour at reset timings).
-static const uint32_t PSRAM_MAX_SCK_HZ = 84000000u;
+// The M1 timing constants (QMI_PSRAM_SEC_TO_FS, QMI_PSRAM_MAX_SELECT_FS64,
+// QMI_PSRAM_MIN_DESELECT_FS), the SCK divider (QMI_PSRAM_MAX_SCK_HZ,
+// qmi_psram_clkdiv()) and the pre-scale helper (qmi_psram_timing()) all live
+// in qmi_psram.h — pure and host-tested by tests/unit/test_qmi_psram_clkdiv.c.
 
 #define PSRAM_CMD_QUAD_END    0xF5
 #define PSRAM_CMD_QUAD_ENABLE 0x35
@@ -153,15 +147,17 @@ static size_t __no_inline_not_in_flash_func(read_psram_id)(void) {
   return psram_size;
 }
 
-static void __no_inline_not_in_flash_func(apply_timing)(uint32_t rxdelay) {
-  uint32_t sys_hz = clock_get_hz(clk_sys);
-  uint32_t divider = (sys_hz + PSRAM_MAX_SCK_HZ - 1) / PSRAM_MAX_SCK_HZ;
-  if (divider < 1)
-    divider = 1;
-
-  uint32_t fs_per_cycle = (uint32_t)(SEC_TO_FS / sys_hz);
-  uint32_t max_select = MAX_SELECT_FS64 / fs_per_cycle;
-  uint32_t min_deselect = (MIN_DESELECT_FS + fs_per_cycle - 1) / fs_per_cycle;
+// lo_hz == hi_hz applies the steady-state timing for that one clk_sys;
+// lo_hz != hi_hz applies the pre-scale timing safe at both (see
+// qmi_psram_timing() in qmi_psram.h). Stays __no_inline_not_in_flash_func:
+// callers use this while clk_sys is about to change (or has just changed)
+// with the Lua VM's stack living in this same PSRAM, so it must not touch
+// PSRAM or flash-resident data. qmi_psram_timing() has its only call site
+// here, so it inlines rather than leaving RAM (verified with objdump).
+static void __no_inline_not_in_flash_func(apply_timing)(uint32_t rxdelay,
+                                                         uint32_t lo_hz,
+                                                         uint32_t hi_hz) {
+  qmi_psram_timing_t t = qmi_psram_timing(lo_hz, hi_hz);
 
   uint32_t intr_stash = save_and_disable_interrupts();
   qmi_hw->m[1].timing =
@@ -169,17 +165,18 @@ static void __no_inline_not_in_flash_func(apply_timing)(uint32_t rxdelay) {
       3u << QMI_M1_TIMING_SELECT_HOLD_LSB |
       1u << QMI_M1_TIMING_COOLDOWN_LSB |
       rxdelay << QMI_M1_TIMING_RXDELAY_LSB |
-      max_select << QMI_M1_TIMING_MAX_SELECT_LSB |
-      min_deselect << QMI_M1_TIMING_MIN_DESELECT_LSB |
-      divider << QMI_M1_TIMING_CLKDIV_LSB;
+      t.max_select << QMI_M1_TIMING_MAX_SELECT_LSB |
+      t.min_deselect << QMI_M1_TIMING_MIN_DESELECT_LSB |
+      t.clkdiv << QMI_M1_TIMING_CLKDIV_LSB;
   __asm volatile("dsb sy" ::: "memory");
   restore_interrupts(intr_stash);
 
   printf("[QMI_PSRAM] timing: div=%lu (%lu kHz SCK) rxdelay=%lu maxSel=%lu "
-         "minDesel=%lu at %lu kHz sysclk\n",
-         (unsigned long)divider, (unsigned long)(sys_hz / divider / 1000),
-         (unsigned long)rxdelay, (unsigned long)max_select,
-         (unsigned long)min_deselect, (unsigned long)(sys_hz / 1000));
+         "minDesel=%lu at %lu/%lu kHz sysclk\n",
+         (unsigned long)t.clkdiv, (unsigned long)(hi_hz / t.clkdiv / 1000),
+         (unsigned long)rxdelay, (unsigned long)t.max_select,
+         (unsigned long)t.min_deselect, (unsigned long)(lo_hz / 1000),
+         (unsigned long)(hi_hz / 1000));
 }
 
 static void __no_inline_not_in_flash_func(apply_quad_formats)(void) {
@@ -253,8 +250,9 @@ size_t qmi_psram_init(uint32_t cs_pin) {
   xip_ctrl_hw->ctrl |= XIP_CTRL_WRITABLE_M1_BITS;
 
   // Self-test, escalating RXDELAY until the readback is clean.
+  uint32_t sys_hz = clock_get_hz(clk_sys);
   for (uint32_t rxdelay = 1; rxdelay <= 4; rxdelay++) {
-    apply_timing(rxdelay);
+    apply_timing(rxdelay, sys_hz, sys_hz);
     if (selftest()) {
       s_quad_mode = true;
       printf("[QMI_PSRAM] quad mode OK: %u MB, rxdelay=%lu\n",
@@ -288,7 +286,16 @@ void qmi_psram_update_timing(void) {
   // Keep the RXDELAY that passed the boot self-test; timing scales the rest.
   uint32_t rxdelay = (qmi_hw->m[1].timing & QMI_M1_TIMING_RXDELAY_BITS) >>
                      QMI_M1_TIMING_RXDELAY_LSB;
-  apply_timing(rxdelay);
+  uint32_t sys_hz = clock_get_hz(clk_sys);
+  apply_timing(rxdelay, sys_hz, sys_hz);
+}
+
+void qmi_psram_prescale_timing(uint32_t a_hz, uint32_t b_hz) {
+  if (!s_quad_mode)
+    return;
+  uint32_t rxdelay = (qmi_hw->m[1].timing & QMI_M1_TIMING_RXDELAY_BITS) >>
+                     QMI_M1_TIMING_RXDELAY_LSB;
+  apply_timing(rxdelay, a_hz < b_hz ? a_hz : b_hz, a_hz < b_hz ? b_hz : a_hz);
 }
 
 bool qmi_psram_is_quad(void) { return s_quad_mode; }
@@ -300,6 +307,10 @@ size_t qmi_psram_init(uint32_t cs_pin) {
   return 0;
 }
 void qmi_psram_update_timing(void) {}
+void qmi_psram_prescale_timing(uint32_t a_hz, uint32_t b_hz) {
+  (void)a_hz;
+  (void)b_hz;
+}
 bool qmi_psram_is_quad(void) { return false; }
 
 #endif

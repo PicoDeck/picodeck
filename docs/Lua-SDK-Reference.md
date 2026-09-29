@@ -7,10 +7,12 @@ This document provides a complete reference for all Lua APIs available to PicoDe
 ## API Sections
 
 - [Global Variables and Permissions](Global-Variables-and-Permissions.md)
+- [API 3D](API-3D.md) — Flat-shaded 3D meshes, camera, light, fog, sky and sprites (`picocalc.gfx3d`)
 - [API Audio and Sound](API-Audio-and-Sound.md) — Audio Playback (WAV, MP3) & Tones
 - [API Crypto](API-Crypto.md) — Cryptographic Primitives
 - [API Display and Graphics](API-Display-and-Graphics.md) — Graphics & Display
 - [API Filesystem](API-Filesystem.md) — Filesystem (SD Card)
+- [API Gamepad](API-Gamepad.md) — Rebindable Gamepad Buttons (`picocalc.gamepad`)
 - [API Input](API-Input.md) — Keyboard & Button Input
 - [API Modplayer](API-Modplayer.md) — Tracker Module Music (MOD, XM, S3M)
 - [API Network and WiFi](API-Network-and-WiFi.md) — WiFi & HTTP Client
@@ -49,8 +51,7 @@ while true do
     picocalc.perf.drawFPS()
     picocalc.display.flush()
     
-    picocalc.perf.endFrame()
-    picocalc.sys.sleep(16)  -- ~60 FPS
+    picocalc.perf.endFrame()  -- flush() already paces the loop; see perf.setTargetFPS
 end
 ```
 

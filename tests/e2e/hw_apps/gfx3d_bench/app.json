@@ -1,0 +1,2 @@
+{ "id": "com.test.gfx3d_bench", "name": "gfx3d bench", "version": "1.0",
+  "description": "gfx3d frame-cost benchmark (hardware test)", "author": "PicoDeck" }

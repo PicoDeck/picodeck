@@ -1,0 +1,8 @@
+{
+    "id": "com.test.qoa",
+    "name": "QOA Test",
+    "description": "E2E fixture: QOA streaming through the fileplayer (duration, position, seek, looping)",
+    "version": "1.0",
+    "author": "PicoDeck E2E",
+    "requirements": ["audio"]
+}

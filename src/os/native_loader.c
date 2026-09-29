@@ -1,6 +1,7 @@
 #include "native_loader.h"
 #include "launcher_types.h"
 #include "app_identity.h"
+#include "gamepad.h"
 #include "app_abi.h"
 #include "../drivers/audio.h"
 #include "../drivers/display.h"
@@ -244,6 +245,8 @@ static bool native_run_app(const app_entry_t *app) {
   tcp_close_all();
   audio_stop_stream();
   audio_stop_tone();
+  audio_set_volume(100);  // the app's master volume must not outlive it
+  audio_output_stop();
   return ok;
 }
 #else
@@ -850,6 +853,10 @@ out:
     printf("[NATIVE] Core 1 pause timeout (200ms) at cleanup\n");
   audio_stop_stream();
   audio_stop_tone();
+  // The master volume is the app's too: an app that turned it down must not
+  // leave every later app (and its MP3) quiet until a reboot.
+  audio_set_volume(100);
+  audio_output_stop();
   // Core 1 is paused (or timed out) — safe to drop the watcher snapshot now.
   // g_code_watch_snap holds the uncached alias; umm_free wants the original.
   if (g_code_watch_snap) {
@@ -889,6 +896,7 @@ static bool native_run(const app_entry_t *app) {
                    "invalid app id (or out of PSRAM)");
     return false;
   }
+  gamepad_apply();  // global bindings + this app's override
   bool ok = native_run_app(app);
   // sys->poll drops a reboot-ota that arrives while an app runs; an app that
   // never polls leaves it latched for the launcher, so drop it here too.

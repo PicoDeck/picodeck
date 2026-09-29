@@ -48,6 +48,7 @@ static int s_clip_x1 = 319, s_clip_y1 = 319;
 // The clip-once rasterisers are shared with the firmware driver; this
 // framebuffer is host order, so they run with swap = false.
 #include "../../src/drivers/display_clip.h"
+#include "../../src/drivers/display_raster.h"
 static inline disp_clip_t cur_clip(void) {
     return (disp_clip_t){s_clip_x0, s_clip_y0, s_clip_x1, s_clip_y1};
 }
@@ -112,6 +113,30 @@ void display_darken(void) {
 
 uint16_t* display_get_back_buffer(void) { 
     return g_current_buffer == 0 ? g_back_buffer : g_front_buffer;
+}
+
+// Mirrors display_save_buffers / display_restore_buffers in
+// src/drivers/display.c (semantics, not steps): the saved front comes back as
+// the front buffer and is what the panel (the GRAM analog) shows; the saved
+// back comes back as the back buffer.
+static uint16_t* sim_front_buffer(void) {
+    return g_current_buffer == 0 ? g_front_buffer : g_back_buffer;
+}
+
+void display_save_buffers(uint16_t* dst) {
+    const size_t n = 320 * 320;
+    memcpy(dst, sim_front_buffer(), n * sizeof(uint16_t));
+    memcpy(dst + n, display_get_back_buffer(), n * sizeof(uint16_t));
+}
+
+void display_restore_buffers(const uint16_t* src) {
+    const size_t n = 320 * 320;
+    uint16_t* front = sim_front_buffer();
+    memcpy(front, src, n * sizeof(uint16_t));
+    memcpy(display_get_back_buffer(), src + n, n * sizeof(uint16_t));
+    memcpy(s_gram, front, n * sizeof(uint16_t));
+    present_gram();
+    s_last_presented = front;
 }
 
 void display_fill_rect(int x, int y, int w, int h, uint16_t color) {
@@ -217,6 +242,25 @@ void display_flush_region(int y0, int y1) {
            (size_t)(y1 - y0 + 1) * 320 * sizeof(uint16_t));
 }
 
+// Mirror of display_push_rect: copy the rectangle from the back buffer into
+// the GRAM analog and re-present (no swap, s_last_presented unchanged).
+void display_push_rect(int x, int y, int w, int h) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > 320) w = 320 - x;
+    if (y + h > 320) h = 320 - y;
+    if (w <= 0 || h <= 0) return;
+
+    uint16_t* back = display_get_back_buffer();
+    for (int r = y; r < y + h; r++)
+        memcpy(&s_gram[r * 320 + x], &back[r * 320 + x],
+               (size_t)w * sizeof(uint16_t));
+    present_gram();
+}
+
+// No flush DMA here: every flush has finished when it returns.
+void display_wait_for_flush(void) {}
+
 void display_apply_clock(void) {}
 
 void display_clear(uint16_t color) {
@@ -232,6 +276,12 @@ void display_set_pixel(int x, int y, uint16_t color) {
     if (x >= s_clip_x0 && x <= s_clip_x1 && y >= s_clip_y0 && y <= s_clip_y1) {
         display_get_back_buffer()[y * 320 + x] = color;
     }
+}
+
+// Mirror of the firmware's display_get_pixel (host order here, no unswap).
+uint16_t display_get_pixel(int x, int y) {
+    if (x < 0 || x >= 320 || y < 0 || y >= 320) return 0;
+    return display_get_back_buffer()[y * 320 + x];
 }
 
 void display_draw_line(int x0, int y0, int x1, int y1, uint16_t color) {
@@ -289,6 +339,16 @@ void display_fill_triangle(int x0, int y0, int x1, int y1, int x2, int y2, uint1
     disp_clip_t c = cur_clip();
     disp_fill_triangle(display_get_back_buffer(), 320, &c, x0, y0, x1, y1, x2,
                        y2, color);
+}
+
+void display_get_raster_target(display_raster_target_t *t) {
+    t->fb = display_get_back_buffer();
+    t->stride = 320;
+    t->clip_x0 = s_clip_x0;
+    t->clip_y0 = s_clip_y0;
+    t->clip_x1 = s_clip_x1;
+    t->clip_y1 = s_clip_y1;
+    t->swap = false;
 }
 
 void display_draw_textured_column(int x, int y0, int y1,
@@ -487,6 +547,20 @@ void display_draw_image_scaled_nn(int x, int y, const uint16_t *data,
     disp_clip_t c = cur_clip();
     disp_blit_scaled(display_get_back_buffer(), 320, &c, x, y, data, src_w,
                      src_h, dst_w, dst_h, transparent_color, false);
+}
+
+void display_draw_image_stretched(int x, int y, int dst_w, int dst_h,
+                                  const uint16_t *data, int img_w, int img_h,
+                                  int sx, int sy, int sw, int sh,
+                                  uint16_t transparent_color) {
+    if (sx < 0) { sw += sx; sx = 0; }
+    if (sy < 0) { sh += sy; sy = 0; }
+    if (sw > img_w - sx) sw = img_w - sx;
+    if (sh > img_h - sy) sh = img_h - sy;
+    if (sw <= 0 || sh <= 0) return;
+    disp_clip_t c = cur_clip();
+    disp_blit_scaled_rect(display_get_back_buffer(), 320, &c, x, y, data, img_w,
+                          sx, sy, sw, sh, dst_w, dst_h, transparent_color, false);
 }
 
 void display_draw_image_scaled(int x, int y, int img_w, int img_h,
@@ -735,8 +809,18 @@ bool sdcard_disk_info(uint32_t* out_free_kb, uint32_t* out_total_kb) {
         if (out_total_kb) *out_total_kb = 0;
         return false;
     }
-    if (out_total_kb) *out_total_kb = (uint32_t)((st.f_blocks * st.f_frsize) / 1024);
-    if (out_free_kb)  *out_free_kb  = (uint32_t)((st.f_bavail * st.f_frsize) / 1024);
+    // Model an SD card, not the host disk: fs.diskInfo pushes these as 32-bit
+    // Lua integers, and a multi-terabyte host filesystem (btrfs, XFS) would
+    // wrap negative. 32 GB is a typical card size. The device itself cannot
+    // overflow: FF_LBA64 is 0 (at most 2^32 sectors) and the SD spec stops at
+    // 2 TB, about 1.95e9 KB, under INT32_MAX.
+    const uint64_t cap_kb = 32ull * 1024 * 1024;
+    uint64_t total_kb = ((uint64_t)st.f_blocks * st.f_frsize) / 1024;
+    uint64_t free_kb  = ((uint64_t)st.f_bavail * st.f_frsize) / 1024;
+    if (total_kb > cap_kb) total_kb = cap_kb;
+    if (free_kb > total_kb) free_kb = total_kb;
+    if (out_total_kb) *out_total_kb = (uint32_t)total_kb;
+    if (out_free_kb)  *out_free_kb  = (uint32_t)free_kb;
     return true;
 }
 
@@ -993,12 +1077,13 @@ void display_effect_posterize(uint8_t levels) {
     }
 }
 
-// Audio/sound/fileplayer/mp3 are implemented in simulator/sim_audio.c
+// Audio/sound/fileplayer/mp3 are the firmware's own code (src/drivers/);
+// simulator/sim_audio.c is only the output.
 
 // Native audio callback
 _Atomic(void (*)(void)) g_native_audio_callback = NULL;
 
-// audio_ring_free / audio_stream_debug live in sim_audio.c.
+// audio_ring_free / audio_stream_debug live in src/drivers/audio_mix.c.
 
 // umm_malloc: a counting allocator over the host malloc (see stubs/
 // umm_malloc.h). Live bytes are the requested sizes of every block handed
@@ -1259,18 +1344,6 @@ int display_draw_text_to_buffer(uint16_t *buf, int buf_w, int buf_h,
                      x, y, text, fg, bg, false);
 }
 
-// --- Sound player callbacks ---
-// Stored like firmware sound.c (the Lua bridge finds a player's callback
-// slots through them, to reuse and release them); the simulator mixer does
-// not fire them yet.
-#include "../../src/drivers/sound.h"
-void sound_player_set_finish_callback(sound_player_t *player, int (*cb)(void *), void *arg) {
-    if (!player) return;
-    player->finish_callback = cb;
-    player->finish_callback_arg = arg;
-}
-void sound_player_set_loop_callback(sound_player_t *player, int (*cb)(void *), void *arg) {
-    if (!player) return;
-    player->loop_callback = cb;
-    player->loop_callback_arg = arg;
-}
+// sound_player_set_finish_callback / sound_player_set_loop_callback now come
+// from src/drivers/sound.c, compiled into the simulator (Task 5): defining
+// them here too would be a duplicate symbol.

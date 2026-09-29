@@ -10,10 +10,23 @@
 // Returns NULL for ids that are out of range or not currently loaded.
 const pc_font_t *font_registry_get(int id);
 
+// Loaded-font slots (ids FONT_REGISTRY_BUILTIN..FONT_REGISTRY_SLOTS-1). The
+// Lua display.loadFont, graphics.font.new and a native app's loadFont all draw
+// from this one pool.
+#define FONT_REGISTRY_LOADED (FONT_REGISTRY_SLOTS - FONT_REGISTRY_BUILTIN)
+
 // Read `path` (absolute SD path) into PSRAM and validate it. Returns the
 // new slot id (>= FONT_REGISTRY_BUILTIN) or -1 (missing file, bad image,
-// no free slot); the reason is printed to the serial log.
+// no free slot); the reason is printed to the serial log. -1 is the native
+// API's failure value (`loadFont` in os.h); the Lua bridge turns it into
+// `nil, errstr` via font_registry_load_ex.
 int font_registry_load(const char *path);
+
+// As font_registry_load; on failure also sets *why (if non-NULL) to a static
+// string naming the cause: "no free font slot", "cannot read file" or "not a
+// valid .pfn font". *why is left untouched on success.
+int font_registry_load_ex(const char *path, const char **why);
+#define FONT_REGISTRY_WHY_FULL "no free font slot"
 
 // Free one loaded slot. No-op for built-ins and empty slots.
 void font_registry_unload(int id);

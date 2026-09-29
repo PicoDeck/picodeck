@@ -197,10 +197,8 @@ def test_panels_hw_scroll(sim_factory, test_sd_card):
     # System menu takeover: the OS resets the scroll register.  panels must
     # detect the foreign write via the write counter, repaint, and re-enter
     # the fast path (second "PANELS:HW on"), restoring the exact frame.
-    # (No wait_input_consumed on the menu key: keyboard_stub.c sets the menu
-    # flag before it records the injection's seq, so a menu opened in that
-    # window leaves the seq outstanding. The screen changing is the proof.)
-    simulator.keypress("menu")
+    r = simulator.keypress("menu")
+    simulator.wait_input_consumed(r["input_seq"], timeout=5.0)
     _wait_screen(simulator, lambda s: s != mid, "system menu did not appear")
     _tap(simulator, "esc")               # read by the menu: closes it
     _wait_for_count(simulator, "PANELS:HW on", 2)

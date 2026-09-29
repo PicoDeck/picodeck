@@ -41,9 +41,12 @@
 #define KBD_PIN_SDA 6     // GP6 / I2C1 SDA
 #define KBD_PIN_SCL 7     // GP7 / I2C1 SCL
 #define KBD_I2C_ADDR 0x1F // STM32 keyboard controller default address
+#define KBD_I2C_IRQ I2C1_IRQ // the async bus engine (drivers/kbd_i2c.c)
 #define KBD_I2C_BAUD                                                           \
   (10 * 1000) // 10 kHz — conservative speed for STM32F103 I2C reliability
-              // 100 kHz caused STM32 lockup after extended use (requires power cycle)
+              // 100 kHz caused STM32 lockup after extended use (requires power
+              // cycle). The bus is driven asynchronously from interrupts
+              // (drivers/kbd_i2c.c), so the slow clock costs Core 0 nothing.
 
 // STM32 register map (from clockworkpi/PicoCalc picocalc_keyboard firmware)
 // Read protocol:  send reg address (1 byte, nostop=false i.e. STOP), wait, then

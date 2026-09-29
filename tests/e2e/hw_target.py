@@ -26,8 +26,10 @@ device's known traps (see the task-27 report and CLAUDE.md "Debug"):
     /data/<APP_ID>/test_results.json (picotest) and outcomes from `status`
     polls plus /system/error.log growth. The log is advisory only.
   - The launcher caches app.json at boot: push_app reboots when the pushed
-    manifest (id, name, requirements, min_psram_kb) differs from the one on
-    the card, or when `list` does not show the app.
+    manifest (id, name, requirements, min_psram_kb, system_clock_khz)
+    differs from the one on the card, or when `list` does not show the app,
+    then polls `list` for up to rescan_timeout (20 s): a `list` straight
+    after the reboot can miss an app the launcher shows a few seconds later.
   - Dev commands while an app runs (src/os/lua_bridge.c lua_bridge_service,
     src/main.c sys_poll, src/os/launcher.c): `reboot` and `reboot-flash`
     are HONOURED mid-app (Lua hook / sys.sleep pass, native sys->poll; a
@@ -365,7 +367,8 @@ class SimTarget(Target):
                                    f"started nor finished within {timeout}s")
             time.sleep(0.02)
 
-    def wait_for_exit(self, timeout: float = 30.0) -> dict:
+    def wait_for_exit(self, timeout: float = 30.0,
+                      poll_s: Optional[float] = None) -> dict:
         return self.sim.wait_for_exit(timeout=timeout)
 
     def exit_app(self) -> dict:
@@ -424,7 +427,9 @@ class SimTarget(Target):
     def wait_for_log(self, pattern: str, timeout: float = 10.0, since: int = 0) -> str:
         return self.sim.wait_for_log(pattern, timeout=timeout, since_seq=since)
 
-    def run_lua_app(self, name: str, timeout: float = 30.0):
+    def run_lua_app(self, name: str, timeout: float = 30.0, *,
+                    quiet_s: float = 0.0, poll_s: Optional[float] = None):
+        # quiet_s / poll_s matter only on the device (HwTarget.run_lua_app).
         from helpers import run_lua_app
         return run_lua_app(self.sim, name, timeout=timeout)
 
@@ -443,10 +448,15 @@ class _CountingDeque(collections.deque):
 
 
 def _manifest_key(m: Optional[dict]):
+    """Fields the launcher caches at boot and uses to launch the app (so a
+    change in any of them means the on-device cache is stale and the device
+    must reboot before the new app.json takes effect): id, name,
+    requirements, min_psram_kb, system_clock_khz. Cosmetic-only fields
+    (description, author, version, category) are deliberately excluded."""
     if m is None:
         return None
     return (m.get("id"), m.get("name"), sorted(m.get("requirements") or []),
-            m.get("min_psram_kb"))
+            m.get("min_psram_kb"), m.get("system_clock_khz"))
 
 
 class HwTarget(Target):
@@ -457,7 +467,7 @@ class HwTarget(Target):
     def __init__(self, port: str, *, preflight: bool = True,
                  poll_interval: float = 0.5, boot_timeout: float = 60.0,
                  exit_timeout: float = 15.0, connect_timeout: float = 5.0,
-                 command_timeout: float = 5.0):
+                 command_timeout: float = 5.0, rescan_timeout: float = 20.0):
         self.pm = load_picodeck_mcp()
         self.port = port
         self.preflight = preflight
@@ -466,6 +476,7 @@ class HwTarget(Target):
         self.exit_timeout = exit_timeout
         self.connect_timeout = connect_timeout
         self.command_timeout = command_timeout
+        self.rescan_timeout = rescan_timeout
         self._mon = None
         self._launch: Optional[dict] = None
         self._manifests: dict = {}
@@ -586,8 +597,10 @@ class HwTarget(Target):
                         "exit_sent": False}
         return {"launched": kind == "launched", "line": line}
 
-    def wait_for_exit(self, timeout: float = 30.0) -> dict:
-        """Poll `status` until the launcher is back. Returns
+    def wait_for_exit(self, timeout: float = 30.0,
+                      poll_s: Optional[float] = None) -> dict:
+        """Poll `status` (every poll_s, default poll_interval) until the
+        launcher is back. Returns
         {name, found, result, error, runtime_ms} where result is
         "returned" | "error" (error.log grew) | "exit_sentinel" (after
         exit_app) | "load_failed" | "device_rebooted" (uptime went back)."""
@@ -621,7 +634,7 @@ class HwTarget(Target):
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"app {L['name']!r} still running after "
                                    f"{timeout}s (status: {last})")
-            time.sleep(self.poll_interval)
+            time.sleep(poll_s or self.poll_interval)
         self._launch = None
         if last:
             out["runtime_ms"] = last["app_uptime_ms"]
@@ -736,12 +749,24 @@ class HwTarget(Target):
             why = "the launcher does not list it"
         if why:
             self.reboot()
-            if manifest and manifest.get("id") not in [i for _, i in self.list_apps()]:
+            if manifest and not self._wait_listed(manifest.get("id")):
                 raise HwTargetError(f"{name} ({manifest.get('id')}) still not "
-                                    "listed after a reboot")
+                                    f"listed {self.rescan_timeout:g} s after a reboot")
         self._manifests[name] = manifest
         return {"pushed": msg.splitlines()[0], "rebooted": why is not None,
                 "why": why}
+
+    def _wait_listed(self, app_id: str) -> bool:
+        """Poll `list` until it shows app_id, for up to rescan_timeout. On
+        the device a `list` straight after a reboot has missed an app just
+        pushed, which the launcher listed a few seconds later."""
+        deadline = time.monotonic() + self.rescan_timeout
+        while True:
+            if app_id in [i for _, i in self.list_apps()]:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(self.poll_interval)
 
     def _app_id(self, name: str) -> str:
         man = self._manifests.get(name)
@@ -753,16 +778,24 @@ class HwTarget(Target):
             self._manifests[name] = man
         return man["id"]
 
-    def run_lua_app(self, name: str, timeout: float = 30.0):
+    def run_lua_app(self, name: str, timeout: float = 30.0, *,
+                    quiet_s: float = 0.0, poll_s: Optional[float] = None):
         """Launch a picotest app, wait for it, return a helpers.LuaRun built
-        from its results file (the serial log is only a fallback)."""
+        from its results file (the serial log is only a fallback).
+
+        The running app answers every dev command itself, inside a service
+        pass that stalls it for a few ms, so a fixture that times its own
+        calls keeps the harness out of its window: quiet_s sends nothing for
+        that long after the launch, and poll_s spaces the `status` polls
+        (default poll_interval)."""
         from helpers import LuaRun, _LOG_CASE_RE, _LOG_DONE_RE
         res = f"/data/{self._app_id(name)}/test_results.json"
         self.delete_file(res)
         mark = self.log_cursor()
         self.launch_app(name)
+        time.sleep(quiet_s)
         try:
-            outcome = self.wait_for_exit(timeout)
+            outcome = self.wait_for_exit(timeout, poll_s=poll_s)
         except TimeoutError as e:
             outcome = {"name": name, "result": "timeout", "error": str(e)}
             try:

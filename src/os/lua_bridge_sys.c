@@ -7,6 +7,7 @@
 #include "version.h"
 #include "../dev_commands.h"
 #include "../hardware.h"
+#include "../drivers/keyboard.h"
 #include "../drivers/pio_psram.h"
 #include "perf.h"
 #include "hardware/gpio.h"
@@ -21,16 +22,18 @@ static int l_sys_getTimeMs(lua_State *L) {
   return 1;
 }
 
+// Microseconds since boot as a wrapping 32-bit integer (lua_Integer is
+// 32-bit): subtract two readings as integers, which is exact for gaps under
+// ~35 minutes even across the wrap.
+static int l_sys_getTimeUs(lua_State *L) {
+  lua_pushinteger(L, (lua_Integer)(uint32_t)to_us_since_boot(get_absolute_time()));
+  return 1;
+}
+
 static int l_sys_getBattery(lua_State *L) {
-  // Battery reads are slow I2C round-trips — cache for 5 seconds.
-  static int s_cached = -1;
-  static uint32_t s_last_ms = 0;
-  uint32_t now = (uint32_t)to_ms_since_boot(get_absolute_time());
-  if (s_last_ms == 0 || now - s_last_ms >= 5000) {
-    s_cached = kbd_get_battery_percent();
-    s_last_ms = now;
-  }
-  lua_pushinteger(L, s_cached);
+  // The keyboard bus engine reads the level every 5 s in the background;
+  // this returns the latest reading without touching the bus.
+  lua_pushinteger(L, kbd_get_battery_percent());
   return 1;
 }
 
@@ -70,6 +73,7 @@ static int l_sys_sleep(lua_State *L) {
 static int l_sys_reboot(lua_State *L) {
   (void)L;
   crashlog_clear_running(); // intentional — not an unclean exit
+  kbd_prepare_reset();
   watchdog_enable(1, true);
   for (;;)
     tight_loop_contents();
@@ -479,6 +483,7 @@ static int l_sys_resetIdleTimer(lua_State *L) {
 
 static const luaL_Reg l_sys_lib[] = {{"getMemInfo", l_sys_getMemInfo},
                                      {"getTimeMs", l_sys_getTimeMs},
+                                     {"getTimeUs", l_sys_getTimeUs},
                                      {"getBattery", l_sys_getBattery},
                                      {"log", l_sys_log},
                                      {"sleep", l_sys_sleep},

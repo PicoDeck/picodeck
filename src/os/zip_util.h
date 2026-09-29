@@ -44,6 +44,7 @@
 #define ZIP_MAX_TOTAL_UNCOMP   (256u * 1024u * 1024u) // total uncompressed bytes
 #define ZIP_MAX_READ_MEM       (4u * 1024u * 1024u)   // single in-memory read
 #define ZIP_ERR_MAX            96                     // error string buffer
+#define ZIP_READ_TOO_SMALL     (-2)   // zip_reader_read_to_buf: entry > buf_cap
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -107,7 +108,8 @@ bool zip_reader_read_to_heap(zip_reader_t *zr, int idx, void **out_data,
                              char err[ZIP_ERR_MAX]);
 
 // Decompress one entry into a caller-supplied buffer. Returns the number of
-// bytes written, or -1 on error (including "entry larger than buf_cap").
+// bytes written, ZIP_READ_TOO_SMALL when the entry is larger than buf_cap
+// (nothing written), or -1 on any other error.
 int zip_reader_read_to_buf(zip_reader_t *zr, int idx, void *buf,
                            size_t buf_cap, char err[ZIP_ERR_MAX]);
 

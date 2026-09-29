@@ -37,11 +37,28 @@
 #define BTN_F9        (1 << 15)
 #define BTN_BACKSPACE (1 << 16)   // Backspace key
 #define BTN_TAB       (1 << 17)   // Tab key
-#define BTN_DEL       (1 << 18)   // Delete key (Fn+Backspace typically)
+#define BTN_DEL       (1 << 18)   // Delete key (its own key; Shift+Delete is End)
 #define BTN_SHIFT     (1 << 19)   // Shift modifier
 #define BTN_CTRL      (1 << 20)   // Ctrl modifier
 #define BTN_ALT       (1 << 21)   // Alt modifier
 #define BTN_FN        (1 << 22)   // Fn/Symbol modifier
+
+// Gamepad button bitmask values (picocalc_gamepad_t, API version 9). Each is
+// an alias for keys (primary and alternate slot), which still report as
+// themselves through the BTN_* masks. Defaults: arrows, A=F4, B=F5, X=Delete,
+// Y=Backspace, L=F2, R=F3, Start=F1, Select=Tab.
+#define PAD_UP        (1 << 0)
+#define PAD_DOWN      (1 << 1)
+#define PAD_LEFT      (1 << 2)
+#define PAD_RIGHT     (1 << 3)
+#define PAD_A         (1 << 4)
+#define PAD_B         (1 << 5)
+#define PAD_X         (1 << 6)
+#define PAD_Y         (1 << 7)
+#define PAD_L         (1 << 8)
+#define PAD_R         (1 << 9)
+#define PAD_START     (1 << 10)
+#define PAD_SELECT    (1 << 11)
 
 // Built-in font ids for display->setFont (API version 6)
 #define PC_FONT_6X8               0
@@ -61,6 +78,20 @@ typedef struct {
     char (*getChar)(void);
 } picocalc_input_t;
 
+// --- Gamepad (API version 9) -------------------------------------------------
+// A logical gamepad read like the input masks (after sys->poll()). Players
+// rebind it; the keys stay readable through picocalc_input_t. Only present
+// when api->version >= 9: the pointer sits after `version` in PicoCalcAPI.
+
+typedef struct {
+    uint32_t (*getButtons)(void);          // PAD_* held
+    uint32_t (*getButtonsPressed)(void);   // PAD_* pressed this frame
+    uint32_t (*getButtonsReleased)(void);  // PAD_* released this frame
+    // Name of the key bound to one PAD_* button ("F4", "Del", "W"), for
+    // on-screen hints. slot 0 = primary, 1 = alternate. NULL if unbound.
+    const char *(*getLabel)(uint32_t pad_button, int slot);
+} picocalc_gamepad_t;
+
 // --- Display ----------------------------------------------------------------
 
 typedef struct {
@@ -73,7 +104,10 @@ typedef struct {
     void (*fillCircle)(int cx, int cy, int r, uint16_t color);
     // Draw a null-terminated string. Returns pixel width of drawn text.
     int  (*drawText)(int x, int y, const char *text, uint16_t fg, uint16_t bg);
-    // Flush the internal framebuffer to the LCD (call once per frame)
+    // Flush the internal framebuffer to the LCD (call once per frame).
+    // All three presents (flush, flushRows, flushRegion) first draw the OS
+    // overlays into the rows they send: a system toast and, when the Show
+    // FPS setting is on, the OS FPS counter (see perf below).
     void (*flush)(void);
     // Returns display width/height
     int  (*getWidth)(void);
@@ -85,7 +119,8 @@ typedef struct {
     void (*drawImageNN)(int x, int y, const uint16_t *data,
                         int src_w, int src_h, int scale);
     // Flush only rows y0..y1 (inclusive, full width) from the back buffer.
-    // Does NOT swap buffers. Useful for partial screen updates.
+    // Does NOT swap buffers. Useful for partial screen updates. An OS overlay
+    // outside the rows is put on the panel directly, not into the buffer.
     void (*flushRows)(int y0, int y1);
     // Flush rows y0..y1 (inclusive) with buffer swap. Like flush() but only
     // transfers the specified row range. Useful for emulators with letterboxing.
@@ -139,7 +174,9 @@ typedef struct {
     int  (*getFontWidth)(void);            // max advance of the active font
     int  (*getFontHeight)(void);
     int  (*textWidth)(const char *text);   // real width, proportional-aware
-    int  (*loadFont)(const char *path);    // slot id, or -1 on failure
+    // slot id, or -1 on failure (bad file, or all 8 slots in use; the reason
+    // is logged). Lua's display.loadFont returns nil, errstr instead.
+    int  (*loadFont)(const char *path);
     void (*unloadFont)(int font_id);
     // Draw text leaving background pixels untouched.
     int  (*drawTextTransparent)(int x, int y, const char *text, uint16_t fg);
@@ -191,20 +228,31 @@ typedef struct {
     uint64_t (*getTimeUs)(void);
     // Trigger a system reboot
     void     (*reboot)(void);
-    // Battery level 0-100 (from STM32 via I2C). -1 = unknown/USB powered.
+    // Battery level 0-100 (from STM32 via I2C). -1 only before the first
+    // reading (a few seconds after boot); on USB power it keeps the last
+    // level.
     int      (*getBatteryPercent)(void);
-    // True if connected to USB power
+    // True if connected to USB power (reads GP24, the Pico 2's VBUS sense).
+    // Not reliable on Pico W-family boards, including the PicoCalc's
+    // Pimoroni Pico Plus 2 W: GP24 belongs to the wireless chip there, so
+    // this currently reads false even on USB power. A fix (reading VBUS
+    // through the CYW43) is pending.
     bool     (*isUSBPowered)(void);
     // Add an item to the system menu overlay (max 4 items per app)
-    // callback is called when the item is selected in the menu
+    // callback is called when the item is selected in the menu, after the
+    // menu has closed and, when memory for the copy was available, given the
+    // app its screen (both framebuffers) back; what it draws shows at the
+    // app's next flush
     void     (*addMenuItem)(const char *label, void (*callback)(void *user), void *user);
     // Clear all app-registered menu items (called automatically on app exit)
     void     (*clearMenuItems)(void);
     // Log a message to UART serial debug output
     void     (*log)(const char *fmt, ...);
-    // Single OS tick for native apps: polls keyboard + fires any pending
-    // C HTTP callbacks.  Also checks for the Sym (Menu) key and shows the
-    // system menu overlay automatically.  Call in your main loop.
+    // Single OS tick for native apps: polls the keyboard, feeds the watchdog,
+    // reclaims released HTTP/TCP slots and serves dev commands.  Also checks
+    // for the Sym (Menu) key and shows the system menu overlay automatically.
+    // It fires no HTTP callbacks (native apps poll http->isComplete()).
+    // Call in your main loop.
     void     (*poll)(void);
     // Returns true (once) after the user selects "Exit App" from the system
     // menu.  Native apps should check this each frame and return from
@@ -223,7 +271,7 @@ typedef struct {
     // duration_ms = 0 plays indefinitely until stopTone() is called.
     void (*playTone)(uint32_t freq_hz, uint32_t duration_ms);
     void (*stopTone)(void);
-    // Master volume 0-100
+    // Master volume 0-100; it resets to 100 when the app exits
     void (*setVolume)(uint8_t volume);
     // PCM sample streaming. Samples are stereo interleaved int16_t (L,R,L,R).
     // count = number of stereo frames (each frame = 2 int16_t values).
@@ -328,6 +376,8 @@ typedef struct {
 
 typedef struct {
     void (*beginFrame)(void);
+    // One frame of the app's own loop. While an app calls it, the OS FPS
+    // counter (Show FPS) shows endFrame calls per second, not presents.
     void (*endFrame)(void);
     int  (*getFPS)(void);
     uint32_t (*getFrameTime)(void);
@@ -351,7 +401,7 @@ typedef struct {
     // Initiate POST request. body/body_len may be 0/NULL. Non-blocking.
     void  (*post)(pchttp_t c, const char *path, const char *extra_hdrs,
                   const char *body, uint32_t body_len);
-    // Read up to len bytes of response body. Returns bytes read or -1 on error.
+    // Read up to len bytes of response body. Returns bytes read (0 if none).
     int      (*read)(pchttp_t c, uint8_t *buf, uint32_t len);
     // Returns bytes available in the receive buffer.
     uint32_t (*available)(pchttp_t c);
@@ -361,7 +411,8 @@ typedef struct {
     int   (*getStatus)(pchttp_t c);
     // Last error string, or NULL if no error.
     const char* (*getError)(pchttp_t c);
-    // Progress: sets *received and *total (0 if unknown). Returns total.
+    // Progress: sets *received and *total (-1 if unknown). Returns total.
+    // (Lua conn:getProgress() returns received, total instead.)
     int   (*getProgress)(pchttp_t c, int *received, int *total);
     // Configuration — call before get()/post().
     void  (*setKeepAlive)(pchttp_t c, bool keep_alive);
@@ -400,7 +451,7 @@ typedef struct {
     // Create a new player instance. Returns NULL on OOM.
     pcsound_player_t (*playerNew)(void);
     void  (*playerSetSample)(pcsound_player_t p, pcsound_sample_t s);
-    void     (*playerPlay)(pcsound_player_t p, uint8_t repeat_count);  // 0 = loop while setLoop(true)
+    void     (*playerPlay)(pcsound_player_t p, uint8_t repeat_count);  // 0 = loop until stopped, n = play n times (as filePlayerPlay; mp3PlayerPlay: 0 loops, else once)
     void     (*playerStop)(pcsound_player_t p);
     bool     (*playerIsPlaying)(pcsound_player_t p);
     uint8_t  (*playerGetVolume)(pcsound_player_t p);
@@ -411,7 +462,7 @@ typedef struct {
     // --- File player (streaming from SD card) ---
     pcfileplayer_t (*filePlayerNew)(void);
     void     (*filePlayerLoad)(pcfileplayer_t fp, const char *path);
-    void     (*filePlayerPlay)(pcfileplayer_t fp, uint8_t repeat_count);  // 0 = infinite
+    void     (*filePlayerPlay)(pcfileplayer_t fp, uint8_t repeat_count);  // 0 = loop until stopped, n = play n times (as playerPlay); setLoopRange loops regardless
     void     (*filePlayerStop)(pcfileplayer_t fp);
     void     (*filePlayerPause)(pcfileplayer_t fp);
     void     (*filePlayerResume)(pcfileplayer_t fp);
@@ -420,13 +471,13 @@ typedef struct {
     uint8_t  (*filePlayerGetVolume)(pcfileplayer_t fp);
     uint32_t (*filePlayerGetOffset)(pcfileplayer_t fp);
     void     (*filePlayerSetOffset)(pcfileplayer_t fp, uint32_t pos);
-    bool     (*filePlayerDidUnderrun)(pcfileplayer_t fp);
+    bool     (*filePlayerDidUnderrun)(pcfileplayer_t fp);  // this player's stream starved since the last call or play(); cleared by the call
     void     (*filePlayerFree)(pcfileplayer_t fp);
 
     // --- MP3 player (Core 1 decoding, PIO PSRAM ring buffer) ---
     pcmp3player_t (*mp3PlayerNew)(void);
     void     (*mp3PlayerLoad)(pcmp3player_t mp, const char *path);
-    void     (*mp3PlayerPlay)(pcmp3player_t mp, uint8_t repeat_count);  // 0 = infinite
+    void     (*mp3PlayerPlay)(pcmp3player_t mp, uint8_t repeat_count);  // 0 = loop until stopped, any other count plays once (the count is not honoured); as Lua play()
     void     (*mp3PlayerStop)(pcmp3player_t mp);
     void     (*mp3PlayerPause)(pcmp3player_t mp);
     void     (*mp3PlayerResume)(pcmp3player_t mp);
@@ -532,13 +583,17 @@ typedef struct {
     // Image dimensions.
     int       (*width)(pcimage_t img);
     int       (*height)(pcimage_t img);
-    // Raw RGB565 pixel data pointer (PSRAM).
+    // Raw pixel data pointer (PSRAM): w*h row-major RGB565 in host byte
+    // order, the same values colour arguments take. Not byte-swapped like
+    // display->getBackBuffer(): drawing the image does the swap.
     uint16_t* (*pixels)(pcimage_t img);
     // Per-image transparent color for color-key blending (0 = disabled).
     void      (*setTransparentColor)(pcimage_t img, uint16_t color);
     // Draw operations.
     void      (*draw)(pcimage_t img, int x, int y);
     void      (*drawRegion)(pcimage_t img, int sx, int sy, int sw, int sh, int dx, int dy);
+    // dst_w/dst_h are a destination SIZE; Lua's img:drawScaled takes a scale
+    // multiplier instead.
     void      (*drawScaled)(pcimage_t img, int x, int y, int dst_w, int dst_h);
 } picocalc_graphics_t;
 
@@ -621,6 +676,9 @@ typedef struct {
     bool     is_dir;
 } pczip_stat_t;
 
+// zip->read: the entry does not fit in buf_cap (see picocalc_zip_t::read).
+#define PCZIP_ERR_TOO_SMALL (-2)
+
 typedef struct {
     bool (*extract)(const char *zip_path, const char *dest_dir);
     // Returns number of files in archive, -1 on error.
@@ -634,9 +692,11 @@ typedef struct {
     int     (*numEntries)(pczip_t z);                 // files + dirs, -1 on error
     int     (*locate)(pczip_t z, const char *name);   // entry index, -1 if absent
     bool    (*statIndex)(pczip_t z, int idx, pczip_stat_t *out);
-    // Decompress entry idx into a caller-supplied buffer. Returns bytes
-    // written, or -1 on error (including "entry larger than buf_cap" —
-    // statIndex first to size the buffer).
+    // Decompress entry idx into a caller-supplied buffer. Returns the bytes
+    // written, or a negative code: PCZIP_ERR_TOO_SMALL (-2) when the entry
+    // is larger than buf_cap (nothing is written; allocate pczip_stat_t.size
+    // bytes, from statIndex, and retry), -1 for any other error. Test the
+    // result with `< 0`, never `== -1`. Older firmware returns -1 for both.
     int     (*read)(pczip_t z, int idx, void *buf, uint32_t buf_cap);
     // Stream entry idx to dest_path on the SD card (constant memory).
     bool    (*extractEntry)(pczip_t z, int idx, const char *dest_path);
@@ -670,9 +730,13 @@ typedef struct PicoCalcAPI {
     uint32_t                      version;     // 1=Phase1, 2=Phase2, 3=fs->browse,
                                              // 4=clip rect + mode-7 plane + display parity
                                              // 5=zip read-in-place handles
+                                             // 6=fonts: display->setFont/getFont/...
                                              // 7=video time seek/position, OSD, hasEnded
                                              // 8=TLS verification: http->setInsecure,
                                              //   tcp->connectEx
+                                             // 9=gamepad
+    // --- API version 9: fields after `version` (check it first) ---
+    const picocalc_gamepad_t     *gamepad;     // logical gamepad (PAD_*)
 } PicoCalcAPI;
 
 // The global API instance, populated during os_init()

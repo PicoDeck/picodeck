@@ -1,5 +1,6 @@
 #include "lua_runner.h"
 #include "app_identity.h"
+#include "gamepad.h"
 #include "launcher_types.h"
 #include "lua_bridge.h"
 #include "app_stack.h"
@@ -138,6 +139,7 @@ static void lua_vm_body(void *arg) {
   if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
     lua_bridge_show_error(L, "Init error:");
     sim_app_outcome_set(SIM_APP_RESULT_LOAD_FAILED, NULL);
+    lua_bridge_exit_reset(L);
     lua_close(L);
     umm_free(ctx->lua_src);
     return;
@@ -175,6 +177,7 @@ static void lua_vm_body(void *arg) {
     lua_bridge_show_error(L, load_err == LUA_ERRMEM ? "Out of memory loading app:"
                                                     : "Load error:");
     sim_app_outcome_set(SIM_APP_RESULT_LOAD_FAILED, NULL);
+    lua_bridge_exit_reset(L);
     lua_close(L);
     return;
   }
@@ -281,6 +284,13 @@ static bool lua_run_app(const app_entry_t *app) {
   fileplayer_reset();
   sound_init();
   mp3_player_reset();
+  // The master volume is the app's too: an app that turned it down must not
+  // leave every later app (and its MP3) quiet until a reboot.
+  audio_set_volume(100);
+  // Every source is silent now: stop the output too, so the launcher runs
+  // without its refill interrupt and the next app starts it afresh (at its
+  // own clock).
+  audio_output_stop();
 
   return true;
 }
@@ -294,6 +304,7 @@ static bool lua_run(const app_entry_t *app) {
                             "invalid app id (or out of PSRAM)");
     return false;
   }
+  gamepad_apply();  // global bindings + this app's override
   bool ok = lua_run_app(app);
   // lua_close() has run every file handle's __gc by now; this closes what
   // could not be (a handle whose finalizer never ran), so FatFS's 16 lock

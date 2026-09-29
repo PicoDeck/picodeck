@@ -10,6 +10,8 @@ that reads faster than the ring drains drops audio and finishes early.
 Each case runs alone in its own simulator.
 """
 
+import wave
+
 import pytest
 
 from helpers import case_params, lua_case_names, write_wav
@@ -26,6 +28,15 @@ def _setup(case):
         app = sd / "apps" / APP
         write_wav(app / "three_s.wav", seconds=3.0)
         write_wav(app / "one_s.wav", seconds=1.0)
+        write_wav(app / "empty.wav", seconds=0.0)  # a data chunk with no frames
+        # Files load() must refuse: an MP3 (ID3 tag), an 8-bit WAV, junk.
+        (app / "fake.mp3").write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00" + bytes(64))
+        with wave.open(str(app / "eight_bit.wav"), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(1)
+            w.setframerate(22050)
+            w.writeframes(b"\x80" * 2205)
+        (app / "junk.bin").write_bytes(b"not audio at all, just text" * 4)
         (app / "only.flag").write_text(case)
     return setup
 
