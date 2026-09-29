@@ -246,7 +246,7 @@ int zip_reader_read_to_buf(zip_reader_t *zr, int idx, void *buf,
     if (st.m_uncomp_size > (mz_uint64)buf_cap) {
         zip_set_err(err, "buffer too small (%u needed)",
                     (unsigned)st.m_uncomp_size);
-        return -1;
+        return ZIP_READ_TOO_SMALL;
     }
     if (!iter_read_full(zr, idx, (uint8_t *)buf, (size_t)st.m_uncomp_size)) {
         zip_set_err(err, "extract failed");
