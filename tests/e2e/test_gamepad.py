@@ -99,15 +99,16 @@ def _write(sim, rel, content):
     path.write_text(content if isinstance(content, str) else json.dumps(content))
 
 
-def _keys(sim, keys, until, since):
+def _keys(sim, keys, until, since, full=False):
     """Inject `keys` 150 ms apart (past the 80 ms injected hold), wait for
-    the log line `until`, and return the gamepad edges (without the held and
-    btn fields) logged since `since`."""
+    the log line `until`, and return the gamepad edges logged since `since`
+    (without the held and btn fields unless `full`)."""
     for k in keys:
         sim.keypress(k)
         time.sleep(0.15)
     sim.wait_for_log(until, timeout=10, since_seq=since)
-    return [e.split(" held=")[0] for e in _edges(sim, since)]
+    edges = _edges(sim, since)
+    return edges if full else [e.split(" held=")[0] for e in edges]
 
 
 def test_override_file_changes_this_app_only(simulator):
@@ -120,15 +121,18 @@ def test_override_file_changes_this_app_only(simulator):
                   id="com.test.gamepad_other")
 
     # The app with the override: Z is A (a letter, injected as a char: one
-    # tap), F4 is nothing, W from the global map is Up's alternate.
+    # tap), F4 is nothing, W from the global map is Up's alternate. The
+    # letters release cleanly: the later presses hold only their own button.
     seq = _start(sim)
     assert ("GP:LABEL a=Z a_alt=nil x=Del up_alt=W select=Tab"
             in _texts(sim, seq)), _texts(sim, seq)
     mark = sim.get_log_buffer(tail=1).get("next_seq", seq)
     assert _keys(sim, ["f4", "z", "w", "tab"], r"^GP:RELEASE select$",
-                 mark) == ["GP:PRESS a", "GP:RELEASE a", "GP:PRESS up",
-                           "GP:RELEASE up", "GP:PRESS select",
-                           "GP:RELEASE select"], _texts(sim, mark)
+                 mark, full=True) == [
+        "GP:PRESS a held=a btn=0", "GP:RELEASE a",
+        "GP:PRESS up held=up btn=0", "GP:RELEASE up",
+        f"GP:PRESS select held=select btn={BTN_TAB}", "GP:RELEASE select",
+    ], _texts(sim, mark)
     _finish(sim, seq)
 
     # Another app: the global map, no override.
