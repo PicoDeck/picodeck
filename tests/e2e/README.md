@@ -216,8 +216,10 @@ over-full card passes on one filesystem and fails on another. The cap is a
 device memory decision (the app table lives in PSRAM): do not raise it and do
 not add a simulator-only cap.
 
-The default card holds `apps/hello` plus every `tests/e2e/apps/*` fixture, so it
-is near the cap and has room for about one more app. A test that stages apps at
+The default card holds `apps/hello` plus every `tests/e2e/apps/*` fixture, and
+must leave one slot under the cap free: many tests stage a single app without a
+marker, so `test_sd_card.py` fails a new fixture app that would use that slot,
+before a hundred tests fail on health checks. A test that stages apps at
 runtime (`stage_lua_app`, `stage_native_app`, copying an app in) asks for room:
 
 ```python
