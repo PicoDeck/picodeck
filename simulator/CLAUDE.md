@@ -15,6 +15,7 @@
 - `fs.seek` past the end of a file: the device (FatFS `f_lseek`) grows the file at seek time, leaving undefined data in the gap; the simulator's stdio seek neither clamps a read handle nor extends before a write, so `tell()` after such a seek can differ.
 - Everything else (zip including read-in-place archive handles, modplayer, display clip rect, drawPlane, tilemap, sprites) mirrors firmware, including `g_api.version`.
 - **Lua service hook**: the simulator (and the web build) service the Lua VM from the synchronous adaptive count hook; firmware runs the VM hook-free and arms the hook from a 1 ms Core 0 timer (`src/os/CLAUDE.md`, Service hook). Exit/menu/dev-command latency is covered on both by `tests/e2e/test_lua_hook_target.py`; VM speed and the watchdog only on hardware (`test_lua_hook_hw.py`).
+- **SD card size and directory order**: `fs.diskInfo` reports the host filesystem's size and free space, capped at 32 GB (Lua integers are 32-bit; a multi-terabyte btrfs or XFS volume wrapped `total` negative). Directory listings come back in the host's `readdir` order (tmpfs newest first, ext4 hashed, btrfs by creation), unlike a FAT volume: the launcher's `MAX_APPS` cap keeps the first apps listed, so tests build cards that never exceed it (`tests/e2e/README.md`, App cap).
 
 ## Test control channel (`sim_socket_handler.c`, `sim_test_control.c`)
 - `get_log_buffer {since_seq, tail}` returns `{lines:[{seq,t_ms,src,text}], next_seq, dropped, more}` with `src` = `lua`/`native`/`os`/`err`; `subscribe {"logs":true}` pushes `log {seq,src,text}` notifications.
