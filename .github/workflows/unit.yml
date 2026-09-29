@@ -2,7 +2,7 @@ name: Unit Tests
 
 # Host-side tests that need neither the Pico SDK nor the simulator:
 #   make test-unit            C unit tests (tests/unit, ctest, ASan+UBSan)
-#   pytest tests/unit         Python tool tests (mkfont)
+#   pytest tests/unit         Python tool tests (mkfont, sdk/lua stub vs bridge)
 #   make test-lua             Lua syntax check of every app
 on:
   push:

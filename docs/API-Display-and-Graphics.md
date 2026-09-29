@@ -2356,6 +2356,42 @@ end
 
 ---
 
+## picocalc.graphics.animation.animator
+
+An animator interpolates a number from a start value to an end value over a duration. Poll it each frame; it has no callbacks.
+
+#### `picocalc.graphics.animation.animator.new(durationMs, from, to [, easing [, delayMs]])`
+Creates and starts an animator. The duration comes first.
+
+- **Parameters:**
+  - `durationMs` (number): Length of the animation in milliseconds
+  - `from`, `to` (number): Start and end values
+  - `easing` (string, optional): `"linear"` (default), `"sineIn"`, `"sineOut"`, `"sineInOut"`, `"quadIn"`, `"quadOut"`, `"quadInOut"`, `"cubicIn"`, `"cubicOut"` or `"cubicInOut"`. An unknown name is linear; a function is not accepted.
+  - `delayMs` (number, optional): Wait this long before starting
+- **Returns:** (userdata) Animator object
+
+```lua
+local a = picocalc.graphics.animation.animator.new(500, 0, 100, "cubicOut")
+while not a:ended() do
+    local x = a:currentValue()   -- 0 to 100 over half a second
+    -- draw at x ...
+end
+```
+
+### Animator Methods
+
+- `animator:currentValue()` returns the value now. Call it each frame: it is what advances repeats and reversal and marks the animation ended.
+- `animator:valueAtTime(ms)` returns the value `ms` milliseconds into the animation, without changing it.
+- `animator:progress()` returns completion from 0 to 1.
+- `animator:ended()` returns `true` once `currentValue()` has seen the animation finish.
+- `animator:reset([durationMs])` restarts it, optionally with a new duration.
+
+### Animator Properties
+
+Read/write fields: `easingAmplitude` (number, default 1), `easingPeriod` (number, default 0), `repeatCount` (integer, default 1) and `reverses` (boolean, default false: play back to `from` after reaching `to`).
+
+---
+
 ## picocalc.graphics.font
 
 Custom font loading and text rendering. Font objects can be passed to text rendering functions throughout the graphics API.

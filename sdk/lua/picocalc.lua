@@ -7,6 +7,9 @@
 --   "Lua.workspace.library": ["sdk/lua"]
 --
 -- Generated from src/os/lua_bridge_*.c — keep in sync with the bridge sources.
+-- tools/check_lua_stub.py (run by `pytest tests/unit`) compares every signature
+-- here with the C function behind it: parameter count, optional parameters and
+-- return count.
 -- Note: only base/table/string/math stdlib is available (no utf8, no coroutine,
 -- no io/os/package/debug).
 
@@ -862,8 +865,10 @@ function picocalc.sound.playingSources() end
 ---8- or 16-bit PCM, 1-2 channels (float, 24/32-bit, ADPCM are refused); only
 ---the first 64 KB of sample data is kept.
 ---@param path_or_duration? string|number WAV file path, or duration in seconds for an empty sample
----@return PicoDeckSample
-function picocalc.sound.sample(path_or_duration) end
+---@param opts? {sampleRate?: integer, bits?: integer, channels?: integer} Format of an empty sample (with a duration only)
+---@return PicoDeckSample? sample
+---@return string? error
+function picocalc.sound.sample(path_or_duration, opts) end
 
 ---Create a SamplePlayer, optionally pre-loading a sample.
 ---The player keeps its sample alive: dropping your own reference to the sample
@@ -916,7 +921,7 @@ function PicoDeckSample:getSubsample(start_frame, end_frame) end
 
 ---Play this sample immediately. `when` is accepted but ignored (no scheduler
 ---on this hardware — playback starts now).
----@param when? number Reserved; ignored
+---@param when number Reserved; ignored (but required)
 ---@param vol? integer Volume 0–100 (default 100; larger values clamp to 100)
 ---@param rightvol? integer Right volume (ignored — mono PWM)
 ---@param rate? number Playback rate multiplier (default 1.0)
@@ -1538,26 +1543,30 @@ function picocalc.graphics.drawTextAligned(text, x, y, alignment, font) end
 ---@param font? PicoDeckFont
 function picocalc.graphics.drawTextInRect(text, rx, ry, rw, rh, alignment, font) end
 
----Measure a string in the default font.
+---Measure a string in `font` (default: the active font).
 ---@param text string
+---@param font? PicoDeckFont
 ---@return integer width
 ---@return integer height
-function picocalc.graphics.getTextSize(text) end
+function picocalc.graphics.getTextSize(text, font) end
 
 ---Word-wrap a string to `max_width` and measure the result.
 ---@param text string
 ---@param max_width integer
+---@param font? PicoDeckFont
 ---@return integer width
 ---@return integer height
-function picocalc.graphics.getTextSizeForMaxWidth(text, max_width) end
+function picocalc.graphics.getTextSizeForMaxWidth(text, max_width, font) end
 
 ---Render text into a new image (word-wrapped to max_w × max_h).
 ---@param text string
 ---@param max_w integer
 ---@param max_h integer
+---@param bg? integer RGB565 background (default: the graphics background colour)
+---@param font? PicoDeckFont
 ---@return PicoDeckImage? img
 ---@return string? error
-function picocalc.graphics.imageWithText(text, max_w, max_h) end
+function picocalc.graphics.imageWithText(text, max_w, max_h, bg, font) end
 
 -- ── Image ────────────────────────────────────────────────────────────────────
 
@@ -1591,9 +1600,10 @@ function picocalc.graphics.image.loadScaled(path, w, h) end
 
 ---Load an image from a Lua string (in-memory buffer). Format is auto-detected
 ---from magic bytes (BMP, JPEG, PNG, GIF).
----@param data string Raw encoded image bytes
+---@param data string|userdata Raw encoded image bytes, or a qmibuf
+---@param length? integer With a qmibuf: how many bytes of it to decode (default: all)
 ---@return PicoDeckImage?
-function picocalc.graphics.image.loadFromBuffer(data) end
+function picocalc.graphics.image.loadFromBuffer(data, length) end
 
 ---Create a blank (black) image of the given dimensions.
 ---@param width integer
@@ -1658,19 +1668,18 @@ function PicoDeckImage:drawAnchored(x, y, ax, ay) end
 ---@param rect_h integer
 function PicoDeckImage:drawTiled(x, y, rect_w, rect_h) end
 
----Draw the image scaled to `dst_w` × `dst_h` at (x, y) (bilinear).
+---Draw the image at (x, y), multiplied by `scale` (bilinear) and optionally rotated.
 ---@param x integer
 ---@param y integer
----@param dst_w integer
----@param dst_h integer
-function PicoDeckImage:drawScaled(x, y, dst_w, dst_h) end
+---@param scale number Multiplier (a float; 2.0 = double size)
+---@param angle? number Rotation in radians (default 0)
+function PicoDeckImage:drawScaled(x, y, scale, angle) end
 
----Draw the image scaled to `dst_w` × `dst_h` at (x, y) (nearest-neighbour, fast).
+---Draw the image at (x, y), enlarged by a whole-number `scale` (nearest-neighbour, fast).
 ---@param x integer
 ---@param y integer
----@param dst_w integer
----@param dst_h integer
-function PicoDeckImage:drawScaledNN(x, y, dst_w, dst_h) end
+---@param scale integer Positive integer multiplier (a non-positive value raises an error)
+function PicoDeckImage:drawScaledNN(x, y, scale) end
 
 ---Stretch the image (or srcRect of it) to exactly w x h, nearest-neighbour.
 ---@param x integer
@@ -1700,9 +1709,10 @@ picocalc.graphics.sprite = {}
 ---@class PicoDeckSprite : userdata
 local PicoDeckSprite = {}
 
----Create a new Sprite object.
+---Create a new Sprite object, optionally with an image.
+---@param image? PicoDeckImage
 ---@return PicoDeckSprite
-function picocalc.graphics.sprite.new() end
+function picocalc.graphics.sprite.new(image) end
 
 ---Add a sprite to the global sprite list.
 ---@param sprite PicoDeckSprite
@@ -1764,11 +1774,12 @@ function picocalc.graphics.sprite.querySpritesAlongLine(x1, y1, x2, y2) end
 ---@return table[]
 function picocalc.graphics.sprite.querySpriteInfoAlongLine(x1, y1, x2, y2) end
 
----Set clip rects for sprites in a z-index range.
+---Set clip rects for sprites in a z-index range (stored, not applied).
+---@param clip_rect { x: integer, y: integer, w: integer, h: integer }
 ---@param z_start integer
 ---@param z_end integer
----@param clip_rect { x: integer, y: integer, w: integer, h: integer }
-function picocalc.graphics.sprite.setClipRectsInRange(z_start, z_end, clip_rect) end
+---@overload fun(x: integer, y: integer, w: integer, h: integer, z_start: integer, z_end: integer)
+function picocalc.graphics.sprite.setClipRectsInRange(clip_rect, z_start, z_end) end
 
 ---Clear clip rects for sprites in a z-index range.
 ---@param z_start integer
@@ -1785,8 +1796,11 @@ function picocalc.graphics.sprite.addEmptyCollisionSprite(x, y, w, h) end
 
 -- PicoDeckSprite methods
 
----@param image PicoDeckImage
-function PicoDeckSprite:setImage(image) end
+---@param image PicoDeckImage|nil `nil` clears the image
+---@param flip? boolean Horizontal flip
+---@param scale? number
+---@param scale_y? number Defaults to `scale`
+function PicoDeckSprite:setImage(image, flip, scale, scale_y) end
 
 ---@return PicoDeckImage?
 function PicoDeckSprite:getImage() end
@@ -1829,8 +1843,7 @@ function PicoDeckSprite:setCenter(ax, ay) end
 ---@return number ay
 function PicoDeckSprite:getCenter() end
 
----@return integer cx
----@return integer cy
+---@return integer[] point `{cx, cy}`: one table, not two values
 function PicoDeckSprite:getCenterPoint() end
 
 ---@param w integer
@@ -1842,9 +1855,11 @@ function PicoDeckSprite:setSize(w, h) end
 function PicoDeckSprite:getSize() end
 
 ---@param scale number
-function PicoDeckSprite:setScale(scale) end
+---@param scale_y? number Defaults to `scale`
+function PicoDeckSprite:setScale(scale, scale_y) end
 
----@return number
+---@return number scale
+---@return number scale_y
 function PicoDeckSprite:getScale() end
 
 ---Enable nearest-neighbour scaling.
@@ -1855,7 +1870,9 @@ function PicoDeckSprite:setScaleNN(nn) end
 function PicoDeckSprite:setTransparentColor(color) end
 
 ---@param degrees number
-function PicoDeckSprite:setRotation(degrees) end
+---@param scale? number Also sets the scale
+---@param scale_y? number Also sets the vertical scale
+function PicoDeckSprite:setRotation(degrees, scale, scale_y) end
 
 ---@return number
 function PicoDeckSprite:getRotation() end
@@ -1889,12 +1906,11 @@ function PicoDeckSprite:getTag() end
 ---@param mode integer
 function PicoDeckSprite:setImageDrawMode(mode) end
 
----@param flipX boolean
----@param flipY boolean
-function PicoDeckSprite:setImageFlip(flipX, flipY) end
+---Flip the image horizontally. There is no vertical flip.
+---@param flip boolean
+function PicoDeckSprite:setImageFlip(flip) end
 
----@return boolean flipX
----@return boolean flipY
+---@return boolean flip Horizontal flip
 function PicoDeckSprite:getImageFlip() end
 
 ---Stored but not applied yet (no-op).
@@ -1927,7 +1943,9 @@ function PicoDeckSprite:isOpaque() end
 function PicoDeckSprite:setBackgroundDrawingCallback(fn) end
 
 ---Draw this sprite immediately (outside the normal update cycle).
-function PicoDeckSprite:draw() end
+---@param x? integer Defaults to the sprite's x
+---@param y? integer Defaults to the sprite's y
+function PicoDeckSprite:draw(x, y) end
 
 ---Update this sprite (calls its registered update callback).
 function PicoDeckSprite:update() end
@@ -1951,7 +1969,11 @@ function PicoDeckSprite:setCollideRect(x, y, w, h) end
 ---@return integer h
 function PicoDeckSprite:getCollideRect() end
 
----@return { x: integer, y: integer, w: integer, h: integer }
+---Return the collision rectangle in world coordinates.
+---@return integer x
+---@return integer y
+---@return integer w
+---@return integer h
 function PicoDeckSprite:getCollideBounds() end
 
 ---Clear the collision rectangle (no collision).
@@ -1968,10 +1990,9 @@ function PicoDeckSprite:allOverlappingSprites() end
 ---Clear the stencil mask.
 function PicoDeckSprite:clearStencil() end
 
----Set a checkerboard stencil pattern.
----@param x integer Pattern phase x
----@param y integer Pattern phase y
-function PicoDeckSprite:setStencilPattern(x, y) end
+---Set an ordered-dither stencil pattern of the given density.
+---@param level number 0 (nothing drawn) to 1 (everything drawn); other values clamp
+function PicoDeckSprite:setStencilPattern(level) end
 
 ---Return `true` if this sprite's image collides with `other` based on alpha masks.
 ---@param other PicoDeckSprite
@@ -2057,28 +2078,35 @@ picocalc.graphics.spritesheet = {}
 ---@class PicoDeckSpritesheet : userdata
 local PicoDeckSpritesheet = {}
 
----Create a spritesheet from a manually-built frame list.
+---Create a spritesheet, optionally with its source image; add frames with `addFrame`.
+---@param image? PicoDeckImage
 ---@return PicoDeckSpritesheet
-function picocalc.graphics.spritesheet.new() end
+function picocalc.graphics.spritesheet.new(image) end
 
 ---Create a spritesheet from a uniform grid of equal-sized frames.
 ---@param image PicoDeckImage Source image
+---@param cols integer Frames per row
+---@param rows integer Rows
 ---@param frame_w integer Frame width in pixels
 ---@param frame_h integer Frame height in pixels
 ---@return PicoDeckSpritesheet
-function picocalc.graphics.spritesheet.newGrid(image, frame_w, frame_h) end
+function picocalc.graphics.spritesheet.newGrid(image, cols, rows, frame_w, frame_h) end
 
----Add a frame to the spritesheet.
----@param image PicoDeckImage
-function PicoDeckSpritesheet:addFrame(image) end
+---Add a frame (a rectangle of the source image) to the spritesheet.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param h integer
+---@return integer index Zero-based index of the new frame
+function PicoDeckSpritesheet:addFrame(x, y, w, h) end
 
 ---Return the number of frames.
 ---@return integer
 function PicoDeckSpritesheet:getFrameCount() end
 
----Return the image for frame index `i` (1-based).
+---Return the bounds of frame `i` (zero-based); nothing when `i` is out of range.
 ---@param i integer
----@return PicoDeckImage?
+---@return integer[]? bounds `{x, y, w, h}` in the source image
 function PicoDeckSpritesheet:getFrame(i) end
 
 ---Return the combined source image.
@@ -2086,10 +2114,11 @@ function PicoDeckSpritesheet:getFrame(i) end
 function PicoDeckSpritesheet:getImage() end
 
 ---Draw frame `i` at (x, y).
----@param i integer 1-based frame index
+---@param i integer Zero-based frame index
 ---@param x integer
 ---@param y integer
-function PicoDeckSpritesheet:drawFrame(i, x, y) end
+---@param flip? boolean Horizontal flip
+function PicoDeckSpritesheet:drawFrame(i, x, y, flip) end
 
 -- ── AnimationLoop ─────────────────────────────────────────────────────────────
 
@@ -2102,16 +2131,18 @@ picocalc.graphics.animation.loop = {}
 ---@class PicoDeckAnimationLoop : userdata
 local PicoDeckAnimationLoop = {}
 
----Create an animation loop from a spritesheet.
----@param spritesheet PicoDeckSpritesheet
----@param frame_duration_ms? integer Milliseconds per frame (default: 100)
+---Create an animation loop over a list of images (whole images, not a spritesheet).
+---@param interval_ms? integer Milliseconds per frame (default 100)
+---@param frames? PicoDeckImage[] The frame images, in order
+---@param looping? boolean Repeat forever (default true)
 ---@return PicoDeckAnimationLoop
-function picocalc.graphics.animation.loop.new(spritesheet, frame_duration_ms) end
+function picocalc.graphics.animation.loop.new(interval_ms, frames, looping) end
 
 ---Draw the current frame at (x, y).
 ---@param x integer
 ---@param y integer
-function PicoDeckAnimationLoop:draw(x, y) end
+---@param flip? boolean Horizontal flip
+function PicoDeckAnimationLoop:draw(x, y, flip) end
 
 ---Advance the animation timer.
 function PicoDeckAnimationLoop:update() end
@@ -2128,9 +2159,9 @@ function PicoDeckAnimationLoop:isValid() end
 ---@return integer
 function PicoDeckAnimationLoop:getFrameIndex() end
 
----Replace the image table.
----@param spritesheet PicoDeckSpritesheet
-function PicoDeckAnimationLoop:setImageTable(spritesheet) end
+---Replace the frames and restart at frame 0.
+---@param frames? PicoDeckImage[] A list of images; anything else clears the loop
+function PicoDeckAnimationLoop:setImageTable(frames) end
 
 ---Set the milliseconds per frame.
 ---@param ms integer
@@ -2188,23 +2219,30 @@ function PicoDeckBlinker:remove() end
 function PicoDeckBlinker:isRunning() end
 
 ---Advance the blinker timer by the elapsed time.
+---@return boolean on Whether the blinker is currently on
 function PicoDeckBlinker:update() end
 
 -- ── Animator ──────────────────────────────────────────────────────────────────
 
----@class picocalc.graphics.animator
-picocalc.graphics.animator = {}
+---@class picocalc.graphics.animation.animator
+picocalc.graphics.animation.animator = {}
 
 ---@class PicoDeckAnimator : userdata
+---@field easingAmplitude number Amplitude for the easing curve (default 1)
+---@field easingPeriod number Period for the easing curve (default 0)
+---@field repeatCount integer Times the animation runs (default 1)
+---@field reverses boolean Play back to `from` after reaching `to` (default false)
 local PicoDeckAnimator = {}
 
 ---Create an Animator that interpolates a value from `from` to `to` over `duration_ms`.
+---It starts at once, or after `delay_ms`.
+---@param duration_ms integer Duration comes first
 ---@param from number
 ---@param to number
----@param duration_ms integer
----@param easing_fn? fun(t: number): number
+---@param easing? string Easing name: "linear" (default), "sineIn", "sineOut", "sineInOut", "quadIn", "quadOut", "quadInOut", "cubicIn", "cubicOut", "cubicInOut" (an unknown name is linear; a function is not accepted)
+---@param delay_ms? integer Wait this long before starting
 ---@return PicoDeckAnimator
-function picocalc.graphics.animator.new(from, to, duration_ms, easing_fn) end
+function picocalc.graphics.animation.animator.new(duration_ms, from, to, easing, delay_ms) end
 
 ---Return the current interpolated value.
 ---@return number
@@ -2220,7 +2258,8 @@ function PicoDeckAnimator:valueAtTime(ms) end
 function PicoDeckAnimator:progress() end
 
 ---Reset the animation to the start.
-function PicoDeckAnimator:reset() end
+---@param duration_ms? integer New duration
+function PicoDeckAnimator:reset(duration_ms) end
 
 ---Return `true` when the animation has finished.
 ---@return boolean
@@ -2299,7 +2338,12 @@ function PicoDeckFont:getName() end
 
 ---@class PicoDeckMesh : userdata
 local PicoDeckMesh = {}
----@return integer nverts, integer ntris, number cx, number cy, number cz, number radius
+---@return integer nverts
+---@return integer ntris
+---@return number cx
+---@return number cy
+---@return number cz
+---@return number radius
 function PicoDeckMesh:getInfo() end
 
 ---@class picocalc.gfx3d
@@ -2316,19 +2360,35 @@ function picocalc.gfx3d.newMesh(verts, tris, colors, flags) end
 function picocalc.gfx3d.setViewport(x, y, w, h) end
 function picocalc.gfx3d.setProjection(fovY, near, far) end
 function picocalc.gfx3d.setCamera(x, y, z, yaw, pitch, roll) end
+---@param ux? number Up vector (default 0, 1, 0)
+---@param uy? number
+---@param uz? number
 function picocalc.gfx3d.lookAt(ex, ey, ez, tx, ty, tz, ux, uy, uz) end
+---@param ambient? number Default 0.25
 function picocalc.gfx3d.setLight(dx, dy, dz, ambient) end
 function picocalc.gfx3d.setFog(near, far, color) end
 ---@param bands {[1]: number, [2]: integer}[]|nil
 function picocalc.gfx3d.setSky(bands) end
+---@param clearColor? integer
 function picocalc.gfx3d.beginScene(clearColor) end
+---@param scale? number Default 1; must be positive
+---@param bias? number Default 0
+---@param sortAsOne? boolean
 function picocalc.gfx3d.draw(mesh, x, y, z, yaw, pitch, roll, scale, bias, sortAsOne) end
+---@param scale? number Default 1; must be positive
+---@param bias? number Default 0
+---@param sortAsOne? boolean
 function picocalc.gfx3d.drawBasis(mesh, x, y, z, fx, fy, fz, ux, uy, uz, scale, bias, sortAsOne) end
 ---@param list table an array of meshes built in world coordinates
 ---@param bias number|nil depth bias for every mesh (default 0)
 ---@param start integer|nil the first index drawn; the rest wrap round (default 1)
 function picocalc.gfx3d.drawList(list, bias, start) end
 function picocalc.gfx3d.drawBackground(mesh) end
+---@param sx? integer Source rect x (default 0)
+---@param sy? integer Source rect y (default 0)
+---@param sw? integer Source rect width (default: the rest of the image)
+---@param sh? integer Source rect height (default: the rest of the image)
+---@param bias? number Default 0
 function picocalc.gfx3d.drawSprite(image, x, y, z, size, sx, sy, sw, sh, bias) end
 function picocalc.gfx3d.endScene() end
 ---@return number|nil sx, number sy, number depth
@@ -2508,9 +2568,12 @@ function PicoDeckCamera:setZoom(zoom) end
 ---@return number
 function PicoDeckCamera:getZoom() end
 
----Set a target sprite/object to follow. The camera will smoothly track it.
----@param target any Object with `getPosition()` method
-function PicoDeckCamera:setTarget(target) end
+---Follow a world position: `update(dt)` eases the camera towards it. Call it
+---again each frame to track a moving object.
+---@param x number
+---@param y number
+---@param lag? number Smoothing time constant in seconds (default 0.15)
+function PicoDeckCamera:setTarget(x, y, lag) end
 
 ---Clear the follow target.
 function PicoDeckCamera:clearTarget() end
@@ -2525,10 +2588,12 @@ function PicoDeckCamera:setBounds(x, y, w, h) end
 ---Remove world bounds.
 function PicoDeckCamera:clearBounds() end
 
----@return integer x
----@return integer y
----@return integer w
----@return integer h
+---Return the world bounds as `min_x, min_y, max_x, max_y`; nothing at all when
+---the camera is unbounded.
+---@return number? min_x
+---@return number min_y
+---@return number max_x
+---@return number max_y
 function PicoDeckCamera:getBounds() end
 
 ---Apply a full-screen shake effect for `duration_ms` milliseconds.
@@ -2564,7 +2629,8 @@ function PicoDeckCamera:worldToScreen(wx, wy) end
 function PicoDeckCamera:screenToWorld(sx, sy) end
 
 ---Update camera position (advances follow target, shake, etc.).
-function PicoDeckCamera:update() end
+---@param dt number Seconds since the last update
+function PicoDeckCamera:update(dt) end
 
 ---Return the current draw offset applied to the display.
 ---@return integer ox
@@ -2613,15 +2679,16 @@ function picocalc.game.scene.pop() end
 ---@return PicoDeckScene?
 function picocalc.game.scene.getCurrent() end
 
----Call `update()` on the current scene.
-function picocalc.game.scene.update() end
+---Call `update(dt)` on the current scene.
+---@param dt? number Seconds (default 0.016)
+function picocalc.game.scene.update(dt) end
 
 ---Call `draw()` on the current scene.
 function picocalc.game.scene.draw() end
 
 ---Return (or create) an object pool associated with a scene.
 ---@param name string Scene name
----@param factory? fun(): any Factory function for new objects
+---@param factory fun(): any Factory function for new objects
 ---@return table pool
 function picocalc.game.scene.objectPool(name, factory) end
 
@@ -3092,8 +3159,9 @@ picocalc.json = {}
 
 ---Encode a Lua value as a JSON string.
 ---@param value any
+---@param opts? {indent?: integer} Spaces per indent level (default 0: compact)
 ---@return string
-function picocalc.json.encode(value) end
+function picocalc.json.encode(value, opts) end
 
 ---Decode a JSON string into Lua values. JSON null decodes to `json.null`.
 ---@param text string
