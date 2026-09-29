@@ -680,11 +680,13 @@ void display_draw_image_scaled(int x, int y, int img_w, int img_h,
     if (ty > max_y) max_y = ty;
   }
 
-  // Clamp to framebuffer bounds
-  int bx = (int)floorf(min_x);
-  int by = (int)floorf(min_y);
-  int bw = (int)ceilf(max_x - min_x);
-  int bh = (int)ceilf(max_y - min_y);
+  // Clamp to framebuffer bounds. TGX rasterises with its own rounding and can
+  // touch one row/column past the exact float box, so pad it by 1 px a side:
+  // a pixel it writes outside the swapped region keeps the wrong byte order.
+  int bx = (int)floorf(min_x) - 1;
+  int by = (int)floorf(min_y) - 1;
+  int bw = (int)ceilf(max_x - min_x) + 3;
+  int bh = (int)ceilf(max_y - min_y) + 3;
   if (bx < 0) bx = 0;
   if (by < 0) by = 0;
   if (bx + bw > FB_WIDTH) bw = FB_WIDTH - bx;
@@ -699,6 +701,10 @@ void display_draw_image_scaled(int x, int y, int img_w, int img_h,
     }
   }
 
+  // TGX takes the rotation in degrees; the bounding box above and the Lua API
+  // use radians.
+  const float angle_deg = angle * (180.0f / (float)M_PI);
+
   // Use masked version if transparency is enabled, otherwise use regular
   // version.  The clip is passed through (converted from the driver's
   // inclusive bounds to the decoder's half-open rect) so TGX renders into a
@@ -707,14 +713,14 @@ void display_draw_image_scaled(int x, int y, int img_w, int img_h,
     tgx_draw_image_scaled_masked(fb, FB_WIDTH, FB_HEIGHT,
                                  s_clip_x0, s_clip_y0,
                                  s_clip_x1 + 1, s_clip_y1 + 1,
-                                 data, img_w, img_h, (int)cx, (int)cy,
-                                 scale, angle, transparent_color);
+                                 data, img_w, img_h, cx, cy,
+                                 scale, angle_deg, transparent_color);
   } else {
     tgx_draw_image_scaled(fb, FB_WIDTH, FB_HEIGHT,
                           s_clip_x0, s_clip_y0,
                           s_clip_x1 + 1, s_clip_y1 + 1,
-                          data, img_w, img_h, (int)cx, (int)cy,
-                          scale, angle);
+                          data, img_w, img_h, cx, cy,
+                          scale, angle_deg);
   }
 
   // Byte-swap back only the affected region

@@ -192,7 +192,9 @@ typedef struct {
     int  (*getFontWidth)(void);            // max advance of the active font
     int  (*getFontHeight)(void);
     int  (*textWidth)(const char *text);   // real width, proportional-aware
-    int  (*loadFont)(const char *path);    // slot id, or -1 on failure
+    // slot id, or -1 on failure (bad file, or all 8 slots in use; the reason
+    // is logged). Lua's display.loadFont returns nil, errstr instead.
+    int  (*loadFont)(const char *path);
     void (*unloadFont)(int font_id);
     // Draw text leaving background pixels untouched.
     int  (*drawTextTransparent)(int x, int y, const char *text, uint16_t fg);
@@ -602,6 +604,8 @@ typedef struct {
     // Draw operations.
     void      (*draw)(pcimage_t img, int x, int y);
     void      (*drawRegion)(pcimage_t img, int sx, int sy, int sw, int sh, int dx, int dy);
+    // dst_w/dst_h are a destination SIZE; Lua's img:drawScaled takes a scale
+    // multiplier instead.
     void      (*drawScaled)(pcimage_t img, int x, int y, int dst_w, int dst_h);
 } picocalc_graphics_t;
 

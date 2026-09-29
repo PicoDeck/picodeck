@@ -262,17 +262,30 @@ static int l_display_getFontHeight(lua_State *L) {
   return 1;
 }
 
-// loadFont(path) -> id | nil. Sandbox-checked like image loading. Freed at
-// app exit by the launcher, or earlier via unloadFont.
+// loadFont(path) -> id | nil, errstr. Sandbox-checked like image loading. Freed
+// at app exit by the launcher, or earlier via unloadFont. The 8 loaded-font
+// slots are shared with graphics.font.new; a full registry is logged by
+// font_registry_load_ex and reported here. (The native loadFont returns -1.)
 static int l_display_loadFont(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
   if (!fs_sandbox_check(L, path, false)) {
     lua_pushnil(L);
-    return 1;
+    lua_pushfstring(L, "access denied: %s", path);
+    return 2;
   }
-  int id = font_registry_load(path);
-  if (id < 0) lua_pushnil(L);
-  else lua_pushinteger(L, id);
+  const char *why = "load failed";
+  int id = font_registry_load_ex(path, &why);
+  if (id < 0) {
+    lua_pushnil(L);
+    if (strcmp(why, FONT_REGISTRY_WHY_FULL) == 0)
+      lua_pushfstring(L, "font registry full (all %d loaded-font slots are in "
+                         "use; display.loadFont and graphics.font.new share "
+                         "them): %s", FONT_REGISTRY_LOADED, path);
+    else
+      lua_pushfstring(L, "%s: %s", why, path);
+    return 2;
+  }
+  lua_pushinteger(L, id);
   return 1;
 }
 

@@ -144,6 +144,30 @@ static int l_graphics_image_copy(lua_State *L) {
   return 1;
 }
 
+// Reads the srcRect table at stack index idx into sx, sy, sw, sh. It is either
+// named {x=, y=, w=, h=} or positional {x, y, w, h}; a named field wins over the
+// same array slot, and a missing one defaults to 0, 0, image width, image
+// height. Errors name the field as "srcRect.x". Used by img:draw and
+// img:drawStretched.
+static void read_src_rect(lua_State *L, int idx, const lua_image_t *img,
+                          int *sx, int *sy, int *sw, int *sh) {
+  static const char *const names[4] = {"x", "y", "w", "h"};
+  static const char *const whats[4] = {"srcRect.x", "srcRect.y", "srcRect.w",
+                                       "srcRect.h"};
+  int def[4] = {0, 0, img->w, img->h};
+  int v[4];
+  for (int i = 0; i < 4; i++) {
+    lua_getfield(L, idx, names[i]);
+    if (lua_isnil(L, -1)) {  // not named: fall back to the array slot
+      lua_pop(L, 1);
+      lua_rawgeti(L, idx, i + 1);
+    }
+    v[i] = (int)lb_optint_at(L, -1, idx, whats[i], def[i]);
+    lua_pop(L, 1);
+  }
+  *sx = v[0]; *sy = v[1]; *sw = v[2]; *sh = v[3];
+}
+
 static int l_graphics_image_draw(lua_State *L) {
   lua_image_t *img = check_image(L, 1);
   int x = lb_checkint(L, 2);
@@ -163,20 +187,7 @@ static int l_graphics_image_draw(lua_State *L) {
   }
 
   int sx = 0, sy = 0, sw = img->w, sh = img->h;
-  if (lua_istable(L, 5)) {
-    lua_getfield(L, 5, "x");
-    sx = lb_optint_at(L, -1, 5, "field 'x'", 0);
-    lua_pop(L, 1);
-    lua_getfield(L, 5, "y");
-    sy = lb_optint_at(L, -1, 5, "field 'y'", 0);
-    lua_pop(L, 1);
-    lua_getfield(L, 5, "w");
-    sw = lb_optint_at(L, -1, 5, "field 'w'", img->w);
-    lua_pop(L, 1);
-    lua_getfield(L, 5, "h");
-    sh = lb_optint_at(L, -1, 5, "field 'h'", img->h);
-    lua_pop(L, 1);
-  }
+  if (lua_istable(L, 5)) read_src_rect(L, 5, img, &sx, &sy, &sw, &sh);
 
   display_draw_image_partial(x, y, img->w, img->h, img->data, sx, sy, sw, sh,
                              flip_x, flip_y, img->transparent_color);
@@ -234,26 +245,54 @@ static int l_graphics_image_getMetadata(lua_State *L) {
   return 1;
 }
 
+// Largest scaled destination edge, in pixels, that drawScaled accepts. The
+// firmware draws it with TGX blitScaledRotated, whose rasteriser is documented
+// for viewports up to 4096 px at the configured 6 subpixel bits
+// (third_party/tgx Rasterizer.h); beyond it the edge functions overflow int32
+// and a screen-covering result can draw nothing. It still rejects a
+// destination size passed as the scale (182 for a 96 px image = 17472 px).
+#define IMAGE_SCALE_MAX_DST 4096.0f
+// drawScaledNN draws through disp_blit_scaled, which does its arithmetic in
+// int64 over the clipped span only, so it keeps a wider cap.
+#define IMAGE_SCALE_NN_MAX_DST 16384.0f
+
+// Shared scale check. `what` names the call for the message; the text says
+// "scale multiplier" because passing dst_w/dst_h (as the native
+// graphics->drawScaled takes) is the common mistake.
+static void check_image_scale(lua_State *L, const lua_image_t *img, double scale,
+                              const char *what, float max_dst) {
+  double edge = (double)(img->w > img->h ? img->w : img->h) * scale;
+  if (!isfinite(scale) || scale <= 0 || edge > max_dst)
+    luaL_error(L,
+               "%s: the argument is a scale multiplier (2 = twice the size), "
+               "not dst_w/dst_h; it must be finite, > 0 and give at most %d px, "
+               "got %f for a %dx%d image",
+               what, (int)max_dst, scale, img->w, img->h);
+}
+
+// img:drawScaled(x, y, scale [, angle]): scale is a MULTIPLIER (the native
+// graphics->drawScaled takes dst_w/dst_h instead).
 static int l_graphics_image_drawScaled(lua_State *L) {
   lua_image_t *img = check_image(L, 1);
   int x = lb_checkint(L, 2);
   int y = lb_checkint(L, 3);
-  float scale = luaL_checknumber(L, 4);
-  float angle = luaL_optnumber(L, 5, 0.0);
+  double scale = luaL_checknumber(L, 4);
+  check_image_scale(L, img, scale, "drawScaled", IMAGE_SCALE_MAX_DST);
+  float angle = lb_optfloat(L, 5, 0.0f);
 
-  display_draw_image_scaled(x, y, img->w, img->h, img->data, scale, angle,
-                            img->transparent_color);
+  display_draw_image_scaled(x, y, img->w, img->h, img->data, (float)scale,
+                            angle, img->transparent_color);
   return 0;
 }
 
+// img:drawScaledNN(x, y, scale): integer multiplier, nearest neighbour.
 static int l_graphics_image_drawScaledNN(lua_State *L) {
   lua_image_t *img = check_image(L, 1);
   int x = lb_checkint(L, 2);
   int y = lb_checkint(L, 3);
   int scale = lb_checkint(L, 4);
-
-  if (scale <= 0)
-    return luaL_error(L, "scale must be positive integer");
+  check_image_scale(L, img, (double)scale, "drawScaledNN",
+                    IMAGE_SCALE_NN_MAX_DST);
 
   int dst_w = img->w * scale;
   int dst_h = img->h * scale;
@@ -264,7 +303,7 @@ static int l_graphics_image_drawScaledNN(lua_State *L) {
 }
 
 // img:drawStretched(x, y, w, h [, srcRect]) — nearest-neighbour stretch of the
-// image (or of srcRect {x, y, w, h}, clamped to the image) to w x h.
+// image (or of srcRect, clamped to the image) to w x h. srcRect: read_src_rect.
 static int l_graphics_image_drawStretched(lua_State *L) {
   lua_image_t *img = check_image(L, 1);
   int x = (int)lb_checkint(L, 2);
@@ -274,10 +313,7 @@ static int l_graphics_image_drawStretched(lua_State *L) {
   int sx = 0, sy = 0, sw = img->w, sh = img->h;
   if (!lua_isnoneornil(L, 6)) {
     luaL_checktype(L, 6, LUA_TTABLE);
-    lua_getfield(L, 6, "x"); sx = (int)lb_optint_at(L, -1, 6, "field 'x'", 0); lua_pop(L, 1);
-    lua_getfield(L, 6, "y"); sy = (int)lb_optint_at(L, -1, 6, "field 'y'", 0); lua_pop(L, 1);
-    lua_getfield(L, 6, "w"); sw = (int)lb_optint_at(L, -1, 6, "field 'w'", img->w); lua_pop(L, 1);
-    lua_getfield(L, 6, "h"); sh = (int)lb_optint_at(L, -1, 6, "field 'h'", img->h); lua_pop(L, 1);
+    read_src_rect(L, 6, img, &sx, &sy, &sw, &sh);
   }
   if (w <= 0 || h <= 0) return 0;
   display_draw_image_stretched(x, y, w, h, img->data, img->w, img->h, sx, sy, sw,
@@ -3962,11 +3998,26 @@ static int l_font_new(lua_State *L) {
   else if (strcmp(name, "scientifica") == 0)      font_id = 2;
   else if (strcmp(name, "scientifica-bold") == 0) font_id = 3;
   else {
+    // A path has a '/' or ends in ".pfn"; anything else is a bare font name
+    // that matched no built-in, and must not be blamed on the sandbox.
+    size_t n = strlen(name);
+    bool path_like = strchr(name, '/') != NULL ||
+                     (n >= 4 && strcmp(name + n - 4, ".pfn") == 0);
+    if (!path_like)
+      return luaL_error(L, "no such built-in font '%s' (built-ins: 6x8, 8x12, "
+                           "scientifica, scientifica-bold); to load a .pfn file "
+                           "pass its absolute path", name);
     if (!fs_sandbox_check(L, name, false))
       return luaL_error(L, "access denied: %s", name);
-    font_id = font_registry_load(name);
-    if (font_id < 0)
-      return luaL_error(L, "failed to load font: %s", name);
+    const char *why = "load failed";
+    font_id = font_registry_load_ex(name, &why);
+    if (font_id < 0) {
+      if (strcmp(why, FONT_REGISTRY_WHY_FULL) == 0)
+        return luaL_error(L, "font registry full (all %d loaded-font slots are "
+                             "in use; display.loadFont and graphics.font.new "
+                             "share them): %s", FONT_REGISTRY_LOADED, name);
+      return luaL_error(L, "failed to load font %s: %s", name, why);
+    }
     owned = true;
   }
   lua_font_t *f = (lua_font_t *)lua_newuserdata(L, sizeof(lua_font_t));
