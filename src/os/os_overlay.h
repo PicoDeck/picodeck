@@ -48,7 +48,13 @@ void os_overlay_app_start(void);
 // key (or "0") is Off. os_overlay_fps_mode() reads the config.
 // os_overlay_reload() picks up a change and forgets what the panel shows of
 // the overlays: the system menu calls it when it closes, having drawn over
-// the app.
+// the app. It draws nothing: the screen the menu gives back shows the
+// overlays as the app's last present left them (a flush() app's counter at
+// the old corner and value, in its restored front buffer), and the new
+// setting shows from the app's next present. Nothing repaints them on close:
+// the pixels under a counter drawn into a flush() frame are gone, so an old
+// box cannot be erased cleanly, and a value read over the menu's pause would
+// be wrong anyway.
 int os_overlay_fps_mode(void);
 void os_overlay_reload(void);
 const char *os_overlay_fps_key(int mode);    // NULL (Off: no key), "tr", ...
