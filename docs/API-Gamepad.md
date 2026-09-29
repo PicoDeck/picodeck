@@ -2,7 +2,7 @@
 title: "API Gamepad"
 ---
 
-A logical gamepad with 12 buttons. Read it instead of raw keys and your game gets rebinding without writing any code for it: each button is an alias for keys, and players choose those keys.
+A logical gamepad with 12 buttons. Read it instead of raw keys and your game gets rebinding without writing any code for it: each button is an alias for keys, and players choose those keys in the system menu ([Controls](#controls-settings), below).
 
 ## How it works
 
@@ -39,6 +39,29 @@ The keyboard reports some keys differently while Shift or Alt is held, and the g
 - A key pressed within a few milliseconds after Shift comes up may miss its press (Left, Right, Backspace, Space, Enter). No button stays held, with one exception: Enter released at the same moment as Shift while Alt is still held stays held until the system menu opens or the app exits.
 
 Not bindable: the system menu key (F10) and Brk, which belong to the OS; F6–F9, which are Shift+F1–F4; digits and symbols, which Shift turns into other symbols; Shift, Alt and Sym, which change the other keys.
+
+## Controls (Settings)
+
+Players rebind the gamepad in the system menu: **Settings → Controls**. Your game needs no code for it.
+
+- **At the launcher** the page edits the bindings of all games (`/system/gamepad.json`).
+- **Inside a running game** its top row picks **This game** (the default) or **All games**. This game edits that game's override (`/data/<APP_ID>/gamepad.json`); the bindings it inherits from All games are drawn dimmed.
+
+Each button has a row with a **Primary** and an **Alt** cell. Each cell shows its key's name, or `-` when unbound.
+
+| Key | Action |
+|-----|--------|
+| Arrows | Move between cells; on the top row, Left/Right switch This game / All games |
+| Enter | Bind the cell: the next key pressed becomes its key (on the top row, switch) |
+| Menu key | Cancel the capture |
+| C | Clear the cell |
+| R, twice | Reset: All games to the defaults; This game to All games (its override file is deleted) |
+| Esc | Save and go back |
+
+- While the cell reads `press a key...`, every key that can be bound is taken, Esc and Backspace included. A key that cannot be bound is refused with a notice ("Shift can't be bound") and the capture goes on. Brk still takes a screenshot.
+- A key already on another button moves: its old slot becomes unbound and the notice says so ("F5 moved from B to A"). In This game, the button it left becomes part of the override too, as does any button whose slot you bind or clear.
+- Leaving the page with Esc saves, and the running game has the new bindings as soon as the menu closes. The key that closes the menu never reaches the game as a press. If the save fails the page says so, and the previous file and bindings are kept.
+- The global file lists only the buttons that differ from the defaults (with none it is deleted); the override lists the buttons it overrides.
 
 ## picocalc.gamepad
 
@@ -124,7 +147,7 @@ Key names: `Up`, `Down`, `Left`, `Right`, `Enter`, `Esc`, `Tab`, `Bksp`, `Del`, 
 
 ## Bindings files
 
-The bindings are read when an app starts:
+The bindings are read when an app starts, and again when the Controls page saves:
 
 - **`/system/gamepad.json`**: the global map, applied over the defaults.
 - **`/data/<APP_ID>/gamepad.json`**: one game's override. Only the buttons it lists change; every other button keeps the global binding. A key the override uses is taken off the button it had in the global map.
