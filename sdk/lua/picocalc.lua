@@ -418,8 +418,9 @@ function picocalc.input.isKeyDown(k) end
 -- =============================================================================
 
 ---A logical gamepad whose buttons are aliases for keys: a bound key still
----reports as itself through `picocalc.input`, and players can rebind it.
----Updated by `picocalc.input.update()`. Absent on firmware before API version 9: check
+---reports as itself through `picocalc.input`. Players rebind it: the global
+---map is `/system/gamepad.json`, a per-game override `/data/<APP_ID>/gamepad.json`,
+---both read when the app starts. Updated by `picocalc.input.update()`. Absent on firmware before API version 9: check
 ---`if picocalc.gamepad then`.
 ---@class picocalc.gamepad
 ---@field PAD_UP     integer Up (default: Up arrow)
