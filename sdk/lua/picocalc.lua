@@ -1255,15 +1255,15 @@ function PicoDeckHttpConn:getResponseStatus() end
 function PicoDeckHttpConn:getResponseHeaders() end
 
 ---Register a callback fired each time new response data arrives.
----@param fn fun(conn: PicoDeckHttpConn)
+---@param fn fun()
 function PicoDeckHttpConn:setRequestCallback(fn) end
 
 ---Register a callback fired once response headers have been parsed.
----@param fn fun(conn: PicoDeckHttpConn)
+---@param fn fun()
 function PicoDeckHttpConn:setHeadersReadCallback(fn) end
 
 ---Register a callback fired when the full response body has been received.
----@param fn fun(conn: PicoDeckHttpConn)
+---@param fn fun()
 function PicoDeckHttpConn:setRequestCompleteCallback(fn) end
 
 ---Register a callback fired when the request fails (not after a successful response). Called with no arguments; read getError() inside it, since the connection is released afterwards.
