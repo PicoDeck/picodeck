@@ -467,7 +467,9 @@ VAUDIO_FIXTURE = r"""
 --               counts the times the MP3 position went back (a loop that
 --               restarted the audio session resets it).
 --   pausedseek: play 1 s, pause, seek to 2 s, resume, play 1.5 s.
---   seeks:      loop on, a seek every 700 ms for SECONDS.
+--   seeks:      loop on, a seek every 700 ms for SECONDS; before each seek,
+--               the MP3 position (it restarts at 0 with every seek) against
+--               the time since the last seek() returned (or play()).
 local T = picocalc.sys.loadlib("picotest")
 local sys, sound, fs, input = picocalc.sys, picocalc.sound, picocalc.fs, picocalc.input
 local MODE, SECONDS = fs.readFile(fs.appPath("run.txt")):match("(%S+) (%d+)")
@@ -532,20 +534,30 @@ T.case(MODE, function()
   elseif MODE == "seeks" then
     v:setLoop(true)
     v:play()
+    local seg_start = sys.getTimeUs()
     write("playing", "1")
     local targets = {800, 3500, 1500, 4200, 300, 2600}
     local seeks, worst_us, next_seek = 0, 0, sys.getTimeMs() + 700
+    local pace_min, lag_max = 1000, 0
     run(v, SECONDS * 1000, function()
       if sys.getTimeMs() >= next_seek then
+        -- Floats: 32-bit integers overflow at us * 44100.
+        local want = (sys.getTimeUs() - seg_start) / 1000000 * 44100
+        local played = mp3:getPosition()
+        pace_min = math.min(pace_min, played / want)
+        lag_max = math.max(lag_max, want - played)
         seeks = seeks + 1
         local u0 = sys.getTimeUs()
         v:seekMs(targets[(seeks - 1) % #targets + 1])
-        worst_us = math.max(worst_us, sys.getTimeUs() - u0)
+        seg_start = sys.getTimeUs()
+        worst_us = math.max(worst_us, seg_start - u0)
         next_seek = sys.getTimeMs() + 700
       end
     end)
     metrics.seeks = seeks
     metrics.seek_us_max = worst_us
+    metrics.pace_min = pace_min
+    metrics.lag_max_frames = math.floor(lag_max)
   end
   T.ok(v:isPlaying(), "the clip still plays")
   v:stop()
@@ -621,12 +633,18 @@ def test_video_resume_after_a_paused_seek_plays_audio(video_audio_app):
 
 
 def test_video_seeks_keep_the_audio_fed(video_audio_app):
-    """A seek every 700 ms: each restarts the audio from the prefeed read
-    before the old audio stopped (#20), and the audio keeps up: under 1% of
-    the window's frames find no MP3. Prints the longest seek()."""
+    """A seek every 700 ms. Each restarts the audio session from the
+    chunks read before the old audio stopped (#20), and the restarted
+    audio is playing when seek() returns and keeps pace until the next
+    seek: the session's MP3 position against the time since seek()
+    returned (95% at worst over ~700 ms), and under 1% of the window's
+    frames find no MP3. This does not measure the gap inside a seek (a
+    detached MP3 counts no underruns, and the old audio plays on while the
+    new chunks are read); the longest seek() it prints bounds it."""
     stats, m, outcome, results = video_audio_app("seeks", seconds=10, measure_s=8)
     print("video seeks:", stats, m)
     assert outcome["result"] == "returned", outcome
     assert_passed(results)
     assert m["seeks"] >= 10, m
+    assert m["pace_min"] >= 0.95, m
     assert stats["mp3_underruns"] * 100 < 44.1 * stats["window_ms"], stats

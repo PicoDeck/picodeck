@@ -578,10 +578,10 @@ static void present_still(video_player_t *player, video_priv_t *priv) {
 // next header in sight (no bit reservoir kept).
 #define AUDIO_PREFEED_BYTES 16384
 
-// How far off the audio's loop point may be when the video reaches its end
-// for the video to loop in step with it (loop_with_audio): an MP3 track
-// runs up to a frame or two (26-72 ms each) longer than the video, and the
-// app's update() comes a little late. Further off, both restart together.
+// How far the audio's loop point may be from the video's end for the video
+// to loop in step with it (loop_with_audio): an MP3 track runs up to a
+// frame or two (26-72 ms each) longer than the video. Further off, both
+// restart together.
 #define LOOP_AUDIO_SLACK_US 200000
 
 // Feed audio chunks from the audio index into the MP3 fed ring.
@@ -1324,32 +1324,47 @@ static void seek_video(video_player_t *player, video_priv_t *priv, uint32_t fram
     priv->osd_hide_at_us = time_us_64() + priv->osd_timeout_us;
 }
 
+typedef enum {
+    LOOP_IN_STEP,   // looped, the clock set from the audio
+    LOOP_WAIT,      // the last frame holds; update() asks again
+    LOOP_RESTART,   // the caller restarts video and audio together
+} loop_step_t;
+
 // Loop the video in step with its audio.  The feeder has fed the audio on
 // through its loop point (video_feed_audio), so the audio plays on without
-// a gap, and the video restarts when the audio's loop point plays: its
-// clock is set from how far the output is from it (still to come: the
-// last frame holds until then).  False when the audio is not looping with
-// it or is too far off; the caller then restarts both.
-static bool loop_with_audio(video_player_t *player, video_priv_t *priv) {
+// restarting, and the video restarts when the audio's loop point plays,
+// if that is within LOOP_AUDIO_SLACK_US of the video's end (its clock's:
+// an update() that comes late changes nothing).  Until the decoder has
+// reached the loop point (it runs only ~0.1-0.8 s ahead of the mixer) the
+// last frame holds; once it has, the clock is set from how far the mixer
+// is from it (still to come: the last frame holds until then).
+static loop_step_t loop_with_audio(video_player_t *player, video_priv_t *priv) {
     if (!priv->audio_active || !priv->audio_loop_pending || priv->audio_sample_rate == 0)
-        return false;
+        return LOOP_RESTART;
+    uint64_t now = time_us_64();
+    uint64_t video_end = priv->start_time_us +
+                         (uint64_t)player->frame_count * priv->frame_duration_us;
     int32_t frames;
     if (!mp3_player_fed_mark_reached(&frames))
-        return false;   // not even decoded: the audio runs far longer
-    int64_t past_us = (int64_t)frames * 1000000 / (int64_t)priv->audio_sample_rate;
-    if (past_us > LOOP_AUDIO_SLACK_US || past_us < -LOOP_AUDIO_SLACK_US)
-        return false;
+        return (int64_t)(now - video_end) < LOOP_AUDIO_SLACK_US ? LOOP_WAIT : LOOP_RESTART;
+    // When the audio's loop point plays (played or still to come), against
+    // the video's end.
+    int64_t loop_at = (int64_t)now -
+                      (int64_t)frames * 1000000 / (int64_t)priv->audio_sample_rate;
+    int64_t off = loop_at - (int64_t)video_end;
+    if (off > LOOP_AUDIO_SLACK_US || off < -LOOP_AUDIO_SLACK_US)
+        return LOOP_RESTART;
     priv->audio_loop_pending = false;   // the feeder may mark the next one
     video_prefetch_cancel(priv);
     seek_video(player, priv, 0);
-    priv->start_time_us = (uint64_t)((int64_t)time_us_64() - past_us);
-    return true;
+    priv->start_time_us = (uint64_t)loop_at;
+    return LOOP_IN_STEP;
 }
 
 static void video_end_reached(video_player_t *player, video_priv_t *priv) {
     if (player->loop) {
         flush_pending(priv);
-        if (!loop_with_audio(player, priv))
+        if (loop_with_audio(player, priv) == LOOP_RESTART)
             video_player_seek(player, 0);   // restarts the audio from the top
         return;
     }
