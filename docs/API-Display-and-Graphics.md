@@ -1624,7 +1624,7 @@ Sets the sprite's image.
   - `image` (userdata): Image object
   - `flip` (boolean, optional): Enable horizontal flip
   - `scale` (number, optional): Scale factor
-  - `yscale` (number, optional): Y scale factor (defaults to scale)
+  - `yscale` (number, optional): Y scale factor (only applied when given; it does not default to `scale`, unlike `sprite:setScale`)
 - **Returns:** None
 
 ```lua
@@ -1718,10 +1718,10 @@ Checks if the sprite is visible.
 ---
 
 #### `sprite:setCenter(x, y)`
-Sets the sprite's rotation/scale center point.
+Stores a center offset in whole pixels. It is stored only: drawing does not use it.
 
 - **Parameters:**
-  - `x`, `y` (number): Center point relative to sprite origin
+  - `x`, `y` (integer): Center point relative to sprite origin (rounded to an integer)
 - **Returns:** None
 
 ```lua
@@ -1733,7 +1733,7 @@ sprite:setCenter(16, 16)  -- Center of a 32x32 sprite
 #### `sprite:getCenter()`
 Gets the sprite's center point.
 
-- **Returns:** (number, number) `centerX, centerY`
+- **Returns:** (integer, integer) `centerX, centerY`
 
 ---
 
@@ -2303,7 +2303,7 @@ Returns the bounds of a specific frame.
 
 ```lua
 local frame = ss:getFrame(0)
-print(frame.x, frame.y, frame.w, frame.h)
+print(frame[1], frame[2], frame[3], frame[4])  -- x, y, w, h
 ```
 
 ---
@@ -2353,6 +2353,42 @@ while true do
     picocalc.display.flush()
 end
 ```
+
+---
+
+## picocalc.graphics.animation.animator
+
+An animator interpolates a number from a start value to an end value over a duration. Poll it each frame; it has no callbacks.
+
+#### `picocalc.graphics.animation.animator.new(durationMs, from, to [, easing [, delayMs]])`
+Creates and starts an animator. The duration comes first.
+
+- **Parameters:**
+  - `durationMs` (number): Length of the animation in milliseconds
+  - `from`, `to` (number): Start and end values
+  - `easing` (string, optional): `"linear"` (default), `"sineIn"`, `"sineOut"`, `"sineInOut"`, `"quadIn"`, `"quadOut"`, `"quadInOut"`, `"cubicIn"`, `"cubicOut"` or `"cubicInOut"`. An unknown name is linear; a function is not accepted.
+  - `delayMs` (number, optional): Wait this long before starting
+- **Returns:** (userdata) Animator object
+
+```lua
+local a = picocalc.graphics.animation.animator.new(500, 0, 100, "cubicOut")
+while not a:ended() do
+    local x = a:currentValue()   -- 0 to 100 over half a second
+    -- draw at x ...
+end
+```
+
+### Animator Methods
+
+- `animator:currentValue()` returns the value now. Call it each frame: it is what advances repeats and reversal and marks the animation ended.
+- `animator:valueAtTime(ms)` returns the value `ms` milliseconds into the animation, without changing it.
+- `animator:progress()` returns completion from 0 to 1.
+- `animator:ended()` returns `true` once `currentValue()` has seen the animation finish.
+- `animator:reset([durationMs])` restarts it, optionally with a new duration.
+
+### Animator Properties
+
+Read/write fields: `repeatCount` (integer, default 1), `reverses` (boolean, default false: play back to `from` after reaching `to`), and `easingAmplitude` / `easingPeriod` (numbers, defaults 1 and 0). The last two are stored but no easing curve uses them yet.
 
 ---
 

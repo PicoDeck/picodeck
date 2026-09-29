@@ -8,11 +8,12 @@ JSON encoding and decoding. JSON `null` maps to a sentinel value, **not** `nil` 
 
 ### Functions
 
-#### `picocalc.json.encode(value)`
+#### `picocalc.json.encode(value [, opts])`
 Encode a Lua value as a JSON string.
 
 - **Parameters:**
   - `value` (string | number | boolean | table): Value to encode. Use `picocalc.json.null` to emit JSON `null`.
+  - `opts` (table, optional): `{indent = n}` pretty-prints with `n` spaces per level (default 0: compact)
 - **Returns:** (string) JSON text
 
 ```lua

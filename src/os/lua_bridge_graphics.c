@@ -3554,28 +3554,38 @@ static int l_animator_gc(lua_State *L) {
   return 0;
 }
 
+// Milliseconds since the animator started; 0 while a start delay is pending
+// (start_time_ms is then in the future, and the unsigned difference would wrap
+// to a huge elapsed time and end the animation at once).
+static uint32_t animator_elapsed(const lua_animator_t *a, uint32_t now) {
+  int32_t d = (int32_t)(now - a->start_time_ms);
+  return d < 0 ? 0 : (uint32_t)d;
+}
+
 static int l_animator_new(lua_State *L) {
+  // Capture the argument count before lua_newuserdata pushes the object, or
+  // the object is counted as a trailing argument (see l_animation_loop_new).
+  int top = lua_gettop(L);
+  lua_Integer duration = lb_checkint(L, 1);
+  float from = (float)luaL_checknumber(L, 2);
+  float to = (float)luaL_checknumber(L, 3);
+  const char *easing =
+      (top >= 4 && !lua_isnil(L, 4)) ? luaL_checkstring(L, 4) : NULL;
+  lua_Integer delay = (top >= 5 && !lua_isnil(L, 5)) ? lb_checkint(L, 5) : 0;
+
   lua_animator_t *a = (lua_animator_t *)lua_newuserdata(L, sizeof(lua_animator_t));
-  a->duration_ms = lb_checkint(L, 1);
-  a->start_value = (float)luaL_checknumber(L, 2);
-  a->end_value = (float)luaL_checknumber(L, 3);
-  a->start_time_ms = to_ms_since_boot(get_absolute_time());
+  a->duration_ms = duration;
+  a->start_value = from;
+  a->end_value = to;
+  a->start_time_ms = to_ms_since_boot(get_absolute_time()) + (uint32_t)delay;
   a->easing_amplitude = 1.0f;
   a->easing_period = 0.0f;
   a->repeat_count = 1;
   a->current_repeat = 0;
   a->reverses = false;
   a->ended = false;
-  a->easing = easing_linear;
+  a->easing = easing ? get_easing_fn(easing) : easing_linear;
   a->destroyed = false;
-
-  if (lua_gettop(L) >= 4 && lua_isstring(L, 4)) {
-    a->easing = get_easing_fn(luaL_checkstring(L, 4));
-  }
-
-  if (lua_gettop(L) >= 5) {
-    a->start_time_ms += lb_checkint(L, 5);
-  }
 
   luaL_setmetatable(L, GRAPHICS_ANIMATOR_MT);
   return 1;
@@ -3589,7 +3599,7 @@ static int l_animator_currentValue(lua_State *L) {
   }
 
   uint32_t now = to_ms_since_boot(get_absolute_time());
-  uint32_t elapsed = now - a->start_time_ms;
+  uint32_t elapsed = animator_elapsed(a, now);
   float t = (float)elapsed / (float)a->duration_ms;
 
   if (t >= 1.0f) {
@@ -3641,7 +3651,7 @@ static int l_animator_progress(lua_State *L) {
   }
 
   uint32_t now = to_ms_since_boot(get_absolute_time());
-  uint32_t elapsed = now - a->start_time_ms;
+  uint32_t elapsed = animator_elapsed(a, now);
   float progress = (float)elapsed / (float)a->duration_ms;
   if (progress > 1.0f) progress = 1.0f;
   lua_pushnumber(L, progress);
