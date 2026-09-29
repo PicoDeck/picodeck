@@ -88,7 +88,6 @@ static void menu_cb_load_state(void *user) { (void)user; s_req_load_state = true
 // Transient status text drawn in the 16px top bar.
 static char     s_notice[24];
 static uint32_t s_notice_until;
-static int s_notice_scrub;
 
 static void set_notice(const char *msg) {
     int i = 0;
@@ -388,16 +387,10 @@ static int run_game(char *rom_path, int rom_path_len) {
             // the transient notice in it.
             d->fillRect(0, 0, 320, 16, 0x0000);
             if (s_notice[0]) {
-                bool active = sys->getTimeMs() < s_notice_until;
-                d->drawText(120, 4,
-                            active ? s_notice : "                       ",
-                            0xFFE0, 0x0000);
-                if (!active && ++s_notice_scrub >= 2) {
+                if (sys->getTimeMs() < s_notice_until)
+                    d->drawText(120, 4, s_notice, 0xFFE0, 0x0000);
+                else
                     s_notice[0] = '\0';
-                    s_notice_scrub = 0;
-                }
-                if (active)
-                    s_notice_scrub = 0;
             }
 
             // Refresh CGB palette LUT (palettes can change mid-game)
