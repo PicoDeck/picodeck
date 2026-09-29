@@ -308,9 +308,12 @@ static int l_graphics_image_getTransparentColor(lua_State *L) {
 // (only the framebuffer is byte-swapped: the blitters swap as they write), so
 // getPixel/setPixel convert nothing. The bulk strings are row-major
 // little-endian RGB565, two bytes a pixel (string.pack "<I2"): that is the
-// pixel buffer's own layout, so they are copied a row at a time. Nothing is
-// derived from pixel contents (the colour key is compared at draw time), so a
-// write needs no invalidation.
+// pixel buffer's own layout, so they are copied a row at a time. Writes do
+// not invalidate anything: draws, the colour key, spritesheets, tilemaps,
+// animation loops, display.applyEffect("blend") and gfx3d read the pixels
+// live, but sprite:setSourceRect copies its rectangle into frame_data (and
+// sprite:copy copies that copy), so such a sprite keeps drawing and
+// alphaCollision-testing the old pixels until setSourceRect runs again.
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 #error "image pixel strings assume a little-endian host"
 #endif

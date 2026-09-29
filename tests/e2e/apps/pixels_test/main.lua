@@ -253,6 +253,26 @@ T.case("draw_generated_image", function()
     T.eq(disp.getPixel(31, 30), 0x0841)
 end)
 
+T.case("setSourceRect_takes_a_copy", function()
+    -- A sprite's source rect is a copy of the image's pixels taken when it is
+    -- set: a later write shows only after setSourceRect is called again.
+    local sheet = solid(4, 1, 0x1234)
+    local s = gfx.sprite.new(sheet)
+    s:setSourceRect(2, 0, 2, 1)
+    sheet:setPixels(pack(0xABCD, 0xABCD), 2, 0, 2, 1)
+    disp.clear(disp.BLACK)
+    s:draw(40, 40)
+    T.eq(disp.getPixel(40, 40), 0x1234, "drawn from the copy")
+    s:setSourceRect(2, 0, 2, 1)
+    s:draw(40, 40)
+    T.eq(disp.getPixel(40, 40), 0xABCD, "copy refreshed")
+    -- Without a source rect the sprite draws the image itself.
+    s:clearSourceRect()
+    sheet:setPixel(0, 0, 0x5678)
+    s:draw(50, 50)
+    T.eq(disp.getPixel(50, 50), 0x5678)
+end)
+
 T.case("drawTexturedColumn_generated", function()
     disp.clear(disp.BLACK)
     local tex = gfx.image.new(2, 4)

@@ -1725,7 +1725,8 @@ function PicoDeckImage:getPixels(x, y, w, h) end
 
 ---Write a rectangle (default: the whole image) from exactly w*h*2 bytes of
 ---row-major little-endian RGB565 (`string.pack("<I2", color)` per pixel), the
----format `getPixels` returns. The rectangle must lie inside the image.
+---format `getPixels` returns. The rectangle must lie inside the image. A
+---sprite's `setSourceRect` is a copy: call it again after writing.
 ---@param data string
 ---@param x? integer
 ---@param y? integer

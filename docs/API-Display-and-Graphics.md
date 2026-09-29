@@ -45,9 +45,9 @@ picocalc.display.setPixel(160, 160, picocalc.display.WHITE)
 ---
 
 #### `picocalc.display.getPixel(x, y)`
-Reads a pixel of the frame being drawn (the back buffer). The value is the RGB565 colour you drew it with: the screen stores pixels byte-swapped (panel order), and the call swaps them back, so `getPixel` returns exactly what `setPixel` or `fillRect` was given. The clip rect does not apply to reads.
+Reads a pixel of the frame being drawn (the back buffer). The value is the RGB565 color you drew it with: the screen stores pixels byte-swapped (panel order), and the call swaps them back, so `getPixel` returns exactly what `setPixel` or `fillRect` was given. The clip rect does not apply to reads.
 
-`flush()` swaps the two framebuffers, so right after a `flush()` the back buffer holds the frame before last, not the one on screen. Read before you flush.
+`flush()` swaps the two framebuffers, so right after a `flush()` the back buffer holds the frame before last, not the one on screen; `flushRows()` does not swap (the back buffer stays the frame on screen), and `flushRegion()` swaps but copies the flushed rows back, so only those rows match the screen. Read before you flush.
 
 - **Parameters:**
   - `x` (number): X coordinate (0-319)
@@ -1436,16 +1436,18 @@ local backup = img:copy()
 
 Read and write an image's pixels to build textures, palettes, lookup tables or sprite sheets at runtime, for example a generated floor for `display.drawPlane` or wall for `display.drawTexturedColumn`. Start from `image.new(w, h)` (all black) or any loaded image.
 
-> **Byte order.** A colour is the same plain RGB565 number everywhere in Lua: `getPixel` returns and `setPixel` takes the value `fillRect`, `display.rgb` and the colour constants use (`0xF800` is red). The screen stores pixels byte-swapped (panel order), but images do not, and drawing an image does the swap, so you never see panel order from Lua.
+> **Byte order.** A color is the same plain RGB565 number everywhere in Lua: `getPixel` returns and `setPixel` takes the value `fillRect`, `display.rgb` and the color constants use (`0xF800` is red). The screen stores pixels byte-swapped (panel order), but images do not, and drawing an image does the swap, so you never see panel order from Lua.
 >
 > The bulk strings of `getPixels` / `setPixels` are **row-major, two bytes per pixel, little-endian RGB565**: pixel `(x, y)` of a `w`-wide rectangle is `string.unpack("<I2", s, 1 + 2 * (y * w + x))`, and `string.pack("<I2", color)` encodes one. This is the image's own memory layout, so the bulk calls copy without converting. Always write the `<`: without it `string.pack` uses the machine's byte order.
 
-Coordinates and sizes round like every other quantity; colours must be integers. Coordinates outside the image raise an error (nothing is clipped). A pixel set to the transparent colour is skipped when the image is drawn, exactly as for a loaded image; `drawPlane` and `drawTexturedColumn` draw every pixel.
+Coordinates and sizes round like every other quantity; colors must be integers. Coordinates outside the image raise an error (nothing is clipped). A pixel set to the transparent color is skipped when the image is drawn, exactly as for a loaded image; `drawPlane` and `drawTexturedColumn` draw every pixel.
 
-Each call costs a Lua-to-C call: for more than a few pixels, build a string and use `setPixels`. A bulk string lives on the Lua heap like any other (a whole 256×256 image is 128 KB), so work in rows or tiles on large images.
+Everything that draws an image reads its pixels at draw time, so a write shows at the next draw, with one exception: `sprite:setSourceRect` copies its rectangle out of the image when you call it (and `sprite:copy()` copies that copy). After writing to a sprite sheet, call `setSourceRect` again on the sprites that use it.
+
+Each call costs a Lua-to-C call: for more than a few pixels, build a string and use `setPixels`. A bulk string lives on the Lua heap like any other (a whole 256×256 image is 128 KB), so work in rows or tiles on large images. `getPixels` of a rectangle narrower than the image briefly needs twice the string's size (it is assembled in a buffer, then copied).
 
 #### `img:getPixel(x, y)`
-Returns the colour of one pixel.
+Returns the color of one pixel.
 
 - **Parameters:**
   - `x` (number): 0 to width - 1
