@@ -300,26 +300,33 @@ bool gamepad_app_path(char *out, size_t n, const char *app_id) {
   return len > 0 && (size_t)len < n;
 }
 
-bool gamepad_load(const char *path, kbd_padmap_t *m, uint16_t *listed) {
+gamepad_file_t gamepad_load_file(const char *path, kbd_padmap_t *m,
+                                 uint16_t *listed) {
   sd_atomic_recover(path);
   int size = sdcard_fsize(path);
   if (size < 0)
-    return false; // no file: the defaults / no override
+    return GAMEPAD_FILE_MISSING; // no file: the defaults / no override
   if (size > GAMEPAD_FILE_MAX) {
     printf("[GAMEPAD] %s: %d bytes, larger than %d; ignored\n", path, size,
            GAMEPAD_FILE_MAX);
-    return false;
+    return GAMEPAD_FILE_IGNORED;
   }
   char *json = sdcard_read_file(path, NULL);
   if (!json) {
     printf("[GAMEPAD] %s: unreadable; ignored\n", path);
-    return false;
+    return GAMEPAD_FILE_UNREADABLE;
   }
   bool ok = gamepad_map_parse(json, m, listed, path);
   umm_free(json);
-  if (!ok)
+  if (!ok) {
     printf("[GAMEPAD] %s: not a bindings file; ignored\n", path);
-  return ok;
+    return GAMEPAD_FILE_IGNORED;
+  }
+  return GAMEPAD_FILE_LOADED;
+}
+
+bool gamepad_load(const char *path, kbd_padmap_t *m, uint16_t *listed) {
+  return gamepad_load_file(path, m, listed) == GAMEPAD_FILE_LOADED;
 }
 
 // The directory holding path (/data/<app_id>), created if missing.

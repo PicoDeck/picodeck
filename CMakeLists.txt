@@ -253,6 +253,7 @@ add_executable(picodeck
     src/os/lua_bridge_gamepad.c
     src/os/gamepad.c
     src/os/gamepad_map.c
+    src/os/gamepad_edit.c
     src/os/lua_bridge_sys.c
     src/os/lua_bridge_fs.c
     src/os/lua_bridge_network.c

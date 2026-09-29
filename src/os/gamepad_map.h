@@ -129,6 +129,19 @@ bool gamepad_app_path(char *out, size_t n, const char *app_id);
 // first (sd_atomic_recover).
 bool gamepad_load(const char *path, kbd_padmap_t *m, uint16_t *listed);
 
+// What gamepad_load_file found. The Settings page must not overwrite a file
+// it could not read: that file may read fine next time.
+typedef enum {
+  GAMEPAD_FILE_LOADED,     // read and applied
+  GAMEPAD_FILE_MISSING,    // no file (also: its f_stat failed)
+  GAMEPAD_FILE_IGNORED,    // too big, or not a bindings file: ignored for good
+  GAMEPAD_FILE_UNREADABLE, // there, but not read (out of memory, read error)
+} gamepad_file_t;
+
+// gamepad_load, telling why nothing was loaded.
+gamepad_file_t gamepad_load_file(const char *path, kbd_padmap_t *m,
+                                 uint16_t *listed);
+
 // Write the buttons in `mask` of *m to path through a .tmp file and a rename
 // (sd_atomic_write, as the config stores), creating the file's directory
 // (/data/<app_id>) when missing. False (logged) keeps the previous file. The
