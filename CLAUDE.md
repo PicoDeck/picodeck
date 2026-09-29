@@ -114,7 +114,7 @@ main()
 
 ### System Menu (`src/os/system_menu.c`)
 - Triggered by the Sym key; detected via `kbd_consume_menu_press()` in the Lua count hook.
-- Overlays the current framebuffer (darkened with `display_darken()`).
+- Overlays the current framebuffer (darkened with `display_darken()`) and gives the app both framebuffers back when it closes; app item callbacks run after that (`src/os/CLAUDE.md`).
 - Apps and OS register items with `system_menu_add_item()` / `picocalc.sys.addMenuItem()`.
 
 ### Memory Map

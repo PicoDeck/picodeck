@@ -1136,6 +1136,25 @@ void display_darken(void) {
   }
 }
 
+void display_save_buffers(uint16_t *dst) {
+  const size_t n = FB_WIDTH * FB_HEIGHT;
+  display_wait_for_flush();
+  memcpy(dst, s_framebuffers[1 - s_back_buffer_idx], n * sizeof(uint16_t));
+  memcpy(dst + n, s_framebuffers[s_back_buffer_idx], n * sizeof(uint16_t));
+}
+
+void display_restore_buffers(const uint16_t *src) {
+  const size_t n = FB_WIDTH * FB_HEIGHT;
+  display_wait_for_flush();
+  // The saved front goes into the back buffer, and the flush swaps and
+  // presents it: it is the front buffer again, and on the panel.
+  memcpy(s_framebuffers[s_back_buffer_idx], src, n * sizeof(uint16_t));
+  display_flush();
+  // The saved back goes into the new back buffer. The DMA just started
+  // reads only the front, so this copy can run alongside it.
+  memcpy(s_framebuffers[s_back_buffer_idx], src + n, n * sizeof(uint16_t));
+}
+
 // =============================================================================
 // Framebuffer Effects
 // =============================================================================

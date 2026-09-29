@@ -487,7 +487,8 @@ function picocalc.sys.getTimeMs() end
 ---@return integer
 function picocalc.sys.getTimeUs() end
 
----Return battery charge (0–100), or -1 if unknown / USB-powered.
+---Return battery charge (0–100), or -1 only before the first reading (a few
+---seconds after boot). On USB power it keeps the last level read.
 ---Result is cached for ~5 seconds to avoid slow I²C reads.
 ---@return integer
 function picocalc.sys.getBattery() end
@@ -506,7 +507,10 @@ function picocalc.sys.exit() end
 ---Reboot the device via the watchdog timer. Never returns.
 function picocalc.sys.reboot() end
 
----Return `true` if USB power is connected (GP24 VBUS sense).
+---Return `true` if USB power is connected (GP24 VBUS sense). Not reliable on
+---Pico W-family boards, including the PicoCalc's Pimoroni Pico Plus 2 W: GP24
+---belongs to the wireless chip there, so this currently reads `false` even on
+---USB power. A fix (reading VBUS through the CYW43) is pending.
 ---@return boolean
 function picocalc.sys.isUSBPowered() end
 
@@ -544,6 +548,9 @@ function picocalc.sys.getVersion() end
 function picocalc.sys.applyUpdate(path) end
 
 ---Register a custom item in the system-menu overlay (max 4 per app).
+---The callback runs after the menu has closed and given the app its screen back
+---(both framebuffers, when memory for the copy is available); what it draws
+---shows at the app's next flush, and it may call `sys.exit()`.
 ---@param label string Menu item text
 ---@param callback fun() Called when the item is selected
 function picocalc.sys.addMenuItem(label, callback) end
