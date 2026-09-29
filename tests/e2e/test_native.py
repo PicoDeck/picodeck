@@ -129,3 +129,24 @@ def test_api_table_matches_os_h(probe, table):
         assert gap == got, (f"{table}: simulator table is {gap} bytes, "
                             f"sizeof({typ}) is {got}: trampoline slot count "
                             f"drifted (simulator/unicorn_trampolines.c)")
+
+
+def test_native_app_does_not_inherit_perf_pacing(simulator):
+    """A Lua app's setTargetFPS(5) and frame history do not reach the native
+    app launched after it: getFPS() starts at 0 and an unpaced endFrame()
+    returns at once (a leaked 5 fps target would make the second wait 200 ms).
+    """
+    simulator.launch_app("perf_pacing_test")
+    outcome = simulator.wait_for_exit(timeout=15)
+    assert outcome.get("result") == "returned", outcome
+    simulator.launch_app("native_api_probe")
+    outcome = simulator.wait_for_exit(timeout=15)
+    assert outcome.get("result") == "returned", outcome
+    lines = [re.sub(r"^\[APP\] ", "", t)
+             for t in log_texts(simulator.get_log_lines())]
+    perf = [t for t in lines if t.startswith("PERF ")]
+    assert len(perf) == 1, lines
+    m = re.fullmatch(r"PERF fps=(-?\d+) endframe_ms=(\d+)", perf[0])
+    assert m, perf
+    assert int(m.group(1)) == 0, f"inherited frame history: {perf[0]}"
+    assert int(m.group(2)) < 100, f"inherited pacing target: {perf[0]}"

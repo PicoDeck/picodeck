@@ -7,6 +7,7 @@
 #include "lua_runner.h"
 #include "native_loader.h"
 #include "ota_update.h"
+#include "perf.h"
 #include "app_stack.h"
 #include "zip_archive.h"
 #include "../drivers/audio.h"
@@ -835,6 +836,7 @@ static bool run_app(int idx) {
   display_set_scroll_offset(0);
   display_set_font(0);            // nor the previous app's font selection
   font_registry_unload_all();     // nor its loaded fonts
+  perf_init();                    // nor its setTargetFPS pacing and frame history
 
   // Dirty-exit marker: if this file still exists at the next boot, the app
   // never returned to the launcher (hang → watchdog, hardfault, panic, or
@@ -858,6 +860,7 @@ static bool run_app(int idx) {
   display_set_scroll_offset(0);   // nor its hardware-scroll offset
   display_set_font(0);            // nor the previous app's font selection
   font_registry_unload_all();     // nor its loaded fonts
+  perf_init();                    // nor its perf pacing target
 
   if (app->system_clock_khz > 0) {
     launcher_apply_clock(200000); // Reset to system default
