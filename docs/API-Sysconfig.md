@@ -33,6 +33,8 @@ end
 #### `picocalc.sysconfig.set(key [, value])`
 Set a system configuration value. Pass `nil` as the value (or omit it) to delete the key.
 
+Keys are cut to 31 characters and values to 127. All keys and values share one 1 KB store (each costs its length plus 2 bytes); a new key, or a longer value, that does not fit is ignored and the old value kept.
+
 - **Parameters:**
   - `key` (string): Configuration key name
   - `value` (string or nil, optional): Value to set, or `nil` to delete the key
