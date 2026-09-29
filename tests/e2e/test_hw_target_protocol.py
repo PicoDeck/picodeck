@@ -87,6 +87,7 @@ class FakeDevice:
         self.putb64 = None   # (path, size, b64 buffer, raw bytes)
         self.reboot_delay = 0.2
         self.unzip_s = 0.0   # silence between unzip's echo and its reply
+        self.scan_s = 0.0    # after a boot, `list` shows no apps for this long
 
     # -- helpers --
     def install(self, app: FakeApp, cached=True):
@@ -189,10 +190,12 @@ class FakeDevice:
             if app:
                 self.running, self.polls = app, 0
         elif cmd == "list":
+            scanned = time.monotonic() - self.boot_ms >= self.scan_s
+            apps = list(self.apps.values()) if scanned else []
             self.emit("[DEV] Available apps:")
-            for a in self.apps.values():
+            for a in apps:
                 self.emit(f"  {a.name}  ({a.id})")
-            self.emit(f"[DEV] Total: {len(self.apps)} apps")
+            self.emit(f"[DEV] Total: {len(apps)} apps")
         elif cmd.startswith("getb64 "):
             path = cmd[7:]
             if path not in self.files:
@@ -629,6 +632,25 @@ def test_push_waits_out_a_quiet_extraction(hw, dev, tmp_path):
     r = hw.push_app(d)
     assert not r["rebooted"], r
     assert dev.files["/apps/big/main.lua"] == b"return\n"
+
+
+def test_push_waits_for_the_launcher_to_list_a_new_app(hw, dev, tmp_path):
+    # On the device a `list` straight after the reboot has missed an app
+    # just pushed, which the launcher listed a few seconds later: push_app
+    # polls for it.
+    dev.scan_s = 0.6
+    r = hw.push_app(_app_dir(tmp_path, "late"))
+    assert r["rebooted"], r
+    assert "late" in dev.apps
+
+
+def test_push_gives_up_on_an_app_the_launcher_never_lists(hw, dev, tmp_path):
+    dev.scan_s = 60
+    hw.rescan_timeout = 0.5
+    t0 = time.monotonic()
+    with pytest.raises(HwTargetError, match="still not listed"):
+        hw.push_app(_app_dir(tmp_path, "never"))
+    assert time.monotonic() - t0 < 5
 
 
 def test_reboot_is_refused_while_an_app_runs(hw, dev):

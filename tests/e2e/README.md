@@ -108,8 +108,10 @@ and builds the device's traps in:
   `load_failed`, `device_rebooted` when uptime goes back). Log lines
   (`get_log_lines`, `wait_for_log`) are advisory.
 - **The launcher caches `app.json` at boot.** `push_app` reboots when the
-  pushed manifest (id, name, requirements, `min_psram_kb`) differs from the
-  card's, or `list` does not show the app.
+  pushed manifest (id, name, requirements, `min_psram_kb`,
+  `system_clock_khz`) differs from the card's, or `list` does not show the
+  app, then polls `list` for up to 20 s (`rescan_timeout`): a `list` straight
+  after the reboot can miss an app the launcher shows a few seconds later.
 - **Dev commands while an app runs.** `reboot` and `reboot-flash` are
   honoured mid-app (a Lua app's instruction hook / `sys.sleep`, a native
   app's `sys->poll`; a native app that never polls leaves them latched for
