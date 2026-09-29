@@ -678,7 +678,8 @@ void core0_heartbeat(void) {
 // Pending app launch from serial command
 static const char* s_pending_launch = NULL;
 
-// Native-app tick: poll keyboard, fire pending C HTTP callbacks, and
+// Native-app tick: poll keyboard, feed the watchdog, reap released
+// HTTP/TCP slots (no HTTP callbacks for native apps), and
 // check the Sym (Menu) key to show the system menu overlay.
 static void sys_poll(void) {
   kbd_poll();
@@ -985,7 +986,7 @@ static pchttp_t http_newConn_w(const char *server, uint16_t port, bool use_ssl) 
     // Copy server hostname and port/ssl into the connection slot
     strncpy(c->server, server, HTTP_SERVER_MAX - 1);
     c->server[HTTP_SERVER_MAX - 1] = '\0';
-    c->port    = port;
+    c->port    = port ? port : (use_ssl ? 443 : 80);  // 0 = scheme default
     c->use_ssl = use_ssl;
     return (pchttp_t)c;
 }

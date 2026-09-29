@@ -2,7 +2,7 @@
 title: "Standard Lua Libraries"
 ---
 
-The following Lua 5.4 standard libraries are available:
+Apps run on **Lua 5.4** (5.4.7, `third_party/lua-5.4`), built without the `LUA_COMPAT_*` options. The following standard libraries are available:
 
 | Library | Description |
 |---------|-------------|
@@ -16,6 +16,25 @@ The following Lua 5.4 standard libraries are available:
 **Not available** (for sandboxing): `io`, `os`, `package`, `debug`. The base
 functions `dofile` and `loadfile` are removed. `load` accepts text chunks only
 (bytecode is rejected), as do app `main.lua` files and `sys.loadlib`.
+
+### Names removed since Lua 5.1-5.3
+
+Code written for older Lua fails at run time, not at load, with `attempt to call a nil value`. Replace:
+
+| Old | Lua 5.4 |
+|-----|---------|
+| `unpack(t)` | `table.unpack(t)` |
+| `math.atan2(y, x)` | `math.atan(y, x)` |
+| `math.pow(x, y)` | `x ^ y` |
+| `math.log10(x)` | `math.log(x, 10)` |
+| `math.cosh`, `sinh`, `tanh`, `frexp`, `ldexp` | none (`sinh`, `cosh`, `tanh` can be written with `math.exp`) |
+| `bit32.*` | none: use the bitwise operators (`&`, `\|`, `~`, `<<`, `>>`) |
+| `loadstring(s)` | `load(s)` |
+| `setfenv`, `getfenv` | none: pass an environment as `load`'s fourth argument |
+| `table.getn(t)` | `#t` |
+| `table.maxn`, `table.foreach`, `table.foreachi`, `string.gfind` | none |
+
+Integers are 32-bit here; see the number notes below.
 
 ### `require(name)`
 

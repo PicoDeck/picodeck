@@ -1285,7 +1285,7 @@ local w, h = img:getSize()
 #### `img:getMetadata()`
 Returns image metadata without touching pixel data.
 
-- **Returns:** (table) `{width=number, height=number, transparentColor=number?, storage=string}` — `transparentColor` is only present if one is set; `storage` is `"psram"`
+- **Returns:** (table) `{width=number, height=number, transparentColor=number?, storage=string}` — `transparentColor` is only present when a non-zero transparent colour is set, so the table's fields vary; `storage` is `"psram"`
 
 ```lua
 local meta = img:getMetadata()

@@ -24,6 +24,7 @@ typedef struct {
     void (*renderDirty)(terminal_t* term);
     int (*getCols)(terminal_t* term);
     int (*getRows)(terminal_t* term);
+    // NOTE: the next two take no terminal_t*; they set one global cursor state.
     void (*setCursorVisible)(bool visible);
     void (*setCursorBlink)(bool blink);
     void (*markAllDirty)(terminal_t* term);
@@ -254,9 +255,11 @@ typedef struct {
     void     (*clearMenuItems)(void);
     // Log a message to UART serial debug output
     void     (*log)(const char *fmt, ...);
-    // Single OS tick for native apps: polls keyboard + fires any pending
-    // C HTTP callbacks.  Also checks for the Sym (Menu) key and shows the
-    // system menu overlay automatically.  Call in your main loop.
+    // Single OS tick for native apps: polls the keyboard, feeds the watchdog,
+    // reclaims released HTTP/TCP slots and serves dev commands.  Also checks
+    // for the Sym (Menu) key and shows the system menu overlay automatically.
+    // It fires no HTTP callbacks (native apps poll http->isComplete()).
+    // Call in your main loop.
     void     (*poll)(void);
     // Returns true (once) after the user selects "Exit App" from the system
     // menu.  Native apps should check this each frame and return from
@@ -411,7 +414,7 @@ typedef struct {
     // Initiate POST request. body/body_len may be 0/NULL. Non-blocking.
     void  (*post)(pchttp_t c, const char *path, const char *extra_hdrs,
                   const char *body, uint32_t body_len);
-    // Read up to len bytes of response body. Returns bytes read or -1 on error.
+    // Read up to len bytes of response body. Returns bytes read (0 if none).
     int      (*read)(pchttp_t c, uint8_t *buf, uint32_t len);
     // Returns bytes available in the receive buffer.
     uint32_t (*available)(pchttp_t c);
@@ -421,7 +424,7 @@ typedef struct {
     int   (*getStatus)(pchttp_t c);
     // Last error string, or NULL if no error.
     const char* (*getError)(pchttp_t c);
-    // Progress: sets *received and *total (0 if unknown). Returns total.
+    // Progress: sets *received and *total (-1 if unknown). Returns total.
     int   (*getProgress)(pchttp_t c, int *received, int *total);
     // Configuration — call before get()/post().
     void  (*setKeepAlive)(pchttp_t c, bool keep_alive);
@@ -730,6 +733,7 @@ typedef struct PicoCalcAPI {
     uint32_t                      version;     // 1=Phase1, 2=Phase2, 3=fs->browse,
                                              // 4=clip rect + mode-7 plane + display parity
                                              // 5=zip read-in-place handles
+                                             // 6=fonts: display->setFont/getFont/...
                                              // 7=video time seek/position, OSD, hasEnded
                                              // 8=TLS verification: http->setInsecure,
                                              //   tcp->connectEx
