@@ -161,6 +161,10 @@ bool gamepad_edit_key(gamepad_edit_t *e, uint8_t type, uint8_t key,
   e->skip_key = k;  // its repeats (fresh presses on this keyboard) are not
   if (e->capturing) {
     if (!gamepad_key_bindable(key)) {
+      // Shift, Alt and Sym only start chords (the menu key is Shift+F5):
+      // no notice for them.
+      if (is_modifier(key))
+        return false;
       char buf[8];
       notice_set(e, "%s can't be bound",
                  gamepad_edit_key_label(key, buf, sizeof(buf)));

@@ -191,14 +191,14 @@ static void test_capture_moves_the_key(void) {
 }
 
 // Every key gamepad_key_bindable refuses is refused by name; capture goes
-// on, the map is unchanged, and the next bindable key binds. Esc binds.
+// on, the map is unchanged, and the next bindable key binds. Shift, Alt and
+// Sym are refused without a notice (they start chords: the menu key is
+// Shift+F5). Esc and Ctrl bind.
 static void test_capture_refuses_unbindable_keys(void) {
   static const struct {
     uint8_t key;
     const char *notice;
   } refused[] = {
-      {KEY_MOD_SHL, "Shift can't be bound"}, {KEY_MOD_SHR, "Shift can't be bound"},
-      {KEY_MOD_ALT, "Alt can't be bound"},   {KEY_MOD_SYM, "Sym can't be bound"},
       {KEY_F6, "F6 can't be bound"},         {KEY_F9, "F9 can't be bound"},
       {KEY_PGUP, "PgUp can't be bound"},     {KEY_INSERT, "Insert can't be bound"},
       {KEY_END, "End can't be bound"},       {KEY_HOME, "Home can't be bound"},
@@ -218,12 +218,26 @@ static void test_capture_refuses_unbindable_keys(void) {
     CHECK(e.capturing);
     up(&e, refused[i].key);
   }
+  static const uint8_t mods[] = {KEY_MOD_SHL, KEY_MOD_SHR, KEY_MOD_ALT,
+                                 KEY_MOD_SYM};
+  for (size_t i = 0; i < sizeof(mods); i++) {
+    CHECK(!gamepad_key_bindable(mods[i]));
+    uint8_t seq = e.notice_seq;
+    CHECK(!gamepad_edit_key(&e, KBD_EV_DOWN, mods[i], 0));
+    CHECK(e.notice_seq == seq);
+    CHECK(e.capturing);
+    up(&e, mods[i]);
+  }
   CHECK(map_eq(&e.global, &before));
   CHECK(!e.global_dirty);
   down(&e, KEY_ESC);
   CHECK(!e.capturing);
   CHECK_EQ_INT(e.global.key[A][0], KEY_ESC);
   CHECK_STR(e.notice, "");
+  // Ctrl is a key like any other.
+  go(&e, B, 1);
+  bind(&e, KEY_MOD_CTRL);
+  CHECK_EQ_INT(e.global.key[B][1], KEY_MOD_CTRL);
 }
 
 // The menu key ends capture with nothing bound.
@@ -232,6 +246,8 @@ static void test_cancel(void) {
   go(&e, A, 0);
   gamepad_edit_enter(&e, KEY_ENTER);
   down(&e, KEY_MOD_SHL);                   // Shift (the menu key is Shift+F5)
+  CHECK_STR(e.notice, "");                 // no notice for it
+  CHECK(e.capturing);
   gamepad_edit_cancel(&e);
   CHECK(!e.capturing);
   CHECK_STR(e.notice, "");

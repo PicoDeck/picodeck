@@ -415,7 +415,9 @@ static void draw_panel(const flat_item_t *items, int count, int sel, int px,
 // inside the file reads looks like a missing file, which would put the
 // defaults on screen and then over the user's file: so check first.
 #define CTL_HEAP_MIN (8u * 1024u)
-#define C_DIM COLOR_GRAY // a binding inherited from All games
+#define C_DIM COLOR_GRAY                // a binding inherited from All games
+#define C_DIM_SEL RGB565(200, 200, 200) // the same on the selection bar
+#define C_HEAD RGB565(130, 160, 220)    // the column heads
 
 // Notices and saves go to the serial log (and the simulator's, for tests).
 static void ctl_log(const char *text) {
@@ -494,8 +496,8 @@ static void ctl_draw_cell(const gamepad_edit_t *e, int button, int slot,
   bool inherited = false;
   uint8_t key = gamepad_edit_cell(e, button, slot, &inherited);
   const char *name = key ? gamepad_key_name(key) : "-";
-  display_draw_text(x + 4, y + 2, name ? name : "?",
-                    inherited ? C_DIM : COLOR_WHITE, bg);
+  uint16_t fg = !inherited ? COLOR_WHITE : focused ? C_DIM_SEL : C_DIM;
+  display_draw_text(x + 4, y + 2, name ? name : "?", fg, bg);
 }
 
 // Title, the scope row (in a game), the column heads, a row per button, the
@@ -526,14 +528,15 @@ static void ctl_draw(const gamepad_edit_t *e, bool error) {
       if (on)
         display_fill_rect(x, y + 1, CTL_CELL_W, ITEM_H - 2, C_BORDER);
       display_draw_text(x + 4, y + 2, i ? "All games" : "This game",
-                        on ? COLOR_WHITE : C_DIM, on ? C_BORDER : bg);
+                        on ? COLOR_WHITE : focused ? C_DIM_SEL : C_DIM,
+                        on ? C_BORDER : bg);
     }
     y += ITEM_H;
   }
 
-  display_draw_text(px + CTL_LABEL_X, y + 2, "Button", C_DIM, C_PANEL_BG);
-  display_draw_text(px + CTL_CELL_X0 + 4, y + 2, "Primary", C_DIM, C_PANEL_BG);
-  display_draw_text(px + CTL_CELL_X1 + 4, y + 2, "Alt", C_DIM, C_PANEL_BG);
+  display_draw_text(px + CTL_LABEL_X, y + 2, "Button", C_HEAD, C_PANEL_BG);
+  display_draw_text(px + CTL_CELL_X0 + 4, y + 2, "Primary", C_HEAD, C_PANEL_BG);
+  display_draw_text(px + CTL_CELL_X1 + 4, y + 2, "Alt", C_HEAD, C_PANEL_BG);
   y += ITEM_H;
 
   for (int b = 0; b < KBD_PAD_BUTTONS; b++, y += ITEM_H) {

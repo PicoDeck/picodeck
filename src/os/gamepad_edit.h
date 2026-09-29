@@ -62,9 +62,11 @@ void gamepad_edit_enter(gamepad_edit_t *e, uint8_t held);
 
 // One keyboard event (KBD_EV_* type, keycode, KBD_EVF_* flags). Repeats and
 // the downs of skip_key are ignored.
-//   Capturing: the first key-down ends capture. A bindable key is bound to
-//   the focused cell ("F4 moved from A to B" when it leaves another slot);
-//   any other key is refused ("Shift can't be bound") and capture goes on.
+//   Capturing: a bindable key is bound to the focused cell, ending capture
+//   ("F4 moved from A to B" when it leaves another slot). Any other key is
+//   refused ("1 can't be bound") and capture goes on; Shift, Alt and Sym
+//   are ignored without a notice, as they start chords (the menu key is
+//   Shift+F5).
 //   Otherwise: C clears the focused cell, R resets (gamepad_edit_reset).
 // Returns true when the page has to be redrawn.
 bool gamepad_edit_key(gamepad_edit_t *e, uint8_t type, uint8_t key,

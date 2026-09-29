@@ -193,18 +193,18 @@ def test_reset_to_defaults_takes_two_presses(simulator):
 
 
 def test_refused_keys_keep_capturing_and_menu_key_cancels(simulator):
-    """Shift and a digit are refused by name and capture goes on (Z then
-    binds). The menu key cancels a capture: B keeps F5, and a key typed
-    after it binds nothing."""
+    """A digit is refused by name and Shift quietly (it starts the menu
+    key's chord, Shift+F5); capture goes on and Z then binds. The menu key
+    cancels a capture: B keeps F5, and a key typed after it binds nothing."""
     sim = simulator
     mark = _mark(sim)
     _open_controls(sim)
     _keys(sim, TO_A + ["enter", "shift", "1", "z"])
-    _keys(sim, ["down", "enter", "menu", "x"])
+    _keys(sim, ["down", "enter", "shift", "menu", "x"])
     _leave(sim, mark)
     texts = _texts(sim, mark)
-    assert "[CONTROLS] Shift can't be bound" in texts, texts
     assert "[CONTROLS] 1 can't be bound" in texts, texts
+    assert not [t for t in texts if "Shift" in t], texts
     assert _read(sim, "system/gamepad.json") == {"a": ["Z"]}, texts
 
 
@@ -396,24 +396,30 @@ def _white(region):
     return (region >= 240).all(axis=-1)
 
 
+def _light(region):
+    """C_DIM_SEL, an inherited binding on the selection bar (200 grey)."""
+    return ((region >= 190) & (region <= 215)).all(axis=-1)
+
+
 def _dim(region):
     """COLOR_GRAY text (128, 128, 128 give or take the RGB565 rounding)."""
     return ((region >= 120) & (region <= 140)).all(axis=-1)
 
 
 def _ink(arr, button, slot):
-    """The text colours in a key cell: "white", "dim", or both."""
+    """The text colours in a key cell: "white", "light", "dim"."""
     y = FIRST_ROW_Y + button * ROW_H
     x = CELL_X[slot]
     cell = arr[y + 2:y + 10, x + 4:x + CELL_W]
-    return ({"white"} if _white(cell).any() else set()) | (
-        {"dim"} if _dim(cell).any() else set())
+    return {name for name, test in (("white", _white), ("light", _light),
+                                    ("dim", _dim)) if test(cell).any()}
 
 
 def test_layout_fits_and_dims_inherited_bindings(simulator, tmp_path):
     """The page fits the 320x320 screen inside a game (its tallest form),
     every button row has its name, and in This game the buttons the
-    override does not list are drawn dimmed; All games shows them normally.
+    override does not list are drawn dimmed (lighter on the selection bar);
+    All games shows them normally. The column heads are not the dimmed grey.
     The screenshots go to the test's tmp dir, which pytest keeps only when
     the test fails."""
     sim = simulator
@@ -437,11 +443,16 @@ def test_layout_fits_and_dims_inherited_bindings(simulator, tmp_path):
     footer = arr[bottom - 24:bottom, PANEL_X + 4:PANEL_X + 200]
     assert _dim(footer).sum() > 200, "no footer hint"
 
-    A, B, X = 4, 5, 6
+    UP, A, B, X = 0, 4, 5, 6
     assert _ink(arr, A, 0) == {"white"}, "overridden A is dimmed"
     assert _ink(arr, A, 1) == {"white"}
     assert _ink(arr, B, 0) == {"dim"}, "inherited B is not dimmed"
     assert _ink(arr, X, 1) == {"dim"}
+    assert _ink(arr, UP, 0) == {"light"}, "focused inherited Up"
+    heads = arr[FIRST_ROW_Y - ROW_H + 2:FIRST_ROW_Y - ROW_H + 10,
+                PANEL_X + 10:PANEL_X + 200]
+    assert not _dim(heads).any(), "the column heads look inherited"
+    assert (heads[..., 2] - heads[..., 0] > 60).any(), "no column heads"
 
     _keys(sim, ["up", "enter"])                # the scope row: All games
     time.sleep(0.3)
