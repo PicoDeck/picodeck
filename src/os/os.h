@@ -89,7 +89,7 @@ typedef struct {
 #define BTN_F9        (1 << 15)
 #define BTN_BACKSPACE (1 << 16)   // Backspace key
 #define BTN_TAB       (1 << 17)   // Tab key
-#define BTN_DEL       (1 << 18)   // Delete key (Fn+Backspace typically)
+#define BTN_DEL       (1 << 18)   // Delete key (its own key; Shift+Delete is End)
 #define BTN_SHIFT     (1 << 19)   // Shift modifier
 #define BTN_CTRL      (1 << 20)   // Ctrl modifier
 #define BTN_ALT       (1 << 21)   // Alt modifier

@@ -93,6 +93,7 @@ static inline const kbd_btn_map_t *kbd_btn_map(void) {
       {KEY_F7, BTN_F7},         {KEY_F8, BTN_F8},
       {KEY_F9, BTN_F9},         {KEY_F10, BTN_MENU},
       {KEY_BKSPC, BTN_BACKSPACE}, {KEY_TAB, BTN_TAB},
+      {KEY_DEL, BTN_DEL},
       {KEY_MOD_SHL, BTN_SHIFT}, {KEY_MOD_SHR, BTN_SHIFT},
       {KEY_MOD_CTRL, BTN_CTRL}, {KEY_MOD_ALT, BTN_ALT},
       {KEY_MOD_SYM, BTN_FN},    {0, 0}};
