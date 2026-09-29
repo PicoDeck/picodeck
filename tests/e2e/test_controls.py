@@ -11,6 +11,7 @@ injected keys, as a player would.
 """
 
 import json
+import shutil
 import time
 from pathlib import Path
 
@@ -72,6 +73,14 @@ def _write(sim, rel, content):
 
 
 def _stage_games(sim):
+    """Two copies of the gamepad fixture, as the SD card's only apps. The
+    launcher keeps the first MAX_APPS (64) apps in directory order, and the
+    manifest's apps plus these would pass it, so which ones it kept would
+    depend on the filesystem (tmpfs lists new entries first, ext4 and btrfs
+    do not). launch_app rescans /apps when it misses a name."""
+    apps = Path(sim.sd_card_path) / "apps"
+    for app in apps.iterdir():
+        shutil.rmtree(app)
     code = FIXTURE.read_text().replace("+ 20000", "+ 120000")
     stage_lua_app(Path(sim.sd_card_path), GAME, code, id=GAME_ID)
     stage_lua_app(Path(sim.sd_card_path), OTHER, code, id="com.test.gamepad_ctl_other")
@@ -362,7 +371,8 @@ def test_layout_fits_and_dims_inherited_bindings(simulator, tmp_path):
     """The page fits the 320x320 screen inside a game (its tallest form),
     every button row has its name, and in This game the buttons the
     override does not list are drawn dimmed; All games shows them normally.
-    The screenshots are kept in the test's tmp dir for a look."""
+    The screenshots go to the test's tmp dir, which pytest keeps only when
+    the test fails."""
     sim = simulator
     _stage_games(sim)
     _write(sim, f"data/{GAME_ID}/gamepad.json", {"a": ["Z"]})
