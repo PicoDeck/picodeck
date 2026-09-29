@@ -2981,11 +2981,12 @@ static void tramp_zip_read(uc_engine *uc) {
     int idx = (int)read_reg(uc, UC_ARM_REG_R1);
     uint32_t buf_addr = read_reg(uc, UC_ARM_REG_R2);
     uint32_t buf_cap = read_reg(uc, UC_ARM_REG_R3);
-    if (!z || !buf_addr || !buf_cap) {
+    if (!z || !buf_addr) {
         write_reg(uc, UC_ARM_REG_R0, (uint32_t)-1);
         return;
     }
-    void *tmp = malloc(buf_cap);
+    // buf_cap 0 still reaches zip_archive_read: PCZIP_ERR_TOO_SMALL, as on device.
+    void *tmp = malloc(buf_cap ? buf_cap : 1);
     if (!tmp) {
         write_reg(uc, UC_ARM_REG_R0, (uint32_t)-1);
         return;

@@ -119,6 +119,27 @@ picodeck_unit_test(test_appconfig SOURCES ${SRC}/os/appconfig.c ${SD_FAKE}
 picodeck_unit_test(test_app_files SOURCES ${SRC}/os/app_identity.c
                 ${SRC}/os/app_manifest.c ${SRC}/os/appconfig.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
+file(WRITE "${CMAKE_BINARY_DIR}/generated/miniz/miniz_export.h"
+    "#ifndef MINIZ_EXPORT_H\n#define MINIZ_EXPORT_H\n#define MINIZ_EXPORT\n#endif\n")
+# The g_api.zip entry points over the real zip engine and miniz (host malloc).
+picodeck_unit_test(test_zip_archive SOURCES ${SRC}/os/zip_archive.c
+                ${SRC}/os/zip_util.c ${SRC}/os/zip_name.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz_tinfl.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz_tdef.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz_zip.c
+                ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES} ${PICODECK_ROOT}/third_party/miniz
+                ${CMAKE_BINARY_DIR}/generated/miniz
+                DEFINES PICODECK_SIMULATOR MINIZ_NO_STDIO MINIZ_NO_ARCHIVE_WRITING_APIS
+                MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
+target_compile_options(test_zip_archive PRIVATE -Wno-unused-parameter)
+set_source_files_properties(
+                ${PICODECK_ROOT}/third_party/miniz/miniz.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz_tinfl.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz_tdef.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz_zip.c
+                PROPERTIES COMPILE_OPTIONS "-Wno-error;-w")
 # The firmware sample mixer (sound.c): sample/player lifetimes and slots.
 picodeck_unit_test(test_sound SOURCES ${SRC}/drivers/sound.c ${SRC}/drivers/wav.c
                 ${SD_FAKE} INCLUDES ${SD_INCLUDES})

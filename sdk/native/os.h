@@ -621,6 +621,9 @@ typedef struct {
     bool     is_dir;
 } pczip_stat_t;
 
+// zip->read: the entry does not fit in buf_cap (see picocalc_zip_t::read).
+#define PCZIP_ERR_TOO_SMALL (-2)
+
 typedef struct {
     bool (*extract)(const char *zip_path, const char *dest_dir);
     // Returns number of files in archive, -1 on error.
@@ -634,9 +637,11 @@ typedef struct {
     int     (*numEntries)(pczip_t z);                 // files + dirs, -1 on error
     int     (*locate)(pczip_t z, const char *name);   // entry index, -1 if absent
     bool    (*statIndex)(pczip_t z, int idx, pczip_stat_t *out);
-    // Decompress entry idx into a caller-supplied buffer. Returns bytes
-    // written, or -1 on error (including "entry larger than buf_cap" —
-    // statIndex first to size the buffer).
+    // Decompress entry idx into a caller-supplied buffer. Returns the bytes
+    // written, or a negative code: PCZIP_ERR_TOO_SMALL (-2) when the entry
+    // is larger than buf_cap (nothing is written; allocate pczip_stat_t.size
+    // bytes, from statIndex, and retry), -1 for any other error. Test the
+    // result with `< 0`, never `== -1`. Older firmware returns -1 for both.
     int     (*read)(pczip_t z, int idx, void *buf, uint32_t buf_cap);
     // Stream entry idx to dest_path on the SD card (constant memory).
     bool    (*extractEntry)(pczip_t z, int idx, const char *dest_path);
