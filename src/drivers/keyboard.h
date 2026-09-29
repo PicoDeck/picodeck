@@ -37,6 +37,16 @@
 // Special system keys
 #define KEY_BRK    0xD0   // Break key — intercepted by OS for screenshots
 
+// What the keyboard controller sends for a key while Shift is held (it
+// recomputes the code at every transition, picocalc_keyboard keyboard.ino):
+// Shift+F1..F5 = F6..F10 (F10 is the system menu key), Shift+Esc = Brk,
+// and these. Shift+Left/Right/Backspace/Space send nothing at all.
+#define KEY_INSERT 0xD1   // Shift+Enter (also Alt+I)
+#define KEY_HOME   0xD2   // Shift+Tab
+#define KEY_END    0xD5   // Shift+Delete
+#define KEY_PGUP   0xD6   // Shift+Up
+#define KEY_PGDN   0xD7   // Shift+Down
+
 // Function keys
 #define KEY_F1     0x81
 #define KEY_F2     0x82
@@ -209,10 +219,12 @@ void kbd_flush_events(void);
 // aliases for keys: a bound key still reports as itself everywhere else
 // (BTN_*, getChar, events, isKeyDown). Each button has a primary and an
 // alternate slot holding a keycode (0 = unbound). Keys are matched like the
-// key-down set: letters case-folded, stored lower case. kbd_poll() updates it
-// with the same rules as the button masks (a tap inside one poll is held for
-// that poll; a key held across kbd_clear_state gives no press edge), and
-// injected keys drive it too. src/os/gamepad_map.h builds the map.
+// key-down set (letters case-folded, stored lower case), and the codes a key
+// takes while Shift is held fold back to it (kbd_event_queue.h, "Gamepad").
+// kbd_poll() updates it with the same rules as the button masks (a tap
+// inside one poll is held for that poll; a key held across kbd_clear_state
+// gives no press edge), and injected keys drive it too.
+// src/os/gamepad_map.h builds the map.
 
 #define KBD_PAD_BUTTONS 12  // PAD_UP .. PAD_SELECT
 #define KBD_PAD_SLOTS 2     // 0 = primary, 1 = alternate

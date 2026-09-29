@@ -51,7 +51,7 @@ _Static_assert(KBD_POLL_MAX_ITEMS * 2 <= KBD_EVENT_QUEUE_LEN,
 // ────────────────────────────────────────────────────────────
 
 // Button and gamepad masks (held / previous poll / tap bookkeeping, see
-// kbd_event_queue.h). 28 bytes.
+// kbd_event_queue.h). 36 bytes.
 static kbd_buttons_t s_btn;
 // Event queue, key-down and unseen-press sets and getChar backlog. 140 bytes
 // of SRAM: 16 four-byte events, two 256-bit key sets, 4 backlog chars and

@@ -123,7 +123,7 @@ void kbd_poll(void) {
     kbd_event_t ev;
     while (hal_input_pop_event(&ev)) {
         kbd_input_accept(&s_in, ev);
-        kbd_pad_event(&s_pad, &s_padmap, &s_in.down, ev);
+        kbd_pad_event(&s_pad, &s_padmap, ev);
     }
 
     // Get character input
@@ -279,9 +279,9 @@ void kbd_clear_state(void) {
     kbd_input_clear(&s_in);
     // An injected key still down keeps its gamepad button held, without a
     // press edge; its retire/keyup event releases it (as on the device).
-    s_pad.curr = s_pad.prev =
-        kbd_pad_from_buttons(&s_padmap, hal_input_injected_down());
-    s_pad.tapped = s_pad.deferred = 0;
+    memset(&s_pad, 0, sizeof(s_pad));
+    s_pad.down = kbd_pad_slots_from_buttons(&s_padmap, hal_input_injected_down());
+    s_pad.curr = s_pad.prev = kbd_pad_buttons_of(s_pad.down);
 }
 
 void kbd_discard_pending(void) {

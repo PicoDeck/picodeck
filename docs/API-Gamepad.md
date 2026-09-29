@@ -30,7 +30,14 @@ Only the primary slots are bound by default.
 
 ### Keys that can be bound
 
-Arrows, Enter, Esc, Tab, Backspace, Delete, Space, F1–F9, the letters A–Z, and the Shift (left, right) and Ctrl keys. The system menu key (F10) and Brk belong to the OS. Digits and symbols, Sym and Alt cannot be bound: Shift changes the key a symbol reports while it is held, so its release could be missed.
+Arrows, Enter, Esc, Tab, Backspace, Delete, Space, F1–F5, the letters A–Z, and Ctrl.
+
+The keyboard reports some keys differently while Shift or Alt is held, and the gamepad allows for it:
+
+- **Shift** turns F1–F5 into F6–F10, Delete into End, Tab into Home, Enter into Insert, Esc into Brk and Up/Down into PgUp/PgDn. The gamepad reads these as the original key, so a button held while Shift goes down still releases. Shift+F5 (F10) and Shift+Esc (Brk) keep their system meaning (system menu, screenshot) and never press a button.
+- **Shift** silences Left, Right, Backspace and Space, and **Alt** silences B and Space and turns I into Insert. If Shift or Alt goes down while one of these is held, its button is released at once; keep holding the key and the button comes back at the key's next repeat after the modifier is up.
+
+Not bindable: the system menu key (F10) and Brk, which belong to the OS; F6–F9, which are Shift+F1–F4; digits and symbols, which Shift turns into other symbols; Shift, Alt and Sym, which change the other keys.
 
 ## picocalc.gamepad
 
@@ -95,7 +102,7 @@ local key = picocalc.gamepad.getLabel(picocalc.gamepad.PAD_A) or "?"
 picocalc.display.drawText(10, 300, "Press " .. key .. " to jump", picocalc.display.WHITE)
 ```
 
-Key names: `Up`, `Down`, `Left`, `Right`, `Enter`, `Esc`, `Tab`, `Bksp`, `Del`, `Space`, `F1`–`F9`, `A`–`Z`, `LShift`, `RShift`, `Ctrl`.
+Key names: `Up`, `Down`, `Left`, `Right`, `Enter`, `Esc`, `Tab`, `Bksp`, `Del`, `Space`, `F1`–`F5`, `A`–`Z`, `Ctrl`.
 
 ### Button Constants
 

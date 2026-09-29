@@ -485,7 +485,7 @@ static void test_bg_wake_swallow_keeps_earlier_edges(void) {
 // ── Injected input across kbd_clear_state ────────────────────────────────────
 // keyboard.c's kbd_clear_state: zero the masks and the input state, then
 // kbd_inject_after_clear. The injection state itself survives. No pad map
-// here: the gamepad side is tests/unit/test_gamepad.c's.
+// here: the gamepad side is tests/unit/test_kbd_pad.c's.
 static kbd_inject_t inj;
 #define HOLD_MS 80
 

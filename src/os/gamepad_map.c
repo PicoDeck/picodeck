@@ -10,7 +10,8 @@
 
 // ── Key names ────────────────────────────────────────────────────────────────
 // The one table of bindable keys (letters are generated below). Short names:
-// they label on-screen hints and the Settings page's cells.
+// they label on-screen hints and the Settings page's cells. F6-F9 are not
+// here: the keyboard sends them for Shift+F1..F4 (see gamepad_map.h).
 
 typedef struct {
   uint8_t key;
@@ -23,8 +24,6 @@ static const gamepad_key_t k_keys[] = {
     {KEY_TAB, "Tab"},      {KEY_BKSPC, "Bksp"},   {KEY_DEL, "Del"},
     {' ', "Space"},        {KEY_F1, "F1"},        {KEY_F2, "F2"},
     {KEY_F3, "F3"},        {KEY_F4, "F4"},        {KEY_F5, "F5"},
-    {KEY_F6, "F6"},        {KEY_F7, "F7"},        {KEY_F8, "F8"},
-    {KEY_F9, "F9"},        {KEY_MOD_SHL, "LShift"}, {KEY_MOD_SHR, "RShift"},
     {KEY_MOD_CTRL, "Ctrl"},
 };
 

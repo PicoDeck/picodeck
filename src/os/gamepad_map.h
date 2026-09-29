@@ -21,12 +21,23 @@
 #include <stdint.h>
 
 // ── Keys ─────────────────────────────────────────────────────────────────────
-// Only keys whose release the keyboard reports under the keycode they were
-// pressed with can be bound: arrows, Enter, Esc, Tab, Backspace, Delete,
-// Space, F1-F9, letters (case-folded: Shift may come up first) and the Shift
-// and Ctrl modifiers. Not bindable: the system menu key (F10) and Brk (the
-// OS's), Sym/Fn and Alt (layer keys), digits and symbols (Shift changes
-// their keycode while held, so their release could be missed).
+// The keyboard controller recomputes a key's code at every transition from
+// the modifiers held at that moment, so Shift or Alt going down while a key
+// is held changes (or silences) its later reports. A key can be bound when
+// the gamepad can still release it cleanly (kbd_event_queue.h, "Gamepad"):
+//   - arrows, Enter, Esc, Tab, Delete, F1-F5: Shift turns them into F6-F10,
+//     Brk, Home, End, Insert, PgUp, PgDn, which the gamepad folds back;
+//   - letters: case-folded (Shift and Alt only change their case), except
+//     that Alt silences B and turns I into Insert;
+//   - Left, Right, Backspace, Space: Shift silences them (and Alt Space), so
+//     their button is released when the modifier goes down while they are
+//     held, and comes back at their next repeat;
+//   - Ctrl: never changes.
+// Not bindable: the system menu key (F10) and Brk (the OS's), F6-F9 (they
+// are Shift+F1-F4), digits and symbols (Shift turns them into other symbols
+// the gamepad cannot tell apart), Shift and Alt themselves (they change the
+// other keys), Sym. gamepad_key_bindable() is the rule; the Settings page
+// refuses whatever it rejects.
 
 // The key's name ("F4", "Del", "W"), or NULL when it cannot be bound.
 const char *gamepad_key_name(uint8_t key);
@@ -34,7 +45,7 @@ const char *gamepad_key_name(uint8_t key);
 // The keycode named `name` (any case; letters come back lower case), or 0.
 uint8_t gamepad_key_from_name(const char *name);
 
-// True when the key can be bound (it has a name).
+// True when the key can be bound (it has a name): the one bindable-key rule.
 static inline bool gamepad_key_bindable(uint8_t key) {
   return gamepad_key_name(key) != NULL;
 }

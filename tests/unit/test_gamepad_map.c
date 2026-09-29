@@ -25,11 +25,11 @@ static kbd_padmap_t defaults(void) {
 // Every bindable key's name maps back to it, in any case; letters are
 // case-folded and named in upper case.
 static void test_key_names_round_trip(void) {
-  static const uint8_t keys[] = {KEY_UP,    KEY_DOWN,  KEY_LEFT, KEY_RIGHT,
-                                 KEY_ENTER, KEY_ESC,   KEY_TAB,  KEY_BKSPC,
-                                 KEY_DEL,   ' ',       KEY_F1,   KEY_F5,
-                                 KEY_F9,    'a',       'w',      'z',
-                                 KEY_MOD_SHL, KEY_MOD_SHR, KEY_MOD_CTRL};
+  static const uint8_t keys[] = {KEY_UP,    KEY_DOWN, KEY_LEFT, KEY_RIGHT,
+                                 KEY_ENTER, KEY_ESC,  KEY_TAB,  KEY_BKSPC,
+                                 KEY_DEL,   ' ',      KEY_F1,   KEY_F2,
+                                 KEY_F3,    KEY_F4,   KEY_F5,   'a',
+                                 'w',       'z',      KEY_MOD_CTRL};
   for (size_t i = 0; i < sizeof(keys); i++) {
     const char *name = gamepad_key_name(keys[i]);
     CHECK(name != NULL);
@@ -48,11 +48,17 @@ static void test_key_names_round_trip(void) {
   CHECK_EQ_INT(gamepad_key_from_name("f4"), KEY_F4);
 }
 
-// Keys that cannot be bound: the OS's (menu key, Brk), layer keys, digits
-// and symbols (their keycode changes with Shift), and unknown names.
+// Keys that cannot be bound: the OS's (menu key, Brk), the codes keys take
+// under Shift (F6-F9, End, Home, Insert, PgUp, PgDn), the modifiers that
+// change other keys (Shift, Alt, Sym), digits and symbols (their keycode
+// changes with Shift), and unknown names.
 static void test_unbindable_keys(void) {
-  static const uint8_t keys[] = {KEY_F10, KEY_BRK, KEY_MOD_SYM, KEY_MOD_ALT,
-                                 '1', '0', '!', ';', 0};
+  static const uint8_t keys[] = {KEY_F10,     KEY_BRK,     KEY_F6,   KEY_F7,
+                                 KEY_F8,      KEY_F9,      KEY_END,  KEY_HOME,
+                                 KEY_INSERT,  KEY_PGUP,    KEY_PGDN, KEY_MOD_SHL,
+                                 KEY_MOD_SHR, KEY_MOD_SYM, KEY_MOD_ALT,
+                                 '1',         '0',         '!',      ';',
+                                 0};
   for (size_t i = 0; i < sizeof(keys); i++) {
     CHECK(gamepad_key_name(keys[i]) == NULL);
     CHECK(!gamepad_key_bindable(keys[i]));
@@ -61,6 +67,9 @@ static void test_unbindable_keys(void) {
   CHECK_EQ_INT(gamepad_key_from_name("Brk"), 0);
   CHECK_EQ_INT(gamepad_key_from_name("1"), 0);
   CHECK_EQ_INT(gamepad_key_from_name("Fn"), 0);
+  CHECK_EQ_INT(gamepad_key_from_name("F6"), 0);
+  CHECK_EQ_INT(gamepad_key_from_name("LShift"), 0);
+  CHECK_EQ_INT(gamepad_key_from_name("RShift"), 0);
   CHECK_EQ_INT(gamepad_key_from_name(""), 0);
   CHECK_EQ_INT(gamepad_key_from_name(NULL), 0);
   CHECK_EQ_INT(gamepad_key_from_name("Upp"), 0);
@@ -131,9 +140,11 @@ static void test_bind_moves_the_key(void) {
   CHECK(!gamepad_map_bind(&m, A, 0, KEY_F10, &fb, &fs));
   CHECK(!gamepad_map_bind(&m, A, 0, KEY_BRK, NULL, NULL));
   CHECK(!gamepad_map_bind(&m, A, 0, '1', NULL, NULL));
-  CHECK(!gamepad_map_bind(&m, 12, 0, KEY_F6, NULL, NULL));
-  CHECK(!gamepad_map_bind(&m, A, 2, KEY_F6, NULL, NULL));
-  CHECK(!gamepad_map_bind(&m, -1, 0, KEY_F6, NULL, NULL));
+  CHECK(!gamepad_map_bind(&m, A, 0, KEY_F6, NULL, NULL));
+  CHECK(!gamepad_map_bind(&m, A, 0, KEY_MOD_SHL, NULL, NULL));
+  CHECK(!gamepad_map_bind(&m, 12, 0, KEY_F2, NULL, NULL));
+  CHECK(!gamepad_map_bind(&m, A, 2, KEY_F2, NULL, NULL));
+  CHECK(!gamepad_map_bind(&m, -1, 0, KEY_F2, NULL, NULL));
   CHECK(map_eq(&m, &before));
   CHECK_EQ_INT(fb, -1);
 }
@@ -188,13 +199,13 @@ static void test_parse(void) {
   // Whitespace, any case, a bare string, [], null and "".
   m = defaults();
   listed = 0;
-  CHECK(gamepad_map_parse(" {\n  \"A\" : [ \"f6\" , \"x\" ],\r\n"
+  CHECK(gamepad_map_parse(" {\n  \"A\" : [ \"f2\" , \"x\" ],\r\n"
                           "  \"Start\": \"Enter\",\t\"select\": [],\n"
                           "  \"l\": [null, \"Q\"], \"r\": [\"\"] }\n",
                           &m, &listed, "t"));
   CHECK_EQ_U32(listed, (1u << A) | (1u << START) | (1u << SELECT) |
                            (1u << L) | (1u << R));
-  CHECK_EQ_INT(m.key[A][0], KEY_F6);
+  CHECK_EQ_INT(m.key[A][0], KEY_F2);
   CHECK_EQ_INT(m.key[A][1], 'x');
   CHECK_EQ_INT(m.key[START][0], KEY_ENTER);
   CHECK_EQ_INT(m.key[START][1], 0);
@@ -218,22 +229,24 @@ static void test_parse(void) {
 static void test_parse_unknown_names(void) {
   kbd_padmap_t m = defaults();
   uint16_t listed = 0;
-  CHECK(gamepad_map_parse("{\"turbo\":[\"F6\"],\"a\":[\"F44\",\"Z\"],"
+  CHECK(gamepad_map_parse("{\"turbo\":[\"F1\"],\"a\":[\"F44\",\"Z\"],"
                           "\"b\":[\"F10\"],\"x\":[\"1\",\"Brk\"],"
-                          "\"y\":[\"F7\",\"F8\",\"F9\"],"
-                          "\"averyveryverylongbuttonname\":[\"F6\"]}",
+                          "\"y\":[\"F2\",\"F3\",\"F1\"],"
+                          "\"select\":[\"F6\",\"LShift\"],"
+                          "\"averyveryverylongbuttonname\":[\"F1\"]}",
                           &m, &listed, "t"));
-  CHECK_EQ_U32(listed, (1u << A) | (1u << B) | (1u << X) | (1u << Y));
+  CHECK_EQ_U32(listed, (1u << A) | (1u << B) | (1u << X) | (1u << Y) |
+                           (1u << SELECT));
   CHECK_EQ_INT(m.key[A][0], 0);
   CHECK_EQ_INT(m.key[A][1], 'z');
   CHECK_EQ_INT(m.key[B][0], 0);
   CHECK_EQ_INT(m.key[X][0], 0);
   CHECK_EQ_INT(m.key[X][1], 0);
-  CHECK_EQ_INT(m.key[Y][0], KEY_F7);
-  CHECK_EQ_INT(m.key[Y][1], KEY_F8);
-  for (int b = 0; b < KBD_PAD_BUTTONS; b++)
-    for (int s = 0; s < KBD_PAD_SLOTS; s++)
-      CHECK(m.key[b][s] != KEY_F6 && m.key[b][s] != KEY_F9);
+  CHECK_EQ_INT(m.key[Y][0], KEY_F2);
+  CHECK_EQ_INT(m.key[Y][1], KEY_F3);
+  CHECK_EQ_INT(m.key[SELECT][0], 0);
+  CHECK_EQ_INT(m.key[SELECT][1], 0);
+  CHECK_EQ_INT(m.key[START][0], KEY_F1);   // the ignored F1s moved nothing
 }
 
 // One button per key inside a file: a key listed twice ends on the later
