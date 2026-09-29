@@ -361,7 +361,8 @@ typedef struct {
     int   (*getStatus)(pchttp_t c);
     // Last error string, or NULL if no error.
     const char* (*getError)(pchttp_t c);
-    // Progress: sets *received and *total (0 if unknown). Returns total.
+    // Progress: sets *received and *total (-1 if unknown). Returns total.
+    // (Lua conn:getProgress() returns received, total instead.)
     int   (*getProgress)(pchttp_t c, int *received, int *total);
     // Configuration — call before get()/post().
     void  (*setKeepAlive)(pchttp_t c, bool keep_alive);
