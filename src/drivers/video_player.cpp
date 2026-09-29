@@ -83,8 +83,12 @@ typedef struct {
 
     // Audio playback state
     uint32_t audio_feed_cursor;    // Next audio chunk to feed
+    uint8_t  audio_volume;         // 0-100: kept across starts, loops and seeks
     bool     audio_muted;
     bool     audio_active;         // True if fed mode is currently running
+    bool     audio_output_pending; // (re)started while paused: resume starts the output
+    bool     audio_loop_pending;   // fed on past the last chunk, loop point marked
+    uint8_t *audio_prefeed;        // a restart's first chunks (AUDIO_PREFEED_BYTES)
 
     // On-screen display (progress bar + time).  osd_backup holds the clean
     // video rows under the strip so the OSD can be re-rendered (e.g. with the
@@ -567,17 +571,39 @@ static void present_still(video_player_t *player, video_priv_t *priv) {
 
 // --- Audio -------------------------------------------------------------------
 
+// A restart's first chunks: ~1-1.3 s of 96-128 kbps MP3, the depth of a
+// first start's 50-chunk pre-fill.  The decoder must not reach the end of
+// what was fed before update() tops the ring up: its buffer would end on a
+// frame boundary, and libmad drops the frame after one it decodes with no
+// next header in sight (no bit reservoir kept).
+#define AUDIO_PREFEED_BYTES 16384
+
+// How far off the audio's loop point may be when the video reaches its end
+// for the video to loop in step with it (loop_with_audio): an MP3 track
+// runs up to a frame or two (26-72 ms each) longer than the video, and the
+// app's update() comes a little late. Further off, both restart together.
+#define LOOP_AUDIO_SLACK_US 200000
+
 // Feed audio chunks from the audio index into the MP3 fed ring.
-// Called during play (pre-fill) and update (top-up).
-static void video_feed_audio(video_priv_t *priv, int max_chunks) {
+// Called during play (pre-fill) and update (top-up).  Looping, it goes on
+// past the last chunk from the first one, so the decoder plays straight
+// through the loop point, and marks the loop point in the fed stream for
+// video_end_reached (one at a time: it waits there for the video to loop).
+static void video_feed_audio(video_priv_t *priv, const video_player_t *player,
+                             int max_chunks) {
     if (!priv->has_audio || !priv->audio_index.entries || priv->audio_muted)
         return;
 
     uint8_t temp[2048];
     int chunks_fed = 0;
 
-    while (chunks_fed < max_chunks &&
-           priv->audio_feed_cursor < priv->audio_index.count) {
+    while (chunks_fed < max_chunks) {
+        if (priv->audio_feed_cursor >= priv->audio_index.count) {
+            if (!player->loop || priv->audio_loop_pending) break;
+            mp3_player_fed_mark();
+            priv->audio_loop_pending = true;
+            priv->audio_feed_cursor = 0;
+        }
         uint32_t space = mp3_player_feed_space();
         if (space < 1024) break;
 
@@ -599,28 +625,76 @@ static void audio_stop(video_priv_t *priv) {
         mp3_player_stop_fed();
         priv->audio_active = false;
     }
+    priv->audio_output_pending = false;
+    priv->audio_loop_pending = false;
+    if (priv->audio_prefeed) {
+        umm_free(priv->audio_prefeed);
+        priv->audio_prefeed = NULL;
+    }
 }
 
-// (Re)start fed-mode audio positioned at `frame`.  Pre-fills the compressed
-// ring from SD; starts the output immediately unless `defer_dma` (paused —
-// resume starts it).  Any previous fed session is torn down first.
+// Reads whole chunks from `cursor` on (to the end of the index at most)
+// into audio_prefeed. Returns the bytes read, *chunks the chunks.
+static uint32_t read_audio_prefeed(video_priv_t *priv, uint32_t cursor,
+                                   uint32_t *chunks) {
+    *chunks = 0;
+    if (!priv->audio_prefeed)
+        priv->audio_prefeed = (uint8_t *)umm_malloc(AUDIO_PREFEED_BYTES);
+    if (!priv->audio_prefeed)
+        return 0;
+    uint32_t bytes = 0;
+    for (uint32_t i = cursor; i < priv->audio_index.count; i++) {
+        const avi_index_entry_t *e = &priv->audio_index.entries[i];
+        if (e->chunk_size > AUDIO_PREFEED_BYTES - bytes) break;
+        sdcard_fseek(priv->file, e->file_offset + 8);
+        sdcard_fread(priv->file, priv->audio_prefeed + bytes, (int)e->chunk_size);
+        bytes += e->chunk_size;
+        (*chunks)++;
+    }
+    return bytes;
+}
+
+// (Re)start fed-mode audio positioned at `frame`.  A first start pre-fills
+// the compressed ring from SD before its output starts.  A restart (a seek,
+// or a loop the audio could not follow) reads the new position's first
+// chunks while the old audio still plays, then restarts the session on the
+// ring it has: only the fade-out and the decoder's start are left in the
+// gap.  The output starts at once unless `defer_output` (paused: resume
+// starts it).
 static void audio_start_at(video_priv_t *priv, video_player_t *player,
-                           uint32_t frame, bool defer_dma) {
-    audio_stop(priv);
+                           uint32_t frame, bool defer_output) {
     if (!priv->has_audio || priv->audio_format != 0x0055 || priv->audio_muted ||
-        !priv->audio_index.entries || priv->audio_index.count == 0)
+        !priv->audio_index.entries || priv->audio_index.count == 0) {
+        audio_stop(priv);
         return;
-    if (!mp3_player_start_fed(priv->audio_sample_rate, priv->audio_channels))
-        return;
-    priv->audio_active = true;
+    }
     // Approximate audio cursor from the video frame position
     uint32_t denom = priv->frame_index_count ? priv->frame_index_count : player->frame_count;
     if (denom == 0) denom = 1;
-    priv->audio_feed_cursor = (uint32_t)((uint64_t)frame * priv->audio_index.count / denom);
-    if (priv->audio_feed_cursor >= priv->audio_index.count)
-        priv->audio_feed_cursor = priv->audio_index.count - 1;
-    video_feed_audio(priv, 50);            // pre-fill fed ring with compressed data
-    if (!defer_dma) mp3_player_start_fed_output();  // decode + start the mixer pulling it
+    uint32_t cursor = (uint32_t)((uint64_t)frame * priv->audio_index.count / denom);
+    if (cursor >= priv->audio_index.count)
+        cursor = priv->audio_index.count - 1;
+
+    uint32_t pre_bytes = 0, pre_chunks = 0;
+    if (priv->audio_active)
+        pre_bytes = read_audio_prefeed(priv, cursor, &pre_chunks);
+
+    if (!mp3_player_start_fed(priv->audio_sample_rate, priv->audio_channels)) {
+        audio_stop(priv);
+        return;
+    }
+    mp3_player_set_volume(mp3_player_create(), priv->audio_volume);  // start_fed reset it
+    priv->audio_active = true;
+    priv->audio_loop_pending = false;      // start_fed cleared the mark
+    priv->audio_output_pending = defer_output;
+    priv->audio_feed_cursor = cursor;
+    if (pre_bytes) {
+        mp3_player_feed(priv->audio_prefeed, pre_bytes);
+        priv->audio_feed_cursor += pre_chunks;
+    } else {
+        video_feed_audio(priv, player, 50);  // pre-fill fed ring with compressed data
+    }
+    if (!defer_output) mp3_player_start_fed_output();  // decode + start the mixer pulling it
 }
 
 // Align the wall-clock frame timer so that frame `current_frame` is due now.
@@ -656,6 +730,7 @@ video_player_t *video_player_create(void) {
     }
 
     priv->adaptive_stride = 1;
+    priv->audio_volume = 100;
     priv->osd_enabled = true;
     priv->osd_timeout_us = 3000 * 1000u;
     priv->osd_backup = (uint16_t *)umm_malloc(OSD_STRIP_H * FB_WIDTH * sizeof(uint16_t));
@@ -995,16 +1070,13 @@ void video_player_resume(video_player_t *player) {
     player->paused = false;
     priv->osd_hide_at_us = time_us_64() + priv->osd_timeout_us;
     if (priv->audio_active) {
-        mp3_player_t *mp3 = mp3_player_create();
-        if (mp3_player_is_playing(mp3)) {
-            // Already playing (e.g. a seek restarted it while paused)
-        } else if (mp3->playing && mp3->paused) {
-            // Normal resume from pause
-            mp3_player_resume(mp3);
-        } else {
-            // Fed mode was restarted (e.g. seek while paused) — start it
-            video_feed_audio(priv, 50);
+        if (priv->audio_output_pending) {
+            // (Re)started while paused (a seek, an unmute): the session
+            // plays (Core 1 has been staging it) but nothing mixes it yet.
+            priv->audio_output_pending = false;
             mp3_player_start_fed_output();
+        } else {
+            mp3_player_resume(mp3_player_create());   // paused by pause()
         }
     }
     // Capture start time after any audio work so clock aligns with audio
@@ -1204,10 +1276,76 @@ static bool decode_frame_number(video_player_t *player, video_priv_t *priv, uint
     return decoded;
 }
 
+// Point the decoder at `frame` (below frame_count) and show the OSD: the
+// video half of a seek.
+static void seek_video(video_player_t *player, video_priv_t *priv, uint32_t frame) {
+    // Fast path: direct index lookup
+    if (priv->frame_index && frame < priv->frame_index_count) {
+        priv->next_chunk_pos = priv->frame_index[frame].file_offset;
+        player->current_frame = frame;
+    } else {
+        // Slow fallback: scan chunk headers.  Continue forward from the
+        // current position when the target is ahead of it; otherwise restart
+        // from the last indexed frame (or the start of movi).
+        if (frame < player->current_frame || player->current_frame >= player->frame_count) {
+            if (priv->frame_index && priv->frame_index_count > 0) {
+                uint32_t last = priv->frame_index_count - 1;
+                priv->next_chunk_pos = priv->frame_index[last].file_offset;
+                player->current_frame = last;
+            } else {
+                priv->next_chunk_pos = priv->movi_offset;
+                player->current_frame = 0;
+            }
+        }
+
+        // Scan until next_chunk_pos sits at (or just before) the target's
+        // chunk: decode_frame_number's sequential path takes it from there.
+        while (player->current_frame < frame) {
+            sdcard_fseek(priv->file, priv->next_chunk_pos);
+            uint8_t chunk[8];
+            if (sdcard_fread(priv->file, chunk, 8) != 8) break;
+            uint32_t size = *(uint32_t *)(chunk + 4);
+            priv->next_chunk_pos = sdcard_ftell(priv->file) + size;
+            if (priv->next_chunk_pos & 1) priv->next_chunk_pos++;
+            if (chunk[2] == 'd' && (chunk[3] == 'b' || chunk[3] == 'c')) {
+                player->current_frame++;
+                if (player->current_frame % 100 == 0) watchdog_update();
+            }
+        }
+    }
+
+    priv->adaptive_stride = 1;
+    priv->consecutive_drops = 0;
+    priv->osd_hide_at_us = time_us_64() + priv->osd_timeout_us;
+}
+
+// Loop the video in step with its audio.  The feeder has fed the audio on
+// through its loop point (video_feed_audio), so the audio plays on without
+// a gap, and the video restarts when the audio's loop point plays: its
+// clock is set from how far the output is from it (still to come: the
+// last frame holds until then).  False when the audio is not looping with
+// it or is too far off; the caller then restarts both.
+static bool loop_with_audio(video_player_t *player, video_priv_t *priv) {
+    if (!priv->audio_active || !priv->audio_loop_pending || priv->audio_sample_rate == 0)
+        return false;
+    int32_t frames;
+    if (!mp3_player_fed_mark_reached(&frames))
+        return false;   // not even decoded: the audio runs far longer
+    int64_t past_us = (int64_t)frames * 1000000 / (int64_t)priv->audio_sample_rate;
+    if (past_us > LOOP_AUDIO_SLACK_US || past_us < -LOOP_AUDIO_SLACK_US)
+        return false;
+    priv->audio_loop_pending = false;   // the feeder may mark the next one
+    video_prefetch_cancel(priv);
+    seek_video(player, priv, 0);
+    priv->start_time_us = (uint64_t)((int64_t)time_us_64() - past_us);
+    return true;
+}
+
 static void video_end_reached(video_player_t *player, video_priv_t *priv) {
     if (player->loop) {
         flush_pending(priv);
-        video_player_seek(player, 0);
+        if (!loop_with_audio(player, priv))
+            video_player_seek(player, 0);   // restarts the audio from the top
         return;
     }
     player->ended = true;
@@ -1231,6 +1369,8 @@ bool video_player_update(video_player_t *player) {
     flush_pending_nocopy(priv);
 
     uint64_t now = time_us_64();
+    // A loop waiting for its audio (loop_with_audio) starts the clock later.
+    if (now < priv->start_time_us) return false;
     uint32_t target_frame = (uint32_t)((now - priv->start_time_us) / priv->frame_duration_us);
 
     if (target_frame < player->current_frame) {
@@ -1274,7 +1414,7 @@ bool video_player_update(video_player_t *player) {
 
     // Feed audio chunks to keep the compressed ring topped up
     if (priv->audio_active) {
-        video_feed_audio(priv, 20);
+        video_feed_audio(priv, player, 20);
     }
 
     bool decoded = decode_frame_number(player, priv, target_frame);
@@ -1303,45 +1443,7 @@ void video_player_seek(video_player_t *player, uint32_t frame) {
     // Clamp — never wrap.  Reaching the last frame ends the video naturally
     // on the next update (loop or hold), exactly as if playback got there.
     if (frame >= player->frame_count) frame = player->frame_count - 1;
-
-    // Fast path: direct index lookup
-    if (priv->frame_index && frame < priv->frame_index_count) {
-        priv->next_chunk_pos = priv->frame_index[frame].file_offset;
-        player->current_frame = frame;
-    } else {
-        // Slow fallback: scan chunk headers.  Continue forward from the
-        // current position when the target is ahead of it; otherwise restart
-        // from the last indexed frame (or the start of movi).
-        if (frame < player->current_frame || player->current_frame >= player->frame_count) {
-            if (priv->frame_index && priv->frame_index_count > 0) {
-                uint32_t last = priv->frame_index_count - 1;
-                priv->next_chunk_pos = priv->frame_index[last].file_offset;
-                player->current_frame = last;
-            } else {
-                priv->next_chunk_pos = priv->movi_offset;
-                player->current_frame = 0;
-            }
-        }
-
-        // Scan until next_chunk_pos sits at (or just before) the target's
-        // chunk: decode_frame_number's sequential path takes it from there.
-        while (player->current_frame < frame) {
-            sdcard_fseek(priv->file, priv->next_chunk_pos);
-            uint8_t chunk[8];
-            if (sdcard_fread(priv->file, chunk, 8) != 8) break;
-            uint32_t size = *(uint32_t *)(chunk + 4);
-            priv->next_chunk_pos = sdcard_ftell(priv->file) + size;
-            if (priv->next_chunk_pos & 1) priv->next_chunk_pos++;
-            if (chunk[2] == 'd' && (chunk[3] == 'b' || chunk[3] == 'c')) {
-                player->current_frame++;
-                if (player->current_frame % 100 == 0) watchdog_update();
-            }
-        }
-    }
-
-    priv->adaptive_stride = 1;
-    priv->consecutive_drops = 0;
-    priv->osd_hide_at_us = time_us_64() + priv->osd_timeout_us;
+    seek_video(player, priv, frame);
 
     bool was_ended = player->ended;
     if (was_ended) {
@@ -1351,9 +1453,10 @@ void video_player_seek(video_player_t *player, uint32_t frame) {
         player->paused = false;
     }
 
-    // Reposition audio: flush and restart the fed ring from the proportional
-    // audio chunk for the target frame.  Do this before capturing start_time_us
-    // so the video clock starts only after audio pre-fill (SD I/O) completes.
+    // Reposition audio: restart the fed session from the proportional audio
+    // chunk for the target frame (paused: resume starts its output).  Do
+    // this before capturing start_time_us so the video clock starts only
+    // after the audio's pre-fill (SD I/O) completes.
     if (priv->audio_active || was_ended) {
         audio_start_at(priv, player, player->current_frame, player->paused);
     }
@@ -1448,9 +1551,13 @@ bool video_player_has_audio(video_player_t *player) {
     return priv->has_audio;
 }
 
+// The player keeps the volume: every audio (re)start applies it, since
+// mp3_player_start_fed resets the MP3 player's to 100.
 void video_player_set_audio_volume(video_player_t *player, uint8_t volume) {
     if (!player || !player->priv) return;
     video_priv_t *priv = (video_priv_t *)player->priv;
+    if (volume > 100) volume = 100;
+    priv->audio_volume = volume;
     if (priv->audio_active) {
         mp3_player_set_volume(mp3_player_create(), volume);
     }
@@ -1458,11 +1565,7 @@ void video_player_set_audio_volume(video_player_t *player, uint8_t volume) {
 
 uint8_t video_player_get_audio_volume(video_player_t *player) {
     if (!player || !player->priv) return 0;
-    video_priv_t *priv = (video_priv_t *)player->priv;
-    if (priv->audio_active) {
-        return mp3_player_get_volume(mp3_player_create());
-    }
-    return 100;  // default
+    return ((video_priv_t *)player->priv)->audio_volume;
 }
 
 void video_player_set_audio_muted(video_player_t *player, bool muted) {
@@ -1472,9 +1575,10 @@ void video_player_set_audio_muted(video_player_t *player, bool muted) {
 
     if (muted) {
         audio_stop(priv);
-    } else if (!priv->audio_active && player->playing && !player->paused) {
-        // Unmute: start audio from the current position
-        audio_start_at(priv, player, player->current_frame, false);
+    } else if (!priv->audio_active && player->playing) {
+        // Unmute: start audio from the current position (paused: resume
+        // starts its output)
+        audio_start_at(priv, player, player->current_frame, player->paused);
     }
 }
 

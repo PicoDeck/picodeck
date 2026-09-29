@@ -94,6 +94,21 @@ static uint8_t *s_fed_ring_buf = NULL; // umm_malloc'd in QMI PSRAM
 static _Atomic uint32_t s_fed_wr = 0; // written by Core 0
 static _Atomic uint32_t s_fed_rd = 0; // read by Core 1
 
+// The loop mark (mp3_player_fed_mark). Stream positions count from
+// start_fed: s_fed_fed is the bytes fed (Core 0); s_fed_taken the bytes the
+// decoder has taken from the ring and s_fed_frames the content frames it
+// has decoded (the decoder's side, under s_mp3_mutex). Core 0 sets
+// s_mark_at, then arms the mark; the decoder sets s_mark_frame (the frames
+// decoded before the first frame at or after s_mark_at), then marks it
+// reached; Core 0 clears it once it has read it.
+enum { MARK_NONE, MARK_ARMED, MARK_REACHED };
+static uint32_t    s_fed_fed = 0;
+static uint32_t    s_fed_taken = 0;
+static uint32_t    s_fed_frames = 0;
+static uint32_t    s_mark_at = 0;
+static uint32_t    s_mark_frame = 0;
+static _Atomic int s_mark_state = MARK_NONE;
+
 static inline uint32_t fed_ring_available(void) {
     uint32_t wr = atomic_load_explicit(&s_fed_wr, memory_order_acquire);
     uint32_t rd = atomic_load_explicit(&s_fed_rd, memory_order_acquire);
@@ -268,6 +283,7 @@ static refill_t refill_decode_buffer(void) {
             if (to_read > 0) {
                 fed_ring_read(s_decode_buffer + s_bytes_in_buffer, to_read);
                 s_bytes_in_buffer += (int)to_read;
+                s_fed_taken += to_read;
                 result = REFILL_GOT_DATA;
             }
         } else if (!s_file) {
@@ -379,6 +395,21 @@ static bool end_of_stream(bool *rewound) {
     return false;
 }
 
+// The decoder's side of the loop mark: the frame just decoded starts `at`
+// bytes into the `valid` bytes the decode buffer held, the last the decoder
+// took from the fed ring. The first frame at or after the mark is where
+// the next pass begins (its first frame uses no bit reservoir, so the
+// decoder needs nothing from before it).
+static void fed_note_frame(uint32_t at, uint32_t valid) {
+    if (atomic_load_explicit(&s_mark_state, memory_order_acquire) != MARK_ARMED)
+        return;
+    uint32_t pos = s_fed_taken - valid + at;
+    if ((int32_t)(pos - s_mark_at) < 0)
+        return;
+    s_mark_frame = s_fed_frames;
+    atomic_store_explicit(&s_mark_state, MARK_REACHED, memory_order_release);
+}
+
 // ── Decode: fill PCM ring buffer (called from main loop, NOT ISR) ───────────
 static void decode_fill_ring(void) {
     if (!s_player.playing || s_player.paused || s_eof || !s_mad_stream)
@@ -402,7 +433,9 @@ static void decode_fill_ring(void) {
     // Every pass either decodes a frame, gets new input, counts an error
     // (capped), or leaves: the loop is bounded within one update.
     while (frames_decoded < max_frames && ring_free() >= 1152 * 2 * 2) {
-        mad_stream_buffer(s_mad_stream, s_decode_buffer + s_buffer_pos, s_bytes_in_buffer + MAD_BUFFER_GUARD);
+        const uint8_t *base = s_decode_buffer + s_buffer_pos;
+        uint32_t valid = (uint32_t)s_bytes_in_buffer;
+        mad_stream_buffer(s_mad_stream, base, valid + MAD_BUFFER_GUARD);
 
         if (mad_frame_decode(s_mad_frame, s_mad_stream) != 0) {
             // Track consumed bytes
@@ -454,6 +487,9 @@ static void decode_fill_ring(void) {
             }
         }
 
+        if (s_fed_mode)
+            fed_note_frame((uint32_t)(s_mad_stream->this_frame - base), valid);
+
         mad_synth_frame(s_mad_synth, s_mad_frame);
         frames_decoded++;
         s_diag_decode_frames++;
@@ -461,6 +497,8 @@ static void decode_fill_ring(void) {
         struct mad_pcm *pcm = &s_mad_synth->pcm;
         s_pcm_channels = pcm->channels;
         unsigned int nsamples = pcm->length;
+        if (s_fed_mode)
+            s_fed_frames += nsamples;
 
         if (pcm->channels == 2) {
             // Stereo: samplesX is already interleaved [sample][2] int16_t
@@ -827,6 +865,8 @@ bool mp3_player_start_fed(uint32_t sample_rate, uint16_t channels) {
     s_fed_mode = true;
     s_fed_wr = 0;
     s_fed_rd = 0;
+    s_fed_fed = s_fed_taken = s_fed_frames = 0;
+    atomic_store(&s_mark_state, MARK_NONE);
 
     // Reset decode state
     s_bytes_in_buffer = 0;
@@ -891,7 +931,24 @@ uint32_t mp3_player_feed(const uint8_t *data, uint32_t len) {
         memcpy(s_fed_ring_buf, data + to_end, to_write - to_end);
     }
     atomic_store_explicit(&s_fed_wr, (wr + to_write) % FED_RING_SIZE, memory_order_release);
+    s_fed_fed += to_write;
     return to_write;
+}
+
+void mp3_player_fed_mark(void) {
+    if (!s_fed_mode) return;
+    s_mark_at = s_fed_fed;
+    atomic_store_explicit(&s_mark_state, MARK_ARMED, memory_order_release);
+}
+
+bool mp3_player_fed_mark_reached(int32_t *frames) {
+    if (atomic_load_explicit(&s_mark_state, memory_order_acquire) != MARK_REACHED)
+        return false;
+    // frames_played: the mixer's count, one aligned word, from the same
+    // start_fed as s_fed_frames (ring and stage pass every frame on).
+    *frames = (int32_t)(s_stage.frames_played - s_mark_frame);
+    atomic_store_explicit(&s_mark_state, MARK_NONE, memory_order_relaxed);
+    return true;
 }
 
 void mp3_player_stop_fed(void) {
@@ -903,6 +960,7 @@ void mp3_player_stop_fed(void) {
     s_fed_mode = false;
     s_fed_wr = 0;
     s_fed_rd = 0;
+    atomic_store(&s_mark_state, MARK_NONE);
     if (s_fed_ring_buf) { umm_free(s_fed_ring_buf); s_fed_ring_buf = NULL; }
     s_bytes_in_buffer = 0;
     s_buffer_pos = 0;

@@ -49,7 +49,9 @@ player:seekMs(ms)            -- jump to an absolute time
 player:seekRelativeMs(-5000) -- skip backwards/forwards relative to the current position
 ```
 
-All seeks clamp to `[0, last frame]` and **never wrap**: seeking to or past the last frame ends the video on the next `update()` (held, or looped if `setLoop(true)`). A seek while paused decodes and presents the target frame immediately, so scrubbing gives feedback. A seek on an ended player restarts playback from the target.
+All seeks clamp to `[0, last frame]` and **never wrap**: seeking to or past the last frame ends the video on the next `update()` (held, or looped if `setLoop(true)`). A seek while paused decodes and presents the target frame immediately, so scrubbing gives feedback, and the audio starts from the target on `resume()`. A seek on an ended player restarts playback from the target. A seek restarts the audio at the new position, with a short gap while its decoder starts.
+
+A looping video's audio plays straight through the loop point, with no gap: the video restarts when the audio does. When the audio track is a little longer or shorter than the video (an MP3 usually runs a frame or two longer), the video holds its last frame, or skips its first, for that long; up to 200 ms. Tracks further apart than that both restart at every loop, with a short gap in the audio.
 
 #### `player:pause()`
 Pauses video playback. Audio is also paused. The current frame is presented as a stable still (with the OSD) so the app can draw overlays and call `display.flush()` freely.
@@ -137,6 +139,8 @@ player:isMuted()             -- returns current mute state
 player:setVolume(vol)        -- 0–100
 player:getVolume()           -- returns current volume
 ```
+
+The volume belongs to the player: set it before or after `play()`, and it holds across loops, seeks, mute and `load()` (default 100). Unmuting while paused starts the audio on `resume()`.
 
 ### State
 

@@ -49,7 +49,9 @@ void mp3_player_get_diag(uint32_t out[11]);
 void mp3_player_reset_diag(void);
 
 // Fed mode: decoder reads from an external ring buffer instead of SD file.
-// Used by video player to feed interleaved AVI audio data.
+// Used by video player to feed interleaved AVI audio data. Calling
+// start_fed on a running session restarts it (fade out, empty the rings,
+// reset the decoder and the volume to 100) and keeps its ring allocated.
 bool     mp3_player_start_fed(uint32_t sample_rate, uint16_t channels);
 // Decodes what has been fed so far and starts the mixer pulling it (fading
 // in). Call after feeding the first chunks, and again after a seek.
@@ -58,6 +60,16 @@ uint32_t mp3_player_feed(const uint8_t *data, uint32_t len);
 void     mp3_player_stop_fed(void);
 uint32_t mp3_player_feed_space(void);
 bool     mp3_player_is_fed_mode(void);
+// The loop point of a looping video's audio, which the video player feeds
+// on from its first chunk again after the last so that the decoder plays
+// straight through it. Call it just before feeding the next pass's first
+// chunk; one mark at a time (start_fed and stop_fed clear it). Core 0.
+void     mp3_player_fed_mark(void);
+// Once the decoder has decoded past the mark: true, with *frames the
+// content frames the mixer has played beyond it (negative: still to play
+// before it), and the mark cleared. False, *frames untouched, while it is
+// still ahead of the decoder or none is set. Core 0, lock-free.
+bool     mp3_player_fed_mark_reached(int32_t *frames);
 
 // The mixer's MP3 source (audio_mix_render): adds `frames` frames of the
 // playing MP3 into l and r. Runs in Core 1's DMA refill ISR on the device.

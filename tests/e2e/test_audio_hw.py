@@ -418,19 +418,17 @@ def test_output_rate_survives_the_video_boost(target):
     """The output, started at 200 MHz by a sample, keeps 44.1 kHz after the
     video player boosts clk_sys to 300 MHz (audio_apply_clock re-derives the
     PWM divider), with the clip's MP3 audio mixed in: under 10% of the
-    window's frames find no MP3 (each loop restart leaves a short gap,
-    ~2.5% measured). After the app, the output is off and the clock back
-    at 200 MHz."""
+    window's frames find no MP3 (~2.5% measured while every loop restarted
+    the audio; test_video_loop_keeps_its_audio holds loops to 1%). After
+    the app, the output is off and the clock back at 200 MHz."""
     if not FFMPEG:
         pytest.skip("ffmpeg makes the clip")
     with tempfile.TemporaryDirectory() as tmp:
         clip = Path(tmp) / "clip.avi"
         # 3 s at 20 fps (~218 KB; it loops). With sfx1.wav the push stays
         # under ~250 KB, inside push_app's extraction timeout (see mix_app).
-        # The frame rate keeps the MP3 in the video player's audio index,
-        # which holds frames * 1.5 + 64 chunks: ffmpeg writes one 26 ms MP3
-        # frame per chunk, so at 10 fps the index ran out ~1.4 s before the
-        # end of a 5 s clip and the MP3 went silent for the rest of it.
+        # (20 fps: the audio index used to hold only frames * 1.5 + 64
+        # chunks, too few at 10 fps; the loop tests below run 10 fps.)
         subprocess.run([FFMPEG, "-v", "error", "-y",
                         "-f", "lavfi", "-i", "testsrc=size=160x120:rate=20",
                         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
@@ -454,3 +452,181 @@ def test_output_rate_survives_the_video_boost(target):
     assert stats["mp3_underruns"] * 10 < frames, stats
     after = audiostat(target)
     assert after["out"] == 0 and after["sys_khz"] == 200000, after
+
+
+# ── The video player's audio: loops, seeks, pause, volume ─────────────────────
+# Issues #17-#20. The fixture reads the video's MP3 session through the
+# one MP3 player's Lua handle: getPosition() is the frames the mixer has
+# played since the session (re)started, getVolume() the session's volume.
+
+VAUDIO_APP, VAUDIO_ID = "video_audio", "com.test.video_audio"
+
+VAUDIO_FIXTURE = r"""
+-- run.txt: "<mode> <seconds>".
+--   loop:       volume 40 set before play(), loop on, SECONDS of playback;
+--               counts the times the MP3 position went back (a loop that
+--               restarted the audio session resets it).
+--   pausedseek: play 1 s, pause, seek to 2 s, resume, play 1.5 s.
+--   seeks:      loop on, a seek every 700 ms for SECONDS.
+local T = picocalc.sys.loadlib("picotest")
+local sys, sound, fs, input = picocalc.sys, picocalc.sound, picocalc.fs, picocalc.input
+local MODE, SECONDS = fs.readFile(fs.appPath("run.txt")):match("(%S+) (%d+)")
+SECONDS = tonumber(SECONDS)
+
+local function write(name, text)
+  local f = fs.open(fs.appPath(name), "w")
+  fs.write(f, text)
+  fs.close(f)
+end
+
+-- Plays `ms` of the video, calling each() after every update.
+local function run(v, ms, each)
+  local t_end = sys.getTimeMs() + ms
+  while sys.getTimeMs() < t_end do
+    v:update()
+    if each then each() end
+    input.update()
+  end
+end
+
+T.case(MODE, function()
+  local metrics = {mode = MODE}
+  -- The video's audio is the one MP3 player in fed mode. Held until after
+  -- v:stop(): collecting the handle stops the MP3 player, fed mode too.
+  local mp3 = sound.mp3player()
+  local v = picocalc.video.player()
+  T.ok(v:load(APP_DIR .. "/clip.avi"), "load clip.avi")
+  T.ok(v:hasAudio(), "clip.avi has MP3 audio")
+  v:setOSD(false)
+  if MODE == "loop" then
+    v:setVolume(40)
+    T.eq(v:getVolume(), 40, "getVolume() before play()")
+    v:setLoop(true)
+    v:play()
+    write("playing", "1")
+    local t0, last, back = sys.getTimeMs(), 0, 0
+    run(v, SECONDS * 1000, function()
+      local p = mp3:getPosition()
+      if p < last then back = back + 1 end
+      last = p
+    end)
+    metrics.elapsed_ms = sys.getTimeMs() - t0
+    metrics.position = last
+    metrics.restarts = back
+    metrics.mp3_volume = mp3:getVolume()
+    metrics.volume = v:getVolume()
+  elseif MODE == "pausedseek" then
+    v:setVolume(40)
+    v:play()
+    run(v, 1000)
+    v:pause()
+    v:seekMs(2000)
+    T.ok(v:isPaused(), "paused after the seek")
+    sys.sleep(300)
+    metrics.pos_paused = mp3:getPosition()
+    v:resume()
+    write("playing", "1")
+    run(v, 1500)
+    metrics.pos_resumed = mp3:getPosition()
+    metrics.mp3_volume = mp3:getVolume()
+  elseif MODE == "seeks" then
+    v:setLoop(true)
+    v:play()
+    write("playing", "1")
+    local targets = {800, 3500, 1500, 4200, 300, 2600}
+    local seeks, worst_us, next_seek = 0, 0, sys.getTimeMs() + 700
+    run(v, SECONDS * 1000, function()
+      if sys.getTimeMs() >= next_seek then
+        seeks = seeks + 1
+        local u0 = sys.getTimeUs()
+        v:seekMs(targets[(seeks - 1) % #targets + 1])
+        worst_us = math.max(worst_us, sys.getTimeUs() - u0)
+        next_seek = sys.getTimeMs() + 700
+      end
+    end)
+    metrics.seeks = seeks
+    metrics.seek_us_max = worst_us
+  end
+  T.ok(v:isPlaying(), "the clip still plays")
+  v:stop()
+  write("metrics.json", picocalc.json.encode(metrics))
+end)
+T.done()
+"""
+
+
+@pytest.fixture
+def video_audio_app(target):
+    """Stage the video_audio fixture with a 5 s, 10 fps clip once per
+    session; returns run(mode, seconds, measure_s)."""
+    if not FFMPEG:
+        pytest.skip("ffmpeg makes the clip")
+    if VAUDIO_APP not in _staged:
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "clip.avi"
+            # 10 fps: ffmpeg writes one 26 ms MP3 frame per chunk, ~4 chunks
+            # a video frame. The audio index once held frames * 1.5 + 64
+            # (139 of these 192 chunks): 1.4 s of every loop was silent.
+            subprocess.run([FFMPEG, "-v", "error", "-y",
+                            "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+                            "-t", "5", "-c:v", "mjpeg", "-pix_fmt", "yuvj420p",
+                            "-q:v", "12", "-c:a", "libmp3lame", "-b:a", "96k",
+                            "-ac", "2", str(clip)], check=True)
+            target.stage_lua_app(VAUDIO_APP, VAUDIO_FIXTURE,
+                                 requirements=("audio",), id=VAUDIO_ID,
+                                 files={"clip.avi": clip.read_bytes()})
+        _staged.add(VAUDIO_APP)
+
+    def run(mode, seconds, measure_s):
+        target.write_file(f"/data/{VAUDIO_ID}/run.txt",
+                          f"{mode} {seconds}".encode())
+        return measure(target, VAUDIO_APP, VAUDIO_ID, measure_s)
+    return run
+
+
+def test_video_loop_keeps_its_audio(video_audio_app):
+    """A looping 10 fps clip plays its audio whole and straight through
+    every loop point: the audio session is never restarted (the MP3
+    position only grows), the mixer is fed throughout (the position keeps
+    pace with the clock; under 1% of the window's frames find no MP3), and
+    the volume set before play() holds across the loops (#17-#20: #19
+    starved the tail of every loop, #20 left ~75 ms of silence at each
+    loop point, #18 reset the volume to 100)."""
+    stats, m, outcome, results = video_audio_app("loop", seconds=16, measure_s=11)
+    print("video loop:", stats, m)
+    assert outcome["result"] == "returned", outcome
+    assert_passed(results)
+    assert stats["sys_khz"] == 300000, stats
+    assert m["elapsed_ms"] >= 15000, m                  # three loop points
+    assert m["restarts"] == 0, m
+    played_ms = m["position"] / 44.1
+    assert 0.97 * m["elapsed_ms"] <= played_ms <= 1.02 * m["elapsed_ms"], m
+    assert stats["mp3_underruns"] * 100 < 44.1 * stats["window_ms"], stats
+    assert m["volume"] == 40 and m["mp3_volume"] == 40, m
+
+
+def test_video_resume_after_a_paused_seek_plays_audio(video_audio_app):
+    """Pause, seek, resume: the audio plays from the resume on (#17: the
+    restarted session was never mixed, silent until the next loop), at
+    the volume set before play() (#18)."""
+    stats, m, outcome, results = video_audio_app("pausedseek", seconds=0,
+                                                 measure_s=1)
+    print("paused seek:", stats, m)
+    assert outcome["result"] == "returned", outcome
+    assert_passed(results)
+    assert m["pos_paused"] == 0, m                      # restarted, not mixed yet
+    assert m["pos_resumed"] >= 44100, m                 # >= 1 s of the 1.5 s
+    assert m["mp3_volume"] == 40, m
+
+
+def test_video_seeks_keep_the_audio_fed(video_audio_app):
+    """A seek every 700 ms: each restarts the audio from the prefeed read
+    before the old audio stopped (#20), and the audio keeps up: under 1% of
+    the window's frames find no MP3. Prints the longest seek()."""
+    stats, m, outcome, results = video_audio_app("seeks", seconds=10, measure_s=8)
+    print("video seeks:", stats, m)
+    assert outcome["result"] == "returned", outcome
+    assert_passed(results)
+    assert m["seeks"] >= 10, m
+    assert stats["mp3_underruns"] * 100 < 44.1 * stats["window_ms"], stats
