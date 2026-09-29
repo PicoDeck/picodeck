@@ -298,11 +298,14 @@ function picocalc.display.getFontHeight() end
 
 ---Load a `.pfn` bitmap font from an absolute SD path (sandbox-checked, like
 ---image loading). Returns an id (4-11, at most 8 loaded at once) for use
----with setFont, or nil on sandbox denial or load failure. Never raises.
+---with setFont, or `nil, err` on sandbox denial, an unreadable or malformed
+---file, or a full registry (display.loadFont and graphics.font.new share the
+---8 loaded-font slots). Never raises.
 ---Every font an app loads is freed automatically when it exits, or earlier
 ---via unloadFont.
 ---@param path string Absolute path to a `.pfn` file
 ---@return integer? id Font id (4-11), or nil on failure
+---@return string? err Why the load failed
 function picocalc.display.loadFont(path) end
 
 ---Free a font previously returned by loadFont. If it is the active font,
@@ -598,10 +601,15 @@ function PicoDeckFile:write(data) end
 ---Close the file (no-op if already closed).
 function PicoDeckFile:close() end
 
----Seek to an absolute byte offset.
----@param offset integer Must be >= 0
+---Seek to a byte offset, relative to `whence`: `"set"` (default, from the
+---start), `"cur"` (from the current position) or `"end"` (from the end, so
+---`seek(0, "end")` then `tell()` gives the file length). `"set"` needs an
+---offset >= 0; `"cur"` and `"end"` accept negative offsets. A target before
+---the start raises and leaves the position unchanged.
+---@param offset integer
+---@param whence? "set"|"cur"|"end"
 ---@return boolean ok
-function PicoDeckFile:seek(offset) end
+function PicoDeckFile:seek(offset, whence) end
 
 ---Current byte offset.
 ---@return integer offset
@@ -632,11 +640,15 @@ function picocalc.fs.write(file, data) end
 ---@param file PicoDeckFile?
 function picocalc.fs.close(file) end
 
----Seek to an absolute byte offset within an open file.
+---Seek within an open file, relative to `whence`: `"set"` (default, from the
+---start), `"cur"` (from the current position) or `"end"` (from the end).
+---`"set"` needs an offset >= 0; `"cur"` and `"end"` accept negative offsets.
+---A target before the start raises and leaves the position unchanged.
 ---@param file PicoDeckFile
----@param offset integer Must be >= 0
+---@param offset integer
+---@param whence? "set"|"cur"|"end"
 ---@return boolean ok
-function picocalc.fs.seek(file, offset) end
+function picocalc.fs.seek(file, offset, whence) end
 
 ---Return the current byte offset within an open file.
 ---@param file PicoDeckFile
@@ -948,7 +960,7 @@ function PicoDeckSamplePlayer:setSample(sample) end
 ---@return PicoDeckSample?
 function PicoDeckSamplePlayer:getSample() end
 
----Start playback. `repeat_count` = number of repetitions (0 = use loop flag).
+---Start playback. `repeat_count` = number of plays (0 = loop until stopped).
 ---@param repeat_count? integer
 ---@return boolean ok
 function PicoDeckSamplePlayer:play(repeat_count) end
@@ -999,10 +1011,13 @@ function PicoDeckSamplePlayer:getRate() end
 
 -- ── PicoDeckFilePlayer methods ──────────────────────────────────────────────────
 
----Open a WAV file for streaming. 16-bit PCM only (1-2 channels): an 8-bit
----WAV that a Sample would accept is refused here (returns false).
+---Open a WAV (16-bit PCM, 1-2 channels) or QOA file for streaming. A file
+---that cannot be played (missing, MP3, 8-bit WAV, a refused QOA, ...) gives
+---`nil` and the reason; the sandbox refusal is `nil, "access denied"`.
+---Clears any loop range set for the previous file.
 ---@param path string
----@return boolean ok
+---@return boolean? ok `true` when the file will play
+---@return string? error
 function PicoDeckFilePlayer:load(path) end
 
 ---Start streaming playback.
@@ -1022,8 +1037,9 @@ function PicoDeckFilePlayer:resume() end
 ---@return boolean
 function PicoDeckFilePlayer:isPlaying() end
 
----Return total file length in seconds.
----@return number
+---Return the file's length in sample frames (divide by getSampleRate() for
+---seconds). getOffset/setOffset work in whole seconds.
+---@return integer
 function PicoDeckFilePlayer:getLength() end
 
 ---Return the file's sample rate in Hz (0 before a successful load).
@@ -1076,7 +1092,7 @@ function PicoDeckMp3Player:load(path) end
 
 ---Start playback from the beginning of the file (also after it finished).
 ---A `play()` while playing fades out first (~1.5 ms, no click).
----@param repeat_count? integer 0 = infinite
+---@param repeat_count? integer 0 = loop until stopped; any other count plays once
 ---@return boolean ok
 function PicoDeckMp3Player:play(repeat_count) end
 
@@ -1684,7 +1700,7 @@ function PicoDeckImage:drawTiled(x, y, rect_w, rect_h) end
 ---Draw the image at (x, y), multiplied by `scale` (bilinear) and optionally rotated.
 ---@param x integer
 ---@param y integer
----@param scale number Multiplier (a float; 2.0 = double size)
+---@param scale number Multiplier (a float; 2.0 = double size). Must be finite and > 0, and the larger image edge times `scale` at most 4096 px, or it raises
 ---@param angle? number Rotation in radians (default 0)
 function PicoDeckImage:drawScaled(x, y, scale, angle) end
 
@@ -1695,11 +1711,13 @@ function PicoDeckImage:drawScaled(x, y, scale, angle) end
 function PicoDeckImage:drawScaledNN(x, y, scale) end
 
 ---Stretch the image (or srcRect of it) to exactly w x h, nearest-neighbour.
+---`srcRect` is named (`{x=0, y=0, w=48, h=48}`) or positional
+---(`{0, 0, 48, 48}`); a named field wins, and a missing one defaults.
 ---@param x integer
 ---@param y integer
 ---@param w integer
 ---@param h integer
----@param srcRect? {x?: integer, y?: integer, w?: integer, h?: integer}
+---@param srcRect? {x?: integer, y?: integer, w?: integer, h?: integer}|integer[]
 function PicoDeckImage:drawStretched(x, y, w, h, srcRect) end
 
 ---Set a transparent colour for this image (overrides global setting).
@@ -2326,8 +2344,11 @@ local PicoDeckFont = {}
 ---A path is sandbox-checked and loaded; the returned object frees its
 ---loaded slot when garbage-collected. Every font an app loads is also
 ---freed automatically when the app exits.
+---A bare name that is not a built-in raises "no such built-in font"; a
+---path-like argument (contains `/` or ends in `.pfn`) raises "access denied",
+---"font registry full" or "failed to load font <path>: <reason>".
 ---@param name_or_path string One of "6x8", "8x12", "scientifica", "scientifica-bold", or a `.pfn` path
----@return PicoDeckFont font Errors (never returns nil) on access denied or load failure
+---@return PicoDeckFont font Errors (never returns nil) on failure
 function picocalc.graphics.font.new(name_or_path) end
 
 ---Draw text at (x, y) using this font. bg defaults to BLACK if omitted.

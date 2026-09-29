@@ -116,6 +116,8 @@ ALLOW = {
                            "by draw_instance()",
     "picocalc.gfx3d.drawBasis": "the optional scale/bias/sortAsOne (11-13) "
                                 "are read by draw_instance()",
+    "PicoDeckImage.setPixels": "the optional rect (3-6) is read by "
+                               "image_check_rect() from a computed index",
 }
 
 # A reader is any call `name(L, <literal>` whose name says it reads or checks
@@ -131,6 +133,8 @@ NOT_READERS = {"luaL_checkstack", "lua_getfield", "lua_geti", "lua_gettable",
                "luaL_getmetafield", "luaL_getsubtable", "luaL_getmetatable"}
 CALL_RE = re.compile(r"\b(\w+)\s*\(\s*L\s*\)")
 GETTOP_RE = re.compile(r"lua_gettop\s*\(\s*L\s*\)\s*(>=|>|==|<)\s*(\d+)")
+# luaL_checkoption with a default (anything but NULL) is optional.
+OPTION_DEFAULT_RE = re.compile(r"luaL_checkoption\s*\(\s*L\s*,\s*(\d+)\s*,\s*(?=\S)(?!NULL\b)")
 RETURN_RE = re.compile(r"\breturn\s+([^;]+);")
 RAISE_RE = re.compile(r"(?:luaL_error|luaL_argerror|luaL_typeerror|lua_error|"
                       r"luaL_argexpected)\b")
@@ -214,9 +218,12 @@ def analyse_c(body: str, method: bool,
     for var in re.findall(r"(\w+)\s*=\s*lua_gettop\s*\(\s*L\s*\)", body):
         probed |= {int(n) for n in re.findall(
             rf"\b{var}\s*(?:>=|>|==)\s*(\d+)", body)}
+    defaulted = {int(n) for n in OPTION_DEFAULT_RE.findall(body)}
     for name, n in reads:
         low = name.lower()
         hi = max(hi, n)
+        if low == "lual_checkoption" and n in defaulted:
+            continue
         if "opt" not in low:
             nonopt = max(nonopt, n)
         if n not in probed and low.startswith(("lual_check", "lb_check", "check_")):

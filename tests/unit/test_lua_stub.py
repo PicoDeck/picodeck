@@ -102,3 +102,11 @@ def test_c_scanning_ignores_braces_and_comment_markers_in_literals():
     src = 'static int f(lua_State *L) {\n  puts("}} // x");\n  return 1;\n}\nint g(void) { return 2; }\n'
     fns = cls.c_functions(cls.strip_comments(src))
     assert "return 1;" in fns["f"] and "return 2" not in fns["f"] and "g" in fns
+
+
+def test_checkoption_with_a_default_is_optional():
+    body = '  int w = luaL_checkoption(L, 3, "set", opts);\n  luaL_checkinteger(L, 2);\n'
+    f = cls.analyse_c(body, method=False)
+    assert f["total"] == 3 and f["required"] == 2 and f["nonopt"] == 2
+    f = cls.analyse_c(body.replace('"set"', "NULL"), method=False)
+    assert f["required"] == 3
