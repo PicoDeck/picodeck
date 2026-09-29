@@ -2581,7 +2581,6 @@ function PicoDeckCamera:setTarget(x, y, lag) end
 ---Clear the follow target.
 function PicoDeckCamera:clearTarget() end
 
----Constrain the camera to a world-space rectangle.
 ---Constrain the camera. The arguments are two corners, not a size.
 ---@param min_x number
 ---@param min_y number

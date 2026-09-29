@@ -221,7 +221,7 @@ camera:update(1 / 30)
 ---
 
 #### `camera:getOffset()`
-Get the current draw offset (camera position plus shake). Subtract this from world coordinates when drawing.
+Get the current draw offset (camera position plus shake). Add this to world coordinates (scaled by the zoom) to get screen coordinates.
 
 - **Parameters:** None
 - **Returns:** (number, number) Offset `ox, oy`
@@ -472,11 +472,11 @@ local play = {}
 
 function play:enter()
     score = 0
-    camera:setTarget(player)
+    camera:setTarget(player.x, player.y)
     camera:setBounds(0, 0, 1024, 1024)
 end
 
-function play:update()
+function play:update(dt)
     picocalc.input.update()
     local buttons = picocalc.input.getButtons()
     if buttons & picocalc.input.BTN_RIGHT ~= 0 then player.x = player.x + 2 end
@@ -484,13 +484,14 @@ function play:update()
     if buttons & picocalc.input.BTN_DOWN  ~= 0 then player.y = player.y + 2 end
     if buttons & picocalc.input.BTN_UP    ~= 0 then player.y = player.y - 2 end
     score = score + 1
-    camera:update()
+    camera:setTarget(player.x, player.y)
+    camera:update(dt)
 end
 
 function play:draw()
     picocalc.display.clear(0x0000)
     local ox, oy = camera:getOffset()
-    picocalc.display.fillRect(player.x - 4 - ox, player.y - 4 - oy, 8, 8, 0xF800)
+    picocalc.display.fillRect(player.x - 4 + ox, player.y - 4 + oy, 8, 8, 0xF800)
     picocalc.display.drawText(4, 4, "SCORE " .. score, 0xFFFF)
     picocalc.display.flush()
 end
