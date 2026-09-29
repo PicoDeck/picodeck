@@ -31,6 +31,7 @@
 #include "font_registry.h"
 #include "app_identity.h"
 #include "native_loader.h"
+#include "os_overlay.h"
 
 // From unicorn_runner.c
 extern uc_engine *g_uc;
@@ -94,6 +95,10 @@ extern uint32_t kbd_get_buttons(void);
 extern uint32_t kbd_get_buttons_pressed(void);
 extern uint32_t kbd_get_buttons_released(void);
 extern char kbd_get_char(void);
+extern uint32_t kbd_get_pad(void);
+extern uint32_t kbd_get_pad_pressed(void);
+extern uint32_t kbd_get_pad_released(void);
+#include "gamepad.h"  // gamepad_get_label (src/os)
 
 // Timing
 extern uint32_t hal_get_time_ms(void);
@@ -190,7 +195,7 @@ extern bool fileplayer_is_playing(const fileplayer_t *player);
 extern void fileplayer_set_volume(fileplayer_t *player, uint8_t left, uint8_t right);
 extern uint32_t fileplayer_get_offset(const fileplayer_t *player);
 extern void fileplayer_set_offset(fileplayer_t *player, uint32_t seconds);
-extern bool fileplayer_did_underrun(void);
+extern bool fileplayer_did_underrun(fileplayer_t *player);
 
 // MP3 player (from sim_audio.c)
 extern mp3_player_t *mp3_player_create(void);
@@ -665,7 +670,14 @@ enum {
     SLOT_ZIP_EXTRACT_ENTRY,
     SLOT_ZIP_END,
 
-    SLOT_TOTAL_COUNT = SLOT_ZIP_END,
+    // picocalc_gamepad_t (4 functions, API v9): the table after `version`.
+    SLOT_GAMEPAD_GET_BUTTONS = SLOT_ZIP_END,
+    SLOT_GAMEPAD_GET_BUTTONS_PRESSED,
+    SLOT_GAMEPAD_GET_BUTTONS_RELEASED,
+    SLOT_GAMEPAD_GET_LABEL,
+    SLOT_GAMEPAD_END,
+
+    SLOT_TOTAL_COUNT = SLOT_GAMEPAD_END,
 };
 
 // =============================================================================
@@ -830,6 +842,7 @@ static void tramp_display_flush(uc_engine *uc) {
     }
     s_back_buffer_dirty = 0;
 
+    os_overlay_draw(OS_PRESENT_FLUSH, 0, 319);  // toast, Show FPS (as main.c)
     display_flush();
 }
 
@@ -882,6 +895,9 @@ static void tramp_display_flush_rows(uc_engine *uc) {
     uint32_t len = (y1 - y0) * 320 * sizeof(uint16_t);
     uc_mem_read(uc, EMU_FB_BASE + offset, back + y0 * 320, len);
     byteswap_rgb565(back + y0 * 320, (y1 - y0) * 320);
+    // This path presents the whole buffer, so the overlay is drawn as for
+    // flush() (each call counts as one frame: no flushRows sweep detection).
+    os_overlay_draw(OS_PRESENT_FLUSH, 0, 319);
     display_flush();
 }
 
@@ -890,6 +906,7 @@ static void tramp_display_flush_region(uc_engine *uc) {
     uint16_t *back = display_get_back_buffer();
     uc_mem_read(uc, EMU_FB_BASE, back, 320 * 320 * sizeof(uint16_t));
     byteswap_rgb565(back, 320 * 320);
+    os_overlay_draw(OS_PRESENT_FLUSH, 0, 319);  // whole buffer, as above
     display_flush();
 }
 
@@ -1044,6 +1061,54 @@ static void tramp_input_get_buttons_released(uc_engine *uc) {
 
 static void tramp_input_get_char(uc_engine *uc) {
     write_reg(uc, UC_ARM_REG_R0, (uint32_t)(unsigned char)kbd_get_char());
+}
+
+// =============================================================================
+// Gamepad trampoline handlers (API v9)
+// =============================================================================
+
+static void tramp_gamepad_get_buttons(uc_engine *uc) {
+    write_reg(uc, UC_ARM_REG_R0, kbd_get_pad());
+}
+
+static void tramp_gamepad_get_buttons_pressed(uc_engine *uc) {
+    write_reg(uc, UC_ARM_REG_R0, kbd_get_pad_pressed());
+}
+
+static void tramp_gamepad_get_buttons_released(uc_engine *uc) {
+    write_reg(uc, UC_ARM_REG_R0, kbd_get_pad_released());
+}
+
+// getLabel's names come from a const table: on the device the pointer stays
+// valid for the whole run (flash), so an app may keep it. The string arena
+// wraps and reuses its space, so each name is written once per launch into
+// the API region after the sub-tables (unicorn_build_api_struct sets the
+// range) and that copy is handed out from then on.
+#define LABEL_AREA_SIZE 1024u
+#define LABEL_CACHE_LEN 64
+static struct { const char *host; uint32_t emu; } s_label_cache[LABEL_CACHE_LEN];
+static int s_label_count;
+static uint32_t s_label_next, s_label_end;
+
+static uint32_t label_addr(uc_engine *uc, const char *label) {
+    for (int i = 0; i < s_label_count; i++)
+        if (s_label_cache[i].host == label) return s_label_cache[i].emu;
+    uint32_t len = (uint32_t)strlen(label) + 1;
+    if (s_label_count == LABEL_CACHE_LEN || s_label_next + len > s_label_end)
+        return arena_write_string(uc, label);  // never: the table is smaller
+    uint32_t addr = s_label_next;
+    uc_mem_write(uc, addr, label, len);
+    s_label_next += (len + 3) & ~3u;
+    s_label_cache[s_label_count].host = label;
+    s_label_cache[s_label_count++].emu = addr;
+    return addr;
+}
+
+static void tramp_gamepad_get_label(uc_engine *uc) {
+    uint32_t pad = read_reg(uc, UC_ARM_REG_R0);
+    int slot = (int)read_reg(uc, UC_ARM_REG_R1);
+    const char *label = gamepad_get_label(pad, slot);
+    write_reg(uc, UC_ARM_REG_R0, label ? label_addr(uc, label) : 0);
 }
 
 // =============================================================================
@@ -2212,8 +2277,8 @@ static void tramp_snd_fp_set_offset(uc_engine *uc) {
 
 static void tramp_snd_fp_did_underrun(uc_engine *uc) {
     uint32_t handle = read_reg(uc, UC_ARM_REG_R0);
-    (void)handle;  // fileplayer_did_underrun is global
-    write_reg(uc, UC_ARM_REG_R0, fileplayer_did_underrun() ? 1 : 0);
+    fileplayer_t *fp = handle_unwrap(handle);
+    write_reg(uc, UC_ARM_REG_R0, fp && fileplayer_did_underrun(fp) ? 1 : 0);
 }
 
 static void tramp_snd_fp_free(uc_engine *uc) {
@@ -2238,7 +2303,10 @@ static void tramp_snd_mp3_play(uc_engine *uc) {
     uint32_t handle = read_reg(uc, UC_ARM_REG_R0);
     uint8_t repeat = (uint8_t)read_reg(uc, UC_ARM_REG_R1);
     mp3_player_t *mp = handle_unwrap(handle);
-    if (mp) mp3_player_play(mp, repeat);
+    if (mp) {
+        mp3_player_set_loop(mp, repeat == 0);  // 0 = loop until stopped
+        mp3_player_play(mp, repeat);
+    }
 }
 
 static void tramp_snd_mp3_stop(uc_engine *uc) {
@@ -2981,11 +3049,12 @@ static void tramp_zip_read(uc_engine *uc) {
     int idx = (int)read_reg(uc, UC_ARM_REG_R1);
     uint32_t buf_addr = read_reg(uc, UC_ARM_REG_R2);
     uint32_t buf_cap = read_reg(uc, UC_ARM_REG_R3);
-    if (!z || !buf_addr || !buf_cap) {
+    if (!z || !buf_addr) {
         write_reg(uc, UC_ARM_REG_R0, (uint32_t)-1);
         return;
     }
-    void *tmp = malloc(buf_cap);
+    // buf_cap 0 still reaches zip_archive_read: PCZIP_ERR_TOO_SMALL, as on device.
+    void *tmp = malloc(buf_cap ? buf_cap : 1);
     if (!tmp) {
         write_reg(uc, UC_ARM_REG_R0, (uint32_t)-1);
         return;
@@ -3365,6 +3434,11 @@ void unicorn_tramp_init(uc_engine *uc) {
     s_dispatch[SLOT_ZIP_STAT_INDEX]       = tramp_zip_stat_index;
     s_dispatch[SLOT_ZIP_READ]             = tramp_zip_read;
     s_dispatch[SLOT_ZIP_EXTRACT_ENTRY]    = tramp_zip_extract_entry;
+
+    s_dispatch[SLOT_GAMEPAD_GET_BUTTONS]          = tramp_gamepad_get_buttons;
+    s_dispatch[SLOT_GAMEPAD_GET_BUTTONS_PRESSED]  = tramp_gamepad_get_buttons_pressed;
+    s_dispatch[SLOT_GAMEPAD_GET_BUTTONS_RELEASED] = tramp_gamepad_get_buttons_released;
+    s_dispatch[SLOT_GAMEPAD_GET_LABEL]            = tramp_gamepad_get_label;
 }
 
 void unicorn_tramp_dispatch(uc_engine *uc, uint32_t slot) {
@@ -3407,8 +3481,9 @@ static uint32_t write_func_table(uc_engine *uc, uint32_t base_addr,
 
 void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_base) {
     // Layout: PicoCalcAPI struct at api_base, followed by sub-tables
-    // PicoCalcAPI has 19 pointer fields + 1 uint32_t (version)
-    uint32_t api_struct_size = 20 * 4;  // 19 pointers + version
+    // PicoCalcAPI has 19 pointer fields, 1 uint32_t (version), then the
+    // pointers added after it (gamepad)
+    uint32_t api_struct_size = 21 * 4;  // 19 pointers + version + gamepad
 
     // Sub-tables start after the main struct
     uint32_t sub_base = api_base + api_struct_size;
@@ -3511,6 +3586,17 @@ void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_b
     uint32_t zip_count = SLOT_ZIP_END - SLOT_ZIP_EXTRACT;
     sub_base = write_func_table(uc, sub_base, tramp_base, SLOT_ZIP_EXTRACT, zip_count);
 
+    // picocalc_gamepad_t (4 function pointers, API v9)
+    uint32_t gamepad_addr = sub_base;
+    uint32_t gamepad_count = SLOT_GAMEPAD_END - SLOT_GAMEPAD_GET_BUTTONS;
+    sub_base = write_func_table(uc, sub_base, tramp_base, SLOT_GAMEPAD_GET_BUTTONS, gamepad_count);
+
+    // getLabel's strings, written on first use (label_addr); the API region
+    // (64 KB) has room well past the ~1.4 KB of tables.
+    s_label_count = 0;
+    s_label_next = sub_base;
+    s_label_end = sub_base + LABEL_AREA_SIZE;
+
     printf("[UNICORN] API sub-tables written, total %u bytes at 0x%08x..0x%08x\n",
            sub_base - api_base, api_base, sub_base);
     printf("[UNICORN] Total trampoline slots: %u\n", SLOT_TOTAL_COUNT);
@@ -3537,6 +3623,7 @@ void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_b
     //   const picocalc_modplayer_t *modplayer;  // offset 68
     //   const picocalc_zip_t     *zip;          // offset 72
     //   uint32_t                  version;      // offset 76
+    //   const picocalc_gamepad_t *gamepad;      // offset 80 (API v9)
     // };
     // NOTE: keep this struct (and api_struct_size above) in lockstep with
     // src/os/os.h's `struct PicoCalcAPI` — a mismatch here silently shifts
@@ -3563,7 +3650,8 @@ void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_b
     write32(uc, api_base + 64, video_addr);
     write32(uc, api_base + 68, modplayer_addr);
     write32(uc, api_base + 72, zip_addr);
-    write32(uc, api_base + 76, 8);  // version = 8 (http->setInsecure, tcp->connectEx; 7 = video seek/OSD; matches src/main.c g_api.version)
+    write32(uc, api_base + 76, 9);  // version = 9 (gamepad; 8 = http->setInsecure, tcp->connectEx; matches src/main.c g_api.version)
+    write32(uc, api_base + 80, gamepad_addr);
 
-    printf("[UNICORN] PicoCalcAPI struct at 0x%08x, version=8\n", api_base);
+    printf("[UNICORN] PicoCalcAPI struct at 0x%08x, version=9\n", api_base);
 }

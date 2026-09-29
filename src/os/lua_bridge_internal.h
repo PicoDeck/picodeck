@@ -97,6 +97,7 @@ void lb_register_type(lua_State *L, const char *mtname,
 
 void lua_bridge_display_init(lua_State *L);
 void lua_bridge_input_init(lua_State *L);
+void lua_bridge_gamepad_init(lua_State *L);
 void lua_bridge_sys_init(lua_State *L);
 void lua_bridge_fs_init(lua_State *L);
 void lua_bridge_network_init(lua_State *L);

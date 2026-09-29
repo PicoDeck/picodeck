@@ -207,6 +207,9 @@ class PicodeckSimulator:
         # Bounded: the drain keeps reading past the cap, it just stops
         # storing, so report volume can never back up the pipe.
         self._sanitizer_report: list[str] = []
+        # "[LAUNCHER] WARNING: app cap (N) reached, ignoring '<dir>'" lines,
+        # kept apart from the tail for the same reason.
+        self._app_cap_drops: list[str] = []
         self._drain_threads: list[threading.Thread] = []
 
     # ── Context Manager ──────────────────────────────────────────────────────
@@ -334,6 +337,13 @@ class PicodeckSimulator:
         """The captured sanitizer report (first line onwards, with stacks)."""
         return "\n".join(self._sanitizer_report)
 
+    APP_CAP_RE = re.compile(r"\[LAUNCHER\] WARNING: app cap \(\d+\) reached")
+
+    def _note_stdout_line(self, line: str):
+        """Stdout drain hook: remember launcher app-cap drops."""
+        if self.APP_CAP_RE.search(line) and len(self._app_cap_drops) < 20:
+            self._app_cap_drops.append(line)
+
     def _note_stderr_line(self, line: str):
         """Stderr drain hook: start or extend the sticky sanitizer report."""
         if self._sanitizer_report or self.SANITIZER_RE.search(line):
@@ -360,6 +370,14 @@ class PicodeckSimulator:
         if san:
             report = self._sanitizer_report or san
             problems.append("sanitizer report on stderr:\n" + "\n".join(report[:120]))
+        if self._app_cap_drops:
+            problems.append(
+                "the launcher dropped apps at its MAX_APPS cap (which apps "
+                "depends on the filesystem's directory order, so a test can "
+                "pass on tmpfs and fail elsewhere): the SD card held too many "
+                "apps. Ask for a smaller card with @pytest.mark.sd(fixtures="
+                "[...], reserve=N); see tests/e2e/README.md, 'App cap'.\n  "
+                + "\n  ".join(self._app_cap_drops))
         return problems
 
     def _join_drains(self, timeout: float = 1.0):
@@ -396,7 +414,8 @@ class PicodeckSimulator:
                     pass
 
         for wanted, stream, tail, note in (
-                (stdout, self.process.stdout, self._stdout_tail, None),
+                (stdout, self.process.stdout, self._stdout_tail,
+                 self._note_stdout_line),
                 (stderr, self.process.stderr, self._stderr_tail,
                  self._note_stderr_line)):
             if not wanted or stream is None:
@@ -434,6 +453,7 @@ class PicodeckSimulator:
                 time.sleep(0.05)
                 continue
             self._stdout_tail.append(line.rstrip("\n"))
+            self._note_stdout_line(line)
 
             m = port_re.search(line)
             if m:

@@ -134,7 +134,7 @@ Returns the current time as a table. Time is synchronized via NTP when WiFi is c
 
 - **Parameters:** None
 - **Returns:** (table) Clock data with fields:
-  - `synced` (boolean): `true` if time has been synchronized via NTP
+  - `synced` (boolean): `true` if time has been synchronized via NTP. Until then `hour`, `min`, `sec` and `epoch` are all `0`, and HTTPS/TLS connections refuse to start (see `conn:setInsecure`)
   - `hour` (number): Current hour (0-23, adjusted for timezone)
   - `min` (number): Current minute (0-59)
   - `sec` (number): Current second (0-59)
@@ -308,10 +308,27 @@ Load a shared Lua library from `/system/lib/<name>.lua` and return its result. L
   - `name` (string): Library name (without `.lua` extension)
 - **Returns:** Whatever the library script returns (typically a table)
 
+Returns `nil, errmsg` when `/system/lib/<name>.lua` cannot be opened. Only `.lua` source is loaded (bytecode is rejected).
+
 ```lua
-local json = picocalc.sys.loadlib("json")
-local data = json.decode(raw)
+local download = picocalc.sys.loadlib("download")
 ```
+
+JSON is not loaded this way. `picocalc.json` is a built-in namespace, always present (see [API-JSON](API-JSON.md)); there is no `json.lua` library:
+
+```lua
+local data = picocalc.json.decode(raw)
+```
+
+The libraries in the repo's `system/lib/` are the ones that exist. Each is a plain file that has to be present on the SD card at `/system/lib/`; release packaging does not install them for you:
+
+| Name | File | Docs |
+|------|------|------|
+| `"download"` | `download.lua` | [Library-Download](Library-Download.md) |
+| `"panels"` | `panels.lua` | [Library-Panels](Library-Panels.md) |
+| `"widgets"` | `widgets.lua` | none (a widget toolkit; read the file header) |
+
+`require` (see [Standard-Lua-Libraries](Standard-Lua-Libraries.md)) also searches `/system/lib`.
 
 ---
 

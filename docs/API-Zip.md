@@ -55,6 +55,7 @@ At most **4 archives** may be open at once per app. An archive is closed by `:cl
 - **Parameters:**
   - `path` (string): Path to the ZIP file
 - **Returns:** (userdata or nil, string) Archive object, or `nil, errorString` on failure
+- **Errors:** `"permission denied"`, `"too many open archives (max 4)"`, or `"open failed"` (the file cannot be opened) or `"bad zip"` (not a valid archive). (`picocalc.zip.list` opens an archive only for the call and does not count towards the 4.)
 
 ```lua
 local ar, err = picocalc.zip.open(APP_DIR .. "/assets.zip")
@@ -65,7 +66,9 @@ if not ar then error(err) end
 
 ### Archive Methods
 
-Objects returned by `picocalc.zip.open()`. Calling any method on a closed archive raises an error, except `:close()`, which is a no-op when already closed.
+The archive object returned by `picocalc.zip.open()` is the Lua surface for random access, and it is addressed **by entry name**: there are no entry indexes, no `locate` and no `statIndex`, and `ar:read` returns a string rather than filling a caller buffer. (The C API works by index; see [the C-to-Lua mapping](#c-to-lua-mapping).) Use it as `ar:method(...)`.
+
+Errors come in two kinds. A **runtime failure** (missing entry, bad archive, permission, size cap) is reported in the return values, per method: `ar:read` gives `nil, errorString`, `ar:extract` and `ar:extractAll` give `false, errorString`, `ar:exists` gives `false` and `ar:size` gives a bare `nil`; `ar:list` cannot fail. **Misuse** raises a Lua error: calling any method on a closed archive raises `archive is closed` (except `:close()`, which is a no-op when already closed), and a missing or wrongly typed argument raises the usual argument error.
 
 #### `ar:list()`
 List the archive's file entries (directory entries are skipped). Same result shape as `picocalc.zip.list`.
@@ -86,7 +89,7 @@ Check whether an entry with this exact name exists. Names include any directory 
 
 - **Parameters:**
   - `name` (string): Entry name
-- **Returns:** (boolean) `true` if the entry exists
+- **Returns:** (boolean) `true` if the entry exists (directory entries included), `false` otherwise. Never returns an error string.
 
 ```lua
 if ar:exists("images/hero.png") then ... end
@@ -99,7 +102,7 @@ Get an entry's uncompressed size.
 
 - **Parameters:**
   - `name` (string): Entry name
-- **Returns:** (number or nil) Uncompressed size in bytes, or `nil` if the entry does not exist
+- **Returns:** (number or nil) Uncompressed size in bytes, or `nil` (no error string) if the entry does not exist
 
 ```lua
 local bytes = ar:size("music/theme.mod")
@@ -108,12 +111,13 @@ local bytes = ar:size("music/theme.mod")
 ---
 
 #### `ar:read(name [, max_len])`
-Decompress a whole entry into a Lua string, without touching the SD card's filesystem. Fails if the entry's uncompressed size exceeds `max_len` (when given) or the 4 MB in-memory cap.
+Decompress a whole entry into a Lua string, without touching the SD card's filesystem. Fails if the entry's uncompressed size exceeds `max_len` (when given) or the 4 MB in-memory cap. The size is checked before anything is decompressed, so a rejected entry costs no memory.
 
 - **Parameters:**
   - `name` (string): Entry name
-  - `max_len` (number, optional): Reject entries that decompress to more than this many bytes
-- **Returns:** (string or nil, string) Entry contents, or `nil, errorString` on failure
+  - `max_len` (number, optional): Reject entries that decompress to more than this many bytes. `0`, a negative value or `nil` means no limit beyond the 4 MB cap; a larger value never raises the cap.
+- **Returns:** (string or nil, string) Entry contents (a zero-length entry gives the empty string), or `nil, errorString` on failure
+- **Errors:** `"no such entry"`, `"size cap"` (larger than `max_len` or 4 MB), `"bad zip"`, or an engine message such as `"extract failed"` (corrupt or unsupported data). Out of memory raises.
 
 ```lua
 local data, err = ar:read("levels/level1.json")
@@ -131,6 +135,7 @@ Stream one entry to a file on the SD card, using constant memory regardless of e
   - `name` (string): Entry name
   - `dest_path` (string): Destination file path (parent directories are created as needed)
 - **Returns:** (boolean, string) `true` on success, or `false, errorString` on failure
+- **Errors:** `"no such entry"`, `"permission denied (destination)"`, or an engine message (`"mkdir failed"`, `"extract failed"`, ...). A failed extraction removes the partial file.
 
 ```lua
 local ok, err = ar:extract("music/theme.mod", "/data/com.example.mygame/theme.mod")
@@ -145,6 +150,7 @@ Extract every file entry into a directory. Same behaviour as `picocalc.zip.extra
   - `dest_dir` (string): Destination directory
   - `progress_fn` (function, optional): Progress callback receiving `(done, total)` after each extracted file
 - **Returns:** (boolean, string) `true` on success, or `false, errorString` on failure
+- **Errors:** `"permission denied (destination)"` or an engine message (entry-count or total-size cap exceeded, write failure, ...). Errors raised inside `progress_fn` are ignored; a `sys.exit()` from it stops the extraction and the app exits.
 
 ```lua
 local ok, err = ar:extractAll("/data/com.example.mygame/assets")
@@ -161,6 +167,25 @@ Close the archive and release its SD file handle. Closing an already-closed arch
 ```lua
 ar:close()
 ```
+
+---
+
+### C-to-Lua mapping
+
+The native `g_api.zip` (see [Native API](#native-api-c)) and the Lua archive object cover the same ground with different shapes: C addresses entries by index and fills a buffer you allocate, Lua addresses them by name and returns a string. Porting either way:
+
+| C (`api->zip->...`) | Lua | Note |
+|---|---|---|
+| `extract(zip_path, dest_dir)` | `picocalc.zip.extract(zip_path, dest_dir [, progress])` | Lua adds a progress callback and an error string |
+| `list(zip_path)` (count) | `picocalc.zip.list(zip_path)` (table) | Lua returns the entries, files only |
+| `open(path)` (`NULL` on error) | `picocalc.zip.open(path)` (`nil, err`) | at most 4 open per app in both |
+| `numEntries(z)` + `statIndex(z, i, &st)` loop | `ar:list()` | Lua skips directory entries; C counts them |
+| `locate(z, name)` (index or -1) | `ar:exists(name)` | Lua has no index to keep |
+| `statIndex(z, idx, &st)` then `st.size` | `ar:size(name)` | `nil` if absent |
+| `read(z, idx, buf, cap)` | `ar:read(name [, max_len])` | Lua allocates the string; no undersized-buffer case |
+| `extractEntry(z, idx, dest)` | `ar:extract(name, dest)` | |
+| (none) | `ar:extractAll(dest [, progress])` | C: use `extract` |
+| `close(z)` | `ar:close()` | Lua also closes on GC, `<close>` and app exit |
 
 ---
 
@@ -233,7 +258,15 @@ Entry names are strictly validated before an entry name may become a filesystem 
 
 `g_api.zip` (`picocalc_zip_t` in `src/os/os.h`). `extract(zip_path, dest_dir)` and `list(zip_path)` exist since Phase 2. API version 5 (`g_api.version >= 5`) appends read-in-place archive handles: `open`, `close`, `numEntries`, `locate`, `statIndex`, `read` and `extractEntry`, working on an opaque `pczip_t` handle. Check `api->version >= 5` before calling them; on older firmware the struct ends at `list`.
 
-Reads are caller-allocated: `statIndex` first to size the buffer, then `read` decompresses into it. `read` returns the number of bytes written, or -1 on any error, including "entry larger than `buf_cap`".
+Reads are caller-allocated: `statIndex` first to size the buffer (`st.size` is the uncompressed size), then `read` decompresses into it. `read` returns the number of bytes written, or a negative code:
+
+| Return | Meaning |
+|---|---|
+| `>= 0` | bytes written (0 for an empty entry) |
+| `PCZIP_ERR_TOO_SMALL` (-2) | the entry is larger than `buf_cap`; nothing was written. Allocate `st.size` bytes and retry |
+| `-1` | any other error: bad handle, bad index, corrupt data |
+
+Test the result with `< 0`, never `== -1`: both codes are negative, so a caller that only checks `n < 0` is safe with either. `PCZIP_ERR_TOO_SMALL` is defined in `os.h` and needs no API version bump; firmware from before it returned `-1` for the too-small case as well, so code that must run there should size the buffer from `statIndex` and treat every negative result as a failure.
 
 ```c
 pczip_t z = api->zip->open("/apps/mygame/assets.zip");   // NULL on error
@@ -244,7 +277,7 @@ pczip_stat_t st;
 if (idx >= 0 && api->zip->statIndex(z, idx, &st)) {
     void *buf = umm_malloc(st.size);                     // caller allocates
     if (buf) {
-        int got = api->zip->read(z, idx, buf, st.size);  // bytes written, -1 on error
+        int got = api->zip->read(z, idx, buf, st.size);  // bytes written, < 0 on error
         if (got >= 0) {
             // ... use buf[0..got) ...
         }

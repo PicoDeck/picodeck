@@ -502,7 +502,7 @@ extern "C" void tgx_draw_image_scaled(uint16_t *dst_fb, int dst_w, int dst_h,
                                       int clip_x0, int clip_y0, int clip_x1,
                                       int clip_y1,
                                       const uint16_t *src_data, int src_w,
-                                      int src_h, int dst_x, int dst_y,
+                                      int src_h, float dst_x, float dst_y,
                                       float scale, float angle) {
   if (!dst_fb || !src_data)
     return;
@@ -531,7 +531,7 @@ extern "C" void tgx_draw_image_scaled_masked(uint16_t *dst_fb, int dst_w, int ds
                                             int clip_x0, int clip_y0,
                                             int clip_x1, int clip_y1,
                                             const uint16_t *src_data, int src_w,
-                                            int src_h, int dst_x, int dst_y,
+                                            int src_h, float dst_x, float dst_y,
                                             float scale, float angle,
                                             uint16_t transparent_color) {
   if (!dst_fb || !src_data)

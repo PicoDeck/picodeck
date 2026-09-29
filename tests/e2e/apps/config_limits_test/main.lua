@@ -61,6 +61,19 @@ if not second_run then
         T.eq(#missing, 0, "dropped: " .. table.concat(missing, ","))
     end)
 
+    -- The store is a 1 KB pool of pairs: ten 120-char values overflow it.
+    T.case("sysconfig_fill_pool", function()
+        local sc = T.ok(pc.sysconfig, "picocalc.sysconfig missing")
+        local v = string.rep("x", 120)
+        for i = 1, 10 do sc.set("e2e_f" .. i, v) end
+        local missing = {}
+        for i = 1, 10 do
+            if sc.get("e2e_f" .. i) ~= v then missing[#missing + 1] = "e2e_f" .. i end
+        end
+        for i = 1, 10 do sc.set("e2e_f" .. i, nil) end
+        T.eq(#missing, 0, "dropped: " .. table.concat(missing, ","))
+    end)
+
     T.case("sysconfig_200_char_value", function()
         local sc = T.ok(pc.sysconfig, "picocalc.sysconfig missing")
         local long = string.rep("abcdefghij", 20)

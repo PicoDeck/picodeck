@@ -551,6 +551,8 @@ void lua_bridge_register(lua_State *L) {
   lua_bridge_display_init(L);
   printf("[LUA] registering input...\n");
   lua_bridge_input_init(L);
+  printf("[LUA] registering gamepad...\n");
+  lua_bridge_gamepad_init(L);
   printf("[LUA] registering sys...\n");
   lua_bridge_sys_init(L);
   printf("[LUA] registering fs...\n");

@@ -336,6 +336,10 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_bridge.c
     ${PICODECK_ROOT}/src/os/lua_bridge_display.c
     ${PICODECK_ROOT}/src/os/lua_bridge_input.c
+    ${PICODECK_ROOT}/src/os/lua_bridge_gamepad.c
+    ${PICODECK_ROOT}/src/os/gamepad.c
+    ${PICODECK_ROOT}/src/os/gamepad_map.c
+    ${PICODECK_ROOT}/src/os/gamepad_edit.c
     ${PICODECK_ROOT}/src/os/lua_bridge_sys.c
     ${PICODECK_ROOT}/src/os/lua_bridge_fs.c
     ${PICODECK_ROOT}/src/os/lua_bridge_config.c
@@ -343,6 +347,7 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_bridge_appconfig.c
     ${PICODECK_ROOT}/src/os/lua_bridge_perf.c
     ${PICODECK_ROOT}/src/os/perf.c
+    ${PICODECK_ROOT}/src/os/fps_counter.c
     ${PICODECK_ROOT}/src/os/lua_bridge_graphics.c
     ${PICODECK_ROOT}/src/os/lua_bridge_3d.c
     ${PICODECK_ROOT}/src/os/gfx3d.c
@@ -352,6 +357,7 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_corolib.c
     ${PICODECK_ROOT}/src/os/lua_bridge_ui.c
     ${PICODECK_ROOT}/src/os/toast.c
+    ${PICODECK_ROOT}/src/os/os_overlay.c
     ${PICODECK_ROOT}/src/os/lua_bridge_audio.c
     ${PICODECK_ROOT}/src/os/lua_bridge_sound.c
     ${PICODECK_ROOT}/src/os/lua_bridge_repl.c

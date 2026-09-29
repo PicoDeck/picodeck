@@ -86,6 +86,13 @@ bool hal_input_pop_event(struct kbd_event_s *out);
 // counterpart of keyboard.c's kbd_discard_pending FIFO drain).
 void hal_input_discard_pending(void);
 
+// Injected buttons down right now: one-shot clicks a poll has already read
+// (the device's active ones) and keydown latches. kbd_clear_state keeps their
+// gamepad buttons held without an edge, as keyboard.c's
+// kbd_inject_after_clear does; a click not read yet is published, with its
+// edge, by the next poll (the device's pending one).
+uint32_t hal_input_injected_down(void);
+
 // ── Injection sequence numbers (test sync) ─────────────────────────────────
 // Every injection (click/press/release/char, and the menu click, which the
 // keyboard stub handles outside the button state) gets the next seq. An
@@ -96,7 +103,7 @@ void hal_input_discard_pending(void);
 uint32_t hal_input_last_issued_seq(void);
 // consumed: highest seq such that it and every earlier seq are consumed.
 void hal_input_get_seq_state(uint32_t *issued, uint32_t *consumed);
-void hal_input_note_menu_injected(void);
-void hal_input_note_menu_consumed(void);
+void hal_input_raise_menu(bool injected);  // injected: also note its input seq
+bool hal_input_take_menu(void);            // test-and-clear the flag and its seq
 
 #endif // HAL_INPUT_H

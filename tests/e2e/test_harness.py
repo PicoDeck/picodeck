@@ -192,6 +192,7 @@ def test_invalid_app_id_is_refused_and_logged(harness_sim, test_sd_card, bad_id)
     assert _tree(test_sd_card / "data") == data_before
 
 
+@pytest.mark.sd(fixtures=[], reserve=2)  # stages dup_a and dup_b
 def test_apps_folding_to_one_id_are_warned_at_scan(harness_sim, test_sd_card):
     """Two apps whose ids fold to the same /data/<id> share a data dir and a
     config store: the scan logs a warning naming both."""

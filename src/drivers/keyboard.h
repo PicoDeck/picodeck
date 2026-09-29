@@ -24,6 +24,7 @@
 #define KEY_ESC    0xB1
 #define KEY_BKSPC  0x08   // ASCII backspace
 #define KEY_TAB    0x09   // ASCII tab
+#define KEY_DEL    0xD4   // Delete key (Shift+Delete sends End, 0xD5)
 #define KEY_NONE   0x00   // No key / idle
 
 // Modifier key codes (sent as separate events when CFG_REPORT_MODS is set)
@@ -35,6 +36,16 @@
 
 // Special system keys
 #define KEY_BRK    0xD0   // Break key — intercepted by OS for screenshots
+
+// What the keyboard controller sends for a key while Shift is held (it
+// recomputes the code at every transition, picocalc_keyboard keyboard.ino):
+// Shift+F1..F5 = F6..F10 (F10 is the system menu key), Shift+Esc = Brk,
+// and these. Shift+Left/Right/Backspace/Space send nothing at all.
+#define KEY_INSERT 0xD1   // Shift+Enter (also Alt+I)
+#define KEY_HOME   0xD2   // Shift+Tab
+#define KEY_END    0xD5   // Shift+Delete
+#define KEY_PGUP   0xD6   // Shift+Up
+#define KEY_PGDN   0xD7   // Shift+Down
 
 // Function keys
 #define KEY_F1     0x81
@@ -100,9 +111,9 @@ bool kbd_consume_menu_press(void);
 // Brk is intercepted by the OS for screenshots and is never visible to apps.
 bool kbd_consume_screenshot_press(void);
 
-// Clear all keyboard state (buttons, chars, the event queue, the key-down
-// set). Call this after an app exits to prevent button presses in the
-// launcher from being "inherited" by the next app. A key still physically
+// Clear all keyboard state (buttons, the gamepad, chars, the event queue, the
+// key-down set). Call this after an app exits to prevent button presses in
+// the launcher from being "inherited" by the next app. A key still physically
 // held afterwards is picked up by its next HOLD report without a press edge.
 void kbd_clear_state(void);
 
@@ -138,7 +149,8 @@ void kbd_set_poll_interval_ms(uint32_t ms);
 // press before ever sampling it. An app's update→read sequence still always
 // observes both a press and a release edge; a repeat injection of the same
 // button while it's still active is queued and only republished after a full
-// release cycle, guaranteeing a real release-then-press edge.
+// release cycle, guaranteeing a real release-then-press edge. A gamepad
+// button bound to the key follows it (so do kbd_hold_buttons' latches).
 void kbd_inject_buttons(uint32_t buttons);
 
 // Hold buttons down until kbd_release_buttons() — for injected modifier
@@ -152,7 +164,9 @@ void kbd_release_buttons(uint32_t buttons);
 
 // Inject a character. The character is stored in s_last_char and consumed on the
 // next call to kbd_get_char() (similar to real keyboard input). It is also
-// queued as a down / char / up event triple for kbd_poll_event().
+// queued as a down / char / up event triple for kbd_poll_event(), and a
+// gamepad button bound to its key reads as a tap at the next kbd_poll() (held
+// for that poll, released at the one after).
 void kbd_inject_char(char c);
 
 // ── Event queue (picocalc.input.pollEvent / isKeyDown) ───────────────────────
@@ -199,3 +213,40 @@ void kbd_poll_background(void);
 // Drop queued events only (held state is kept). Called when an app starts so
 // it does not receive the launcher's keys.
 void kbd_flush_events(void);
+
+// ── Gamepad (picocalc.gamepad / g_api.gamepad) ───────────────────────────────
+// A logical gamepad whose 12 buttons (PAD_* in os.h: bit i is button i) are
+// aliases for keys: a bound key still reports as itself everywhere else
+// (BTN_*, getChar, events, isKeyDown). Each button has a primary and an
+// alternate slot holding a keycode (0 = unbound). Keys are matched like the
+// key-down set (letters case-folded, stored lower case), and the codes a key
+// takes while Shift is held fold back to it (kbd_event_queue.h, "Gamepad").
+// kbd_poll() updates it with the same rules as the button masks (a tap
+// inside one poll is held for that poll; a key held across kbd_clear_state
+// gives no press edge), and injected keys drive it too.
+// src/os/gamepad_map.h builds the map.
+
+#define KBD_PAD_BUTTONS 12  // PAD_UP .. PAD_SELECT
+#define KBD_PAD_SLOTS 2     // 0 = primary, 1 = alternate
+
+typedef struct {
+  uint8_t key[KBD_PAD_BUTTONS][KBD_PAD_SLOTS];
+} kbd_padmap_t;
+
+// The default bindings (primary slots only), in PAD_* order: arrows, then
+// A=F4, B=F5, X=Delete, Y=Backspace, L=F2, R=F3, Start=F1, Select=Tab.
+#define KBD_PAD_DEFAULT_MAP                                                    \
+  {{{KEY_UP, 0}, {KEY_DOWN, 0}, {KEY_LEFT, 0}, {KEY_RIGHT, 0},                 \
+    {KEY_F4, 0}, {KEY_F5, 0}, {KEY_DEL, 0}, {KEY_BKSPC, 0},                    \
+    {KEY_F2, 0}, {KEY_F3, 0}, {KEY_F1, 0}, {KEY_TAB, 0}}}
+
+// PAD_* held / pressed this poll / released this poll, as getButtons*.
+uint32_t kbd_get_pad(void);
+uint32_t kbd_get_pad_pressed(void);
+uint32_t kbd_get_pad_released(void);
+
+// Install the effective map (copied). Gamepad state is dropped without edges;
+// a key still held is picked up again quietly by its next HOLD report.
+void kbd_set_pad_map(const kbd_padmap_t *map);
+// The installed map (never NULL). Starts as KBD_PAD_DEFAULT_MAP.
+const kbd_padmap_t *kbd_get_pad_map(void);

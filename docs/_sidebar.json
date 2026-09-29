@@ -82,6 +82,10 @@
         "page": "API-Game.md"
       },
       {
+        "label": "API Gamepad",
+        "page": "API-Gamepad.md"
+      },
+      {
         "label": "API Input",
         "page": "API-Input.md"
       },

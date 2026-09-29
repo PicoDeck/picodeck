@@ -14,7 +14,8 @@ as garbage (this has happened). The checks:
     in (1) and (2), member by member (comments and spacing ignored);
   - g_api.version in src/main.c equals the version the trampolines write, and
     they write it at offsetof(PicoCalcAPI, version) with api_struct_size ==
-    sizeof(PicoCalcAPI);
+    sizeof(PicoCalcAPI), and a table pointer at every other offset (tables
+    appended after `version` included);
   - with --cc (an ARM cross compiler, e.g. arm-none-eabi-gcc): both headers
     are compiled and the real sizeof() of every struct and offsetof(version)
     are compared (read back from symbol sizes with the matching nm).
@@ -160,7 +161,8 @@ def check_trampolines(layout: dict, version: int) -> list[str]:
             f"unicorn_trampolines.c: writes {got!r} at api_base + "
             f"{layout['version_off']} (offsetof(PicoCalcAPI, version)); "
             f"src/main.c sets g_api.version = {version}")
-    table_offs = set(range(0, layout["version_off"], POINTER_SIZE))
+    # Every table pointer, including those appended after `version`.
+    table_offs = set(range(0, layout["size"], POINTER_SIZE)) - {layout["version_off"]}
     missing = sorted(table_offs - set(writes))
     if missing:
         problems.append(f"unicorn_trampolines.c: no write32 at api_base + {missing}")

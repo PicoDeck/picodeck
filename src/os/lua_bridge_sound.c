@@ -516,11 +516,17 @@ static int l_sound_fileplayer_load(lua_State *L) {
     fileplayer_t *player = check_fileplayer(L, 1);
     const char *path = luaL_checkstring(L, 2);
     if (!fs_sandbox_check(L, path, false)) {
-        lua_pushboolean(L, false);
+        lua_pushnil(L);
         lua_pushstring(L, "access denied");
         return 2;
     }
-    g_api.soundplayer->filePlayerLoad(player, path);
+    // Not through the void native filePlayerLoad: Lua gets the reason.
+    const char *reason = NULL;
+    if (!fileplayer_load_err(player, path, &reason)) {
+        lua_pushnil(L);
+        lua_pushstring(L, reason ? reason : "cannot play file");
+        return 2;
+    }
     lua_pushboolean(L, true);
     return 1;
 }
@@ -554,6 +560,12 @@ static int l_sound_fileplayer_isPlaying(lua_State *L) {
 static int l_sound_fileplayer_getLength(lua_State *L) {
     fileplayer_t *player = check_fileplayer(L, 1);
     lua_pushinteger(L, fileplayer_get_length(player));
+    return 1;
+}
+
+static int l_sound_fileplayer_getSampleRate(lua_State *L) {
+    fileplayer_t *player = check_fileplayer(L, 1);
+    lua_pushinteger(L, (lua_Integer)fileplayer_get_sample_rate(player));
     return 1;
 }
 
@@ -759,8 +771,8 @@ static void release_player_cbs(lua_State *L, sound_player_t *player) {
 }
 
 static int l_sound_fileplayer_didUnderrun(lua_State *L) {
-    (void)check_fileplayer(L, 1);
-    lua_pushboolean(L, fileplayer_did_underrun());
+    fileplayer_t *player = check_fileplayer(L, 1);
+    lua_pushboolean(L, fileplayer_did_underrun(player));
     return 1;
 }
 
@@ -995,6 +1007,7 @@ static const luaL_Reg sound_fileplayer_methods[] = {
     {"resume", l_sound_fileplayer_resume},
     {"isPlaying", l_sound_fileplayer_isPlaying},
     {"getLength", l_sound_fileplayer_getLength},
+    {"getSampleRate", l_sound_fileplayer_getSampleRate},
     {"getOffset", l_sound_fileplayer_getOffset},
     {"setOffset", l_sound_fileplayer_setOffset},
     {"setVolume", l_sound_fileplayer_setVolume},

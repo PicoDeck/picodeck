@@ -78,14 +78,15 @@ def probe(sim_module):
     lines = [t for t in lines if t.startswith("PROBE ")]
     assert lines and lines[-1] == "PROBE done", (
         "the probe did not log its layout:\n" + "\n".join(lines))
+    table_lines = [t for t in lines[2:-1] if t.startswith("PROBE table ")]
     tables = {}
-    for t in lines[2:-1]:
+    for t in table_lines:
         m = re.fullmatch(r"PROBE table (\w+) size=(\d+) gap=(\d+)", t)
         assert m, lines
         tables[m.group(1)] = (int(m.group(2)), int(m.group(3)))
     return {"lines": lines, "tables": tables,
             "order": [re.match(r"PROBE table (\w+)", t).group(1)
-                      for t in lines[2:-1]]}
+                      for t in table_lines]}
 
 
 def test_api_version_matches_main_c(probe):
@@ -112,6 +113,19 @@ def test_api_struct_matches_os_h(probe):
     assert probe["order"] == TABLES, probe["order"]
 
 
+def test_api_gamepad_table(probe):
+    """API version 9 appends the gamepad table after `version`: a native app
+    that checks api->version >= 9 reaches it, nothing is held at launch, and
+    getLabel reports the default binding of A (F4, alternate unbound). The
+    label is a permanent string, as the device's flash one: kept from
+    startup, it still reads F4 after 10000 more getLabel calls."""
+    assert abi.api_version() >= 9
+    lines = [t for t in probe["lines"] if t.startswith("PROBE gamepad ")]
+    assert lines == ["PROBE gamepad buttons=0 pressed=0 label_a=F4 "
+                     "label_a_alt=-",
+                     "PROBE gamepad kept label_a=F4"], probe["lines"]
+
+
 @pytest.mark.parametrize("table", [
     pytest.param(t, marks=[known_bug(KNOWN_TABLE_DRIFT[t])]
                  if t in KNOWN_TABLE_DRIFT else []) for t in TABLES])
@@ -129,3 +143,28 @@ def test_api_table_matches_os_h(probe, table):
         assert gap == got, (f"{table}: simulator table is {gap} bytes, "
                             f"sizeof({typ}) is {got}: trampoline slot count "
                             f"drifted (simulator/unicorn_trampolines.c)")
+
+
+def test_native_app_does_not_inherit_perf_pacing(simulator):
+    """A Lua app's setTargetFPS(5) and frame history do not reach the native
+    app launched after it: getFPS() starts at 0 and an unpaced endFrame()
+    returns at once (a leaked 5 fps target would make the second wait 200 ms).
+    """
+    simulator.launch_app("perf_pacing_test")
+    outcome = simulator.wait_for_exit(timeout=15)
+    assert outcome.get("result") == "returned", outcome
+    lines = [re.sub(r"^\[APP\] ", "", t)
+             for t in log_texts(simulator.get_log_lines())]
+    # Precondition: the fixture's setTargetFPS(5) really paced it.
+    assert "PERF_LUA fps=5" in lines, lines
+    simulator.launch_app("native_api_probe")
+    outcome = simulator.wait_for_exit(timeout=15)
+    assert outcome.get("result") == "returned", outcome
+    lines = [re.sub(r"^\[APP\] ", "", t)
+             for t in log_texts(simulator.get_log_lines())]
+    perf = [t for t in lines if t.startswith("PERF ")]
+    assert len(perf) == 1, lines
+    m = re.fullmatch(r"PERF fps=(-?\d+) endframe_ms=(\d+)", perf[0])
+    assert m, perf
+    assert int(m.group(1)) == 0, f"inherited frame history: {perf[0]}"
+    assert int(m.group(2)) < 100, f"inherited pacing target: {perf[0]}"

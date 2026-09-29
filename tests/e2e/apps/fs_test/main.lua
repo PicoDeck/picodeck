@@ -69,6 +69,51 @@ T.case("seek_tell", function()
     T.eq(got, "FGHIJ", "read after seek")
 end)
 
+T.case("seek_whence", function()
+    local path = fs.appPath("test_seek.txt")
+    write(path, "ABCDEFGHIJ")
+    local f = T.ok(fs.open(path, "r"), "open for read")
+
+    -- "end": offset 0 lands on the length; it can be told and read from.
+    T.eq(fs.seek(f, 0, "end"), true, "seek end")
+    T.eq(fs.tell(f), 10, "tell after seek end = file length")
+    T.eq(fs.read(f, 1), nil, "read at end")
+    -- Negative offsets from the end.
+    T.eq(fs.seek(f, -3, "end"), true, "seek end-3")
+    T.eq(fs.read(f, 3), "HIJ", "read last three")
+
+    -- "cur" is relative to the current position, both ways.
+    fs.seek(f, 2)
+    T.eq(fs.seek(f, 3, "cur"), true, "seek cur+3")
+    T.eq(fs.tell(f), 5, "tell after cur+3")
+    T.eq(fs.seek(f, -4, "cur"), true, "seek cur-4")
+    T.eq(fs.tell(f), 1, "tell after cur-4")
+    T.eq(fs.seek(f, 0, "cur"), true, "seek cur+0")
+    T.eq(fs.tell(f), 1, "cur+0 does not move")
+
+    -- Explicit "set" equals the default; the method form takes whence too.
+    T.eq(fs.seek(f, 4, "set"), true)
+    T.eq(fs.tell(f), 4, "explicit set")
+    T.eq(f:seek(-2, "end"), true, "method seek end")
+    T.eq(f:tell(), 8, "method tell")
+
+    -- Default (no whence) is unchanged: absolute, negatives rejected.
+    T.eq(fs.seek(f, 5), true)
+    T.eq(fs.tell(f), 5, "default whence is set")
+    T.raises(function() fs.seek(f, -1) end, "negative offset")
+    T.raises(function() fs.seek(f, -1, "set") end, "negative offset")
+    T.eq(fs.tell(f), 5, "failed set left the position alone")
+
+    -- Bad whence, and positions before the start or out of range, raise.
+    T.raises(function() fs.seek(f, 0, "bogus") end, "invalid option")
+    T.raises(function() fs.seek(f, 0, 1) end, "invalid option")
+    T.raises(function() fs.seek(f, -11, "end") end, "before start")
+    T.raises(function() fs.seek(f, -6, "cur") end, "before start")
+    T.raises(function() fs.seek(f, 2147483647, "end") end, "out of range")
+    T.eq(fs.tell(f), 5, "rejected seeks left the position alone")
+    fs.close(f)
+end)
+
 T.case("mkdir", function()
     local dir = fs.appPath("test_subdir")
     T.ok(fs.mkdir(dir), "mkdir failed")

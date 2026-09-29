@@ -218,6 +218,25 @@ void display_flush_region(int y0, int y1) {
            (size_t)(y1 - y0 + 1) * 320 * sizeof(uint16_t));
 }
 
+// Mirror of display_push_rect: copy the rectangle from the back buffer into
+// the GRAM analog and re-present (no swap, s_last_presented unchanged).
+void display_push_rect(int x, int y, int w, int h) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > 320) w = 320 - x;
+    if (y + h > 320) h = 320 - y;
+    if (w <= 0 || h <= 0) return;
+
+    uint16_t* back = display_get_back_buffer();
+    for (int r = y; r < y + h; r++)
+        memcpy(&s_gram[r * 320 + x], &back[r * 320 + x],
+               (size_t)w * sizeof(uint16_t));
+    present_gram();
+}
+
+// No flush DMA here: every flush has finished when it returns.
+void display_wait_for_flush(void) {}
+
 void display_apply_clock(void) {}
 
 void display_clear(uint16_t color) {
@@ -233,6 +252,12 @@ void display_set_pixel(int x, int y, uint16_t color) {
     if (x >= s_clip_x0 && x <= s_clip_x1 && y >= s_clip_y0 && y <= s_clip_y1) {
         display_get_back_buffer()[y * 320 + x] = color;
     }
+}
+
+// Mirror of the firmware's display_get_pixel (host order here, no unswap).
+uint16_t display_get_pixel(int x, int y) {
+    if (x < 0 || x >= 320 || y < 0 || y >= 320) return 0;
+    return display_get_back_buffer()[y * 320 + x];
 }
 
 void display_draw_line(int x0, int y0, int x1, int y1, uint16_t color) {
@@ -760,8 +785,18 @@ bool sdcard_disk_info(uint32_t* out_free_kb, uint32_t* out_total_kb) {
         if (out_total_kb) *out_total_kb = 0;
         return false;
     }
-    if (out_total_kb) *out_total_kb = (uint32_t)((st.f_blocks * st.f_frsize) / 1024);
-    if (out_free_kb)  *out_free_kb  = (uint32_t)((st.f_bavail * st.f_frsize) / 1024);
+    // Model an SD card, not the host disk: fs.diskInfo pushes these as 32-bit
+    // Lua integers, and a multi-terabyte host filesystem (btrfs, XFS) would
+    // wrap negative. 32 GB is a typical card size. The device itself cannot
+    // overflow: FF_LBA64 is 0 (at most 2^32 sectors) and the SD spec stops at
+    // 2 TB, about 1.95e9 KB, under INT32_MAX.
+    const uint64_t cap_kb = 32ull * 1024 * 1024;
+    uint64_t total_kb = ((uint64_t)st.f_blocks * st.f_frsize) / 1024;
+    uint64_t free_kb  = ((uint64_t)st.f_bavail * st.f_frsize) / 1024;
+    if (total_kb > cap_kb) total_kb = cap_kb;
+    if (free_kb > total_kb) free_kb = total_kb;
+    if (out_total_kb) *out_total_kb = (uint32_t)total_kb;
+    if (out_free_kb)  *out_free_kb  = (uint32_t)free_kb;
     return true;
 }
 

@@ -2,7 +2,7 @@
 title: "API Input"
 ---
 
-Keyboard and button input functions.
+Keyboard and button input functions. For games, the [gamepad](API-Gamepad.md) (`picocalc.gamepad`) gives the same edges on buttons players can rebind; the keys behind it still report here.
 
 ## picocalc.input
 

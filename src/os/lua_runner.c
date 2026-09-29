@@ -1,5 +1,6 @@
 #include "lua_runner.h"
 #include "app_identity.h"
+#include "gamepad.h"
 #include "launcher_types.h"
 #include "lua_bridge.h"
 #include "app_stack.h"
@@ -303,6 +304,7 @@ static bool lua_run(const app_entry_t *app) {
                             "invalid app id (or out of PSRAM)");
     return false;
   }
+  gamepad_apply();  // global bindings + this app's override
   bool ok = lua_run_app(app);
   // lua_close() has run every file handle's __gc by now; this closes what
   // could not be (a handle whose finalizer never ran), so FatFS's 16 lock

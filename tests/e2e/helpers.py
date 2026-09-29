@@ -34,12 +34,29 @@ GOLDEN_DIR = E2E_DIR / "fixtures"
 SdExtra = Union[str, tuple]
 
 
+def launcher_app_cap() -> int:
+    """MAX_APPS, read from src/os/launcher.c so it can't drift from the OS."""
+    src = (PROJECT_ROOT / "src" / "os" / "launcher.c").read_text()
+    m = re.search(r"^#define\s+MAX_APPS\s+(\d+)", src, re.M)
+    if not m:
+        raise RuntimeError("MAX_APPS not found in src/os/launcher.c")
+    return int(m.group(1))
+
+
+def fixture_app_names() -> list[str]:
+    """Every fixture app under tests/e2e/apps/."""
+    return sorted(a.name for a in FIXTURE_APPS.iterdir() if a.is_dir())
+
+
 def build_sd_card(dest: Path, extra: Iterable[SdExtra] = (),
-                  default_sd: Path = DEFAULT_SD_SOURCE) -> Path:
+                  default_sd: Path = DEFAULT_SD_SOURCE,
+                  fixtures: Optional[Iterable[str]] = None,
+                  reserve: int = 0) -> Path:
     """Build a simulator SD card at `dest` from the manifest:
 
     - apps/hello from the default SD card (simulator/assets/sd_card)
-    - every fixture app under tests/e2e/apps/
+    - every fixture app under tests/e2e/apps/ (or only those named in
+      `fixtures`, hello excepted)
     - system/lib/*.lua from the repo, plus the test kit (picotest.lua)
 
     Nothing else is copied, so untracked content in the default SD card (a
@@ -47,8 +64,25 @@ def build_sd_card(dest: Path, extra: Iterable[SdExtra] = (),
     adds more: a string is a path relative to `default_sd` copied to the same
     place, and a (source, dest) tuple copies `source` (absolute, or relative
     to the repo root) to `dest` (relative to the SD root).
+
+    The launcher keeps at most MAX_APPS apps, in directory order, and drops
+    the rest with a warning; which ones it drops depends on the filesystem
+    (tmpfs lists new entries first, ext4 and btrfs do not). So a card must
+    never hold more than that: this raises if the built card does, or would
+    once the test stages `reserve` more apps at runtime. A test that stages
+    apps passes `fixtures=` (just the fixture apps it launches) and `reserve=`
+    (how many it stages), through `@pytest.mark.sd(fixtures=..., reserve=...)`.
     """
     dest = Path(dest)
+    available = fixture_app_names()
+    if fixtures is None:
+        wanted = available
+    else:
+        wanted = sorted(set(fixtures))
+        unknown = [n for n in wanted if n not in available]
+        if unknown:
+            raise ValueError(f"build_sd_card: no such fixture app(s) {unknown} "
+                             f"under {FIXTURE_APPS}")
     for sub in ("apps", "data", "system/lib"):
         (dest / sub).mkdir(parents=True, exist_ok=True)
 
@@ -56,10 +90,10 @@ def build_sd_card(dest: Path, extra: Iterable[SdExtra] = (),
     if hello.is_dir():
         shutil.copytree(hello, dest / "apps" / "hello", dirs_exist_ok=True)
 
-    for app in sorted(FIXTURE_APPS.iterdir()):
-        if app.is_dir():
-            shutil.copytree(app, dest / "apps" / app.name, dirs_exist_ok=True,
-                            ignore=shutil.ignore_patterns("__pycache__"))
+    for name in wanted:
+        shutil.copytree(FIXTURE_APPS / name, dest / "apps" / name,
+                        dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__"))
 
     for lib in list(SYSTEM_LIB_DIR.glob("*.lua")) + list(TEST_LIB_DIR.glob("*.lua")):
         shutil.copy2(lib, dest / "system" / "lib" / lib.name)
@@ -77,6 +111,20 @@ def build_sd_card(dest: Path, extra: Iterable[SdExtra] = (),
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, target)
+
+    cap = launcher_app_cap()
+    count = sum(1 for a in (dest / "apps").iterdir() if a.is_dir())
+    if count + reserve > cap:
+        raise RuntimeError(
+            f"SD card holds {count} apps"
+            + (f" and the test stages {reserve} more" if reserve else "")
+            + f", over the launcher's MAX_APPS ({cap}, src/os/launcher.c). "
+            "The launcher would silently drop the surplus in directory order, "
+            "which differs per filesystem. Do not raise MAX_APPS (the app "
+            "table is device PSRAM). Ask for a smaller card: "
+            "@pytest.mark.sd(fixtures=[<the fixture apps this test launches>], "
+            "reserve=<apps it stages>), or fixtures=... on sim_module_factory "
+            "/ lua_suite. See tests/e2e/README.md, 'App cap'.")
     return dest
 
 

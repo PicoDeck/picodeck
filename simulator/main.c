@@ -41,6 +41,7 @@
 #endif
 #include "drivers/keyboard.h"
 #include "appconfig.h"
+#include "gamepad.h"
 #include "config.h"
 #include "clock.h"
 #include "idle_dim.h"
@@ -384,12 +385,16 @@ static void sp_filePlayerSetVolume(pcfileplayer_t fp, uint8_t vol) { fileplayer_
 static uint8_t sp_filePlayerGetVolume(pcfileplayer_t fp) { uint8_t l=0,r=0; fileplayer_get_volume((const fileplayer_t *)fp,&l,&r); return l; }
 static uint32_t sp_filePlayerGetOffset(pcfileplayer_t fp) { return fileplayer_get_offset((const fileplayer_t *)fp); }
 static void sp_filePlayerSetOffset(pcfileplayer_t fp, uint32_t pos) { fileplayer_set_offset((fileplayer_t *)fp, pos); }
-static bool sp_filePlayerDidUnderrun(pcfileplayer_t fp) { (void)fp; return fileplayer_did_underrun(); }
+static bool sp_filePlayerDidUnderrun(pcfileplayer_t fp) { return fileplayer_did_underrun((fileplayer_t *)fp); }
 static void sp_filePlayerFree(pcfileplayer_t fp) { fileplayer_destroy((fileplayer_t *)fp); }
 
 static pcmp3player_t sp_mp3PlayerNew(void) { return (pcmp3player_t)mp3_player_create(); }
 static void sp_mp3PlayerLoad(pcmp3player_t mp, const char *path) { mp3_player_load((mp3_player_t *)mp, path); }
-static void sp_mp3PlayerPlay(pcmp3player_t mp, uint8_t repeat) { mp3_player_play((mp3_player_t *)mp, repeat); }
+static void sp_mp3PlayerPlay(pcmp3player_t mp, uint8_t repeat) {
+    // 0 = loop until stopped, any other count plays once (as Lua's play()).
+    mp3_player_set_loop((mp3_player_t *)mp, repeat == 0);
+    mp3_player_play((mp3_player_t *)mp, repeat);
+}
 static void sp_mp3PlayerStop(pcmp3player_t mp) { mp3_player_stop((mp3_player_t *)mp); }
 static void sp_mp3PlayerPause(pcmp3player_t mp) { mp3_player_pause((mp3_player_t *)mp); }
 static void sp_mp3PlayerResume(pcmp3player_t mp) { mp3_player_resume((mp3_player_t *)mp); }
@@ -428,7 +433,8 @@ static pchttp_t http_newConn_w(const char *server, uint16_t port, bool use_ssl) 
     if (!c) return NULL;
     strncpy(c->server, server, HTTP_SERVER_MAX - 1);
     c->server[HTTP_SERVER_MAX - 1] = '\0';
-    c->port = port; c->use_ssl = use_ssl;
+    c->port = port ? port : (use_ssl ? 443 : 80);  // 0 = scheme default
+    c->use_ssl = use_ssl;
     return (pchttp_t)c;
 }
 static void http_get_w(pchttp_t c, const char *path, const char *extra_hdrs) { http_get((http_conn_t *)c, path, extra_hdrs); }
@@ -468,12 +474,20 @@ static const picocalc_appconfig_t s_appconfig_impl = {
     .getAppId = appconfig_get_app_id,
 };
 
+// -- Gamepad (the keyboard stub's masks, the shared label lookup) --
+
+static const picocalc_gamepad_t s_gamepad_impl = {
+    .getButtons = kbd_get_pad, .getButtonsPressed = kbd_get_pad_pressed,
+    .getButtonsReleased = kbd_get_pad_released, .getLabel = gamepad_get_label,
+};
+
 static void sim_wire_g_api(void) {
     memset(&g_api, 0, sizeof(g_api));
     g_api.soundplayer = &s_soundplayer_impl;
     g_api.http        = &s_http_impl;
     g_api.appconfig   = &s_appconfig_impl;
-    g_api.version     = 8;  // 8 = http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts (matches src/main.c)
+    g_api.version     = 9;  // 9 = gamepad; 8 = http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts (matches src/main.c)
+    g_api.gamepad     = &s_gamepad_impl;
 }
 
 int main(int argc, char** argv) {

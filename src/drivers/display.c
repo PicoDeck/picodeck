@@ -378,6 +378,13 @@ void display_set_pixel(int x, int y, uint16_t color) {
   s_framebuffer[y * FB_WIDTH + x] = be;
 }
 
+uint16_t display_get_pixel(int x, int y) {
+  if (x < 0 || x >= FB_WIDTH || y < 0 || y >= FB_HEIGHT)
+    return 0;
+  uint16_t be = s_framebuffer[y * FB_WIDTH + x];
+  return (uint16_t)((be >> 8) | (be << 8));
+}
+
 void display_fill_rect(int x, int y, int w, int h, uint16_t color) {
   // Clipped once in int64 (x + w cannot overflow); full-width bands use
   // 32-bit stores.
@@ -680,11 +687,13 @@ void display_draw_image_scaled(int x, int y, int img_w, int img_h,
     if (ty > max_y) max_y = ty;
   }
 
-  // Clamp to framebuffer bounds
-  int bx = (int)floorf(min_x);
-  int by = (int)floorf(min_y);
-  int bw = (int)ceilf(max_x - min_x);
-  int bh = (int)ceilf(max_y - min_y);
+  // Clamp to framebuffer bounds. TGX rasterises with its own rounding and can
+  // touch one row/column past the exact float box, so pad it by 1 px a side:
+  // a pixel it writes outside the swapped region keeps the wrong byte order.
+  int bx = (int)floorf(min_x) - 1;
+  int by = (int)floorf(min_y) - 1;
+  int bw = (int)ceilf(max_x - min_x) + 3;
+  int bh = (int)ceilf(max_y - min_y) + 3;
   if (bx < 0) bx = 0;
   if (by < 0) by = 0;
   if (bx + bw > FB_WIDTH) bw = FB_WIDTH - bx;
@@ -699,6 +708,10 @@ void display_draw_image_scaled(int x, int y, int img_w, int img_h,
     }
   }
 
+  // TGX takes the rotation in degrees; the bounding box above and the Lua API
+  // use radians.
+  const float angle_deg = angle * (180.0f / (float)M_PI);
+
   // Use masked version if transparency is enabled, otherwise use regular
   // version.  The clip is passed through (converted from the driver's
   // inclusive bounds to the decoder's half-open rect) so TGX renders into a
@@ -707,14 +720,14 @@ void display_draw_image_scaled(int x, int y, int img_w, int img_h,
     tgx_draw_image_scaled_masked(fb, FB_WIDTH, FB_HEIGHT,
                                  s_clip_x0, s_clip_y0,
                                  s_clip_x1 + 1, s_clip_y1 + 1,
-                                 data, img_w, img_h, (int)cx, (int)cy,
-                                 scale, angle, transparent_color);
+                                 data, img_w, img_h, cx, cy,
+                                 scale, angle_deg, transparent_color);
   } else {
     tgx_draw_image_scaled(fb, FB_WIDTH, FB_HEIGHT,
                           s_clip_x0, s_clip_y0,
                           s_clip_x1 + 1, s_clip_y1 + 1,
-                          data, img_w, img_h, (int)cx, (int)cy,
-                          scale, angle);
+                          data, img_w, img_h, cx, cy,
+                          scale, angle_deg);
   }
 
   // Byte-swap back only the affected region
@@ -1065,6 +1078,27 @@ void display_flush_rows(int y0, int y1) {
   s_dma_active = true;
   s_last_presented = s_framebuffer;
   // Non-blocking: no buffer swap — caller uses display_flush() for that.
+}
+
+void display_push_rect(int x, int y, int w, int h) {
+  if (x < 0) { w += x; x = 0; }
+  if (y < 0) { h += y; y = 0; }
+  if (x + w > FB_WIDTH) w = FB_WIDTH - x;
+  if (y + h > FB_HEIGHT) h = FB_HEIGHT - y;
+  if (w <= 0 || h <= 0) return;
+
+  display_wait_for_flush();
+  lcd_set_window(x, y, x + w - 1, y + h - 1);
+  lcd_cs_low();
+  lcd_dc_data();
+  // Bytes as stored: the framebuffer is already in panel byte order.
+  for (int r = y; r < y + h; r++) {
+    const uint8_t *p = (const uint8_t *)&s_framebuffer[r * FB_WIDTH + x];
+    for (int i = 0; i < w * 2; i++)
+      pio_spi_write8(p[i]);
+  }
+  lcd_spi_wait_idle();
+  lcd_cs_high();
 }
 
 void display_set_brightness(uint8_t brightness) {

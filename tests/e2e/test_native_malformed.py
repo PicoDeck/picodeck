@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import time
 from pathlib import Path
 
@@ -196,15 +195,10 @@ def test_malformed_elf_refused(simulator, test_sd_card, case):
     assert "Starting emulation" not in out.split(f"Loading native app: /apps/{name}")[-1]
 
 
+@pytest.mark.sd(fixtures=[], reserve=len(CASES) + 1)  # see README, "App cap"
 def test_sim_survives_every_refusal_in_a_row(simulator, test_sd_card):
     """All the malformed images back to back in one simulator, then a valid
     one: a refusal leaves no state behind that breaks the next launch."""
-    # The launcher keeps the first MAX_APPS (64) apps in directory order, and
-    # the manifest's apps plus these would exceed it, so which ones survived
-    # depended on the filesystem (tmpfs lists new entries first, ext4 and
-    # btrfs do not). This test needs only its own apps.
-    for app in (Path(test_sd_card) / "apps").iterdir():
-        shutil.rmtree(app)
     for case, (knobs, _) in CASES.items():
         stage_native_app(test_sd_card, f"badelf_{case}", build_elf(**knobs))
     stage_native_app(test_sd_card, "goodelf", build_elf())

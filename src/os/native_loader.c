@@ -1,6 +1,7 @@
 #include "native_loader.h"
 #include "launcher_types.h"
 #include "app_identity.h"
+#include "gamepad.h"
 #include "app_abi.h"
 #include "../drivers/audio.h"
 #include "../drivers/display.h"
@@ -895,6 +896,7 @@ static bool native_run(const app_entry_t *app) {
                    "invalid app id (or out of PSRAM)");
     return false;
   }
+  gamepad_apply();  // global bindings + this app's override
   bool ok = native_run_app(app);
   // sys->poll drops a reboot-ota that arrives while an app runs; an app that
   // never polls leaves it latched for the launcher, so drop it here too.

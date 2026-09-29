@@ -15,7 +15,7 @@ local img = gfx.image.loadFromBuffer(bmp2x2())
 
 local ok1 = not pcall(img.drawStretched, img, 0, 0, 10)                      -- h missing
 local ok2, e2 = pcall(img.drawStretched, img, 0, 0, 10, 10, { x = "a" })
-ok2 = (not ok2) and tostring(e2):find("field 'x'") ~= nil
+ok2 = (not ok2) and tostring(e2):find("srcRect.x", 1, true) ~= nil
 pc.sys.log("ST:ERRORS " .. ((ok1 and ok2) and "ok" or ("bad " .. tostring(e2))))
 
 -- Redrawn every frame (not just re-flushed): display_flush() swaps between

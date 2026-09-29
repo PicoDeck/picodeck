@@ -170,10 +170,15 @@ def simulator_binary(request) -> Path:
 @pytest.fixture
 def test_sd_card(tmp_path, request):
     """Per-test SD card built from the manifest (see helpers.build_sd_card).
-    `@pytest.mark.sd(extra=[...])` stages more."""
+    `@pytest.mark.sd(extra=[...])` stages more. A test that stages apps at
+    runtime asks for room: `@pytest.mark.sd(fixtures=["fs_test"], reserve=3)`
+    puts only those fixture apps (plus hello) on the card and checks that
+    3 more still fit under the launcher's MAX_APPS."""
     marker = request.node.get_closest_marker("sd")
-    extra = marker.kwargs.get("extra", ()) if marker else ()
-    return build_sd_card(tmp_path / "sd_card", extra=extra,
+    kw = marker.kwargs if marker else {}
+    return build_sd_card(tmp_path / "sd_card", extra=kw.get("extra", ()),
+                         fixtures=kw.get("fixtures"),
+                         reserve=kw.get("reserve", 0),
                          default_sd=Path(request.config.getoption("--sd-card-path")))
 
 
@@ -215,13 +220,14 @@ def simulator(sim_factory, test_sd_card) -> PicodeckSimulator:
 def sim_module_factory(request, simulator_binary, tmp_path_factory):
     """Module-scoped simulators: start(setup=None, **kwargs) boots one on a
     fresh manifest SD card (`setup(sd_path)` runs before boot). For modules
-    that share one run across many test ids. Stopped and health-checked when
-    the module finishes."""
+    that share one run across many test ids. `fixtures` / `reserve` are as for
+    build_sd_card (a module that stages apps asks for room). Stopped and
+    health-checked when the module finishes."""
     sims = []
 
-    def start(setup=None, **kwargs):
+    def start(setup=None, fixtures=None, reserve=0, **kwargs):
         base = tmp_path_factory.mktemp("modsim")
-        sd = build_sd_card(base / "sd_card",
+        sd = build_sd_card(base / "sd_card", fixtures=fixtures, reserve=reserve,
                            default_sd=Path(request.config.getoption("--sd-card-path")))
         if setup:
             setup(sd)
@@ -254,15 +260,16 @@ def sim_module(sim_module_factory):
 @pytest.fixture(scope="session")
 def lua_suite(request, simulator_binary, tmp_path_factory):
     """Run a picotest fixture app once in its own simulator:
-    lua_suite(name, setup=None, timeout=30) -> helpers.LuaRun.
+    lua_suite(name, setup=None, timeout=30, fixtures=None, reserve=0)
+    -> helpers.LuaRun (`fixtures` / `reserve`: see build_sd_card).
 
     For module-scoped fixtures that expand an app's cases into one pytest id
     each. `setup(sd_path)` runs before boot (stage files). The simulator is
     stopped after the run; its health problems land in LuaRun.problems.
     """
-    def run(name, setup=None, timeout=30.0):
+    def run(name, setup=None, timeout=30.0, fixtures=None, reserve=0):
         base = tmp_path_factory.mktemp(f"suite_{name}")
-        sd = build_sd_card(base / "sd_card",
+        sd = build_sd_card(base / "sd_card", fixtures=fixtures, reserve=reserve,
                            default_sd=Path(request.config.getoption("--sd-card-path")))
         if setup:
             setup(sd)

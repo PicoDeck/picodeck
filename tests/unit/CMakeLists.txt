@@ -74,13 +74,19 @@ set_source_files_properties(${PICODECK_ROOT}/third_party/qoa/qoa.c
 picodeck_unit_test(test_audio_ring INCLUDES ${SRC}/drivers)
 # The MP3 staging buffer as a mixer source (header-only, like audio_ring.h).
 picodeck_unit_test(test_pcm_stage INCLUDES ${SRC}/drivers)
+# The video player's audio chunk index: sizing and growth (header-only).
+picodeck_unit_test(test_avi_index INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_event_queue INCLUDES ${SRC}/drivers)
+# The gamepad layer of the same decode (keys -> PAD_* through the pad map).
+picodeck_unit_test(test_kbd_pad INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_bus SOURCES ${SRC}/drivers/kbd_bus.c INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_pio_psram_range INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_pio_psram_xip INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_qmi_psram_clkdiv INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_zip_name SOURCES ${SRC}/os/zip_name.c)
 picodeck_unit_test(test_text_wrap SOURCES ${SRC}/os/text_wrap.c)
+# The OS FPS counter's counting rules (Show FPS; os_overlay.c draws it).
+picodeck_unit_test(test_fps_counter SOURCES ${SRC}/os/fps_counter.c)
 picodeck_unit_test(test_module_path SOURCES ${SRC}/os/module_path.c ${SRC}/os/fs_path.c)
 # Clip-once rasterisers shared by the firmware display and the simulator.
 picodeck_unit_test(test_display_clip INCLUDES ${SRC}/drivers)
@@ -116,9 +122,38 @@ picodeck_unit_test(test_config SOURCES ${SRC}/os/config.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
 picodeck_unit_test(test_appconfig SOURCES ${SRC}/os/appconfig.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
+# Gamepad bindings: key names, the one-button-per-key rule, the JSON files.
+picodeck_unit_test(test_gamepad_map SOURCES ${SRC}/os/gamepad_map.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES})
+# The Settings -> Controls page's state (system_menu.c draws it).
+picodeck_unit_test(test_gamepad_edit SOURCES ${SRC}/os/gamepad_edit.c
+                ${SRC}/os/gamepad_map.c ${SD_FAKE} INCLUDES ${SD_INCLUDES})
 picodeck_unit_test(test_app_files SOURCES ${SRC}/os/app_identity.c
                 ${SRC}/os/app_manifest.c ${SRC}/os/appconfig.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
+if(NOT EXISTS "${CMAKE_BINARY_DIR}/generated/miniz/miniz_export.h")
+    file(WRITE "${CMAKE_BINARY_DIR}/generated/miniz/miniz_export.h"
+        "#ifndef MINIZ_EXPORT_H\n#define MINIZ_EXPORT_H\n#define MINIZ_EXPORT\n#endif\n")
+endif()
+# The g_api.zip entry points over the real zip engine and miniz (host malloc).
+picodeck_unit_test(test_zip_archive SOURCES ${SRC}/os/zip_archive.c
+                ${SRC}/os/zip_util.c ${SRC}/os/zip_name.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz_tinfl.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz_tdef.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz_zip.c
+                ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES} ${PICODECK_ROOT}/third_party/miniz
+                ${CMAKE_BINARY_DIR}/generated/miniz
+                DEFINES PICODECK_SIMULATOR MINIZ_NO_STDIO MINIZ_NO_ARCHIVE_WRITING_APIS
+                MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
+target_compile_options(test_zip_archive PRIVATE -Wno-unused-parameter)
+set_source_files_properties(
+                ${PICODECK_ROOT}/third_party/miniz/miniz.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz_tinfl.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz_tdef.c
+                ${PICODECK_ROOT}/third_party/miniz/miniz_zip.c
+                PROPERTIES COMPILE_OPTIONS "-Wno-error;-w")
 # The firmware sample mixer (sound.c): sample/player lifetimes and slots.
 picodeck_unit_test(test_sound SOURCES ${SRC}/drivers/sound.c ${SRC}/drivers/wav.c
                 ${SD_FAKE} INCLUDES ${SD_INCLUDES})
@@ -138,6 +173,31 @@ picodeck_unit_test(test_fileplayer SOURCES ${SRC}/drivers/fileplayer.c
                 ${PICODECK_ROOT}/third_party/qoa/qoa.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES} ${PICODECK_ROOT}/third_party)
 target_link_libraries(test_fileplayer PRIVATE pthread)
+# The MP3 player's fed mode (the video player's audio: its loop point) over
+# libmad, built as the simulator builds it. Third-party: no sanitizers (its
+# synthesis reads D[][] across a row, which -fsanitize=bounds reports), no
+# warnings.
+set(LIBMAD_DIR ${PICODECK_ROOT}/third_party/libmad)
+add_library(libmad_host STATIC ${LIBMAD_DIR}/bit.c ${LIBMAD_DIR}/fixed.c
+            ${LIBMAD_DIR}/frame.c ${LIBMAD_DIR}/huffman.c ${LIBMAD_DIR}/layer3.c
+            ${LIBMAD_DIR}/stream.c ${LIBMAD_DIR}/synth.c ${LIBMAD_DIR}/timer.c
+            ${LIBMAD_DIR}/version.c)
+target_include_directories(libmad_host PUBLIC ${LIBMAD_DIR})
+target_compile_definitions(libmad_host PRIVATE FPM_64BIT HAVE_STDINT_H=1
+            SIZEOF_INT=4 SIZEOF_LONG=${CMAKE_SIZEOF_VOID_P} SIZEOF_LONG_LONG=8
+            NDEBUG=1 OPT_SPEED=1 OPT_SSO=1 PROGMEM=)
+target_compile_options(libmad_host PRIVATE -O2 -w)
+picodeck_unit_test(test_mp3_fed SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES})
+target_link_libraries(test_mp3_fed PRIVATE libmad_host)
+# The pico/critical_section.h stub leaves a parameter unused.
+target_compile_options(test_mp3_fed PRIVATE -Wno-unused-parameter)
+# ...and its decode loop at the ends of the input buffer (no frame lost
+# where a refill ends), from a file (the SD fake) and fed.
+picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES})
+target_link_libraries(test_mp3_refill PRIVATE libmad_host)
+target_compile_options(test_mp3_refill PRIVATE -Wno-unused-parameter)
 # The MOD player (mod_player.c + pocketmod): Core 0 load/free vs Core 1
 # update on two threads.
 picodeck_unit_test(test_mod_player SOURCES ${SRC}/drivers/mod_player.c ${SD_FAKE}

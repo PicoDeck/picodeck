@@ -43,6 +43,7 @@ picocalc.sys.log("G3GC:READY")
 """
 
 
+@pytest.mark.sd(fixtures=[], reserve=2)  # stages g3gc_test and g3gc_after
 def test_context_gc_cannot_be_reached_by_a_later_finalizer(simulator):
     stage_lua_app(simulator.sd_card_path, "g3gc_test", GC_CONTEXT_APP)
     seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)

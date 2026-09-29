@@ -50,3 +50,25 @@ def test_blinker_start_reads_durations_after_self(graphics_app):
     joined = "\n".join(_lines(graphics_app))
     assert "GT BLINKER_ERR" not in joined, joined
     assert "GT BLINKER_OK state=false" in joined, joined
+
+
+def _marker(sim, name):
+    line = next((l for l in _lines(sim) if f"GT {name}_" in l), None)
+    assert line is not None, "\n".join(_lines(sim))
+    return line.split(f"GT {name}_", 1)[1]
+
+
+def test_animator_four_argument_form_with_named_easing(graphics_app):
+    """animator.new(duration, from, to, easing): the docs' own example. The
+    new userdata must not be read as an argument."""
+    assert _marker(graphics_app, "ANIM4") == "OK 100.0 true"
+
+
+def test_animator_nil_easing_is_absent(graphics_app):
+    assert _marker(graphics_app, "ANIMNIL") == "OK 100.0 true"
+
+
+def test_animator_delay_holds_the_start_value_then_animates(graphics_app):
+    """A 400 ms delay: the value stays at `from` with progress 0 (no uint32
+    wrap ending it at once), then reaches `to` after delay + duration."""
+    assert _marker(graphics_app, "ANIMDELAY") == "OK 10.0/0.0 90.0/true"
