@@ -191,7 +191,9 @@ def sim(sim_module_factory):
     def setup(sd):
         (sd / "system" / "config.json").write_text(json.dumps(
             {"wifi_ssid": "HomeNet", "wifi_pass": "hunter2"}))
-    return sim_module_factory(setup=setup)
+    # Every app here is staged by the tests (about 20): none of the fixture
+    # apps is used, so the card carries none and leaves the cap to them.
+    return sim_module_factory(setup=setup, fixtures=[], reserve=30)
 
 
 def _passed(run):

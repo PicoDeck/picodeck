@@ -785,8 +785,16 @@ bool sdcard_disk_info(uint32_t* out_free_kb, uint32_t* out_total_kb) {
         if (out_total_kb) *out_total_kb = 0;
         return false;
     }
-    if (out_total_kb) *out_total_kb = (uint32_t)((st.f_blocks * st.f_frsize) / 1024);
-    if (out_free_kb)  *out_free_kb  = (uint32_t)((st.f_bavail * st.f_frsize) / 1024);
+    // Model an SD card, not the host disk: fs.diskInfo pushes these as 32-bit
+    // Lua integers, and a multi-terabyte host filesystem (btrfs, XFS) would
+    // wrap negative. 32 GB is the largest FAT32 card the device sees.
+    const uint64_t cap_kb = 32ull * 1024 * 1024;
+    uint64_t total_kb = ((uint64_t)st.f_blocks * st.f_frsize) / 1024;
+    uint64_t free_kb  = ((uint64_t)st.f_bavail * st.f_frsize) / 1024;
+    if (total_kb > cap_kb) total_kb = cap_kb;
+    if (free_kb > total_kb) free_kb = total_kb;
+    if (out_total_kb) *out_total_kb = (uint32_t)total_kb;
+    if (out_free_kb)  *out_free_kb  = (uint32_t)free_kb;
     return true;
 }
 
