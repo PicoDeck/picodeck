@@ -1,4 +1,5 @@
 #include "perf.h"
+#include "os_overlay.h"
 #include "pico/stdlib.h"
 #include "hardware/structs/xip.h"
 #include <stdio.h>
@@ -73,6 +74,7 @@ void perf_end_frame(void) {
     }
     s_perf_last_end_us = end;
     s_perf_frame_start_us = end;
+    os_overlay_frame_tick((uint32_t)(end / 1000));  // the Show FPS counter
 }
 
 int perf_get_fps(void) {

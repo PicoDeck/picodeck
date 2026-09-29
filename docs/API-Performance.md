@@ -4,6 +4,17 @@ title: "API Performance"
 
 Performance monitoring utilities for apps.
 
+## The OS FPS counter (Show FPS)
+
+The OS can count frames and draw an FPS counter over any app, Lua or native, with no app code: system menu → Settings → **Show FPS**. Each press of Enter moves it on: **Off → Top right → Top left → Bottom right → Bottom left**, so you can move a counter that covers your HUD. The setting is the `show_fps` key in [API Sysconfig](API-Sysconfig.md) and takes effect when the menu closes. The counter is drawn only while an app runs, not in the launcher or over the system menu.
+
+- **What it counts.** Frames presented per second, counted over a window of at least 1 s: `flush()` and `flushRegion()` count one frame each. For an app that presents only with `flushRows()`, a call whose `y0` is at or above the previous call's `y0` starts a new frame, so a top-to-bottom sweep of bands is one frame.
+- **`perf.endFrame()` sets the number.** While your app calls `endFrame()` (within the last 2 s), the counter shows `endFrame()` calls per second instead: your loop's logical frame rate, even when you present less often (an emulator running two game frames per present shows 60, not 30). It is counted per 1 s window, not from the 30-frame average `getFPS()` returns, so the two can differ by a frame or two.
+- **What it looks like.** `FPS: n` in the built-in 6×8 font, colour-coded like `drawFPS()`: green ≥55, yellow ≥30, red below; `FPS: --` in grey until the first second is counted; numbers stop at 999. It sits in an opaque black 52×12 box with its text 8 px in from the screen edges; the top corners are just below the standard header (`picocalc.ui.drawHeader`), where `drawFPS()` draws by default.
+- **Where it is drawn.** The OS draws it into your frame just before each present, so it is in your framebuffer after `flush()` and in screenshots. With `flushRows()` and `flushRegion()` it is drawn only into the rows you send; when the box lies outside them the OS updates it on the panel directly (only when its text changes) and leaves your draw buffer as it was. While the hardware-scroll offset (`setScrollOffset`) is not 0, partial flushes skip it.
+
+`drawFPS()` and `getFPS()` stay for apps that want their own counter.
+
 ## picocalc.perf
 
 ### Functions
@@ -25,7 +36,7 @@ end
 ---
 
 #### `picocalc.perf.endFrame()`
-Ends timing a frame and updates FPS calculation. Call at the **end** of your game loop.
+Ends timing a frame and updates FPS calculation. Call at the **end** of your game loop. While you call it, the OS FPS counter (Show FPS, above) shows your `endFrame()` calls per second.
 
 - **Parameters:** None
 - **Returns:** None

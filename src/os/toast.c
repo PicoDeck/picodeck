@@ -8,6 +8,7 @@
 #define TOAST_QUEUE_SIZE 4
 #define TOAST_MSG_MAX    64
 #define TOAST_DURATION_MS 3000
+#define TOAST_Y 280  // near the bottom of the 320px display, above the footer area
 
 // Background colors per toast style
 #define TOAST_COLOR_INFO    RGB565(40,  40,  40)    // Default gray
@@ -59,7 +60,7 @@ void toast_push(const char *msg, uint8_t style) {
     spin_unlock(s_lock, save);
 }
 
-bool toast_draw(void) {
+uint32_t toast_update(void) {
     uint32_t now = to_ms_since_boot(get_absolute_time());
 
     // If active toast expired, clear it
@@ -78,10 +79,17 @@ bool toast_draw(void) {
         spin_unlock(s_lock, save);
     }
 
-    if (s_active.expire_ms == 0) return false;
+    // The expiry time tells one toast from the next.
+    return s_active.expire_ms;
+}
 
-    // Draw toast near the bottom of the 320px display, above footer area
+void toast_rect(int *x, int *y, int *w, int *h) {
+    ui_widget_toast_rect(s_active.msg, x, w, h);
+    *y = TOAST_Y;
+}
+
+void toast_render(void) {
+    if (s_active.expire_ms == 0) return;
     uint16_t color = (s_active.style < 4) ? s_toast_colors[s_active.style] : s_toast_colors[0];
-    ui_widget_toast(280, s_active.msg, color);
-    return true;
+    ui_widget_toast(TOAST_Y, s_active.msg, color);
 }

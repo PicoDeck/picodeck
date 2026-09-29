@@ -21,6 +21,8 @@
 //   "dev_mode"             — "1" enables developer mode
 //   "wifi_auto_disconnect" — "0" keeps WiFi up after initial time sync
 //   "battery_pct"          — "1" shows the battery percentage in the header
+//   "show_fps"             — the OS FPS counter's corner: "tr", "tl", "br",
+//                            "bl"; "0" (or missing) is off
 // =============================================================================
 
 // Every entry is static SRAM (CONFIG_KEY_MAX + CONFIG_VAL_MAX bytes), and the

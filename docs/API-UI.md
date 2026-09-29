@@ -319,7 +319,7 @@ picocalc.ui.drawToast(280, "File saved!")
 ---
 
 #### `picocalc.ui.toast(text, [style])`
-Push a system toast notification that auto-displays and auto-dismisses.
+Push a system toast notification that auto-displays and auto-dismisses. The OS draws the toast over your frame (centred at y 280, in the built-in font) at every present — `flush()`, `flushRows()` or `flushRegion()` — for about 3 s. With a partial flush that does not send its rows, the OS updates it on the panel directly and leaves your draw buffer as it was.
 
 - **Parameters:**
   - `text` (string): Toast message text

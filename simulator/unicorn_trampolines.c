@@ -31,6 +31,7 @@
 #include "font_registry.h"
 #include "app_identity.h"
 #include "native_loader.h"
+#include "os_overlay.h"
 
 // From unicorn_runner.c
 extern uc_engine *g_uc;
@@ -830,6 +831,7 @@ static void tramp_display_flush(uc_engine *uc) {
     }
     s_back_buffer_dirty = 0;
 
+    os_overlay_draw(OS_PRESENT_FLUSH, 0, 319);  // toast, Show FPS (as main.c)
     display_flush();
 }
 
@@ -882,6 +884,9 @@ static void tramp_display_flush_rows(uc_engine *uc) {
     uint32_t len = (y1 - y0) * 320 * sizeof(uint16_t);
     uc_mem_read(uc, EMU_FB_BASE + offset, back + y0 * 320, len);
     byteswap_rgb565(back + y0 * 320, (y1 - y0) * 320);
+    // This path presents the whole buffer, so the overlay is drawn as for
+    // flush() (each call counts as one frame: no flushRows sweep detection).
+    os_overlay_draw(OS_PRESENT_FLUSH, 0, 319);
     display_flush();
 }
 
@@ -890,6 +895,7 @@ static void tramp_display_flush_region(uc_engine *uc) {
     uint16_t *back = display_get_back_buffer();
     uc_mem_read(uc, EMU_FB_BASE, back, 320 * 320 * sizeof(uint16_t));
     byteswap_rgb565(back, 320 * 320);
+    os_overlay_draw(OS_PRESENT_FLUSH, 0, 319);  // whole buffer, as above
     display_flush();
 }
 

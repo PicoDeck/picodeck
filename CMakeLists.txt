@@ -259,6 +259,7 @@ add_executable(picodeck
     src/os/lua_bridge_appconfig.c
     src/os/lua_bridge_perf.c
     src/os/perf.c
+    src/os/fps_counter.c
     src/os/lua_bridge_graphics.c
     src/os/lua_bridge_3d.c
     src/os/gfx3d.c
@@ -269,6 +270,7 @@ add_executable(picodeck
     src/os/lua_bridge_ui.c
     src/os/ui_widgets.c
     src/os/toast.c
+    src/os/os_overlay.c
     src/os/text_wrap.c
     src/os/lua_bridge_audio.c
     src/os/lua_bridge_sound.c

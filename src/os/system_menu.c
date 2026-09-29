@@ -12,6 +12,7 @@
 #include "idle_dim.h"
 #include "launcher.h"
 #include "os.h"
+#include "os_overlay.h"
 #include "screenshot.h"
 #include "text_input.h"
 #include "tz_picker.h"
@@ -85,6 +86,7 @@ typedef enum {
   ITEM_DEV_MODE,
   ITEM_WIFI_AUTO_DISCONNECT,
   ITEM_BATTERY_PCT,
+  ITEM_SHOW_FPS,
 } item_type_t;
 
 typedef struct {
@@ -153,6 +155,7 @@ static int build_items(flat_item_t *items, menu_page_t page, bool has_exit,
   } else { // PAGE_SETTINGS
     items[count++] = (flat_item_t){ITEM_BRIGHTNESS, 0};
     items[count++] = (flat_item_t){ITEM_BATTERY_PCT, 0};
+    items[count++] = (flat_item_t){ITEM_SHOW_FPS, 0};
     items[count++] = (flat_item_t){ITEM_TIMEZONE, 0};
     items[count++] = (flat_item_t){ITEM_WIFI_TOGGLE, 0};
     items[count++] = (flat_item_t){ITEM_WIFI_SETTINGS, 0};
@@ -348,6 +351,10 @@ static void draw_panel(const flat_item_t *items, int count, int sel, int px,
     case ITEM_BATTERY_PCT:
       snprintf(label, sizeof(label), "Battery %%: %s",
                ui_battery_pct_enabled() ? "On" : "Off");
+      break;
+    case ITEM_SHOW_FPS:
+      snprintf(label, sizeof(label), "Show FPS: %s",
+               os_overlay_fps_label(os_overlay_fps_mode()));
       break;
     case ITEM_DEV_MODE:
       snprintf(label, sizeof(label), "Developer Mode: %s", s_dev_mode ? "On" : "Off");
@@ -600,6 +607,15 @@ static bool menu_loop(lua_State *L, int context) {
       case ITEM_BATTERY_PCT:
         config_set("battery_pct", ui_battery_pct_enabled() ? "0" : "1");
         config_save();
+        need_redraw = true;
+        break;
+      case ITEM_SHOW_FPS:
+        // Off -> Top right -> Top left -> Bottom right -> Bottom left; the
+        // app's next present draws the counter at the new corner.
+        config_set("show_fps", os_overlay_fps_key((os_overlay_fps_mode() + 1) %
+                                                  OS_FPS_MODES));
+        config_save();
+        os_overlay_reload();
         need_redraw = true;
         break;
       case ITEM_WIFI_AUTO_DISCONNECT:

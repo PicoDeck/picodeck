@@ -1,5 +1,5 @@
 #include "lua_bridge_internal.h"
-#include "toast.h"
+#include "os_overlay.h"
 #include "../fonts/font_registry.h"
 
 // ── picocalc.display.* ───────────────────────────────────────────────────────
@@ -173,7 +173,7 @@ static int l_display_drawPlane(lua_State *L) {
 bool s_screenshot_pending = false;
 
 static int l_display_flush(lua_State *L) {
-  toast_draw();
+  os_overlay_draw(OS_PRESENT_FLUSH, 0, FB_HEIGHT - 1);  // toast, Show FPS
   display_flush();
   if (s_screenshot_pending) {
     s_screenshot_pending = false;
@@ -189,14 +189,15 @@ static int l_display_flush(lua_State *L) {
 }
 
 // flushRows(y0, y1) — push rows y0..y1 (inclusive) of the current draw buffer
-// to the panel WITHOUT swapping buffers.  Mirrors l_display_flush's
-// screenshot-pending hook so MCP screenshots still fire while an app sits in a
-// partial-update idle loop.  toast_draw() is deliberately NOT mirrored: toasts
-// render on full flushes only — painting one here would smear it into an
-// arbitrary row band and it would never be cleanly erased.
+// to the panel WITHOUT swapping buffers.  Mirrors l_display_flush's overlay
+// pass and screenshot-pending hook so MCP screenshots still fire while an app
+// sits in a partial-update idle loop.  The overlay pass draws only into the
+// rows sent and pushes an overlay outside them as a small window (see
+// os_overlay.h), so it never smears into the app's draw buffer.
 static int l_display_flushRows(lua_State *L) {
   int y0 = (int)lb_checkint(L, 1);
   int y1 = (int)lb_checkint(L, 2);
+  os_overlay_draw(OS_PRESENT_ROWS, y0, y1);
   display_flush_rows(y0, y1);
   if (s_screenshot_pending) {
     s_screenshot_pending = false;
@@ -208,11 +209,12 @@ static int l_display_flushRows(lua_State *L) {
 
 // flushRegion(y0, y1) — like flush() but only transfers rows y0..y1.  Swaps
 // buffers and re-syncs the flushed band into the new back buffer (see
-// display_flush_region).  Same screenshot hook, same no-toast rule as
+// display_flush_region).  Same overlay pass and screenshot hook as
 // flushRows.
 static int l_display_flushRegion(lua_State *L) {
   int y0 = (int)lb_checkint(L, 1);
   int y1 = (int)lb_checkint(L, 2);
+  os_overlay_draw(OS_PRESENT_REGION, y0, y1);
   display_flush_region(y0, y1);
   if (s_screenshot_pending) {
     s_screenshot_pending = false;

@@ -129,6 +129,8 @@ local width = picocalc.display.textWidth("Hello World")
 #### `picocalc.display.flush()`
 Flushes the internal framebuffer to the LCD via DMA. **Call once per frame** after all drawing is complete.
 
+Before each present (`flush`, `flushRows`, `flushRegion`) the OS draws its overlays into the rows being sent: an active toast ([`picocalc.ui.toast`](API-UI.md)) and, when the Show FPS setting is on, the FPS counter ([API Performance](API-Performance.md)).
+
 - **Parameters:** None
 - **Returns:** None
 
@@ -142,6 +144,8 @@ picocalc.display.flush()
 Pushes rows `y0`–`y1` (inclusive) of the **current draw buffer** to the LCD via non-blocking DMA, **without swapping buffers**. Rows are clamped to 0–319; the band always spans the full screen width.
 
 Because there is no swap, subsequent drawing continues into the same buffer — ideal for repeatedly updating a small horizontal band (status bar, HUD, terminal line) while the rest of the screen keeps its last presented contents. Mixing `flushRows` with the normal double-buffered `flush()` cycle is the job of `flushRegion()` instead.
+
+An OS overlay (toast, FPS counter) outside the rows is updated on the panel directly when it changes, without being drawn into your buffer; one inside them is drawn into the buffer like any other pixels. The same goes for `flushRegion()`.
 
 - **Parameters:**
   - `y0` (number): First row (inclusive)

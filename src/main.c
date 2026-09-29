@@ -515,6 +515,7 @@ void __attribute__((naked)) isr_hardfault(void) {
 #include "os/ota_update.h"
 #include "os/perf.h"
 #include "os/system_menu.h"
+#include "os/os_overlay.h"
 #include "os/toast.h"
 #include "os/terminal.h"
 #include "os/terminal_render.h"
@@ -529,12 +530,23 @@ void __attribute__((naked)) isr_hardfault(void) {
 
 PicoCalcAPI g_api;
 
-// Wrapper that composites toast notifications before flushing to display.
-// Assigned to g_api.display->flush so all callers (Lua, native, launcher)
-// see toasts without modifying their render loops.
-static void display_flush_with_toasts(void) {
-    toast_draw();
+// Native presents: the OS overlay pass (toast, Show FPS counter; see
+// os_overlay.h) runs before each, as in the Lua bridge. Only native apps
+// reach these through g_api.display; the launcher and the system menu call
+// display_flush() directly.
+static void display_flush_with_overlay(void) {
+    os_overlay_draw(OS_PRESENT_FLUSH, 0, FB_HEIGHT - 1);
     display_flush();
+}
+
+static void display_flush_rows_with_overlay(int y0, int y1) {
+    os_overlay_draw(OS_PRESENT_ROWS, y0, y1);
+    display_flush_rows(y0, y1);
+}
+
+static void display_flush_region_with_overlay(int y0, int y1) {
+    os_overlay_draw(OS_PRESENT_REGION, y0, y1);
+    display_flush_region(y0, y1);
 }
 
 // Native TCP: allocate a slot, then queue the connect.  (connect used to be
@@ -592,13 +604,13 @@ static picocalc_display_t s_display_impl = {
     .drawCircle = display_draw_circle,
     .fillCircle = display_fill_circle,
     .drawText = display_draw_text,
-    .flush = display_flush_with_toasts,
+    .flush = display_flush_with_overlay,
     .getWidth = display_get_width_fn,
     .getHeight = display_get_height_fn,
     .setBrightness = display_set_brightness,
     .drawImageNN = display_draw_image_nn,
-    .flushRows = display_flush_rows,
-    .flushRegion = display_flush_region,
+    .flushRows = display_flush_rows_with_overlay,
+    .flushRegion = display_flush_region_with_overlay,
     .getBackBuffer = display_get_back_buffer,
     .effectInvert = display_effect_invert,
     .effectDarken = display_effect_darken,

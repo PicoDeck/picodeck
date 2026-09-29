@@ -22,6 +22,7 @@
 #include "clock.h"
 #include "config.h"
 #include "lua_psram_alloc.h"
+#include "os_overlay.h"
 #include "screenshot.h"
 #include "system_menu.h"
 #include "ui.h"
@@ -835,6 +836,7 @@ static bool run_app(int idx) {
   display_set_scroll_offset(0);
   display_set_font(0);            // nor the previous app's font selection
   font_registry_unload_all();     // nor its loaded fonts
+  os_overlay_app_start();         // a fresh FPS count, the current Show FPS
 
   // Dirty-exit marker: if this file still exists at the next boot, the app
   // never returned to the launcher (hang → watchdog, hardfault, panic, or
