@@ -12,6 +12,7 @@ This document provides a complete reference for all Lua APIs available to PicoDe
 - [API Crypto](API-Crypto.md) — Cryptographic Primitives
 - [API Display and Graphics](API-Display-and-Graphics.md) — Graphics & Display
 - [API Filesystem](API-Filesystem.md) — Filesystem (SD Card)
+- [API Gamepad](API-Gamepad.md) — Rebindable Gamepad Buttons (`picocalc.gamepad`)
 - [API Input](API-Input.md) — Keyboard & Button Input
 - [API Modplayer](API-Modplayer.md) — Tracker Module Music (MOD, XM, S3M)
 - [API Network and WiFi](API-Network-and-WiFi.md) — WiFi & HTTP Client
