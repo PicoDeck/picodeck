@@ -139,6 +139,10 @@ def test_native_app_does_not_inherit_perf_pacing(simulator):
     simulator.launch_app("perf_pacing_test")
     outcome = simulator.wait_for_exit(timeout=15)
     assert outcome.get("result") == "returned", outcome
+    lines = [re.sub(r"^\[APP\] ", "", t)
+             for t in log_texts(simulator.get_log_lines())]
+    # Precondition: the fixture's setTargetFPS(5) really paced it.
+    assert "PERF_LUA fps=5" in lines, lines
     simulator.launch_app("native_api_probe")
     outcome = simulator.wait_for_exit(timeout=15)
     assert outcome.get("result") == "returned", outcome

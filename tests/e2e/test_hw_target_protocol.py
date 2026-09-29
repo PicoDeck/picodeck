@@ -637,10 +637,16 @@ def test_push_waits_for_unzipped_when_the_echo_holds_a_marker(hw, dev, tmp_path)
     d = _app_dir(tmp_path, "pong")
     dev.install(FakeApp("pong", "pong", "com.test.pong"))
     dev.unzip_s = 1.6
+    t0 = time.monotonic()
     r = hw.push_app(d)
+    waited = time.monotonic() - t0
     assert not r["rebooted"], r
+    assert waited >= dev.unzip_s, f"push returned after {waited:.2f}s"
     assert dev.files["/apps/pong/main.lua"] == b"return\n"
-    assert not any(c.startswith("rm /apps/pong") for c in dev.commands[-2:]), \
+    # The cleanup rm goes out only after the delayed "Unzipped" arrived: were
+    # the echo taken as the reply, rm would follow the unzip at once.
+    assert dev.commands.index("rm /data/tmp/push_app.zip") \
+        > next(i for i, c in enumerate(dev.commands) if c.startswith("unzip ")), \
         dev.commands
 
 
