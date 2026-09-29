@@ -1026,6 +1026,10 @@ function PicoDeckFilePlayer:isPlaying() end
 ---@return number
 function PicoDeckFilePlayer:getLength() end
 
+---Return the file's sample rate in Hz (0 before a successful load).
+---@return integer
+function PicoDeckFilePlayer:getSampleRate() end
+
 ---Return current playback position in seconds.
 ---@return number
 function PicoDeckFilePlayer:getOffset() end

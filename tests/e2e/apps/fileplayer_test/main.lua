@@ -143,4 +143,78 @@ T.case("loop_and_finish_callbacks_per_play", function()
     fp:stop()
 end)
 
+T.case("load_reports_why_a_file_cannot_play", function()
+    local fp = sound.fileplayer()
+    for _, name in ipairs({"missing.wav", "fake.mp3", "eight_bit.wav", "junk.bin"}) do
+        local ok, err = fp:load(APP_DIR .. "/" .. name)
+        T.eq(ok, nil, name .. " load result")
+        T.ok(type(err) == "string" and #err > 0, name .. ": no reason (" .. tostring(err) .. ")")
+        log(name .. " -> " .. tostring(err))
+    end
+    -- The sandbox refusal has the same shape.
+    local ok, err = fp:load("/data/some.other.app/x.wav")
+    T.eq(ok, nil)
+    T.eq(err, "access denied")
+    -- A refused file leaves nothing to play.
+    T.eq(fp:getLength(), 0)
+    fp:play()
+    T.ok(not fp:isPlaying(), "a refused file plays")
+    -- And a good file loads, reports its rate, and plays.
+    T.eq(fp:load(ONE), true)
+    T.eq(fp:getSampleRate(), 22050)
+    T.eq(fp:getLength() / fp:getSampleRate(), 1)
+end)
+
+T.case("did_underrun_is_a_boolean_and_clears", function()
+    local fp = sound.fileplayer()
+    T.ok(fp:load(THREE))
+    T.eq(fp:didUnderrun(), false)
+    fp:play()
+    sys.sleep(300)
+    local first = fp:didUnderrun()
+    T.eq(type(first), "boolean")
+    T.eq(fp:didUnderrun(), false, "a second read still true")
+    fp:stop()
+end)
+
+T.case("loop_range_loops_the_range", function()
+    -- 3 s file, range 1-2 s: the loop callback fires at ~2 s and then every
+    -- second (without a range it fires once, at 3 s), and the position stays
+    -- inside the range once it has wrapped.
+    local fp = sound.fileplayer()
+    T.ok(fp:load(THREE))
+    local loops = 0
+    fp:setLoopCallback(function() loops = loops + 1 end)
+    fp:setLoopRange(1, 2)
+    fp:play()
+    local t0 = sys.getTimeMs()
+    while sys.getTimeMs() - t0 < 4600 do
+        pc.input.update()
+        sys.sleep(10)
+    end
+    local off = fp:getOffset()
+    log("loops after 4.6 s: " .. loops .. ", offset " .. off)
+    T.ok(fp:isPlaying(), "stopped instead of looping")
+    T.ok(loops >= 3, "only " .. loops .. " loop callbacks in 4.6 s of a 1 s loop")
+    T.ok(off >= 1 and off <= 2, "offset " .. off .. " s is outside the 1-2 s range")
+    fp:stop()
+end)
+
+T.case("loop_range_without_args_loops_whole_file", function()
+    local fp = sound.fileplayer()
+    T.ok(fp:load(ONE))
+    local loops = 0
+    fp:setLoopCallback(function() loops = loops + 1 end)
+    fp:setLoopRange()
+    fp:play()
+    local t0 = sys.getTimeMs()
+    while sys.getTimeMs() - t0 < 2600 do
+        pc.input.update()
+        sys.sleep(10)
+    end
+    T.ok(fp:isPlaying(), "stopped instead of looping")
+    T.ok(loops >= 1 and loops <= 2, loops .. " loops of a 1 s file in 2.6 s")
+    fp:stop()
+end)
+
 T.done()

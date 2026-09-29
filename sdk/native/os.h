@@ -405,7 +405,7 @@ typedef struct {
     // Create a new player instance. Returns NULL on OOM.
     pcsound_player_t (*playerNew)(void);
     void  (*playerSetSample)(pcsound_player_t p, pcsound_sample_t s);
-    void     (*playerPlay)(pcsound_player_t p, uint8_t repeat_count);  // 0 = loop while setLoop(true)
+    void     (*playerPlay)(pcsound_player_t p, uint8_t repeat_count);  // 0 = loop until stopped, n = play n times (as filePlayerPlay; mp3PlayerPlay: 0 loops, else once)
     void     (*playerStop)(pcsound_player_t p);
     bool     (*playerIsPlaying)(pcsound_player_t p);
     uint8_t  (*playerGetVolume)(pcsound_player_t p);
@@ -416,7 +416,7 @@ typedef struct {
     // --- File player (streaming from SD card) ---
     pcfileplayer_t (*filePlayerNew)(void);
     void     (*filePlayerLoad)(pcfileplayer_t fp, const char *path);
-    void     (*filePlayerPlay)(pcfileplayer_t fp, uint8_t repeat_count);  // 0 = infinite
+    void     (*filePlayerPlay)(pcfileplayer_t fp, uint8_t repeat_count);  // 0 = loop until stopped, n = play n times (as playerPlay); setLoopRange loops regardless
     void     (*filePlayerStop)(pcfileplayer_t fp);
     void     (*filePlayerPause)(pcfileplayer_t fp);
     void     (*filePlayerResume)(pcfileplayer_t fp);
@@ -425,13 +425,13 @@ typedef struct {
     uint8_t  (*filePlayerGetVolume)(pcfileplayer_t fp);
     uint32_t (*filePlayerGetOffset)(pcfileplayer_t fp);
     void     (*filePlayerSetOffset)(pcfileplayer_t fp, uint32_t pos);
-    bool     (*filePlayerDidUnderrun)(pcfileplayer_t fp);
+    bool     (*filePlayerDidUnderrun)(pcfileplayer_t fp);  // this player's stream starved since the last call or play(); cleared by the call
     void     (*filePlayerFree)(pcfileplayer_t fp);
 
     // --- MP3 player (Core 1 decoding, PIO PSRAM ring buffer) ---
     pcmp3player_t (*mp3PlayerNew)(void);
     void     (*mp3PlayerLoad)(pcmp3player_t mp, const char *path);
-    void     (*mp3PlayerPlay)(pcmp3player_t mp, uint8_t repeat_count);  // 0 = infinite
+    void     (*mp3PlayerPlay)(pcmp3player_t mp, uint8_t repeat_count);  // 0 = loop until stopped, any other count plays once (the count is not honoured); as Lua play()
     void     (*mp3PlayerStop)(pcmp3player_t mp);
     void     (*mp3PlayerPause)(pcmp3player_t mp);
     void     (*mp3PlayerResume)(pcmp3player_t mp);

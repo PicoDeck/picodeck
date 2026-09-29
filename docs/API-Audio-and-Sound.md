@@ -116,6 +116,18 @@ Full audio playback system supporting WAV samples and MP3 files. Provides three 
 - **FilePlayer** — streams a WAV or QOA file from the SD card
 - **MP3Player** — streams an MP3 file from the SD card
 
+### Repeat counts
+
+`play(repeat)` takes a count, and the players read it differently:
+
+| Player | `play(0)` | `play(n)`, n ≥ 1 |
+|---|---|---|
+| SamplePlayer | loops until stopped | plays `n` times |
+| FilePlayer | loops until stopped | plays `n` times |
+| MP3Player | loops until stopped | plays once (the count is ignored) |
+
+Omitting the argument is `1` everywhere. The C calls `playerPlay`, `filePlayerPlay` and `mp3PlayerPlay` behave the same way.
+
 ### Top-Level Functions
 
 #### `picocalc.sound.getCurrentTime()`
@@ -456,17 +468,17 @@ file cut short (an interrupted copy) plays the whole frames it holds.
 
 - **Parameters:**
   - `path` (string): Absolute path to a WAV or QOA file
-- **Returns:** `true` on success, or `nil, errstr`
+- **Returns:** `true` if the file will play, or `nil, errstr` (`"access denied"` outside the sandbox; otherwise the reason: the file cannot be opened, it is an MP3 (use the MP3Player), an unknown format, a WAV that is not 16-bit PCM, or a QOA the player refuses). A failed `load` leaves the player empty.
 
 ---
 
 #### `player:play([repeat])` / `player:stop()` / `player:pause()` / `player:resume()` / `player:isPlaying()`
-Standard playback controls. `repeat` works the same as SamplePlayer. `pause()` halts playback keeping the position; `resume()` continues from the paused position.
+Standard playback controls. `repeat` works the same as SamplePlayer: `n` plays the file `n` times and `0` loops until stopped (see Repeat counts). A player with a loop range (`setLoopRange`) loops until stopped whatever `repeat` says. `pause()` halts playback keeping the position; `resume()` continues from the paused position.
 
 ---
 
-#### `player:getLength()` / `player:getOffset()` / `player:setOffset(seconds)`
-Returns or seeks to a position in seconds.
+#### `player:getLength()` / `player:getSampleRate()` / `player:getOffset()` / `player:setOffset(seconds)`
+`getLength()` returns the file's length in sample frames (per channel), not seconds: divide by `getSampleRate()` for seconds. `getSampleRate()` returns the file's sample rate in Hz (`0` before a successful `load`). `getOffset()` returns the playback position and `setOffset()` seeks to one, both in whole seconds.
 
 ---
 
@@ -476,12 +488,16 @@ Sets the volume (0–100, clamped). `right` is accepted for compatibility but ig
 ---
 
 #### `player:setLoopRange([start [, end]])`
-Sets the loop region in seconds. Omit both to loop the whole file.
+Sets the loop region in whole seconds and makes the player loop until stopped. `play()` starts at the beginning of the file and runs to `end`, then continues from `start` at every pass (a `setOffset()` past `end` plays on to the end of the file first, then wraps to `start`). Omit `end` (or pass `0`) to loop to the end of the file, and omit both to loop the whole file. An `end` past the data is the end of the data, and an empty range (`end <= start`) loops the whole file. The loop callback fires at each wrap.
+
+Granularity: WAV loops on the exact sample. QOA loops on the exact sample too, but the decoder can only start at a QOA frame (5120 samples): at each wrap it decodes and drops the samples between the frame start and `start`, up to 5119 of them. A QOA frame boundary is a multiple of 5120 samples, which is a whole number of seconds only at long intervals (8 s at 48 kHz, 256 s at 44.1 kHz), so in practice only `start` = 0 avoids the dropped samples.
+
+The range stays until you `load()` another file, which clears it, so a player that has had a range loops until stopped and ignores the `repeat` count of `play(n)`. Call `setLoopRange()` after `load()`.
 
 ---
 
 #### `player:didUnderrun()`
-Returns whether the streaming buffer underran since the last check. An underrun means the SD card could not supply audio data fast enough.
+Returns whether the audio stream ran dry while this player was playing, since the last call (or since `play()`). An underrun means the player could not supply audio data fast enough (SD card busy, or the second core starved), and it is audible as a gap. The flag is sticky until you read it: a call returns `true` once for any number of underruns and then clears. The ring is empty between `play()` (or `resume()`) and the first data, which does not count.
 
 - **Returns:** (boolean) `true` if an underrun occurred
 
@@ -536,7 +552,7 @@ local r = player:getRate()         -- returns 2.0
 ---
 
 #### `player:setStopOnUnderrun(flag)`
-Controls whether the player automatically stops when a buffer underrun occurs.
+Controls whether the player automatically stops when the stream underruns (see `didUnderrun()`). The player is then stopped, and `didUnderrun()` still returns `true` until you read it. The default is `false`: playback carries on after the gap.
 
 - **Parameters:**
   - `flag` (boolean): `true` to stop on underrun, `false` to continue
@@ -578,7 +594,7 @@ Opens an MP3 file for streaming.
 ---
 
 #### `player:play([repeat])` / `player:stop()` / `player:pause()` / `player:resume()` / `player:isPlaying()`
-Standard playback controls. `play()` starts from the beginning of the file (also after it finished). `stop()`, `pause()` and a `play()` while playing fade out over ~1.5 ms (no click); `resume()` fades back in. `isPlaying()` stays `true` until the last decoded audio has played.
+Standard playback controls. `play(repeat)` here only chooses between looping and not: `0` loops until stopped, any other value plays once (the count is not honoured; `setLoop()` sets the same flag). `play()` starts from the beginning of the file (also after it finished). `stop()`, `pause()` and a `play()` while playing fade out over ~1.5 ms (no click); `resume()` fades back in. `isPlaying()` stays `true` until the last decoded audio has played.
 
 ---
 
