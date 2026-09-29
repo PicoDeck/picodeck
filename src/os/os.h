@@ -248,7 +248,8 @@ typedef struct {
     // True if connected to USB power
     bool     (*isUSBPowered)(void);
     // Add an item to the system menu overlay (max 4 items per app)
-    // callback is called when the item is selected in the menu
+    // callback is called when the item is selected in the menu, after the
+    // menu has closed and given the app its screen (both framebuffers) back
     void     (*addMenuItem)(const char *label, void (*callback)(void *user), void *user);
     // Clear all app-registered menu items (called automatically on app exit)
     void     (*clearMenuItems)(void);

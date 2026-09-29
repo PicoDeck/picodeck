@@ -407,6 +407,15 @@ static bool menu_loop(lua_State *L, int context) {
 
   int bat = kbd_get_battery_percent();
 
+  // Keep the app's screen to give back on close: both framebuffers, in their
+  // roles (display_restore_buffers). 400 KB of PSRAM, held only while the
+  // menu is open. Without the memory (a fragmented heap) the menu closes
+  // over the darkened screen, as it always did, until the app redraws.
+  uint16_t *app_screen = (uint16_t *)umm_malloc(
+      2 * FB_WIDTH * FB_HEIGHT * sizeof(uint16_t));
+  if (app_screen)
+    display_save_buffers(app_screen);
+
   display_darken();
   bg_save();
 
@@ -436,6 +445,9 @@ static bool menu_loop(lua_State *L, int context) {
   bool need_redraw = true;
   bool need_bg_restore = false;
   bool exit_requested = false;
+  // The app item chosen, if any: its callback runs after the menu has closed.
+  void (*app_cb)(void *user) = NULL;
+  void *app_cb_user = NULL;
 
   while (running) {
     if (need_redraw) {
@@ -486,8 +498,8 @@ static bool menu_loop(lua_State *L, int context) {
     if (pressed & BTN_ENTER) {
       switch (items[sel].type) {
       case ITEM_APP_CB:
-        s_app_items[items[sel].app_idx].callback(
-            s_app_items[items[sel].app_idx].user);
+        app_cb = s_app_items[items[sel].app_idx].callback;
+        app_cb_user = s_app_items[items[sel].app_idx].user;
         running = false;
         break;
       case ITEM_BRIGHTNESS:
@@ -643,10 +655,20 @@ static bool menu_loop(lua_State *L, int context) {
     watchdog_update();
     sleep_ms(16);
   }
+  if (app_screen) {
+    display_restore_buffers(app_screen);
+    umm_free(app_screen);
+  }
   bg_free();
   kbd_clear_state();
   save_brightness_if_changed(entry_brightness);
   display_set_clip_rect(saved_clip_x, saved_clip_y, saved_clip_w, saved_clip_h);
+  // An app item's callback runs last, once the menu is gone: against the
+  // app's own screen and clip rect, from a clean keyboard, and free to leave
+  // by longjmp (a Lua error, sys.exit()) with nothing of the menu's left
+  // allocated.
+  if (app_cb)
+    app_cb(app_cb_user);
   return exit_requested;
 }
 

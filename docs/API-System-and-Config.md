@@ -182,11 +182,27 @@ Adds a custom item to the system menu overlay (Menu key). Maximum **4 items per 
   - `callback` (function): Function to call when the item is selected
 - **Returns:** None
 
+The callback runs after the menu has closed and your screen has been put
+back, with your clip rect and a clean keyboard: what it draws stays on screen,
+and it may call `picocalc.sys.exit()` or raise an error.
+
 ```lua
 picocalc.sys.addMenuItem("Restart Level", function()
     level = 1
 end)
 ```
+
+**Your screen after the menu.** The system menu darkens your frame and draws
+over it. When it closes it puts your screen back, both framebuffers in the
+roles they had: the frame that was showing is on the panel again, and the
+back buffer holds what you had drawn into it (a half-drawn frame included). So
+an app that redraws only what changed, or waits for a key without drawing,
+needs no repaint after the menu. If memory is too short for the copy (it
+needs 400 KB of the Lua heap while the menu is open), the screen stays
+darkened until the app redraws. An app that presents with `flushRows` (no
+buffer swap) sees the other buffer on the panel after the menu until its
+next `flushRows`. The menu also resets a hardware scroll offset (see
+`setScrollOffset` in [API Display and Graphics](API-Display-and-Graphics.md)).
 
 ---
 
