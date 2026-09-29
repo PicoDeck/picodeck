@@ -1,0 +1,7 @@
+{
+    "id": "com.test.gamepad_test",
+    "name": "Gamepad Test",
+    "description": "picocalc.gamepad verification for E2E testing",
+    "version": "1.0",
+    "author": "PicoDeck E2E"
+}

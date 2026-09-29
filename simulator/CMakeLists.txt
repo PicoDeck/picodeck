@@ -336,6 +336,7 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_bridge.c
     ${PICODECK_ROOT}/src/os/lua_bridge_display.c
     ${PICODECK_ROOT}/src/os/lua_bridge_input.c
+    ${PICODECK_ROOT}/src/os/lua_bridge_gamepad.c
     ${PICODECK_ROOT}/src/os/gamepad.c
     ${PICODECK_ROOT}/src/os/gamepad_map.c
     ${PICODECK_ROOT}/src/os/lua_bridge_sys.c
