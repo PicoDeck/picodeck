@@ -36,6 +36,7 @@ The keyboard reports some keys differently while Shift or Alt is held, and the g
 
 - **Shift** turns F1–F5 into F6–F10, Delete into End, Tab into Home, Enter into Insert, Esc into Brk and Up/Down into PgUp/PgDn. The gamepad reads these as the original key, so a button held while Shift goes down still releases. Shift+F5 (F10) and Shift+Esc (Brk) keep their system meaning (system menu, screenshot) and never press a button.
 - **Shift** silences Left, Right, Backspace and Space, and **Alt** silences B and Space and turns I into Insert. If Shift or Alt goes down while one of these is held, its button is released at once; keep holding the key and the button comes back at the key's next repeat after the modifier is up.
+- A key pressed within a few milliseconds after Shift comes up may miss its press (Left, Right, Backspace, Space, Enter). No button stays held, with one exception: Enter released at the same moment as Shift while Alt is still held stays held until the system menu opens or the app exits.
 
 Not bindable: the system menu key (F10) and Brk, which belong to the OS; F6–F9, which are Shift+F1–F4; digits and symbols, which Shift turns into other symbols; Shift, Alt and Sym, which change the other keys.
 

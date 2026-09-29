@@ -102,11 +102,13 @@ static void test_unbound_and_os_keys(void) {
   reset();
   poll_start(false);
   apply(KBD_FIFO_PRESSED, 'q');
-  apply(KBD_FIFO_PRESSED, KEY_F6);
+  apply(KBD_FIFO_PRESSED, KEY_MOD_CTRL);
   apply(KBD_FIFO_PRESSED, KEY_F10);
   apply(KBD_FIFO_PRESSED, KEY_BRK);
   apply(KBD_FIFO_PRESSED, KEY_ESC);  // Esc is not a gamepad button by default
   CHECK_EQ_U32(btn.pad.curr, 0);
+  apply(KBD_FIFO_PRESSED, KEY_F6);   // only ever Shift+F1: Start
+  CHECK_EQ_U32(btn.pad.curr, PAD_START);
   CHECK_EQ_U32(kbd_pad_lookup(&map, KEY_F10), 0);
   CHECK_EQ_U32(kbd_pad_lookup(NULL, KEY_F4), 0);
   CHECK_EQ_U32(kbd_pad_lookup(&map, 0), 0);
@@ -493,6 +495,55 @@ static void test_shift_held_before_press(void) {
   }
 }
 
+// The controller clears its own Shift flag one scan (>= 17 ms) after it
+// reports Shift up, and scans the matrix keys before the side buttons. So a
+// key released just after Shift (or an arrow released in the same scan)
+// still arrives under its shifted code after the Shift RELEASED item. Codes
+// only Shift produces fold back whatever the tracked state: nothing sticks.
+static void test_shift_release_lag(void) {
+  for (size_t i = 0; i < sizeof(k_twins) / sizeof(k_twins[0]); i++) {
+    const twin_t *t = &k_twins[i];
+    reset();
+    bind_enter_esc();
+    poll_start(false);
+    apply(KBD_FIFO_PRESSED, t->key);
+    apply(KBD_FIFO_PRESSED, KEY_MOD_SHL);
+    poll_start(false);
+    apply(KBD_FIFO_HOLD, t->shifted);
+    apply(KBD_FIFO_RELEASED, KEY_MOD_SHL);  // Shift up first...
+    poll_start(false);
+    apply(KBD_FIFO_HOLD, t->shifted);       // ...the flag lags one scan
+    apply(KBD_FIFO_RELEASED, t->shifted);
+    CHECK_EQ_U32(pad_released(), t->pad);
+    check_nothing_held();
+  }
+  // A key pressed in that window: the codes only Shift sends still press
+  // their key's button; F10 stays the menu key.
+  reset();
+  poll_start(false);
+  apply(KBD_FIFO_PRESSED, KEY_MOD_SHL);
+  poll_start(false);
+  apply(KBD_FIFO_RELEASED, KEY_MOD_SHL);
+  apply(KBD_FIFO_PRESSED, KEY_F9);
+  apply(KBD_FIFO_PRESSED, KEY_F10);
+  CHECK_EQ_U32(pad_pressed(), PAD_A);
+  poll_start(false);
+  apply(KBD_FIFO_RELEASED, KEY_F4);         // the flag has caught up
+  apply(KBD_FIFO_RELEASED, KEY_F5);
+  CHECK_EQ_U32(pad_released(), PAD_A);
+  check_nothing_held();
+  // A HOLD of a shifted code after a clear (Shift not tracked yet) holds its
+  // key's button quietly, as the key's own HOLD would.
+  reset();
+  clear_state();
+  poll_start(false);
+  apply(KBD_FIFO_HOLD, KEY_END);
+  CHECK_EQ_U32(pad_pressed(), 0);
+  CHECK_EQ_U32(btn.pad.curr, PAD_X);
+  apply(KBD_FIFO_RELEASED, KEY_END);
+  check_nothing_held();
+}
+
 // Left, Right, Backspace and Space send nothing under Shift: their button is
 // released when Shift goes down, even though the key is still held. Held on,
 // it comes back at the key's next repeat (PRESSED) once Shift is up.
@@ -637,6 +688,7 @@ int main(void) {
   test_pad_from_buttons();
   test_shift_pressed_mid_hold();
   test_shift_held_before_press();
+  test_shift_release_lag();
   test_shift_silences_keys();
   test_alt_pressed_mid_hold();
   test_two_shift_keys();

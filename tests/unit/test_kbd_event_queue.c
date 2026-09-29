@@ -133,8 +133,9 @@ static void test_hold_after_clear_is_not_a_press(void) {
 // edge at all. It now reads as held (with a press edge) for that poll and is
 // released at the next.
 // The STM32 may repeat HOLD. A key held across a clear stays quiet on every
-// HOLD (not just the first) until it is released and pressed again: a 'y'
-// held from typing when ui_confirm opens can never answer it.
+// HOLD (not just the first) until it is released and pressed again. (On the
+// device only F-keys, Esc, modifiers and shifted codes repeat as HOLD; a
+// held letter repeats as PRESSED: see src/drivers/CLAUDE.md.)
 static void test_repeated_hold_after_clear_stays_quiet(void) {
   reset();
   begin_poll();

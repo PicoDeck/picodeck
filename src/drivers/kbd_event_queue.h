@@ -205,19 +205,30 @@ static inline void kbd_keyset_clear(kbd_keyset_t *s, uint8_t key) {
 // (picocalc_keyboard, keyboard.ino transition_to) recomputes a key's code
 // at every transition from the modifiers held at that moment, so a key
 // pressed before Shift or Alt goes down is held and released under another
-// code, or under none. The gamepad tracks Shift and Alt itself and:
-//   - folds the codes keys take while Shift is held back to the key
-//     (kbd_key_unshift: F6-F10, End, Home, Insert, Brk, PgUp, PgDn; letters
-//     are case-folded anyway). F10 (the system menu key) and Brk (the
-//     screenshot key) are the OS's when pressed: as the shifted F5 / Esc
-//     they only ever release a button, never press or hold one;
+// code, or under none. The controller also clears its own Shift flag one
+// scan (>= 17 ms) after it reports Shift up, and scans the matrix keys
+// before the side buttons (Shift, then the arrows), so shifted codes still
+// arrive just after the Shift RELEASED item. The gamepad tracks Shift and
+// Alt itself and:
+//   - folds the codes keys take under Shift back to the key (kbd_pad_unshift
+//     over kbd_key_unshift: F6-F10, End, Home, Insert, Brk, PgUp, PgDn;
+//     letters are case-folded anyway) whatever the tracked Shift state:
+//     only Shift produces them (keyboard.ino has no key that sends them
+//     unshifted). F10 (the system menu key) and Brk (the screenshot key) are
+//     the OS's when pressed: they only ever release a button, never press
+//     or hold one. Insert is also Alt+I, so it presses only while Shift is
+//     tracked, and releases unless Alt alone is tracked;
 //   - releases Left, Right, Backspace and Space when Shift goes down while
 //     they are held: the controller reports nothing for them under Shift;
 //   - releases B, I and Space when Alt goes down while they are held: under
 //     Alt the controller reports nothing for B and Space, and I as Insert.
 // Held on through Shift / Alt, those keys come back at their next repeat
-// (a PRESSED) once the modifier is up. So no transition sequence leaves a
-// gamepad button held; kbd_clear_state and a map change drop the whole state.
+// (a PRESSED) once the modifier is up. So no button stays held, with one
+// exception: Enter released within a scan of Shift going up while Alt is
+// still held (its Insert then reads as Alt+I) stays held until the next
+// kbd_clear_state. A key pressed within a scan of Shift going up may miss
+// its press edge (Left, Right, Backspace, Space, Enter), never sticks.
+// kbd_clear_state and a map change drop the whole state.
 
 // The key behind a code the controller sends while Shift is held, 0 when the
 // code is no shifted key's.
@@ -349,6 +360,23 @@ static inline void kbd_pad_mod(kbd_pad_t *p, const kbd_padmap_t *m,
     kbd_pad_drop_keys(p, m, k_alt_silent, (int)sizeof(k_alt_silent));
 }
 
+// The key a transition's code stands for on the gamepad (see "Gamepad"
+// above), 0 when the transition must not reach it.
+static inline uint8_t kbd_pad_unshift(const kbd_pad_t *p, uint8_t state,
+                                      uint8_t key) {
+  uint8_t base = kbd_key_unshift(key);
+  if (!base)
+    return key;
+  if (key == KEY_F10 || key == KEY_BRK)  // the menu / screenshot key
+    return state == KBD_FIFO_RELEASED ? base : 0;
+  if (key == KEY_INSERT) {  // Shift+Enter, or Alt+I
+    bool shift = (p->mods & KBD_PADMOD_SHIFT) != 0;
+    bool alt = (p->mods & KBD_PADMOD_ALT) != 0;
+    return (shift || (state == KBD_FIFO_RELEASED && !alt)) ? base : key;
+  }
+  return base;
+}
+
 // One key transition (KBD_FIFO_* state).
 static inline void kbd_pad_key(kbd_pad_t *p, const kbd_padmap_t *m,
                                uint8_t state, uint8_t key) {
@@ -360,12 +388,7 @@ static inline void kbd_pad_key(kbd_pad_t *p, const kbd_padmap_t *m,
     kbd_pad_mod(p, m, state, mod);
     return;
   }
-  uint8_t base = (p->mods & KBD_PADMOD_SHIFT) ? kbd_key_unshift(key) : 0;
-  if (base) {
-    if ((key == KEY_F10 || key == KEY_BRK) && state != KBD_FIFO_RELEASED)
-      return;  // the menu / screenshot key, not a gamepad press
-    key = base;
-  }
+  key = kbd_pad_unshift(p, state, key);
   int slot = kbd_pad_slot(m, key);
   if (slot < 0)
     return;
@@ -593,8 +616,11 @@ static inline void kbd_buttons_swallow(kbd_buttons_t *b, bool bg_run,
 //          or kbd_discard_pending), the key is quietly marked held and
 //          "unseen": no events, no char, and its button bit is set in prev
 //          too, so no press edge. Every later HOLD of an unseen key is quiet
-//          as well (the STM32 may repeat HOLD), until the key is released and
-//          pressed again — a held 'y' can never answer ui_confirm.
+//          as well (the STM32 repeats HOLD), until the key is released and
+//          pressed again. Only F-keys, Esc, modifiers and shifted codes
+//          repeat as HOLD: arrows, letters, Enter, Tab, Backspace and Delete
+//          repeat as PRESSED items, fresh presses here (a held 'y' does
+//          answer ui_confirm once it is armed).
 // RELEASED up event if the key was down. A button pressed during this same
 //          poll stays held until the next poll (see kbd_buttons_begin_poll).
 static inline uint8_t kbd_fifo_apply(kbd_input_t *in, kbd_buttons_t *b,
