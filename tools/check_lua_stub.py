@@ -48,6 +48,7 @@ OWNERS = {
     ("lua_bridge_appconfig.c", "l_config_lib"): ("picocalc.config", False),
     ("lua_bridge_config.c", "l_config_lib"): ("picocalc.sysconfig", False),
     ("lua_bridge_input.c", "l_input_lib"): ("picocalc.input", False),
+    ("lua_bridge_gamepad.c", "l_gamepad_lib"): ("picocalc.gamepad", False),
     ("lua_bridge_video.c", "video_funcs"): ("picocalc.video", False),
     ("lua_bridge_video.c", "video_methods"): ("PicoDeckVideoPlayer", True),
     ("lua_bridge_crypto.c", "l_crypto_lib"): ("picocalc.crypto", False),
