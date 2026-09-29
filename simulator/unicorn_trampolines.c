@@ -1073,11 +1073,36 @@ static void tramp_gamepad_get_buttons_released(uc_engine *uc) {
     write_reg(uc, UC_ARM_REG_R0, kbd_get_pad_released());
 }
 
+// getLabel's names come from a const table: on the device the pointer stays
+// valid for the whole run (flash), so an app may keep it. The string arena
+// wraps and reuses its space, so each name is written once per launch into
+// the API region after the sub-tables (unicorn_build_api_struct sets the
+// range) and that copy is handed out from then on.
+#define LABEL_AREA_SIZE 1024u
+#define LABEL_CACHE_LEN 64
+static struct { const char *host; uint32_t emu; } s_label_cache[LABEL_CACHE_LEN];
+static int s_label_count;
+static uint32_t s_label_next, s_label_end;
+
+static uint32_t label_addr(uc_engine *uc, const char *label) {
+    for (int i = 0; i < s_label_count; i++)
+        if (s_label_cache[i].host == label) return s_label_cache[i].emu;
+    uint32_t len = (uint32_t)strlen(label) + 1;
+    if (s_label_count == LABEL_CACHE_LEN || s_label_next + len > s_label_end)
+        return arena_write_string(uc, label);  // never: the table is smaller
+    uint32_t addr = s_label_next;
+    uc_mem_write(uc, addr, label, len);
+    s_label_next += (len + 3) & ~3u;
+    s_label_cache[s_label_count].host = label;
+    s_label_cache[s_label_count++].emu = addr;
+    return addr;
+}
+
 static void tramp_gamepad_get_label(uc_engine *uc) {
     uint32_t pad = read_reg(uc, UC_ARM_REG_R0);
     int slot = (int)read_reg(uc, UC_ARM_REG_R1);
     const char *label = gamepad_get_label(pad, slot);
-    write_reg(uc, UC_ARM_REG_R0, label ? arena_write_string(uc, label) : 0);
+    write_reg(uc, UC_ARM_REG_R0, label ? label_addr(uc, label) : 0);
 }
 
 // =============================================================================
@@ -3555,6 +3580,12 @@ void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_b
     uint32_t gamepad_addr = sub_base;
     uint32_t gamepad_count = SLOT_GAMEPAD_END - SLOT_GAMEPAD_GET_BUTTONS;
     sub_base = write_func_table(uc, sub_base, tramp_base, SLOT_GAMEPAD_GET_BUTTONS, gamepad_count);
+
+    // getLabel's strings, written on first use (label_addr); the API region
+    // (64 KB) has room well past the ~1.4 KB of tables.
+    s_label_count = 0;
+    s_label_next = sub_base;
+    s_label_end = sub_base + LABEL_AREA_SIZE;
 
     printf("[UNICORN] API sub-tables written, total %u bytes at 0x%08x..0x%08x\n",
            sub_base - api_base, api_base, sub_base);

@@ -13,7 +13,9 @@
 //     drifted from os.h, which shifts every later table and `version`;
 //   - the gamepad table (API version 9, after `version`): read only when
 //     api->version says it is there, as apps must; its buttons (none held)
-//     and the labels of A's two slots (default: F4 and unbound).
+//     and the labels of A's two slots (default: F4 and unbound), and that a
+//     label kept from startup still reads the same after many more calls
+//     (on the device the names are flash strings).
 #include "app_abi.h"
 #include "os.h"
 
@@ -65,6 +67,9 @@ void picodeck_main(const PicoCalcAPI *api, const char *app_dir,
             (unsigned)api->gamepad->getButtons(),
             (unsigned)api->gamepad->getButtonsPressed(), a0 ? a0 : "-",
             a1 ? a1 : "-");
+        for (int i = 0; i < 10000; i++)
+            (void)api->gamepad->getLabel(PAD_Y, 0);
+        log("PROBE gamepad kept label_a=%s", a0 ? a0 : "-");
     }
     log("PROBE done");
 }

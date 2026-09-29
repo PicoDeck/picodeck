@@ -116,11 +116,14 @@ def test_api_struct_matches_os_h(probe):
 def test_api_gamepad_table(probe):
     """API version 9 appends the gamepad table after `version`: a native app
     that checks api->version >= 9 reaches it, nothing is held at launch, and
-    getLabel reports the default binding of A (F4, alternate unbound)."""
+    getLabel reports the default binding of A (F4, alternate unbound). The
+    label is a permanent string, as the device's flash one: kept from
+    startup, it still reads F4 after 10000 more getLabel calls."""
     assert abi.api_version() >= 9
     lines = [t for t in probe["lines"] if t.startswith("PROBE gamepad ")]
     assert lines == ["PROBE gamepad buttons=0 pressed=0 label_a=F4 "
-                     "label_a_alt=-"], probe["lines"]
+                     "label_a_alt=-",
+                     "PROBE gamepad kept label_a=F4"], probe["lines"]
 
 
 @pytest.mark.parametrize("table", [
