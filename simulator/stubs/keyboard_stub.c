@@ -30,7 +30,6 @@ static uint32_t s_buttons_pressed = 0;
 static uint32_t s_buttons_released = 0;
 static char s_last_char = 0;
 static uint8_t s_raw_key = 0;
-static bool s_menu_pressed = false;
 static bool s_screenshot_pressed = false;
 // The firmware's event queue + key-down set (kbd_event_queue.h). The HAL
 // stages events as keys are typed/injected; kbd_poll moves them in here, so
@@ -102,7 +101,7 @@ void kbd_poll(void) {
     
     // Check for menu key (F10 or BTN_MENU)
     if (s_buttons_pressed & BTN_MENU) {
-        s_menu_pressed = true;
+        hal_input_raise_menu(false);
         // Hide MENU from apps, matching the hardware driver's intercept
         s_buttons &= ~BTN_MENU;
         s_buttons_pressed &= ~BTN_MENU;
@@ -225,12 +224,7 @@ void kbd_prepare_reset(void) {}
 void kbd_set_poll_interval_ms(uint32_t ms) { (void)ms; }
 
 bool kbd_consume_menu_press(void) {
-    if (s_menu_pressed) {
-        s_menu_pressed = false;
-        hal_input_note_menu_consumed();
-        return true;
-    }
-    return false;
+    return hal_input_take_menu();
 }
 
 bool kbd_consume_screenshot_press(void) {
@@ -267,11 +261,9 @@ void kbd_inject_buttons(uint32_t buttons) {
     // frames after the edge-only intercept stripped the first frame.)
     if (buttons & BTN_MENU) {
         buttons &= ~BTN_MENU;
-        // Note the seq before raising the flag: the app thread clears it when
-        // it consumes the flag, so noting it after would leave a seq nobody
-        // ever clears (get_input_state stuck below every later injection).
-        hal_input_note_menu_injected();
-        s_menu_pressed = true;
+        // One critical section notes the seq and raises the flag, and the
+        // consumer clears both at once (hal_input.c).
+        hal_input_raise_menu(true);
         if (!buttons) return;
     }
     // Inject through HAL only — the next kbd_poll picks them up atomically.

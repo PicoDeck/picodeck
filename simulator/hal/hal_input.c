@@ -402,14 +402,25 @@ void hal_input_discard_pending(void) {
     pthread_mutex_unlock(&s_input_mutex);
 }
 
-void hal_input_note_menu_injected(void) {
+// The menu flag lives here, under the input mutex, so raising it and noting
+// its seq (and taking it and clearing that seq) are each one critical section.
+static bool g_menu_flag = false;
+
+void hal_input_raise_menu(bool injected) {
     pthread_mutex_lock(&s_input_mutex);
-    g_menu_seq = min_nonzero(g_menu_seq, ++g_seq_issued);
+    if (injected)
+        g_menu_seq = min_nonzero(g_menu_seq, ++g_seq_issued);
+    g_menu_flag = true;
     pthread_mutex_unlock(&s_input_mutex);
 }
 
-void hal_input_note_menu_consumed(void) {
+bool hal_input_take_menu(void) {
     pthread_mutex_lock(&s_input_mutex);
-    g_menu_seq = 0;
+    bool was = g_menu_flag;
+    if (was) {
+        g_menu_flag = false;
+        g_menu_seq = 0;
+    }
     pthread_mutex_unlock(&s_input_mutex);
+    return was;
 }
