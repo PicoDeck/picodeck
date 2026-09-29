@@ -3,12 +3,12 @@
 While the menu is open it holds its own darkened backdrop (200 KB, restored
 under each page and sub-dialog) and, when it fits, a copy of the app's two
 framebuffers (400 KB) to give back on close. The copy is the extra: it is
-taken only after the backdrop, and only if it leaves the Controls page its
-8 KB (CTL_HEAP_MIN), so on any heap the menu does at least what it did
-before the copy existed.
+taken only after the backdrop, and given up again if it cost the Controls
+page its 8 KB block (CTL_HEAP_MIN), so on any heap the menu does at least
+what it did before the copy existed.
 
 The fixture paints both framebuffers blue, then holds the whole PSRAM heap
-except one free block of LEAVE KB (the simulator runs the device's own umm,
+except one free block of LEAVE bytes (the simulator runs the device's own umm,
 --real-umm, so the largest free block is real). Each case walks the menu:
 Settings and back (a lost backdrop leaves the Settings panel's title bar
 behind), Settings -> Controls (the page opens or shows its out-of-memory
@@ -60,16 +60,21 @@ end
 """
 
 KB = 1024
-# LEAVE (KB), then what the menu can do in it. The backdrop is 200 KB, the
+# LEAVE (bytes), then what the menu can do in it. The backdrop is 200 KB, the
 # copy 400 KB and the Controls page wants an 8 KB block: 606 KB fits the
-# backdrop and the copy but not the Controls block after them.
+# backdrop and the copy but not the Controls block after them. umm hands out
+# 200-byte blocks, a header included: the backdrop takes 1,025 (205,000 B)
+# and the copy 2,049 (409,800 B), so 622,700 B (a 622,800 B block) is the
+# boundary where both fit and leave 8,000 B, short of the 8,192 Controls
+# wants.
 CASES = [
-    # leave_kb, backdrop, restored, controls
-    (4, False, False, False),
-    (300, True, False, True),
-    (500, True, False, True),
-    (606, True, False, True),
-    (700, True, True, True),
+    # leave, backdrop, restored, controls
+    (4 * KB, False, False, False),
+    (300 * KB, True, False, True),
+    (500 * KB, True, False, True),
+    (606 * KB, True, False, True),
+    (622700, True, False, True),
+    (700 * KB, True, True, True),
 ]
 
 BLUE = (0, 0, 255)
@@ -123,16 +128,17 @@ def _texts(sim, since):
 
 
 @pytest.mark.sd(fixtures=[], reserve=1)
-@pytest.mark.parametrize("leave_kb,backdrop,restored,controls", CASES,
-                         ids=[f"{c[0]}KB" for c in CASES])
-def test_menu_on_a_nearly_full_heap(sim_factory, test_sd_card, leave_kb,
+@pytest.mark.parametrize("leave,backdrop,restored,controls", CASES,
+                         ids=[f"{c[0] // KB}KB" if c[0] % KB == 0 else f"{c[0]}B"
+                              for c in CASES])
+def test_menu_on_a_nearly_full_heap(sim_factory, test_sd_card, leave,
                                     backdrop, restored, controls):
-    stage_lua_app(test_sd_card, APP, FIXTURE.format(leave=leave_kb * KB))
+    stage_lua_app(test_sd_card, APP, FIXTURE.format(leave=leave))
     sim = sim_factory(test_sd_card, extra_args=["--real-umm"])
     sim.launch_app(APP)
     line = sim.wait_for_log(r"^MM:READY", timeout=20)
     largest = int(line.split("=")[1])
-    assert leave_kb * KB <= largest < leave_kb * KB + 8 * KB, line
+    assert leave <= largest < leave + 8 * KB, line
     _wait_px(sim, OUTSIDE, lambda p: _near(p, BLUE), "the fixture never drew")
 
     sim.keypress("menu")
@@ -149,7 +155,7 @@ def test_menu_on_a_nearly_full_heap(sim_factory, test_sd_card, leave_kb,
     _keys(sim, ["esc"])
     if backdrop:
         _wait_px(sim, ABOVE_MAIN, lambda p: p == main_above,
-                 f"with {leave_kb} KB free the Settings panel stayed behind "
+                 f"with {leave} B free the Settings panel stayed behind "
                  f"the main page (its title bar is {settings_title}): the "
                  "menu lost its own backdrop")
     else:
@@ -163,7 +169,7 @@ def test_menu_on_a_nearly_full_heap(sim_factory, test_sd_card, leave_kb,
     _keys(sim, TO_CONTROLS)
     if controls:
         _wait_px(sim, CONTROLS_EDGE, lambda p: not _near(p, DARK_BLUE),
-                 f"with {leave_kb} KB free the Controls page did not open")
+                 f"with {leave} B free the Controls page did not open")
         assert not any("Not enough memory" in t for t in _texts(sim, mark)), (
             _texts(sim, mark))
         _keys(sim, ["esc"])  # nothing changed: nothing to save
@@ -175,7 +181,7 @@ def test_menu_on_a_nearly_full_heap(sim_factory, test_sd_card, leave_kb,
     if restored:
         for xy in (OUTSIDE, CENTRE):
             _wait_px(sim, xy, lambda p: _near(p, BLUE),
-                     f"with {leave_kb} KB free the app's frame was not "
+                     f"with {leave} B free the app's frame was not "
                      "given back")
     elif backdrop:
         # Nothing was saved: the menu closes over the darkened screen and

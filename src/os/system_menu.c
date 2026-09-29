@@ -711,17 +711,24 @@ static bool menu_loop(lua_State *L, int context) {
 
   // Keep the app's screen to give back on close: both framebuffers, in their
   // roles (display_restore_buffers). 400 KB of PSRAM, held only while the
-  // menu is open. It is the extra: taken after the menu's own backdrop, and
-  // only if it leaves the Controls page its block, so on any heap the menu
-  // does at least what it did without it. Without the memory (a nearly full
-  // or fragmented heap) the menu closes over the darkened screen, as it
-  // always did, until the app redraws.
+  // menu is open; not at the launcher, which redraws itself after the menu.
+  // It is the extra: taken after the menu's own backdrop, and given up again
+  // if it cost the Controls page its block (the page's own test, so umm's
+  // block rounding and a second free block count as they will there; the
+  // freed copy merges back, leaving the heap as it was). So on any heap the
+  // menu keeps its backdrop and the Controls page whenever it did without the
+  // copy. Without the memory (a nearly full or fragmented heap) the menu
+  // closes over the darkened screen, as it always did, until the app redraws.
   bg_alloc();
   uint16_t *app_screen = NULL;
-  if (lua_psram_alloc_largest_block() >=
-      2 * FB_WIDTH * FB_HEIGHT * sizeof(uint16_t) + CTL_HEAP_MIN)
+  if (!is_launcher) {
     app_screen = (uint16_t *)umm_malloc(
         2 * FB_WIDTH * FB_HEIGHT * sizeof(uint16_t));
+    if (app_screen && lua_psram_alloc_largest_block() < CTL_HEAP_MIN) {
+      umm_free(app_screen);
+      app_screen = NULL;
+    }
+  }
   if (app_screen)
     display_save_buffers(app_screen);
 

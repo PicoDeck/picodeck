@@ -205,8 +205,8 @@ back buffer holds what you had drawn into it (a half-drawn frame included). So
 an app that redraws only what changed, or waits for a key without drawing,
 needs no repaint after the menu. If memory is too short for the copy (it
 needs a free 400 KB block of the Lua heap while the menu is open, on top of
-the 200 KB the menu uses itself), the screen stays darkened until the app
-redraws. An app that presents only with `flushRows`
+the 200 KB the menu uses itself, and must still leave an 8 KB block for
+Settings → Controls), the screen stays darkened until the app redraws. An app that presents only with `flushRows`
 (no buffer swap) gets its other buffer on the panel after the menu: the rows
 it flushes again come back, and any row it never flushes again stays stale.
 The menu also resets a hardware scroll offset (see
