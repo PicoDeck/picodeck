@@ -7,6 +7,7 @@ extern "C" {
 #include "wifi.h"
 #include "mp3_player.h"
 #include "pio_psram.h"
+#include "avi_index.h"
 #include "../os/launcher.h"
 #include "../os/config.h"
 #include "../os/idle_dim.h"
@@ -74,11 +75,11 @@ typedef struct {
     uint32_t audio_sample_rate;
     uint16_t audio_channels;
     uint32_t audio_avg_bytes_sec;
+    uint32_t audio_strh_length;      // audio stream header dwLength and
+    uint32_t audio_strh_sample_size; // dwSampleSize: size the audio index
 
     // Audio chunk index (parallel to video frame_index)
-    frame_index_entry_t *audio_index;
-    uint32_t audio_index_count;
-    uint32_t audio_index_capacity;
+    avi_index_t audio_index;
 
     // Audio playback state
     uint32_t audio_feed_cursor;    // Next audio chunk to feed
@@ -294,8 +295,10 @@ extern "C" void video_prefetch_update(void) {
 
 // Build a complete frame index (one entry per frame) for O(1) seeking
 // and instant skip-to-target in the update loop.  Sized from the AVI
-// header's frame count (capped at VIDEO_MAX_FRAME_INDEX); the audio index
-// gets 1.5x that since encoders emit slightly more audio chunks than frames.
+// header's frame count (capped at VIDEO_MAX_FRAME_INDEX).  The audio index
+// is sized from the audio stream header and grows while the scan finds
+// more chunks (avi_index.h): at a low frame rate there are several MP3
+// chunks per video frame.
 static bool build_frame_index(video_priv_t *priv, video_player_t *player) {
     uint32_t cap = player->frame_count;
     if (cap == 0) cap = 8192;  // header didn't say — scan and find out
@@ -312,13 +315,15 @@ static bool build_frame_index(video_priv_t *priv, video_player_t *player) {
 
     // Allocate audio index if audio stream present
     if (priv->has_audio) {
-        priv->audio_index_capacity = cap + cap / 2 + 64;
-        priv->audio_index = (frame_index_entry_t *)umm_malloc(
-            priv->audio_index_capacity * sizeof(frame_index_entry_t));
+        uint32_t acap = avi_audio_index_capacity(cap, priv->audio_strh_length,
+                                                 priv->audio_strh_sample_size);
+        priv->audio_index.count = 0;
+        priv->audio_index.entries = (avi_index_entry_t *)umm_malloc(
+            acap * sizeof(avi_index_entry_t));
+        priv->audio_index.capacity = priv->audio_index.entries ? acap : 0;
         // Non-fatal if alloc fails — video still works without audio
-        if (!priv->audio_index) {
+        if (!priv->audio_index.entries) {
             printf("[VIDEO] Warning: could not allocate audio index\n");
-            priv->audio_index_capacity = 0;
             priv->has_audio = false;
         }
     }
@@ -332,7 +337,7 @@ static bool build_frame_index(video_priv_t *priv, video_player_t *player) {
                             ? priv->movi_offset + priv->movi_size
                             : 0xFFFFFFFFu;
     uint32_t frame_num = 0;
-    uint32_t audio_num = 0;
+    bool audio_full = false;
     uint8_t chunk[8];
 
     while (sdcard_ftell(priv->file) < movi_end &&
@@ -351,19 +356,19 @@ static bool build_frame_index(video_priv_t *priv, video_player_t *player) {
             priv->frame_index[frame_num].chunk_size = size;
             frame_num++;
             if (frame_num % 100 == 0) watchdog_update();
-        } else if (priv->has_audio && priv->audio_index &&
+        } else if (priv->has_audio && priv->audio_index.entries && !audio_full &&
                    chunk[0] == '0' && chunk[1] == '1' &&
-                   chunk[2] == 'w' && chunk[3] == 'b' &&
-                   audio_num < priv->audio_index_capacity) {
-            priv->audio_index[audio_num].file_offset = chunk_pos;
-            priv->audio_index[audio_num].chunk_size = size;
-            audio_num++;
+                   chunk[2] == 'w' && chunk[3] == 'b') {
+            if (!avi_index_push(&priv->audio_index, chunk_pos, size, umm_realloc)) {
+                audio_full = true;   // out of memory: the rest of the audio is lost
+                printf("[VIDEO] Audio index full at %u chunks\n",
+                       (unsigned)priv->audio_index.count);
+            }
         }
         sdcard_fseek(priv->file, next_pos);
     }
 
     priv->frame_index_count = frame_num;
-    priv->audio_index_count = audio_num;
     sdcard_fseek(priv->file, saved_pos);
 
     // The scan is authoritative when it covered the whole movi list: trust it
@@ -375,8 +380,8 @@ static bool build_frame_index(video_priv_t *priv, video_player_t *player) {
         player->frame_count = frame_num;
     }
 
-    if (priv->has_audio && audio_num > 0) {
-        printf("[VIDEO] Audio index: %u chunks\n", (unsigned)audio_num);
+    if (priv->has_audio && priv->audio_index.count > 0) {
+        printf("[VIDEO] Audio index: %u chunks\n", (unsigned)priv->audio_index.count);
     }
     if (priv->frame_index_capped) {
         printf("[VIDEO] Frame index capped at %u entries; seeking beyond that is slow\n",
@@ -565,22 +570,22 @@ static void present_still(video_player_t *player, video_priv_t *priv) {
 // Feed audio chunks from the audio index into the MP3 fed ring.
 // Called during play (pre-fill) and update (top-up).
 static void video_feed_audio(video_priv_t *priv, int max_chunks) {
-    if (!priv->has_audio || !priv->audio_index || priv->audio_muted)
+    if (!priv->has_audio || !priv->audio_index.entries || priv->audio_muted)
         return;
 
     uint8_t temp[2048];
     int chunks_fed = 0;
 
     while (chunks_fed < max_chunks &&
-           priv->audio_feed_cursor < priv->audio_index_count) {
+           priv->audio_feed_cursor < priv->audio_index.count) {
         uint32_t space = mp3_player_feed_space();
         if (space < 1024) break;
 
         uint32_t idx = priv->audio_feed_cursor;
-        uint32_t size = priv->audio_index[idx].chunk_size;
+        uint32_t size = priv->audio_index.entries[idx].chunk_size;
         if (size > sizeof(temp) || size > space) break;
 
-        sdcard_fseek(priv->file, priv->audio_index[idx].file_offset + 8);
+        sdcard_fseek(priv->file, priv->audio_index.entries[idx].file_offset + 8);
         sdcard_fread(priv->file, temp, size);
         mp3_player_feed(temp, size);
 
@@ -603,7 +608,7 @@ static void audio_start_at(video_priv_t *priv, video_player_t *player,
                            uint32_t frame, bool defer_dma) {
     audio_stop(priv);
     if (!priv->has_audio || priv->audio_format != 0x0055 || priv->audio_muted ||
-        !priv->audio_index || priv->audio_index_count == 0)
+        !priv->audio_index.entries || priv->audio_index.count == 0)
         return;
     if (!mp3_player_start_fed(priv->audio_sample_rate, priv->audio_channels))
         return;
@@ -611,9 +616,9 @@ static void audio_start_at(video_priv_t *priv, video_player_t *player,
     // Approximate audio cursor from the video frame position
     uint32_t denom = priv->frame_index_count ? priv->frame_index_count : player->frame_count;
     if (denom == 0) denom = 1;
-    priv->audio_feed_cursor = (uint32_t)((uint64_t)frame * priv->audio_index_count / denom);
-    if (priv->audio_feed_cursor >= priv->audio_index_count)
-        priv->audio_feed_cursor = priv->audio_index_count - 1;
+    priv->audio_feed_cursor = (uint32_t)((uint64_t)frame * priv->audio_index.count / denom);
+    if (priv->audio_feed_cursor >= priv->audio_index.count)
+        priv->audio_feed_cursor = priv->audio_index.count - 1;
     video_feed_audio(priv, 50);            // pre-fill fed ring with compressed data
     if (!defer_dma) mp3_player_start_fed_output();  // decode + start the mixer pulling it
 }
@@ -676,7 +681,7 @@ void video_player_destroy(video_player_t *player) {
         if (priv->file) sdcard_fclose(priv->file);
         buffer_pool_cleanup(priv);
         if (priv->frame_index) umm_free(priv->frame_index);
-        if (priv->audio_index) umm_free(priv->audio_index);
+        if (priv->audio_index.entries) umm_free(priv->audio_index.entries);
         if (priv->osd_backup) umm_free(priv->osd_backup);
         // priv->jpeg points to static s_jpeg_sram — no free needed
         umm_free(priv);
@@ -704,12 +709,8 @@ bool video_player_load(video_player_t *player, const char *path) {
     }
     priv->frame_index_count = 0;
     priv->frame_index_capacity = 0;
-    if (priv->audio_index) {
-        umm_free(priv->audio_index);
-        priv->audio_index = NULL;
-    }
-    priv->audio_index_count = 0;
-    priv->audio_index_capacity = 0;
+    if (priv->audio_index.entries) umm_free(priv->audio_index.entries);
+    priv->audio_index = avi_index_t{};
     audio_stop(priv);
 
     player->playing = false;
@@ -735,6 +736,8 @@ bool video_player_load(video_player_t *player, const char *path) {
     priv->audio_sample_rate = 0;
     priv->audio_channels = 0;
     priv->audio_avg_bytes_sec = 0;
+    priv->audio_strh_length = 0;
+    priv->audio_strh_sample_size = 0;
 
     sdcard_fseek(priv->file, 12);
     uint8_t chunk[8];
@@ -777,6 +780,8 @@ bool video_player_load(video_player_t *player, const char *path) {
                                     if (fmt_tag == 0x0055) {  // MP3
                                         priv->has_audio = true;
                                         priv->audio_format = fmt_tag;
+                                        priv->audio_strh_length = *(uint32_t *)(strh + 32);
+                                        priv->audio_strh_sample_size = *(uint32_t *)(strh + 44);
                                         priv->audio_channels = *(uint16_t *)(wfx + 2);
                                         priv->audio_sample_rate = *(uint32_t *)(wfx + 4);
                                         priv->audio_avg_bytes_sec = *(uint32_t *)(wfx + 8);

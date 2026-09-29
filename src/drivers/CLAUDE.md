@@ -56,7 +56,7 @@ Subsystem notes for the firmware drivers. The root `CLAUDE.md` holds the cross-c
 
 ## Video player (`video_player.cpp`)
 - MJPEG with JPEGDEC (decoder state in static SRAM). Frame pool (3×96 KB JPEG buffers) in QMI PSRAM; Core 1 prefetches frame N+1 from SD while Core 0 decodes frame N.
-- Frame + audio chunk indices sized from the AVI header (cap `VIDEO_MAX_FRAME_INDEX`); beyond the cap playback/seek fall back to sequential chunk scanning.
+- The frame index is sized from the AVI header (cap `VIDEO_MAX_FRAME_INDEX`); beyond the cap playback/seek fall back to sequential chunk scanning. The audio chunk index (`avi_index.h`, host-tested) is sized from the audio stream header (VBR MP3: dwLength counts the chunks) and grows during the movi scan: a 10 fps clip has ~4 MP3 chunks a frame, and a chunk the index misses never plays.
 - Seeks clamp and never wrap; with loop off the last frame is held (`ended`). Built-in progress OSD drawn into the frame after decode. Hardware-only (the simulator stubs it).
 
 ## QMI PSRAM (`qmi_psram.c`)
