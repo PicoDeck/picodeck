@@ -16,7 +16,7 @@ Opens a file on the SD card.
   - `mode` (string, optional): File mode (`"r"`, `"w"`, `"a"`, `"rb"`, `"wb"`, etc.). Defaults to `"r"`.
 - **Returns:** a file handle (userdata), or `nil, err` (`"permission denied"`, `"cannot open file"`, `"too many open files"`)
 
-Handles have methods — `f:read(n)`, `f:write(s)`, `f:seek(pos)`, `f:tell()`,
+Handles have methods — `f:read(n)`, `f:write(s)`, `f:seek(offset [, whence])`, `f:tell()`,
 `f:close()` — identical to the `picocalc.fs.*` functions. A handle closes
 itself when garbage-collected, and `local f <close> = picocalc.fs.open(...)`
 closes it at the end of the scope. Using a closed handle raises "attempt to
@@ -152,16 +152,21 @@ end
 
 ---
 
-#### `picocalc.fs.seek(file, position)`
-Seeks to a byte position within an open file.
+#### `picocalc.fs.seek(file, offset [, whence])`
+Moves the read/write position within an open file.
 
 - **Parameters:**
   - `file` (userdata): File handle from `open()`
-  - `position` (number): Byte offset from the beginning of the file
-- **Returns:** None
+  - `offset` (number): Byte offset, relative to `whence`
+  - `whence` (string, optional): `"set"` (default) counts from the start of the file and `offset` must be `>= 0`; `"cur"` counts from the current position; `"end"` counts from the end of the file. `"cur"` and `"end"` accept negative offsets.
+- **Returns:** (boolean) `true` on success, `false` if the seek failed. Use `tell` to read the new position.
+- **Errors:** raises on an unknown `whence`, a negative `offset` with `"set"`, and a resulting position that is before the start of the file or beyond 2^31-1. A rejected seek leaves the position alone. A position past the end of the file is left to the SD driver: a read handle stops at the end, a write handle extends the file.
 
 ```lua
-picocalc.fs.seek(f, 0)  -- Seek to beginning
+picocalc.fs.seek(f, 0)            -- Seek to beginning
+picocalc.fs.seek(f, 0, "end")     -- Seek to the end...
+local length = picocalc.fs.tell(f)  -- ...so tell() is the file length
+picocalc.fs.seek(f, -4, "cur")    -- Back up four bytes
 ```
 
 ---
@@ -341,3 +346,20 @@ Enable or disable slow SD card mode. Slow mode reduces SPI clock speed for compa
 ```lua
 picocalc.fs.setSlowMode(true)  -- Use slower SPI clock for compatibility
 ```
+
+---
+
+### Differences from the native C API
+
+The native `g_api.fs` table (`picocalc_fs_t`) and this Lua table overlap but are not identical. Porting a native app, or reading the C header:
+
+| Native C (`api->fs->...`) | Lua | Note |
+|---|---|---|
+| `fsize(file)` | `picocalc.fs.seek(f, 0, "end")` then `picocalc.fs.tell(f)`, or `picocalc.fs.size(path)` / `picocalc.fs.stat(path).size` | There is no `fs.fsize`. The seek moves the position, so save `tell()` first (or seek back) if you are mid-file |
+| `isDir(path)` | `picocalc.fs.stat(path).is_dir` | `stat` returns `nil, err` for a path that does not exist, so `local st = picocalc.fs.stat(p); local isdir = st and st.is_dir` |
+| `seek(file, offset)` (absolute, `bool`) | `picocalc.fs.seek(f, offset)` | Same default; Lua adds `whence` (`"set"`, `"cur"`, `"end"`); C has absolute seeks only |
+| `tell(file)` | `picocalc.fs.tell(f)` | Same |
+| `read(file, buf, len)` (fills a buffer, returns a count) | `picocalc.fs.read(f, len)` (returns a string, `nil` at end of file) | |
+| `open(path, mode)` (`NULL` on error) | `picocalc.fs.open(path [, mode])` (`nil, err`) | Lua handles are objects with methods and close on garbage collection |
+
+Lua-only additions: `readFile`, `appPath`, `copy`, `deleteRecursive`, `stat`, `diskInfo`, `glob`, `ensureReady` and `setSlowMode`. Names differ for two functions: C `deleteFile` is `picocalc.fs.delete`, and C `renameFile` is `picocalc.fs.rename`; C `listDir` takes a callback where Lua returns a table.
