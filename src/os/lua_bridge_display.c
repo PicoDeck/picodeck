@@ -18,6 +18,18 @@ static int l_display_setPixel(lua_State *L) {
   return 0;
 }
 
+// getPixel(x, y): the colour at (x, y) in the frame being drawn (the back
+// buffer) as the RGB565 value setPixel takes (the driver undoes the panel
+// byte swap). Off-screen coordinates raise; the clip rect does not apply.
+static int l_display_getPixel(lua_State *L) {
+  int x = (int)lb_checkint(L, 1);
+  int y = (int)lb_checkint(L, 2);
+  if (x < 0 || x >= FB_WIDTH || y < 0 || y >= FB_HEIGHT)
+    return luaL_error(L, "pixel (%d, %d) outside the screen", x, y);
+  lua_pushinteger(L, display_get_pixel(x, y));
+  return 1;
+}
+
 static int l_display_fillRect(lua_State *L) {
   display_fill_rect((int)lb_checkint(L, 1), (int)lb_checkint(L, 2),
                     (int)lb_checkint(L, 3), (int)lb_checkint(L, 4),
@@ -399,6 +411,7 @@ static int l_display_fillVLineGradient(lua_State *L) {
 static const luaL_Reg l_display_lib[] = {
     {"clear", l_display_clear},
     {"setPixel", l_display_setPixel},
+    {"getPixel", l_display_getPixel},
     {"fillRect", l_display_fillRect},
     {"drawRect", l_display_drawRect},
     {"drawLine", l_display_drawLine},

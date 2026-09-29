@@ -378,6 +378,13 @@ void display_set_pixel(int x, int y, uint16_t color) {
   s_framebuffer[y * FB_WIDTH + x] = be;
 }
 
+uint16_t display_get_pixel(int x, int y) {
+  if (x < 0 || x >= FB_WIDTH || y < 0 || y >= FB_HEIGHT)
+    return 0;
+  uint16_t be = s_framebuffer[y * FB_WIDTH + x];
+  return (uint16_t)((be >> 8) | (be << 8));
+}
+
 void display_fill_rect(int x, int y, int w, int h, uint16_t color) {
   // Clipped once in int64 (x + w cannot overflow); full-width bands use
   // 32-bit stores.

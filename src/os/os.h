@@ -597,7 +597,9 @@ typedef struct {
     // Image dimensions.
     int       (*width)(pcimage_t img);
     int       (*height)(pcimage_t img);
-    // Raw RGB565 pixel data pointer (PSRAM).
+    // Raw pixel data pointer (PSRAM): w*h row-major RGB565 in host byte
+    // order, the same values colour arguments take. Not byte-swapped like
+    // display->getBackBuffer(): drawing the image does the swap.
     uint16_t* (*pixels)(pcimage_t img);
     // Per-image transparent color for color-key blending (0 = disabled).
     void      (*setTransparentColor)(pcimage_t img, uint16_t color);

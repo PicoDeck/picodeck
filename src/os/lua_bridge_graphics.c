@@ -339,6 +339,115 @@ static int l_graphics_image_getTransparentColor(lua_State *L) {
   return 1;
 }
 
+// ── Pixel access ─────────────────────────────────────────────────────────────
+// Image pixels are host-order RGB565, the values every colour argument takes
+// (only the framebuffer is byte-swapped: the blitters swap as they write), so
+// getPixel/setPixel convert nothing. The bulk strings are row-major
+// little-endian RGB565, two bytes a pixel (string.pack "<I2"): that is the
+// pixel buffer's own layout, so they are copied a row at a time. Writes do
+// not invalidate anything: draws, the colour key, spritesheets, tilemaps,
+// animation loops, display.applyEffect("blend") and gfx3d read the pixels
+// live, but sprite:setSourceRect copies its rectangle into frame_data (and
+// sprite:copy copies that copy), so such a sprite keeps drawing and
+// alphaCollision-testing the old pixels until setSourceRect runs again.
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+#error "image pixel strings assume a little-endian host"
+#endif
+
+// The pixel (x, y) at args idx, idx + 1 (quantities); raises unless it lies
+// inside the image.
+static void image_check_pixel(lua_State *L, const lua_image_t *img, int idx,
+                              int *x, int *y) {
+  *x = (int)lb_checkint(L, idx);
+  *y = (int)lb_checkint(L, idx + 1);
+  if (*x < 0 || *x >= img->w || *y < 0 || *y >= img->h)
+    luaL_error(L, "pixel (%d, %d) outside the %dx%d image", *x, *y, img->w,
+               img->h);
+}
+
+// The rectangle x, y, w, h at args idx..idx + 3 (quantities), or the whole
+// image when all four are absent. Raises unless it lies inside the image; a
+// width or height of 0 is an empty rectangle.
+static void image_check_rect(lua_State *L, const lua_image_t *img, int idx,
+                             int *x, int *y, int *w, int *h) {
+  if (lua_isnoneornil(L, idx) && lua_isnoneornil(L, idx + 1) &&
+      lua_isnoneornil(L, idx + 2) && lua_isnoneornil(L, idx + 3)) {
+    *x = 0;
+    *y = 0;
+    *w = img->w;
+    *h = img->h;
+    return;
+  }
+  *x = (int)lb_checkint(L, idx);
+  *y = (int)lb_checkint(L, idx + 1);
+  *w = (int)lb_checkint(L, idx + 2);
+  *h = (int)lb_checkint(L, idx + 3);
+  if (*x < 0 || *y < 0 || *w < 0 || *h < 0 || *x > img->w - *w ||
+      *y > img->h - *h)
+    luaL_error(L, "rectangle (%d, %d, %d, %d) outside the %dx%d image", *x, *y,
+               *w, *h, img->w, img->h);
+}
+
+// img:getPixel(x, y) -> RGB565 colour
+static int l_graphics_image_getPixel(lua_State *L) {
+  lua_image_t *img = check_image(L, 1);
+  int x, y;
+  image_check_pixel(L, img, 2, &x, &y);
+  lua_pushinteger(L, img->data[y * img->w + x]);
+  return 1;
+}
+
+// img:setPixel(x, y, color)
+static int l_graphics_image_setPixel(lua_State *L) {
+  lua_image_t *img = check_image(L, 1);
+  int x, y;
+  image_check_pixel(L, img, 2, &x, &y);
+  uint16_t color = l_checkcolor(L, 4);
+  img->data[y * img->w + x] = color;
+  return 0;
+}
+
+// img:getPixels([x, y, w, h]) -> string of w * h little-endian RGB565 pixels
+static int l_graphics_image_getPixels(lua_State *L) {
+  lua_image_t *img = check_image(L, 1);
+  int x, y, w, h;
+  image_check_rect(L, img, 2, &x, &y, &w, &h);
+  if (w == 0 || h == 0) {
+    lua_pushliteral(L, "");
+    return 1;
+  }
+  size_t row = (size_t)w * sizeof(uint16_t);
+  if (w == img->w) {  // whole rows are contiguous: one copy, no buffer
+    lua_pushlstring(L, (const char *)&img->data[y * img->w], row * h);
+    return 1;
+  }
+  luaL_Buffer b;
+  char *out = luaL_buffinitsize(L, &b, row * h);
+  for (int r = 0; r < h; r++)
+    memcpy(out + r * row, &img->data[(y + r) * img->w + x], row);
+  luaL_pushresultsize(&b, row * h);
+  return 1;
+}
+
+// img:setPixels(data [, x, y, w, h]): data holds exactly w * h little-endian
+// RGB565 pixels (w * h * 2 bytes), row-major; the default rect is the image.
+static int l_graphics_image_setPixels(lua_State *L) {
+  lua_image_t *img = check_image(L, 1);
+  if (lua_type(L, 2) != LUA_TSTRING)
+    return luaL_typeerror(L, 2, "string");
+  size_t len;
+  const char *data = lua_tolstring(L, 2, &len);
+  int x, y, w, h;
+  image_check_rect(L, img, 3, &x, &y, &w, &h);
+  size_t row = (size_t)w * sizeof(uint16_t);
+  if (len != row * (size_t)h)
+    return luaL_error(L, "pixel data is %d bytes, expected %d (%dx%d pixels)",
+                      (int)len, (int)(row * h), w, h);
+  for (int r = 0; r < h; r++)
+    memcpy(&img->data[(y + r) * img->w + x], data + r * row, row);
+  return 0;
+}
+
 static const luaL_Reg l_graphics_image_methods[] = {
     {"getSize", l_graphics_image_getSize},
     {"copy", l_graphics_image_copy},
@@ -351,6 +460,10 @@ static const luaL_Reg l_graphics_image_methods[] = {
     {"setTransparentColor", l_graphics_image_setTransparentColor},
     {"getTransparentColor", l_graphics_image_getTransparentColor},
     {"getMetadata", l_graphics_image_getMetadata},
+    {"getPixel", l_graphics_image_getPixel},
+    {"setPixel", l_graphics_image_setPixel},
+    {"getPixels", l_graphics_image_getPixels},
+    {"setPixels", l_graphics_image_setPixels},
     {NULL, NULL}};
 
 // loadFromBuffer(string) or loadFromBuffer(qmibuf, [len]): the only
