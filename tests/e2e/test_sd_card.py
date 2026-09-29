@@ -5,7 +5,6 @@ with a warning, and which apps survive depends on the filesystem. These tests
 keep the harness from ever building a card that trips it, and check that a
 card that does is reported loudly.
 """
-import re
 import time
 
 import pytest
@@ -19,19 +18,12 @@ def _apps(sd):
     return sorted(p.name for p in (sd / "apps").iterdir() if p.is_dir())
 
 
-def test_cap_is_read_from_the_launcher_source():
-    src = (helpers.PROJECT_ROOT / "src" / "os" / "launcher.c").read_text()
-    assert launcher_app_cap() == int(re.search(r"#define MAX_APPS (\d+)", src).group(1))
-    assert launcher_app_cap() > 1
-
-
 def test_default_card_holds_every_fixture_and_fits_the_cap(tmp_path):
     """A fixture added past the cap fails here, on every filesystem, instead
-    of silently dropping apps from every test's card."""
-    sd = build_sd_card(tmp_path / "sd")
-    apps = _apps(sd)
-    assert set(fixture_app_names()) <= set(apps)
-    assert len(apps) <= launcher_app_cap()
+    of silently dropping apps from every test's card. One slot must stay
+    free: many tests stage a single app without a marker."""
+    sd = build_sd_card(tmp_path / "sd", reserve=1)
+    assert set(fixture_app_names()) <= set(_apps(sd))
 
 
 def test_fixtures_option_limits_the_card_to_the_named_apps(tmp_path):
@@ -81,4 +73,7 @@ def test_a_simulator_that_drops_apps_at_the_cap_is_unhealthy(
             problems = sim.health_problems()
     finally:
         sim.stop()
-    assert any("MAX_APPS" in p and "app cap" in p for p in problems), problems
+    # The launcher's own message carries its compiled-in cap, which must
+    # equal the value the harness parsed from the source.
+    want = f"app cap ({launcher_app_cap()})"
+    assert any("MAX_APPS" in p and want in p for p in problems), problems
