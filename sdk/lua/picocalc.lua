@@ -429,7 +429,8 @@ function picocalc.sys.getTimeMs() end
 ---@return integer
 function picocalc.sys.getTimeUs() end
 
----Return battery charge (0–100), or -1 if unknown / USB-powered.
+---Return battery charge (0–100), or -1 before the first reading (a few seconds
+---after boot). On USB power it keeps the last level; `isUSBPowered()` tells USB power.
 ---Result is cached for ~5 seconds to avoid slow I²C reads.
 ---@return integer
 function picocalc.sys.getBattery() end

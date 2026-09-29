@@ -59,11 +59,13 @@ picocalc.sys.sleep(100)  -- Sleep for 100ms
 Returns the battery charge level. The level is read from the keyboard controller in the background every 5 seconds (paused while the app goes a second without `input.update()` or `sys.sleep()`); this returns the latest reading without waiting.
 
 - **Parameters:** None
-- **Returns:** (number) Battery percentage (0-100), or -1 if unknown/USB powered
+- **Returns:** (number) Battery percentage (0-100), or -1 before the first reading (a few seconds after boot). On USB power it keeps returning the last level read; use `picocalc.sys.isUSBPowered()` to tell USB power.
 
 ```lua
 local battery = picocalc.sys.getBattery()
-if battery >= 0 then
+if picocalc.sys.isUSBPowered() then
+    print("USB power")
+elseif battery >= 0 then
     print("Battery: " .. battery .. "%")
 end
 ```

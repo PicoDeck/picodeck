@@ -243,7 +243,9 @@ typedef struct {
     uint64_t (*getTimeUs)(void);
     // Trigger a system reboot
     void     (*reboot)(void);
-    // Battery level 0-100 (from STM32 via I2C). -1 = unknown/USB powered.
+    // Battery level 0-100 (from STM32 via I2C). -1 only before the first
+    // reading (a few seconds after boot); on USB power it keeps the last
+    // level: isUSBPowered() tells USB power.
     int      (*getBatteryPercent)(void);
     // True if connected to USB power
     bool     (*isUSBPowered)(void);
