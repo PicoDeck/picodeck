@@ -59,7 +59,7 @@ picocalc.sys.sleep(100)  -- Sleep for 100ms
 Returns the battery charge level. The level is read from the keyboard controller in the background every 5 seconds (paused while the app goes a second without `input.update()` or `sys.sleep()`); this returns the latest reading without waiting.
 
 - **Parameters:** None
-- **Returns:** (number) Battery percentage (0-100), or -1 if unknown/USB powered
+- **Returns:** (number) Battery percentage (0-100), or -1 only before the first reading (a few seconds after boot). On USB power it keeps returning the last level read.
 
 ```lua
 local battery = picocalc.sys.getBattery()
@@ -75,6 +75,11 @@ Checks if the device is powered via USB (GP24 VBUS sense).
 
 - **Parameters:** None
 - **Returns:** (boolean) `true` when USB power is connected
+
+> Not reliable for USB detection: GP24 is the Pico 2's VBUS sense pin, but on
+> Pico W-family boards, including the PicoCalc's Pimoroni Pico Plus 2 W, that
+> pin belongs to the wireless chip, so this currently reads `false` even on
+> USB power. A fix (reading VBUS through the CYW43) is pending.
 
 ---
 
@@ -182,11 +187,30 @@ Adds a custom item to the system menu overlay (Menu key). Maximum **4 items per 
   - `callback` (function): Function to call when the item is selected
 - **Returns:** None
 
+The callback runs after the menu has closed and has given your screen back
+(when memory allows; see below), with your clip rect and a clean keyboard. It
+may call `picocalc.sys.exit()` or raise an error. What it draws goes into the
+back buffer, as any drawing does, and shows at your next `flush`.
+
 ```lua
 picocalc.sys.addMenuItem("Restart Level", function()
     level = 1
 end)
 ```
+
+**Your screen after the menu.** The system menu darkens your frame and draws
+over it. When it closes it puts your screen back, both framebuffers in the
+roles they had: the frame that was showing is on the panel again, and the
+back buffer holds what you had drawn into it (a half-drawn frame included). So
+an app that redraws only what changed, or waits for a key without drawing,
+needs no repaint after the menu. If memory is too short for the copy (it
+needs a free 400 KB block of the Lua heap while the menu is open, on top of
+the 200 KB the menu uses itself, and must still leave an 8 KB block for
+Settings → Controls), the screen stays darkened until the app redraws. An app that presents only with `flushRows`
+(no buffer swap) gets its other buffer on the panel after the menu: the rows
+it flushes again come back, and any row it never flushes again stays stale.
+The menu also resets a hardware scroll offset (see
+`setScrollOffset` in [API Display and Graphics](API-Display-and-Graphics.md)).
 
 ---
 

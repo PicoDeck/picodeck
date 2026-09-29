@@ -193,6 +193,24 @@ void display_set_brightness(uint8_t brightness);
 // Call before drawing the menu panel, then call display_flush().
 void display_darken(void);
 
+// Copies both framebuffers into dst (2 * FB_WIDTH * FB_HEIGHT pixels): the
+// front buffer (on the panel) first, then the back buffer. Waits for any
+// flush in flight first. The system menu saves the app's screen with it
+// before display_darken() and gives it back with display_restore_buffers().
+void display_save_buffers(uint16_t *dst);
+
+// Puts back what display_save_buffers saved: the saved front buffer is
+// presented on the panel and becomes the front buffer again, and the saved
+// back buffer becomes the back buffer again, so an app resumes exactly where
+// it was (mid-frame drawing included). Only the contents and roles come
+// back, not which physical buffer holds each (re-fetch
+// display_get_back_buffer(), as after any flush). Limit: an app that
+// presents only with display_flush_rows() (no swap) shows its back buffer,
+// not its front; after a restore the panel shows the saved front, stale for
+// such an app: the rows it flushes again come back, and any row it never
+// flushes again stays stale.
+void display_restore_buffers(const uint16_t *src);
+
 // Returns a read-only pointer to the raw framebuffer (320×320 RGB565,
 // big-endian). Pixels are byte-swapped relative to the RGB565() macro — un-swap
 // before use.

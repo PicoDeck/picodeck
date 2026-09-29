@@ -26,7 +26,9 @@ BOX_W, BOX_H = 52, 12
 CORNERS = {"tr": (262, 22), "tl": (6, 22), "br": (262, 302), "bl": (6, 302)}
 BG = (0, 0, 255)                     # 0x001F, the fixtures' background
 NUMBER_INKS = {(0, 255, 0), (255, 255, 0), (255, 0, 0)}
-DASH_INK = (132, 130, 132)           # COLOR_GRAY, "FPS: --"
+# COLOR_GRAY, "FPS: --", as the simulator's screenshot widens RGB565
+# (x * 255 / 31, x * 255 / 63, truncating: sim_socket_handler.c).
+DASH_INK = (131, 129, 131)
 TOAST_BG = (41, 40, 41)              # TOAST_COLOR_INFO, RGB565(40, 40, 40)
 
 # Toast geometry (ui_widget_toast at y 280): "TOAST" is 30px wide + 2x8
@@ -323,6 +325,62 @@ def test_settings_item_cycles_and_applies_on_close(sim_factory, test_sd_card):
     sim.keypress_sequence(["esc", "esc"], delay_ms=200)
     arr = wait_screen(sim, lambda a: counter_at(a, "tr", number=False))
     assert counter_at(arr, "tr", number=False), "counter not shown after the menu closed"
+
+
+# Presents blue frames for 1.5 s (so the counter shows a number), then
+# flushes a full blue frame only on Enter.
+STATIC_FIXTURE = """
+local d = picocalc.display
+local input = picocalc.input
+local sys = picocalc.sys
+local t0 = sys.getTimeMs()
+repeat
+    d.clear(0x001F)
+    d.flush()
+    sys.sleep(16)
+until sys.getTimeMs() - t0 >= 1500
+sys.log("FPSSTATIC:READY")
+while true do
+    input.update()
+    local p = input.getButtonsPressed()
+    if p & input.BTN_ESC ~= 0 then return end
+    if p & input.BTN_ENTER ~= 0 then
+        d.clear(0x001F)
+        d.flush()
+        sys.log("FPSSTATIC:FLUSHED")
+    end
+    sys.sleep(16)
+end
+"""
+
+
+def test_new_corner_shows_at_the_next_present_after_the_menu(sim_factory, test_sd_card):
+    """The menu gives the app its screen back as the app last presented it,
+    counter included: a new corner shows from the app's next present (the
+    OS does not repaint the counter on close; see os_overlay.h)."""
+    sim = boot(sim_factory, test_sd_card, show_fps="tr")
+    stage_lua_app(Path(sim.sd_card_path), "fps_static", STATIC_FIXTURE)
+    sim.launch_app("fps_static")
+    sim.wait_for_log("FPSSTATIC:READY", timeout=15)
+    arr = wait_screen(sim, lambda a: counter_at(a, "tr"))
+    assert counter_at(arr, "tr"), "no counter before the menu"
+
+    sim.keypress("menu")
+    time.sleep(0.3)
+    sim.keypress_sequence(["down", "enter", "down", "down", "enter"], delay_ms=200)
+    assert _wait_cfg(sim, "tl") == "tl"
+    sim.keypress_sequence(["esc", "esc"], delay_ms=200)
+    # The restored frame, its counter still at the old corner.
+    arr = wait_screen(sim, lambda a: untouched(a, "br") and untouched(a, "bl"))
+    assert counter_at(arr, "tr"), "the app's frame was not given back"
+    assert untouched(arr, "tl"), "counter drawn at the new corner before a present"
+
+    mark = sim.get_log_buffer(tail=1).get("next_seq", 0)
+    sim.keypress("enter")
+    sim.wait_for_log("FPSSTATIC:FLUSHED", timeout=10, since_seq=mark)
+    arr = wait_screen(sim, lambda a: counter_at(a, "tl"))
+    assert counter_at(arr, "tl"), "no counter at the new corner"
+    assert untouched(arr, "tr"), "old corner not cleared by the app's frame"
 
 
 # ── Native apps ─────────────────────────────────────────────────────────────

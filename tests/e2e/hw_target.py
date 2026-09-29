@@ -27,7 +27,9 @@ device's known traps (see the task-27 report and CLAUDE.md "Debug"):
     polls plus /system/error.log growth. The log is advisory only.
   - The launcher caches app.json at boot: push_app reboots when the pushed
     manifest (id, name, requirements, min_psram_kb, system_clock_khz)
-    differs from the one on the card, or when `list` does not show the app.
+    differs from the one on the card, or when `list` does not show the app,
+    then polls `list` for up to rescan_timeout (20 s): a `list` straight
+    after the reboot can miss an app the launcher shows a few seconds later.
   - Dev commands while an app runs (src/os/lua_bridge.c lua_bridge_service,
     src/main.c sys_poll, src/os/launcher.c): `reboot` and `reboot-flash`
     are HONOURED mid-app (Lua hook / sys.sleep pass, native sys->poll; a
@@ -465,7 +467,7 @@ class HwTarget(Target):
     def __init__(self, port: str, *, preflight: bool = True,
                  poll_interval: float = 0.5, boot_timeout: float = 60.0,
                  exit_timeout: float = 15.0, connect_timeout: float = 5.0,
-                 command_timeout: float = 5.0):
+                 command_timeout: float = 5.0, rescan_timeout: float = 20.0):
         self.pm = load_picodeck_mcp()
         self.port = port
         self.preflight = preflight
@@ -474,6 +476,7 @@ class HwTarget(Target):
         self.exit_timeout = exit_timeout
         self.connect_timeout = connect_timeout
         self.command_timeout = command_timeout
+        self.rescan_timeout = rescan_timeout
         self._mon = None
         self._launch: Optional[dict] = None
         self._manifests: dict = {}
@@ -746,12 +749,24 @@ class HwTarget(Target):
             why = "the launcher does not list it"
         if why:
             self.reboot()
-            if manifest and manifest.get("id") not in [i for _, i in self.list_apps()]:
+            if manifest and not self._wait_listed(manifest.get("id")):
                 raise HwTargetError(f"{name} ({manifest.get('id')}) still not "
-                                    "listed after a reboot")
+                                    f"listed {self.rescan_timeout:g} s after a reboot")
         self._manifests[name] = manifest
         return {"pushed": msg.splitlines()[0], "rebooted": why is not None,
                 "why": why}
+
+    def _wait_listed(self, app_id: str) -> bool:
+        """Poll `list` until it shows app_id, for up to rescan_timeout. On
+        the device a `list` straight after a reboot has missed an app just
+        pushed, which the launcher listed a few seconds later."""
+        deadline = time.monotonic() + self.rescan_timeout
+        while True:
+            if app_id in [i for _, i in self.list_apps()]:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(self.poll_interval)
 
     def _app_id(self, name: str) -> str:
         man = self._manifests.get(name)

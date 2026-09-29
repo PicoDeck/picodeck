@@ -115,6 +115,30 @@ uint16_t* display_get_back_buffer(void) {
     return g_current_buffer == 0 ? g_back_buffer : g_front_buffer;
 }
 
+// Mirrors display_save_buffers / display_restore_buffers in
+// src/drivers/display.c (semantics, not steps): the saved front comes back as
+// the front buffer and is what the panel (the GRAM analog) shows; the saved
+// back comes back as the back buffer.
+static uint16_t* sim_front_buffer(void) {
+    return g_current_buffer == 0 ? g_front_buffer : g_back_buffer;
+}
+
+void display_save_buffers(uint16_t* dst) {
+    const size_t n = 320 * 320;
+    memcpy(dst, sim_front_buffer(), n * sizeof(uint16_t));
+    memcpy(dst + n, display_get_back_buffer(), n * sizeof(uint16_t));
+}
+
+void display_restore_buffers(const uint16_t* src) {
+    const size_t n = 320 * 320;
+    uint16_t* front = sim_front_buffer();
+    memcpy(front, src, n * sizeof(uint16_t));
+    memcpy(display_get_back_buffer(), src + n, n * sizeof(uint16_t));
+    memcpy(s_gram, front, n * sizeof(uint16_t));
+    present_gram();
+    s_last_presented = front;
+}
+
 void display_fill_rect(int x, int y, int w, int h, uint16_t color) {
     disp_clip_t c = cur_clip();
     disp_fill(display_get_back_buffer(), 320, &c, x, y, w, h, color);

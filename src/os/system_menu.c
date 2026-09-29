@@ -107,11 +107,17 @@ typedef enum {
 
 // ── Background save/restore helpers
 // ──────────────────────────────────────────────────────────
-// Save the current back buffer (darkened app background) to PSRAM.
-// Must be called once after display_darken() at menu entry.
-static void bg_save(void) {
+// Allocate the backdrop copy in PSRAM. Called at menu entry before anything
+// else the menu allocates, so the menu keeps its backdrop whenever it did
+// before it also kept the app's screen.
+static void bg_alloc(void) {
   if (!s_saved_bg)
     s_saved_bg = (uint16_t *)umm_malloc(FB_WIDTH * FB_HEIGHT * sizeof(uint16_t));
+}
+
+// Save the current back buffer (darkened app background) into it.
+// Must be called once after display_darken() at menu entry.
+static void bg_save(void) {
   if (s_saved_bg)
     memcpy(s_saved_bg, display_get_back_buffer(),
            FB_WIDTH * FB_HEIGHT * sizeof(uint16_t));
@@ -703,6 +709,29 @@ static bool menu_loop(lua_State *L, int context) {
 
   int bat = kbd_get_battery_percent();
 
+  // Keep the app's screen to give back on close: both framebuffers, in their
+  // roles (display_restore_buffers). 400 KB of PSRAM, held only while the
+  // menu is open; not at the launcher, which redraws itself after the menu.
+  // It is the extra: taken after the menu's own backdrop, and given up again
+  // if it cost the Controls page its block (the page's own test, so umm's
+  // block rounding and a second free block count as they will there; the
+  // freed copy merges back, leaving the heap as it was). So on any heap the
+  // menu keeps its backdrop and the Controls page whenever it did without the
+  // copy. Without the memory (a nearly full or fragmented heap) the menu
+  // closes over the darkened screen, as it always did, until the app redraws.
+  bg_alloc();
+  uint16_t *app_screen = NULL;
+  if (!is_launcher) {
+    app_screen = (uint16_t *)umm_malloc(
+        2 * FB_WIDTH * FB_HEIGHT * sizeof(uint16_t));
+    if (app_screen && lua_psram_alloc_largest_block() < CTL_HEAP_MIN) {
+      umm_free(app_screen);
+      app_screen = NULL;
+    }
+  }
+  if (app_screen)
+    display_save_buffers(app_screen);
+
   display_darken();
   bg_save();
 
@@ -732,6 +761,9 @@ static bool menu_loop(lua_State *L, int context) {
   bool need_redraw = true;
   bool need_bg_restore = false;
   bool exit_requested = false;
+  // The app item chosen, if any: its callback runs after the menu has closed.
+  void (*app_cb)(void *user) = NULL;
+  void *app_cb_user = NULL;
 
   while (running) {
     if (need_redraw) {
@@ -782,8 +814,8 @@ static bool menu_loop(lua_State *L, int context) {
     if (pressed & BTN_ENTER) {
       switch (items[sel].type) {
       case ITEM_APP_CB:
-        s_app_items[items[sel].app_idx].callback(
-            s_app_items[items[sel].app_idx].user);
+        app_cb = s_app_items[items[sel].app_idx].callback;
+        app_cb_user = s_app_items[items[sel].app_idx].user;
         running = false;
         break;
       case ITEM_BRIGHTNESS:
@@ -952,11 +984,21 @@ static bool menu_loop(lua_State *L, int context) {
     watchdog_update();
     sleep_ms(16);
   }
+  if (app_screen) {
+    display_restore_buffers(app_screen);
+    umm_free(app_screen);
+  }
   bg_free();
   kbd_clear_state();
   save_brightness_if_changed(entry_brightness);
   display_set_clip_rect(saved_clip_x, saved_clip_y, saved_clip_w, saved_clip_h);
   os_overlay_reload();  // the Show FPS setting; the menu drew over the overlays
+  // An app item's callback runs last, once the menu is gone: against the
+  // app's own screen and clip rect, from a clean keyboard, and free to leave
+  // by longjmp (a Lua error, sys.exit()) with nothing of the menu's left
+  // allocated.
+  if (app_cb)
+    app_cb(app_cb_user);
   return exit_requested;
 }
 
