@@ -126,7 +126,10 @@ typedef struct {
     void (*fillCircle)(int cx, int cy, int r, uint16_t color);
     // Draw a null-terminated string. Returns pixel width of drawn text.
     int  (*drawText)(int x, int y, const char *text, uint16_t fg, uint16_t bg);
-    // Flush the internal framebuffer to the LCD (call once per frame)
+    // Flush the internal framebuffer to the LCD (call once per frame).
+    // All three presents (flush, flushRows, flushRegion) first draw the OS
+    // overlays into the rows they send: a system toast and, when the Show
+    // FPS setting is on, the OS FPS counter (see perf below).
     void (*flush)(void);
     // Returns display width/height
     int  (*getWidth)(void);
@@ -138,7 +141,8 @@ typedef struct {
     void (*drawImageNN)(int x, int y, const uint16_t *data,
                         int src_w, int src_h, int scale);
     // Flush only rows y0..y1 (inclusive, full width) from the back buffer.
-    // Does NOT swap buffers. Useful for partial screen updates.
+    // Does NOT swap buffers. Useful for partial screen updates. An OS overlay
+    // outside the rows is put on the panel directly, not into the buffer.
     void (*flushRows)(int y0, int y1);
     // Flush rows y0..y1 (inclusive) with buffer swap. Like flush() but only
     // transfers the specified row range. Useful for emulators with letterboxing.
@@ -393,6 +397,8 @@ typedef struct {
 
 typedef struct {
     void (*beginFrame)(void);
+    // One frame of the app's own loop. While an app calls it, the OS FPS
+    // counter (Show FPS) shows endFrame calls per second, not presents.
     void (*endFrame)(void);
     int  (*getFPS)(void);
     uint32_t (*getFrameTime)(void);

@@ -1,6 +1,6 @@
 // Host unit tests for src/os/config.c (/system/config.json, the system-wide
-// key/value store), over the in-memory SD fake.  Limits per
-// specs/test-audit-2026-09-24.md §3.9: 8 entries, keys 31 chars, values 127.
+// key/value store), over the in-memory SD fake.  Limits: keys 31 chars,
+// values 127, all pairs in one CONFIG_POOL_SIZE-byte pool.
 #include "check.h"
 #include "config.h"
 #include "fakes/sdcard_fake.h"
@@ -31,22 +31,103 @@ static void test_set_get_delete(void) {
   CHECK(config_get("") == NULL);
 }
 
-static void test_entry_limit(void) {
-  reset();
-  char k[8], last[8], over[8];
-  for (int i = 0; i < CONFIG_MAX_ENTRIES + 1; i++) {
-    snprintf(k, sizeof(k), "k%d", i);
-    config_set(k, "v");
+// Fill the pool with pairs of `vlen`-char values ("k<i>"); returns how many
+// were stored.
+static int fill(int vlen) {
+  char k[8], v[CONFIG_VAL_MAX];
+  memset(v, 'v', (size_t)vlen);
+  v[vlen] = '\0';
+  int n = 0;
+  for (;; n++) {
+    snprintf(k, sizeof(k), "k%d", n);
+    config_set(k, v);
+    if (!config_get(k)) return n;
   }
-  snprintf(last, sizeof(last), "k%d", CONFIG_MAX_ENTRIES - 1);
-  snprintf(over, sizeof(over), "k%d", CONFIG_MAX_ENTRIES);
-  CHECK_STR(config_get("k0"), "v");
-  CHECK_STR(config_get(last), "v");
-  CHECK(config_get(over) == NULL);  // one past the cap is silently dropped
-  // Deleting frees a slot.
+}
+
+static void test_pool_limit(void) {
+  reset();
+  // Each pair costs its key and value plus two NULs.
+  int n = fill(100);
+  CHECK_EQ_INT(n, CONFIG_POOL_SIZE / (2 + 1 + 100 + 1));
+  char k[8], over[8];
+  snprintf(over, sizeof(over), "k%d", n);
+  CHECK(config_get(over) == NULL);          // one past the end is dropped
+  CHECK_EQ_INT(strlen(config_get("k0")), 100);
+  // Take all but one byte of what is left.
+  char pad[CONFIG_VAL_MAX];
+  int left = CONFIG_POOL_SIZE - n * (2 + 1 + 100 + 1);
+  memset(pad, 'p', (size_t)(left - 4));
+  pad[left - 4] = '\0';
+  config_set("f", pad);
+  CHECK_STR(config_get("f"), pad);
+  // A longer value that does not fit keeps the old one; a shorter one fits.
+  char longer[CONFIG_VAL_MAX];
+  memset(longer, 'L', sizeof(longer) - 1);
+  longer[sizeof(longer) - 1] = '\0';
+  config_set("k1", longer);
+  CHECK_EQ_INT(strlen(config_get("k1")), 100);
+  config_set("k1", "short");
+  CHECK_STR(config_get("k1"), "short");
+  // The same length is rewritten in place.
+  config_set("k1", "SHORT");
+  CHECK_STR(config_get("k1"), "SHORT");
+  // Deleting frees its bytes: an absent key costs nothing.
   config_set("k0", NULL);
+  CHECK(config_get("k0") == NULL);
   config_set(over, "v");
   CHECK_STR(config_get(over), "v");
+  for (int i = 2; i < n; i++) {
+    snprintf(k, sizeof(k), "k%d", i);
+    CHECK_EQ_INT(strlen(config_get(k)), 100);
+  }
+}
+
+// Every well-known key at its longest, and an 11th-plus key or three, fit
+// with room to spare (the fixed 10-slot store was exactly full with them).
+static void test_well_known_keys_fit(void) {
+  reset();
+  char url[CONFIG_VAL_MAX], ssid[33], pass[64];
+  memset(url, 'u', sizeof(url) - 1);
+  url[sizeof(url) - 1] = '\0';
+  memset(ssid, 's', sizeof(ssid) - 1);
+  ssid[sizeof(ssid) - 1] = '\0';
+  memset(pass, 'p', sizeof(pass) - 1);
+  pass[sizeof(pass) - 1] = '\0';
+  const char *keys[][2] = {
+      {"wifi_ssid", ssid}, {"wifi_pass", pass}, {"brightness", "255"},
+      {"dim_timeout_s", "86400"}, {"tz_offset", "-720"}, {"dev_mode", "1"},
+      {"wifi_auto_disconnect", "0"}, {"battery_pct", "1"}, {"show_fps", "br"},
+      {"editor_font", "2"}, {"store_url", url}, {"terminal_font", "1"},
+      {"harness_key", "42"},
+  };
+  size_t nkeys = sizeof(keys) / sizeof(keys[0]);
+  for (size_t i = 0; i < nkeys; i++)
+    config_set(keys[i][0], keys[i][1]);
+  for (size_t i = 0; i < nkeys; i++)
+    CHECK_STR(config_get(keys[i][0]), keys[i][1]);
+  // At least as much again of room left.
+  CHECK(fill(1) >= 40);
+  CHECK(config_save());
+  CHECK(config_load());
+  CHECK_STR(config_get("store_url"), url);
+  CHECK_STR(config_get("wifi_pass"), pass);
+}
+
+// Arguments that point into the pool itself (another key's value, or the
+// key's own) survive the pool moving under them.
+static void test_set_from_pool(void) {
+  reset();
+  config_set("a", "alpha");
+  config_set("b", "bravo-longer");
+  config_set("c", "charlie");
+  config_set("a", config_get("c"));  // grows: a moves to the end
+  CHECK_STR(config_get("a"), "charlie");
+  config_set("b", config_get("b"));
+  CHECK_STR(config_get("b"), "bravo-longer");
+  config_set("c", config_get("b"));
+  CHECK_STR(config_get("c"), "bravo-longer");
+  CHECK_STR(config_get("a"), "charlie");
 }
 
 static void test_length_limits(void) {
@@ -93,13 +174,16 @@ static void test_round_trip_full_store(void) {
   char k[8], v[CONFIG_VAL_MAX];
   memset(v, '"', sizeof(v) - 1);  // worst case: every char escaped
   v[sizeof(v) - 1] = '\0';
-  for (int i = 0; i < CONFIG_MAX_ENTRIES; i++) {
-    snprintf(k, sizeof(k), "k%d", i);
+  int n = 0;
+  for (;; n++) {
+    snprintf(k, sizeof(k), "k%d", n);
     config_set(k, v);
+    if (!config_get(k)) break;
   }
+  CHECK(n >= 2);
   CHECK(config_save());
   CHECK(config_load());
-  for (int i = 0; i < CONFIG_MAX_ENTRIES; i++) {
+  for (int i = 0; i < n; i++) {
     snprintf(k, sizeof(k), "k%d", i);
     CHECK_STR(config_get(k), v);
   }
@@ -140,6 +224,24 @@ static void test_overlong_file_entries(void) {
   CHECK_STR(config_get("after"), "ok");
 }
 
+// A hand-edited file may repeat a key: the last copy wins, as in JSON, and
+// the store keeps one copy, so a later set is what get returns.
+static void test_repeated_key_last_wins(void) {
+  reset();
+  const char *f = "{\"a\":\"1\",\"b\":\"x\",\"a\":\"22\"}";
+  sdfake_put(PATH, f, strlen(f));
+  CHECK(config_load());
+  CHECK_STR(config_get("a"), "22");
+  CHECK_STR(config_get("b"), "x");
+  config_set("a", "333");  // a different length: moves the pair
+  CHECK_STR(config_get("a"), "333");
+  config_set("a", NULL);
+  CHECK(config_get("a") == NULL);
+  CHECK_STR(config_get("b"), "x");
+  CHECK(config_save());
+  CHECK_STR(sdfake_get(PATH, NULL), "{\"b\":\"x\"}");
+}
+
 static void test_load_tolerates(void) {
   reset();
   // Whitespace, a non-string value (skipped), empty key (skipped).
@@ -159,20 +261,27 @@ static void test_load_tolerates(void) {
   sdfake_put(PATH, "{\"a", 3);
   CHECK(config_load());
   CHECK(config_get("a") == NULL);
-  // More entries in the file than the store holds: the first
-  // CONFIG_MAX_ENTRIES load.
-  char many[256] = "{", e[16], last[8], over[8];
-  for (int i = 1; i <= CONFIG_MAX_ENTRIES + 1; i++) {
-    snprintf(e, sizeof(e), "%s\"%d\":\"a\"", i > 1 ? "," : "", i);
+  // More in the file than the pool holds: the pairs that fit load, one
+  // that does not is dropped, and a smaller one after it still loads.
+  static char many[4096];
+  char e[160], big[101];
+  memset(big, 'b', sizeof(big) - 1);
+  big[sizeof(big) - 1] = '\0';
+  strcpy(many, "{");
+  int nbig = CONFIG_POOL_SIZE / (2 + 1 + 100 + 1) + 1;
+  for (int i = 0; i < nbig; i++) {
+    snprintf(e, sizeof(e), "%s\"%d\":\"%s\"", i ? "," : "", i, big);
     strcat(many, e);
   }
-  strcat(many, "}");
+  strcat(many, ",\"z\":\"small\"}");
   sdfake_put(PATH, many, strlen(many));
   CHECK(config_load());
-  snprintf(last, sizeof(last), "%d", CONFIG_MAX_ENTRIES);
-  snprintf(over, sizeof(over), "%d", CONFIG_MAX_ENTRIES + 1);
-  CHECK_STR(config_get(last), "a");
+  char last[8], over[8];
+  snprintf(last, sizeof(last), "%d", nbig - 2);
+  snprintf(over, sizeof(over), "%d", nbig - 1);
+  CHECK_STR(config_get(last), big);
   CHECK(config_get(over) == NULL);
+  CHECK_STR(config_get("z"), "small");
   // Missing file.
   sdfake_reset();
   CHECK(!config_load());
@@ -255,12 +364,15 @@ static void test_atomic_save_failures_keep_old_file(void) {
 
 int main(void) {
   test_set_get_delete();
-  test_entry_limit();
+  test_pool_limit();
+  test_well_known_keys_fit();
+  test_set_from_pool();
   test_length_limits();
   test_round_trip_special_chars();
   test_round_trip_full_store();
   test_key_escapes_round_trip();
   test_overlong_file_entries();
+  test_repeated_key_last_wins();
   test_load_tolerates();
   test_save_failures();
   test_brightness_parse();

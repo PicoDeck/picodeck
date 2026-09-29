@@ -240,17 +240,22 @@ void ui_widget_divider(int x, int y, int w, uint16_t color) {
 
 // ── Toast ────────────────────────────────────────────────────────────────────
 
+#define TOAST_PAD 8
+
+void ui_widget_toast_rect(const char *text, int *x, int *w, int *h) {
+    *w = display_text_width(text) + TOAST_PAD * 2;
+    *h = FH + 6;
+    *x = (FB_WIDTH - *w) / 2;
+}
+
 void ui_widget_toast(int y, const char *text, uint16_t bg_color) {
     if (bg_color == 0) bg_color = UW_TOAST_BG;
-    int pad = 8;
-    int h = FH + 6;
-    int tw = display_text_width(text);
-    int w = tw + pad * 2;
-    int x = (FB_WIDTH - w) / 2;
+    int x, w, h;
+    ui_widget_toast_rect(text, &x, &w, &h);
 
     display_fill_rect(x, y, w, h, bg_color);
     display_draw_rect(x, y, w, h, UW_BORDER);
-    display_draw_text(x + pad, y + 3, text, COLOR_WHITE, bg_color);
+    display_draw_text(x + TOAST_PAD, y + 3, text, COLOR_WHITE, bg_color);
 }
 
 // ── Button ───────────────────────────────────────────────────────────────────

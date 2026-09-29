@@ -174,6 +174,13 @@ void display_sync_back_region(int y0, int y1);
 // partial screen updates (status bars, emulator viewports, etc.).
 void display_flush_rows(int y0, int y1);
 
+// Push the rectangle (x, y, w, h) of the back buffer to the same place on the
+// panel as one blocking window write (no swap, no DMA; ~0.1 ms for 52x12).
+// Waits out any in-flight flush first. Clipped to the screen. The OS overlay
+// (os_overlay.c) updates its counter/toast outside a partial flush's rows
+// with it.
+void display_push_rect(int x, int y, int w, int h);
+
 // Block until any in-flight DMA flush completes.
 // Does NOT swap buffers or start a new transfer.
 void display_wait_for_flush(void);

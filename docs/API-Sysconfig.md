@@ -33,6 +33,8 @@ end
 #### `picocalc.sysconfig.set(key [, value])`
 Set a system configuration value. Pass `nil` as the value (or omit it) to delete the key.
 
+Keys are cut to 31 characters and values to 127. All keys and values share one 1 KB store (each costs its length plus 2 bytes); a new key, or a longer value, that does not fit is ignored and the old value kept.
+
 - **Parameters:**
   - `key` (string): Configuration key name
   - `value` (string or nil, optional): Value to set, or `nil` to delete the key
@@ -82,3 +84,4 @@ picocalc.sysconfig.save()
 | `"tz_offset"` | Clock offset from UTC in minutes (may be negative) |
 | `"dim_timeout_s"` | Idle screen-dim timeout in seconds; `"0"` disables dimming (default `60`) |
 | `"battery_pct"` | `"1"` shows the battery percentage inside the header's battery icon instead of a fill bar (system menu → Settings → Battery %) |
+| `"show_fps"` | Corner of the OS FPS counter: `"tr"`, `"tl"`, `"br"` or `"bl"`; no key (or `"0"`) is off, and the menu removes the key for Off. Read when an app starts and when the system menu closes (Settings → Show FPS; see [API Performance](API-Performance.md)) |
