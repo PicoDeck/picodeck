@@ -266,9 +266,12 @@ void kbd_inject_buttons(uint32_t buttons) {
     // it; with the hold, the bit would leak into s_buttons on the hold
     // frames after the edge-only intercept stripped the first frame.)
     if (buttons & BTN_MENU) {
-        s_menu_pressed = true;
         buttons &= ~BTN_MENU;
+        // Note the seq before raising the flag: the app thread clears it when
+        // it consumes the flag, so noting it after would leave a seq nobody
+        // ever clears (get_input_state stuck below every later injection).
         hal_input_note_menu_injected();
+        s_menu_pressed = true;
         if (!buttons) return;
     }
     // Inject through HAL only — the next kbd_poll picks them up atomically.
