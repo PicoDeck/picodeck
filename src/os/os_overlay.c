@@ -39,7 +39,8 @@ static fps_counter_t s_fps;
 static ov_rect_t s_shown[OV_COUNT];  // what the panel shows of each overlay
 static uint8_t s_fps_mode = OS_FPS_OFF;
 
-static const char *const k_fps_keys[OS_FPS_MODES] = {"0", "tr", "tl", "br", "bl"};
+// Off is stored as no key at all (a "0" from older builds also reads as Off).
+static const char *const k_fps_keys[OS_FPS_MODES] = {NULL, "tr", "tl", "br", "bl"};
 static const char *const k_fps_labels[OS_FPS_MODES] = {
     "Off", "Top right", "Top left", "Bottom right", "Bottom left"};
 
@@ -51,7 +52,12 @@ int os_overlay_fps_mode(void) {
   return OS_FPS_OFF;
 }
 
-void os_overlay_reload(void) { s_fps_mode = (uint8_t)os_overlay_fps_mode(); }
+void os_overlay_reload(void) {
+  s_fps_mode = (uint8_t)os_overlay_fps_mode();
+  // Whatever drew over the app since (the system menu) replaced what the
+  // panel showed: the next present puts the overlays up afresh.
+  memset(s_shown, 0, sizeof(s_shown));
+}
 
 const char *os_overlay_fps_key(int mode) {
   return k_fps_keys[mode >= 0 && mode < OS_FPS_MODES ? mode : OS_FPS_OFF];
@@ -63,7 +69,6 @@ const char *os_overlay_fps_label(int mode) {
 
 void os_overlay_app_start(void) {
   fps_counter_reset(&s_fps);
-  memset(s_shown, 0, sizeof(s_shown));
   os_overlay_reload();
 }
 
@@ -162,9 +167,17 @@ void os_overlay_draw(os_present_t kind, int y0, int y1) {
       !s_shown[OV_FPS].id)
     return;
 
-  if (partial && display_get_scroll_offset() != 0) {
-    // The panel shows these rows at scrolled positions: draw nothing, and
-    // show everything afresh once the offset is back to 0.
+  if (display_get_scroll_offset() != 0) {
+    // The panel shows frame-memory rows at scrolled positions, so nothing is
+    // drawn, and everything is shown afresh once the offset is back to 0.
+    // A partial present first pushes the draw buffer's rows back over what
+    // the panel showed of an overlay (it would slide with the content); a
+    // full one rewrites every row anyway. The push restores the app's own
+    // pixels only where the overlay never went into the buffer (see below).
+    if (partial)
+      for (int i = 0; i < OV_COUNT; i++)
+        if (s_shown[i].id)
+          display_push_rect(s_shown[i].x, s_shown[i].y, s_shown[i].w, s_shown[i].h);
     memset(s_shown, 0, sizeof(s_shown));
     return;
   }
@@ -196,8 +209,11 @@ void os_overlay_draw(os_present_t kind, int y0, int y1) {
     ov_rect_t *shown = &s_shown[i];
     const ov_rect_t *w = &want[i];
     bool moved = !w->id || !same_rect(shown, w);
-    // Gone or moved: outside the rows, the draw buffer holds the app's own
-    // pixels there (compose_push put them back), so push those.
+    // Gone or moved: push the draw buffer's pixels there. compose_push never
+    // leaves the overlay in the buffer, so that is what the app drew, unless
+    // an earlier present sent those rows and so drew it into the buffer: an
+    // app that has not redrawn them since keeps the old overlay, as it
+    // would after flush().
     if (partial && shown->id && moved && !in_rows(shown, y0, y1))
       display_push_rect(shown->x, shown->y, shown->w, shown->h);
     if (w->id) {

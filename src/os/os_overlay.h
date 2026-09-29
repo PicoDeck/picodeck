@@ -30,9 +30,11 @@ enum {
 // are drawn only into those rows, and an overlay that reaches outside them is
 // pushed to the panel as a small window write (display_push_rect) when it
 // appears, changes or goes away, composed over the app's pixels and then
-// removed again, so the app's draw buffer keeps its own pixels there. Nothing
-// is drawn by a partial present while the hardware-scroll offset is non-zero
-// (the rows would land at scrolled positions).
+// removed again, so the app's draw buffer keeps its own pixels there (an
+// overlay drawn into rows that were sent stays in the buffer, as with
+// flush()). Nothing is drawn while the hardware-scroll offset is non-zero
+// (the rows would land at scrolled positions): a partial present then pushes
+// the buffer's rows back over what the panel showed of an overlay.
 void os_overlay_draw(os_present_t kind, int y0, int y1);
 
 // perf.endFrame() (Lua and native): one logical frame. While an app ticks
@@ -42,10 +44,12 @@ void os_overlay_frame_tick(uint32_t now_ms);
 // At every app launch: zero the counter and re-read the setting.
 void os_overlay_app_start(void);
 
-// The show_fps setting (/system/config.json): "0", "tr", "tl", "br", "bl".
-// os_overlay_fps_mode() reads the config; os_overlay_reload() makes the
-// overlay pick up a change (the system menu calls it after writing the key).
+// The show_fps setting (/system/config.json): "tr", "tl", "br", "bl"; no
+// key (or "0") is Off. os_overlay_fps_mode() reads the config.
+// os_overlay_reload() picks up a change and forgets what the panel shows of
+// the overlays: the system menu calls it when it closes, having drawn over
+// the app.
 int os_overlay_fps_mode(void);
 void os_overlay_reload(void);
-const char *os_overlay_fps_key(int mode);    // "0", "tr", ...
+const char *os_overlay_fps_key(int mode);    // NULL (Off: no key), "tr", ...
 const char *os_overlay_fps_label(int mode);  // "Off", "Top right", ...

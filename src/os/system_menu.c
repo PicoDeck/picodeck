@@ -610,12 +610,11 @@ static bool menu_loop(lua_State *L, int context) {
         need_redraw = true;
         break;
       case ITEM_SHOW_FPS:
-        // Off -> Top right -> Top left -> Bottom right -> Bottom left; the
-        // app's next present draws the counter at the new corner.
+        // Off -> Top right -> Top left -> Bottom right -> Bottom left (Off
+        // removes the key); the overlay picks it up when the menu closes.
         config_set("show_fps", os_overlay_fps_key((os_overlay_fps_mode() + 1) %
                                                   OS_FPS_MODES));
         config_save();
-        os_overlay_reload();
         need_redraw = true;
         break;
       case ITEM_WIFI_AUTO_DISCONNECT:
@@ -663,6 +662,7 @@ static bool menu_loop(lua_State *L, int context) {
   kbd_clear_state();
   save_brightness_if_changed(entry_brightness);
   display_set_clip_rect(saved_clip_x, saved_clip_y, saved_clip_w, saved_clip_h);
+  os_overlay_reload();  // the Show FPS setting; the menu drew over the overlays
   return exit_requested;
 }
 

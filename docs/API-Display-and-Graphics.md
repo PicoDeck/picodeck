@@ -145,7 +145,7 @@ Pushes rows `y0`–`y1` (inclusive) of the **current draw buffer** to the LCD vi
 
 Because there is no swap, subsequent drawing continues into the same buffer — ideal for repeatedly updating a small horizontal band (status bar, HUD, terminal line) while the rest of the screen keeps its last presented contents. Mixing `flushRows` with the normal double-buffered `flush()` cycle is the job of `flushRegion()` instead.
 
-An OS overlay (toast, FPS counter) outside the rows is updated on the panel directly when it changes, without being drawn into your buffer; one inside them is drawn into the buffer like any other pixels. The same goes for `flushRegion()`.
+An OS overlay (toast, FPS counter) inside the rows is drawn into your buffer like any other pixels. One outside them is put on the panel directly when it appears or changes, without going into your buffer, and when it goes away the OS pushes your buffer's pixels back over it: those are your own unless an earlier flush sent those rows with the overlay in them and you have not redrawn them. The same goes for `flushRegion()`.
 
 - **Parameters:**
   - `y0` (number): First row (inclusive)
