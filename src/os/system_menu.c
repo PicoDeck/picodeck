@@ -410,6 +410,11 @@ static void draw_panel(const flat_item_t *items, int count, int sel, int px,
 #define CTL_CELL_X0 70  // the Primary column
 #define CTL_CELL_X1 166 // the Alt column
 #define CTL_CELL_W 90
+// The page needs about 3 KB of PSRAM heap (its state, the SD layer's
+// FILINFO, a file's text; 2 KB more to save). An allocation that fails
+// inside the file reads looks like a missing file, which would put the
+// defaults on screen and then over the user's file: so check first.
+#define CTL_HEAP_MIN (8u * 1024u)
 #define C_DIM COLOR_GRAY // a binding inherited from All games
 
 // Notices and saves go to the serial log (and the simulator's, for tests).
@@ -418,14 +423,33 @@ static void ctl_log(const char *text) {
   sim_log_os("[CONTROLS] %s", text);
 }
 
+// A short message in a red box over the menu's backdrop, for 1.5 s.
+static void ctl_alert(const char *text) {
+  ctl_log(text);
+  int w = display_text_width(text) + 20;
+  int x = (FB_WIDTH - w) / 2, y = FB_HEIGHT / 2 - 12;
+  bg_restore();
+  display_fill_rect(x, y, w, 24, COLOR_RED);
+  display_draw_text(x + 10, y + 8, text, COLOR_WHITE, COLOR_RED);
+  display_flush();
+  sleep_ms(1500);
+}
+
+typedef struct {
+  gamepad_edit_t *e;
+  gamepad_file_t global, game; // what each file read gave
+} ctl_load_t;
+
 static void ctl_load_on_stack(void *arg) {
-  gamepad_edit_t *e = (gamepad_edit_t *)arg;
+  ctl_load_t *job = (ctl_load_t *)arg;
+  gamepad_edit_t *e = job->e;
   uint16_t listed = 0;
-  gamepad_load(GAMEPAD_GLOBAL_PATH, &e->global, &listed);
+  job->global = gamepad_load_file(GAMEPAD_GLOBAL_PATH, &e->global, &listed);
+  job->game = GAMEPAD_FILE_MISSING;
   const app_identity_t *me = app_identity_current();
   char path[GAMEPAD_PATH_MAX];
   if (e->has_game && me && gamepad_app_path(path, sizeof(path), me->id))
-    gamepad_load(path, &e->game, &e->game_mask);
+    job->game = gamepad_load_file(path, &e->game, &e->game_mask);
 }
 
 typedef struct {
@@ -541,20 +565,27 @@ static void ctl_draw(const gamepad_edit_t *e, bool error) {
 // Runs until Esc (or a dev exit), then saves what changed and rebuilds the
 // installed map (gamepad_apply). Keys come from the event queue, as the
 // gamepad's do (keycodes: letters bind); navigation from the button masks.
-static void controls_page(bool in_app) {
-  gamepad_edit_t *e = (gamepad_edit_t *)umm_malloc(sizeof(*e));
-  if (!e) {
-    ctl_log("out of memory");
-    return;
-  }
+// A bindings file that is there but could not be read keeps the page shut:
+// the page would show the defaults and save them over it.
+static void controls_run(gamepad_edit_t *e, bool in_app) {
   gamepad_edit_init(e, in_app && app_identity_current() != NULL);
-  if (!app_stack_run_os(ctl_load_on_stack, e)) {
-    ctl_log("no stack to read the bindings");
-    umm_free(e);
+  ctl_load_t load = {e, GAMEPAD_FILE_MISSING, GAMEPAD_FILE_MISSING};
+  if (!app_stack_run_os(ctl_load_on_stack, &load)) {
+    ctl_alert("Not enough memory for Controls");
     return;
   }
-  int saved_font = display_get_font();
-  display_set_font(0);
+  if (load.global == GAMEPAD_FILE_UNREADABLE ||
+      load.game == GAMEPAD_FILE_UNREADABLE) {
+    ctl_alert("Could not read the bindings");
+    return;
+  }
+  if (load.global == GAMEPAD_FILE_IGNORED ||
+      load.game == GAMEPAD_FILE_IGNORED) {
+    // Launches ignore it too: the defaults on screen are what is in use,
+    // and a save replaces the broken file.
+    snprintf(e->notice, sizeof(e->notice), "Ignored a corrupt bindings file");
+    ctl_log(e->notice);
+  }
   // The menu pages never read the event queue: drop what they left in it,
   // and a menu key pressed before now.
   kbd_flush_events();
@@ -623,8 +654,21 @@ static void controls_page(bool in_app) {
     }
     gamepad_apply(); // the effective map, from the files as they now are
   }
+}
+
+static void controls_page(bool in_app) {
+  int saved_font = display_get_font();
+  display_set_font(0);
+  gamepad_edit_t *e = NULL;
+  if (lua_psram_alloc_largest_block() >= CTL_HEAP_MIN)
+    e = (gamepad_edit_t *)umm_malloc(sizeof(*e));
+  if (e) {
+    controls_run(e, in_app);
+    umm_free(e);
+  } else {
+    ctl_alert("Not enough memory for Controls");
+  }
   display_set_font(saved_font);
-  umm_free(e);
 }
 
 // ── Shared menu loop

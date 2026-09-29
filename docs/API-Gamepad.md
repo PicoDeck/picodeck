@@ -61,6 +61,7 @@ Each button has a row with a **Primary** and an **Alt** cell. Each cell shows it
 - While the cell reads `press a key...`, every key that can be bound is taken, Esc and Backspace included. A key that cannot be bound is refused with a notice ("Shift can't be bound") and the capture goes on. Brk still takes a screenshot.
 - A key already on another button moves: its old slot becomes unbound and the notice says so ("F5 moved from B to A"). In This game, the button it left becomes part of the override too, as does any button whose slot you bind or clear.
 - Leaving the page with Esc saves, and the running game has the new bindings as soon as the menu closes. The key that closes the menu never reaches the game as a press. If the save fails the page says so, and the previous file and bindings are kept.
+- A bindings file that is there but cannot be read (a read error, or too little free memory) keeps the page shut with "Could not read the bindings", so its bindings are never replaced by what the page could not see. A corrupt file, which launches ignore too, opens as the defaults ("Ignored a corrupt bindings file"), and saving replaces it.
 - The global file lists only the buttons that differ from the defaults (with none it is deleted); the override lists the buttons it overrides.
 
 ## picocalc.gamepad

@@ -26,3 +26,6 @@ int         sdfake_blocking_while_busy(void);
 // (-1 = never). Renames follow FatFS: refused when dst already exists.
 void        sdfake_fail_rename_after(int n_ok);
 int         sdfake_renames(void);     // successful sdcard_rename calls since reset
+// While set, sdcard_read_file fails (a read error, or no memory for the
+// buffer) for files that exist.
+void        sdfake_fail_reads(bool fail);

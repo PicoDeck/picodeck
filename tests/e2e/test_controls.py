@@ -11,11 +11,13 @@ injected keys, as a player would.
 """
 
 import json
+import os
 import shutil
 import time
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from helpers import stage_lua_app
 
@@ -204,6 +206,47 @@ def test_refused_keys_keep_capturing_and_menu_key_cancels(simulator):
     assert "[CONTROLS] Shift can't be bound" in texts, texts
     assert "[CONTROLS] 1 can't be bound" in texts, texts
     assert _read(sim, "system/gamepad.json") == {"a": ["Z"]}, texts
+
+
+def test_corrupt_file_is_shown_as_defaults_and_replaced(simulator):
+    """Launches ignore a corrupt global file, so the page shows the defaults
+    (and says so), and a save replaces the file."""
+    sim = simulator
+    path = Path(sim.sd_card_path) / "system" / "gamepad.json"
+    path.write_text('{"a": ["Z"')
+    mark = _mark(sim)
+    _open_controls(sim)
+    _keys(sim, TO_A + ["enter", "f5"])
+    _leave(sim, mark)
+    texts = _texts(sim, mark)
+    assert "[CONTROLS] Ignored a corrupt bindings file" in texts, texts
+    assert "[CONTROLS] F5 moved from B to A" in texts, texts
+    assert _read(sim, "system/gamepad.json") == {"a": ["F5"], "b": []}
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
+                    reason="root reads a mode-000 file")
+def test_unreadable_file_keeps_the_page_shut(simulator):
+    """A bindings file that is there but cannot be read (here: no read
+    permission; on the device a read error or no memory) may read fine next
+    time: the page says so and does not open, so it cannot show the
+    defaults and then save them over the file."""
+    sim = simulator
+    path = Path(sim.sd_card_path) / "system" / "gamepad.json"
+    path.write_text('{"a": ["Z"]}')
+    path.chmod(0)
+    try:
+        mark = _mark(sim)
+        _open_controls(sim)
+        sim.wait_for_log(r"^\[CONTROLS\] Could not read the bindings$",
+                         timeout=5, since_seq=mark)
+        time.sleep(1.7)  # the message stays up for 1.5 s
+        _keys(sim, ["esc", "esc"])                     # Settings, the menu
+        assert not [t for t in _texts(sim, mark)
+                    if t.startswith("[CONTROLS] bindings saved")]
+    finally:
+        path.chmod(0o644)
+    assert _read(sim, "system/gamepad.json") == {"a": ["Z"]}
 
 
 def test_esc_can_be_bound(simulator):

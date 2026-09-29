@@ -380,6 +380,41 @@ static void test_load_missing_corrupt_unknown(void) {
   CHECK_EQ_INT(eff.key[A][0], KEY_F4);
 }
 
+// gamepad_load_file says why nothing loaded: the Settings page must not
+// overwrite a file that exists but could not be read (it may read next
+// time), while a corrupt or oversized one is ignored for good.
+static void test_load_file_status(void) {
+  kbd_padmap_t m, d = defaults();
+  uint16_t listed = 0;
+  sdfake_reset();
+  m = d;
+  CHECK_EQ_INT(gamepad_load_file(GLOBAL, &m, &listed), GAMEPAD_FILE_MISSING);
+  put(GLOBAL, "{\"a\":[\"Z\"]}");
+  sdfake_fail_reads(true);
+  CHECK_EQ_INT(gamepad_load_file(GLOBAL, &m, &listed),
+               GAMEPAD_FILE_UNREADABLE);
+  CHECK(!gamepad_load(GLOBAL, &m, &listed));
+  CHECK(map_eq(&m, &d));
+  CHECK_EQ_U32(listed, 0);
+  sdfake_fail_reads(false);
+  CHECK_EQ_INT(gamepad_load_file(GLOBAL, &m, &listed), GAMEPAD_FILE_LOADED);
+  CHECK_EQ_INT(m.key[A][0], 'z');
+  CHECK_EQ_U32(listed, 1u << A);
+  put(GLOBAL, "not json");
+  m = d;
+  listed = 0;
+  CHECK_EQ_INT(gamepad_load_file(GLOBAL, &m, &listed), GAMEPAD_FILE_IGNORED);
+  CHECK(map_eq(&m, &d));
+  static char big[GAMEPAD_FILE_MAX + 16];
+  memset(big, ' ', sizeof(big) - 1);
+  big[0] = '{';
+  big[sizeof(big) - 2] = '}';
+  big[sizeof(big) - 1] = '\0';
+  put(GLOBAL, big);
+  CHECK_EQ_INT(gamepad_load_file(GLOBAL, &m, &listed), GAMEPAD_FILE_IGNORED);
+  CHECK_EQ_U32(listed, 0);
+}
+
 // The per-game file overrides only the buttons it lists, for that app only;
 // a corrupt override falls back to the global map.
 static void test_load_override(void) {
@@ -479,6 +514,7 @@ int main(void) {
   test_parse_corrupt();
   test_format_round_trip();
   test_load_missing_corrupt_unknown();
+  test_load_file_status();
   test_load_override();
   test_save_load_remove();
   test_app_path();
