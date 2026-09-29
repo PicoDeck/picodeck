@@ -618,6 +618,21 @@ static void test_loop_range_on_empty_file_finishes(void) {
   fileplayer_destroy(p);
 }
 
+// A new file does not inherit the old range: play(1) plays once again.
+static void test_load_clears_the_loop_range(void) {
+  setup();
+  put_wav("/a.wav", 4410, 1, 22050, 5);
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/a.wav"));
+  fileplayer_set_loop_range(p, 0, 1);
+  CHECK(fileplayer_load(p, "/a.wav"));
+  CHECK(fileplayer_play(p, 1));
+  run(p, 256, 100000);
+  CHECK(!fileplayer_is_playing(p));
+  CHECK_EQ_INT(s_pushed, 4410);
+  fileplayer_destroy(p);
+}
+
 // ── #31 load() reasons ──────────────────────────────────────────────────────
 static void test_load_reports_why(void) {
   setup();
@@ -704,6 +719,36 @@ static void test_did_underrun_tracks_the_stream(void) {
   fileplayer_destroy(p);
 }
 
+// The refill ISR runs while Core 1 reads the SD card (8-13 ms, several
+// renders): the ring is empty for the whole first read after play() or
+// resume(), and those frames are the ring's own, not an underrun.
+static void isr_during_read(void) { drain(128); }
+
+static void test_no_false_underrun_from_the_first_read(void) {
+  for (int qoa = 0; qoa < 2; qoa++) {
+    setup();
+    if (qoa) put_qoa("/u.qoa", 44100, 1, 22050, 3);
+    else put_wav("/u.wav", 44100, 2, 22050, 3);
+    fileplayer_t *p = fileplayer_create();
+    CHECK(fileplayer_load(p, qoa ? "/u.qoa" : "/u.wav"));
+    fileplayer_set_stop_on_underrun(p, true);
+    sdfake_set_read_hook(isr_during_read);
+    CHECK(fileplayer_play(p, 1));
+    for (int i = 0; i < 10; i++) { fileplayer_update(); drain(44); }
+    CHECK(fileplayer_is_playing(p));
+    CHECK(!fileplayer_did_underrun(p));
+    // The same after a pause.
+    fileplayer_pause(p);
+    drain(RING_FRAMES);
+    fileplayer_resume(p);
+    for (int i = 0; i < 10; i++) { fileplayer_update(); drain(44); }
+    CHECK(fileplayer_is_playing(p));
+    CHECK(!fileplayer_did_underrun(p));
+    sdfake_set_read_hook(NULL);
+    fileplayer_destroy(p);
+  }
+}
+
 static void test_underrun_ignored_while_paused(void) {
   setup();
   put_wav("/u.wav", 44100, 2, 22050, 3);
@@ -774,9 +819,11 @@ int main(void) {
   test_loop_range_to_end_of_data();
   test_loop_range_whole_file_cases();
   test_loop_range_on_empty_file_finishes();
+  test_load_clears_the_loop_range();
   test_load_reports_why();
   test_did_underrun_tracks_the_stream();
   test_underrun_ignored_while_paused();
+  test_no_false_underrun_from_the_first_read();
   test_stop_on_underrun();
   fileplayer_reset();
   sdfake_reset();

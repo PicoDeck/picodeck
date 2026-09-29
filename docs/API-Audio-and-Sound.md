@@ -126,7 +126,7 @@ Full audio playback system supporting WAV samples and MP3 files. Provides three 
 | FilePlayer | loops until stopped | plays `n` times |
 | MP3Player | loops until stopped | plays once (the count is ignored) |
 
-Omitting the argument is `1` everywhere. In C, `playerPlay(p, 0)` and `filePlayerPlay(fp, 0)` loop until stopped and `n` plays `n` times; `mp3PlayerPlay` ignores its count, and the loop comes from `mp3PlayerSetLoop()`.
+Omitting the argument is `1` everywhere. The C calls `playerPlay`, `filePlayerPlay` and `mp3PlayerPlay` behave the same way.
 
 ### Top-Level Functions
 
@@ -488,9 +488,11 @@ Sets the volume (0–100, clamped). `right` is accepted for compatibility but ig
 ---
 
 #### `player:setLoopRange([start [, end]])`
-Sets the loop region in whole seconds and makes the player loop until stopped. Playback runs from wherever it is (the start, after `play()`) to `end`, then continues from `start` at every pass. Omit `end` (or pass `0`) to loop to the end of the file, and omit both to loop the whole file. An `end` past the data is the end of the data, and an empty range (`end <= start`) loops the whole file. The loop callback fires at each wrap.
+Sets the loop region in whole seconds and makes the player loop until stopped. `play()` starts at the beginning of the file and runs to `end`, then continues from `start` at every pass (a `setOffset()` past `end` plays on to the end of the file first, then wraps to `start`). Omit `end` (or pass `0`) to loop to the end of the file, and omit both to loop the whole file. An `end` past the data is the end of the data, and an empty range (`end <= start`) loops the whole file. The loop callback fires at each wrap.
 
-Granularity: WAV loops on the exact sample. QOA loops on the exact sample too, but the decoder can only start at a QOA frame (5120 samples): at each wrap it decodes and drops the samples between the frame start and `start`, up to 5119 of them. For the cheapest QOA loops put `start` on a frame boundary; that is 5120 samples from the start of the file, which is not a whole second at any common rate.
+Granularity: WAV loops on the exact sample. QOA loops on the exact sample too, but the decoder can only start at a QOA frame (5120 samples): at each wrap it decodes and drops the samples between the frame start and `start`, up to 5119 of them. A QOA frame boundary is a multiple of 5120 samples, which is a whole number of seconds only at long intervals (8 s at 48 kHz, 256 s at 44.1 kHz), so in practice only `start` = 0 avoids the dropped samples.
+
+The range stays until you `load()` another file, which clears it, so a player that has had a range loops until stopped and ignores the `repeat` count of `play(n)`. Call `setLoopRange()` after `load()`.
 
 ---
 

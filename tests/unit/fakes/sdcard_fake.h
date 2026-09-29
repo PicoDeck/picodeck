@@ -15,6 +15,9 @@ void        sdfake_limit_writes(int limit);
 // While set, sdcard_try_fread_at reports SDCARD_BUSY (the other core holds
 // the SD card) and counts the attempt.
 void        sdfake_set_busy(bool busy);
+// Called at the start of every sdcard_try_fread_at (NULL = none): the audio
+// refill interrupt runs during a real SD read.
+void        sdfake_set_read_hook(void (*fn)(void));
 int         sdfake_try_reads(void);   // sdcard_try_fread_at calls since reset
 // Blocking calls (fread, fseek, fsize_handle) made while busy: on the device
 // each would wait for the other core's SD mutex. Core 1 must make none.

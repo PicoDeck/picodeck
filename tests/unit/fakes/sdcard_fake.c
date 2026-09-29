@@ -144,8 +144,13 @@ void sdfake_set_busy(bool busy) { s_busy = busy; }
 int sdfake_try_reads(void) { return s_try_reads; }
 int sdfake_blocking_while_busy(void) { return s_blocking_while_busy; }
 
+static void (*s_read_hook)(void);
+void sdfake_set_read_hook(void (*fn)(void)) { s_read_hook = fn; }
+
 int sdcard_try_fread_at(sdfile_t fh, uint32_t offset, void *buf, int len) {
     s_try_reads++;
+    if (s_read_hook)
+        s_read_hook();
     if (!fh)
         return -1;
     if (s_busy)

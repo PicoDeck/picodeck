@@ -389,7 +389,11 @@ static void sp_filePlayerFree(pcfileplayer_t fp) { fileplayer_destroy((fileplaye
 
 static pcmp3player_t sp_mp3PlayerNew(void) { return (pcmp3player_t)mp3_player_create(); }
 static void sp_mp3PlayerLoad(pcmp3player_t mp, const char *path) { mp3_player_load((mp3_player_t *)mp, path); }
-static void sp_mp3PlayerPlay(pcmp3player_t mp, uint8_t repeat) { mp3_player_play((mp3_player_t *)mp, repeat); }
+static void sp_mp3PlayerPlay(pcmp3player_t mp, uint8_t repeat) {
+    // 0 = loop until stopped, any other count plays once (as Lua's play()).
+    mp3_player_set_loop((mp3_player_t *)mp, repeat == 0);
+    mp3_player_play((mp3_player_t *)mp, repeat);
+}
 static void sp_mp3PlayerStop(pcmp3player_t mp) { mp3_player_stop((mp3_player_t *)mp); }
 static void sp_mp3PlayerPause(pcmp3player_t mp) { mp3_player_pause((mp3_player_t *)mp); }
 static void sp_mp3PlayerResume(pcmp3player_t mp) { mp3_player_resume((mp3_player_t *)mp); }

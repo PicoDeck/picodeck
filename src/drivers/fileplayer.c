@@ -292,6 +292,10 @@ bool fileplayer_load_err(fileplayer_t *player, const char *path,
         player->data_size = 0;
         player->length = 0;
     }
+    // A new file does not inherit the old file's loop range.
+    player->loop = false;
+    player->loop_start = 0;
+    player->loop_end = 0;
     player->position = 0;
     if (ok && type == FILEPLAYER_TYPE_QOA)
         qoa_reposition_locked(player);
@@ -562,7 +566,8 @@ static uint32_t wrap_position(const fileplayer_t *p) {
 
 /* Underruns. The stream ring's count (audio_mix.c) is global; a player
  * compares it tick to tick. The ring is legitimately empty from play() or
- * resume() until the first push, so the check is armed by a push. Returns
+ * resume() until the first push, so the check is armed by a push
+ * (arm_underrun_locked, which re-reads the base after the push's read). Returns
  * true when the stream starved since the previous tick (and latches
  * p->underran). A count that went down was reset (audiostat reset). */
 static bool underrun_check_locked(fileplayer_t *p) {
@@ -573,6 +578,16 @@ static bool underrun_check_locked(fileplayer_t *p) {
     if (hit)
         p->underran = true;
     return hit;
+}
+
+// Arms the check after a push, with the count as of now: the refill ISR
+// runs during the SD read that preceded the push (several renders on the
+// device), and an empty ring's pops in that time are not an underrun.
+static void arm_underrun_locked(fileplayer_t *p) {
+    if (p->under_armed)
+        return;
+    audio_stream_debug(NULL, &p->under_base, NULL);
+    p->under_armed = true;
 }
 
 // One streaming step for the active player p (s_lock held).
@@ -609,7 +624,7 @@ static fp_callback_t update_locked(fileplayer_t *p) {
         push_pcm(p, (const int16_t *)s_wav_buffer, br);
         p->position += br;
         p->pass_pushed = true;
-        p->under_armed = true;
+        arm_underrun_locked(p);
     } else if (n >= 0 && p->pass_pushed &&
                (p->loop || p->repeats == 0 || ++p->plays < p->repeats)) {
         // End of data after a pass that played something: go round again.
@@ -719,7 +734,7 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
             push_pcm(p, pcm + from * p->channels, frames * p->block_align);
             p->position += frames * p->block_align;
             p->pass_pushed = true;
-            p->under_armed = true;
+            arm_underrun_locked(p);
         }
     }
 

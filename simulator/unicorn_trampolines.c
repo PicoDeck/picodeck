@@ -2238,7 +2238,10 @@ static void tramp_snd_mp3_play(uc_engine *uc) {
     uint32_t handle = read_reg(uc, UC_ARM_REG_R0);
     uint8_t repeat = (uint8_t)read_reg(uc, UC_ARM_REG_R1);
     mp3_player_t *mp = handle_unwrap(handle);
-    if (mp) mp3_player_play(mp, repeat);
+    if (mp) {
+        mp3_player_set_loop(mp, repeat == 0);  // 0 = loop until stopped
+        mp3_player_play(mp, repeat);
+    }
 }
 
 static void tramp_snd_mp3_stop(uc_engine *uc) {
