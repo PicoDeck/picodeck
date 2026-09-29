@@ -330,7 +330,7 @@ function picocalc.display.rgb(r, g, b) end
 ---@field BTN_F9        integer Function key 9
 ---@field BTN_BACKSPACE integer Backspace
 ---@field BTN_TAB       integer Tab
----@field BTN_DEL       integer Delete (Fn+Backspace)
+---@field BTN_DEL       integer Delete key
 ---@field BTN_SHIFT     integer Shift modifier
 ---@field BTN_CTRL      integer Ctrl modifier
 ---@field BTN_ALT       integer Alt modifier

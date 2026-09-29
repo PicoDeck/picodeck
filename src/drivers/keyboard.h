@@ -24,6 +24,7 @@
 #define KEY_ESC    0xB1
 #define KEY_BKSPC  0x08   // ASCII backspace
 #define KEY_TAB    0x09   // ASCII tab
+#define KEY_DEL    0xD4   // Delete key (Shift+Delete sends End, 0xD5)
 #define KEY_NONE   0x00   // No key / idle
 
 // Modifier key codes (sent as separate events when CFG_REPORT_MODS is set)

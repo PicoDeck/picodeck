@@ -269,10 +269,27 @@ static void test_injected_button_events(void) {
   CHECK(!kbd_evq_pop(&in.q, NULL)); // UP was never down
 }
 
+// Delete is its own key (Shift+Delete sends End): a press and release are
+// BTN_DEL edges, with down/up events under its keycode.
+static void test_delete_key_is_btn_del(void) {
+  reset();
+  begin_poll();
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, KEY_DEL);
+  CHECK_EQ_U32(pressed(), BTN_DEL);
+  CHECK(kbd_keyset_test(&in.down, KEY_DEL));
+  begin_poll();
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_RELEASED, KEY_DEL);
+  CHECK_EQ_U32(released(), BTN_DEL);
+  CHECK_EV(pop(), KBD_EV_DOWN, KEY_DEL, 0, 0);
+  CHECK_EV(pop(), KBD_EV_UP, KEY_DEL, 0, 0);
+  CHECK(!kbd_evq_pop(&in.q, NULL));
+}
+
 static void test_keycode_button_map(void) {
   CHECK_EQ_U32(kbd_keycode_to_button(KEY_MOD_SHR), BTN_SHIFT);
   CHECK_EQ_INT(kbd_button_to_keycode(BTN_SHIFT), KEY_MOD_SHL);
   CHECK_EQ_INT(kbd_button_to_keycode(BTN_F9), KEY_F9);
+  CHECK_EQ_INT(kbd_button_to_keycode(BTN_DEL), KEY_DEL); // injected "del"
   CHECK_EQ_U32(kbd_keycode_to_button('a'), 0);
   CHECK_EQ_U32(kbd_buttons_from_mods(kbd_mods_from_buttons(0xFFFFFFFFu)),
                KBD_MOD_BUTTONS);
@@ -567,6 +584,7 @@ int main(void) {
   test_char_backlog_drops_oldest();
   test_drop_newest_keeps_ups();
   test_injected_button_events();
+  test_delete_key_is_btn_del();
   test_keycode_button_map();
   test_bg_tap_reaches_next_foreground_poll();
   test_bg_tap_inside_one_background_poll();
