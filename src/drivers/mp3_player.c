@@ -36,6 +36,15 @@ static uint8_t     s_decode_buffer[MP3_DECODE_BUFFER_SIZE] __attribute__((aligne
 static int         s_bytes_in_buffer = 0;
 static int         s_buffer_pos = 0;
 static bool        s_eof = false;   // decoding reached the end (not looping)
+// The input has ended (the file, or fed data after mp3_player_fed_end):
+// libmad now gets MAD_BUFFER_GUARD zero bytes after the data, so it decodes
+// the last frame. Until then it gets only the data: it decodes a frame only
+// with the next one's header in sight, which it reads to keep the bit
+// reservoir the next frame draws on. A frame ending at the very end of the
+// buffer, decoded against zeros, kept none, and the next was skipped
+// (BADDATAPTR): with 4 KB refills a constant bitrate comes back to that
+// alignment, every 1.28 s at 128 kbps.
+static bool        s_input_end = false;
 
 static mp3_player_t s_player;
 static bool         s_initialized = false;
@@ -93,6 +102,7 @@ static bool     s_fed_mode = false;
 static uint8_t *s_fed_ring_buf = NULL; // umm_malloc'd in QMI PSRAM
 static _Atomic uint32_t s_fed_wr = 0; // written by Core 0
 static _Atomic uint32_t s_fed_rd = 0; // read by Core 1
+static atomic_bool      s_fed_end;    // Core 0: nothing more will be fed
 
 // The loop mark (mp3_player_fed_mark). Stream positions count from
 // start_fed: s_fed_fed is the bytes fed (Core 0); s_fed_taken the bytes the
@@ -275,8 +285,9 @@ static refill_t refill_decode_buffer(void) {
     int space = (int)MP3_DECODE_BUFFER_SIZE - s_bytes_in_buffer - MAD_BUFFER_GUARD;
     if (space > 0) {
         if (s_fed_mode) {
-            // Fed mode: read from the compressed audio ring (never EOF: the
-            // video player feeds more, or stops us)
+            // Fed mode: read from the compressed audio ring. The end only
+            // once the video player has said so and the ring is empty.
+            bool ended = atomic_load_explicit(&s_fed_end, memory_order_acquire);
             uint32_t avail = fed_ring_available();
             uint32_t to_read = ((uint32_t)space < avail) ? (uint32_t)space : avail;
             if (to_read > 4096) to_read = 4096;
@@ -285,6 +296,8 @@ static refill_t refill_decode_buffer(void) {
                 s_bytes_in_buffer += (int)to_read;
                 s_fed_taken += to_read;
                 result = REFILL_GOT_DATA;
+            } else if (ended && avail == 0) {
+                result = REFILL_EOF;
             }
         } else if (!s_file) {
             result = REFILL_EOF;
@@ -385,6 +398,7 @@ static bool end_of_stream(bool *rewound) {
         s_file_pos = 0;
         s_bytes_in_buffer = 0;
         s_buffer_pos = 0;
+        s_input_end = false;
         mad_stream_init(s_mad_stream);
         mad_frame_init(s_mad_frame);
         mad_synth_init(s_mad_synth);
@@ -435,7 +449,9 @@ static void decode_fill_ring(void) {
     while (frames_decoded < max_frames && ring_free() >= 1152 * 2 * 2) {
         const uint8_t *base = s_decode_buffer + s_buffer_pos;
         uint32_t valid = (uint32_t)s_bytes_in_buffer;
-        mad_stream_buffer(s_mad_stream, base, valid + MAD_BUFFER_GUARD);
+        // (The guard bytes after the data are always zeroed by the refill.)
+        mad_stream_buffer(s_mad_stream, base,
+                          valid + (s_input_end ? MAD_BUFFER_GUARD : 0));
 
         if (mad_frame_decode(s_mad_frame, s_mad_stream) != 0) {
             // Track consumed bytes
@@ -453,14 +469,18 @@ static void decode_fill_ring(void) {
             if (need_data) {
                 if (s_mad_stream->error != MAD_ERROR_BUFLEN)
                     s_diag_decode_errs++;
+                if (s_input_end) {  // the last frame is decoded
+                    if (end_of_stream(&rewound))
+                        continue;
+                    break;
+                }
                 refill_t r = refill_decode_buffer();
                 if (r == REFILL_GOT_DATA)
                     continue;
                 if (r == REFILL_WAIT)
                     break;  // no new data yet: next tick, don't spin
-                if (end_of_stream(&rewound))
-                    continue;
-                break;
+                s_input_end = true;  // decode what is left, then end
+                continue;
             }
 
             if (MAD_RECOVERABLE(s_mad_stream->error)) {
@@ -567,6 +587,7 @@ static bool rewind_locked(void) {
     mad_synth_init(s_mad_synth);
     s_ring_rd = s_ring_wr = 0;
     s_eof = false;
+    s_input_end = false;
     return true;
 }
 
@@ -587,6 +608,7 @@ void mp3_player_reset(void) {
     s_buffer_pos = 0;
     s_pcm_channels = 2;
     s_eof = false;
+    s_input_end = false;
     s_ring_rd = s_ring_wr = 0;
     if (s_mad_stream) mad_stream_init(s_mad_stream);
     if (s_mad_frame)  mad_frame_init(s_mad_frame);
@@ -779,6 +801,7 @@ void mp3_player_stop(mp3_player_t *player) {
     s_buffer_pos = 0;
     s_ring_rd = s_ring_wr = 0;
     s_eof = false;
+    s_input_end = false;
     mutex_exit(&s_mp3_mutex);
 }
 
@@ -867,12 +890,14 @@ bool mp3_player_start_fed(uint32_t sample_rate, uint16_t channels) {
     s_fed_rd = 0;
     s_fed_fed = s_fed_taken = s_fed_frames = 0;
     atomic_store(&s_mark_state, MARK_NONE);
+    atomic_store(&s_fed_end, false);
 
     // Reset decode state
     s_bytes_in_buffer = 0;
     s_buffer_pos = 0;
     s_ring_rd = s_ring_wr = 0;
     s_eof = false;
+    s_input_end = false;
     mad_stream_init(s_mad_stream);
     mad_frame_init(s_mad_frame);
     mad_synth_init(s_mad_synth);
@@ -932,7 +957,14 @@ uint32_t mp3_player_feed(const uint8_t *data, uint32_t len) {
     }
     atomic_store_explicit(&s_fed_wr, (wr + to_write) % FED_RING_SIZE, memory_order_release);
     s_fed_fed += to_write;
+    // More data after an end: not the end (a video's loop switched on late).
+    atomic_store_explicit(&s_fed_end, false, memory_order_release);
     return to_write;
+}
+
+void mp3_player_fed_end(void) {
+    if (s_fed_mode)
+        atomic_store_explicit(&s_fed_end, true, memory_order_release);
 }
 
 void mp3_player_fed_mark(void) {
@@ -961,11 +993,13 @@ void mp3_player_stop_fed(void) {
     s_fed_wr = 0;
     s_fed_rd = 0;
     atomic_store(&s_mark_state, MARK_NONE);
+    atomic_store(&s_fed_end, false);
     if (s_fed_ring_buf) { umm_free(s_fed_ring_buf); s_fed_ring_buf = NULL; }
     s_bytes_in_buffer = 0;
     s_buffer_pos = 0;
     s_ring_rd = s_ring_wr = 0;
     s_eof = false;
+    s_input_end = false;
     printf("[MP3] Fed mode stopped\n");
     mutex_exit(&s_mp3_mutex);
 }

@@ -66,18 +66,22 @@ static void load_fixture(void) {
 static uint32_t position(void) { return mp3_player_get_position(mp3_player_create()); }
 
 // Core 1's tick and one 128-frame mixer render, until `frames` content
-// frames have played or the output stops moving (the fed data ran out).
+// frames have played or the output stops moving (the fed data ran out, or
+// the stream ended). Returns the furthest position: a stream that ends
+// detaches, and its position goes back to 0.
 static uint32_t play_until(uint32_t frames) {
   int idle = 0;
-  while (position() < frames && idle < 50) {
+  uint32_t furthest = position();
+  while (furthest < frames && idle < 50) {
     uint32_t before = position();
     mp3_player_update();
     memset(s_l, 0, sizeof s_l);
     memset(s_r, 0, sizeof s_r);
     mp3_player_mix(s_l, s_r, 128);
     idle = position() == before ? idle + 1 : 0;
+    if (position() > furthest) furthest = position();
   }
-  return position();
+  return furthest;
 }
 
 static uint32_t diag(int i) {
@@ -103,10 +107,11 @@ static const uint32_t ONE_PASS = FIXTURE_FRAMES * SAMPLES_PER_FRAME;
 // with the count this far before the end, while there is still data left.
 #define BEFORE_THE_END 12000u
 
-// The fixture on its own: every frame decodes, and plays out.
+// The fixture on its own, its end marked: every frame decodes, and plays.
 static void test_one_pass(void) {
   start();
   feed_pass();
+  mp3_player_fed_end();
   mp3_player_start_fed_output();
   uint32_t errors = diag(DIAG_ERRORS);
   play_until(ONE_PASS - BEFORE_THE_END);
@@ -125,6 +130,7 @@ static void test_plays_through_the_loop_point(void) {
   feed_pass();
   mp3_player_fed_mark();
   feed_pass();
+  mp3_player_fed_end();
   mp3_player_start_fed_output();
   uint32_t errors = diag(DIAG_ERRORS);
   CHECK(!mp3_player_fed_mark_reached(&late));   // the decoder is not there yet
@@ -167,6 +173,7 @@ static void test_unfed_mark_is_never_reached(void) {
   start();
   feed_pass();
   mp3_player_fed_mark();
+  mp3_player_fed_end();
   mp3_player_start_fed_output();
   CHECK_EQ_U32(play_until(UINT32_MAX), ONE_PASS);
   CHECK(!mp3_player_fed_mark_reached(&late));
@@ -185,6 +192,7 @@ static void test_restart_and_stop_clear_the_mark(void) {
   CHECK(mp3_player_start_fed(44100, 2));        // restart, mark not taken
   CHECK(!mp3_player_fed_mark_reached(&late));
   feed_pass();                                  // the new session plays as new
+  mp3_player_fed_end();
   mp3_player_start_fed_output();
   CHECK_EQ_U32(play_until(UINT32_MAX), ONE_PASS);
 
@@ -216,15 +224,18 @@ static void test_mark_after_a_partial_pass(void) {
   CHECK_EQ_U32(mp3_player_feed(s_mp3 + off, s_mp3_len - off), s_mp3_len - off);
   mp3_player_fed_mark();
   feed_pass();
+  mp3_player_fed_end();
   mp3_player_start_fed_output();
-  // Frame 10 leans on the reservoir the skipped frames filled: libmad
-  // drops it (and maybe the next), so count what the partial pass gave.
-  uint32_t pos = play_until(UINT32_MAX);
-  uint32_t partial = pos - ONE_PASS;
+  // Past the loop point (the partial pass is at most 30 frames), take the
+  // mark; then play out to learn how long the partial pass was. Frame 10
+  // leans on the reservoir the skipped frames filled: libmad drops it (and
+  // maybe the next).
+  uint32_t at = play_until((FIXTURE_FRAMES - 10) * SAMPLES_PER_FRAME + 5000);
+  CHECK(mp3_player_fed_mark_reached(&late));
+  uint32_t partial = play_until(UINT32_MAX) - ONE_PASS;
   CHECK(partial <= (FIXTURE_FRAMES - 10) * SAMPLES_PER_FRAME);
   CHECK(partial >= (FIXTURE_FRAMES - 12) * SAMPLES_PER_FRAME);
-  CHECK(mp3_player_fed_mark_reached(&late));
-  CHECK_EQ_INT(late, (int32_t)(pos - partial));
+  CHECK_EQ_INT(late, (int32_t)(at - partial));
   mp3_player_stop_fed();
 }
 

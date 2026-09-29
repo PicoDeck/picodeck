@@ -589,6 +589,7 @@ static void present_still(video_player_t *player, video_priv_t *priv) {
 // past the last chunk from the first one, so the decoder plays straight
 // through the loop point, and marks the loop point in the fed stream for
 // video_end_reached (one at a time: it waits there for the video to loop).
+// Not looping, it marks the end of the audio, so its last frame decodes.
 static void video_feed_audio(video_priv_t *priv, const video_player_t *player,
                              int max_chunks) {
     if (!priv->has_audio || !priv->audio_index.entries || priv->audio_muted)
@@ -599,7 +600,11 @@ static void video_feed_audio(video_priv_t *priv, const video_player_t *player,
 
     while (chunks_fed < max_chunks) {
         if (priv->audio_feed_cursor >= priv->audio_index.count) {
-            if (!player->loop || priv->audio_loop_pending) break;
+            if (!player->loop) {
+                mp3_player_fed_end();   // the decoder may decode the last frame
+                break;
+            }
+            if (priv->audio_loop_pending) break;
             mp3_player_fed_mark();
             priv->audio_loop_pending = true;
             priv->audio_feed_cursor = 0;

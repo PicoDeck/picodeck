@@ -56,7 +56,13 @@ bool     mp3_player_start_fed(uint32_t sample_rate, uint16_t channels);
 // Decodes what has been fed so far and starts the mixer pulling it (fading
 // in). Call after feeding the first chunks, and again after a seek.
 void     mp3_player_start_fed_output(void);
+// Feeding clears an end marked by mp3_player_fed_end.
 uint32_t mp3_player_feed(const uint8_t *data, uint32_t len);
+// Nothing more will be fed (the end of the audio): the decoder decodes the
+// last frame, then the stream finishes as a file's does. Until then it
+// decodes a frame only once the next one's header is fed, so the last frame
+// fed waits for more. Core 0.
+void     mp3_player_fed_end(void);
 void     mp3_player_stop_fed(void);
 uint32_t mp3_player_feed_space(void);
 bool     mp3_player_is_fed_mode(void);
