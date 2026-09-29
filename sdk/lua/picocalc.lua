@@ -2615,7 +2615,8 @@ function PicoDeckVideoPlayer:getInfo() end
 ---@return boolean
 function PicoDeckVideoPlayer:hasAudio() end
 
----Set audio volume.
+---Set the audio volume (0–100). The player keeps it: set it before or after
+---`play()`; it holds across loops, seeks, mute and `load()`.
 ---@param vol integer 0–100
 function PicoDeckVideoPlayer:setVolume(vol) end
 
