@@ -134,7 +134,7 @@ Returns the current time as a table. Time is synchronized via NTP when WiFi is c
 
 - **Parameters:** None
 - **Returns:** (table) Clock data with fields:
-  - `synced` (boolean): `true` if time has been synchronized via NTP
+  - `synced` (boolean): `true` if time has been synchronized via NTP. Until then `hour`, `min`, `sec` and `epoch` are all `0`, and HTTPS/TLS connections refuse to start (see `conn:setInsecure`)
   - `hour` (number): Current hour (0-23, adjusted for timezone)
   - `min` (number): Current minute (0-59)
   - `sec` (number): Current second (0-59)

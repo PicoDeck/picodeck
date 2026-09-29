@@ -202,9 +202,11 @@ typedef struct {
     void     (*clearMenuItems)(void);
     // Log a message to UART serial debug output
     void     (*log)(const char *fmt, ...);
-    // Single OS tick for native apps: polls keyboard + fires any pending
-    // C HTTP callbacks.  Also checks for the Sym (Menu) key and shows the
-    // system menu overlay automatically.  Call in your main loop.
+    // Single OS tick for native apps: polls the keyboard, feeds the watchdog,
+    // reclaims released HTTP/TCP slots and serves dev commands.  Also checks
+    // for the Sym (Menu) key and shows the system menu overlay automatically.
+    // It fires no HTTP callbacks (native apps poll http->isComplete()).
+    // Call in your main loop.
     void     (*poll)(void);
     // Returns true (once) after the user selects "Exit App" from the system
     // menu.  Native apps should check this each frame and return from
@@ -671,6 +673,7 @@ typedef struct PicoCalcAPI {
     uint32_t                      version;     // 1=Phase1, 2=Phase2, 3=fs->browse,
                                              // 4=clip rect + mode-7 plane + display parity
                                              // 5=zip read-in-place handles
+                                             // 6=fonts: display->setFont/getFont/...
                                              // 7=video time seek/position, OSD, hasEnded
                                              // 8=TLS verification: http->setInsecure,
                                              //   tcp->connectEx

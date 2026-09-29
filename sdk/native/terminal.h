@@ -20,6 +20,7 @@ typedef struct {
     void (*renderDirty)(terminal_t* term);
     int (*getCols)(terminal_t* term);
     int (*getRows)(terminal_t* term);
+    // NOTE: the next two take no terminal_t*; they set one global cursor state.
     void (*setCursorVisible)(bool visible);
     void (*setCursorBlink)(bool blink);
     void (*markAllDirty)(terminal_t* term);

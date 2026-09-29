@@ -24,20 +24,22 @@ Creating an app is incredibly straightforward. You only need two files in a dire
  3 
  4     -- Main app loop
  5     while true do
- 6         -- Check for the ESC key to exit back to the launcher
- 7         if pc.input.getButtonsPressed() & pc.input.BTN_ESC ~= 0 then
- 8             return
- 9         end
-10 
-11         -- Drawing
-12         pc.display.clear(pc.display.BLACK)
-13         pc.display.drawText(100, 150, "Hello, World!", pc.display.WHITE)
-14         pc.display.flush() -- Push your changes to the screen
-15 
--- Sleep to maintain a steady frame rate (~60 FPS)
-pc.sys.sleep(16)
-end
+ 6         -- Read the keyboard once per frame
+ 7         pc.input.update()
+ 8 
+ 9         -- Check for the ESC key to exit back to the launcher
+10         if pc.input.getButtonsPressed() & pc.input.BTN_ESC ~= 0 then
+11             return
+12         end
+13 
+14         -- Drawing
+15         pc.display.clear(pc.display.BLACK)
+16         pc.display.drawText(100, 150, "Hello, World!", pc.display.WHITE)
+17         pc.display.flush() -- Push your changes to the screen
+18     end
 ```
+
+The loop needs no `sleep`: `flush()` waits for the previous frame's transfer to the panel (about 15.6 ms for a full frame), which already limits a simple app to roughly 40-60 frames per second. To hold a lower rate, such as 30 FPS to save battery, bracket each frame with `picocalc.perf.beginFrame()` and `picocalc.perf.endFrame()` and call `picocalc.perf.setTargetFPS(30)` once; see [API Performance](API-Performance.md). `picocalc.sys.sleep(ms)` is for waiting, not for pacing.
 
 ### Add an icon (optional)
 
