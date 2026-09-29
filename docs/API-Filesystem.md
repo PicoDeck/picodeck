@@ -13,7 +13,7 @@ Opens a file on the SD card.
 
 - **Parameters:**
   - `path` (string): Absolute file path (e.g., `"/apps/hello/data.txt"`)
-  - `mode` (string, optional): File mode (`"r"`, `"w"`, `"a"`, `"rb"`, `"wb"`, etc.). Defaults to `"r"`.
+  - `mode` (string, optional): File mode (`"r"`, `"w"`, `"a"`, `"rb"`, `"wb"`, etc.). Defaults to `"r"`. A mode containing `r` but no `w` or `a` (including `"r+"`) opens the file read-only.
 - **Returns:** a file handle (userdata), or `nil, err` (`"permission denied"`, `"cannot open file"`, `"too many open files"`)
 
 Handles have methods — `f:read(n)`, `f:write(s)`, `f:seek(offset [, whence])`, `f:tell()`,
@@ -160,7 +160,7 @@ Moves the read/write position within an open file.
   - `offset` (number): Byte offset, relative to `whence`
   - `whence` (string, optional): `"set"` (default) counts from the start of the file and `offset` must be `>= 0`; `"cur"` counts from the current position; `"end"` counts from the end of the file. `"cur"` and `"end"` accept negative offsets.
 - **Returns:** (boolean) `true` on success, `false` if the seek failed. Use `tell` to read the new position.
-- **Errors:** raises on an unknown `whence`, a negative `offset` with `"set"`, and a resulting position that is before the start of the file or beyond 2^31-1. A rejected seek leaves the position alone. A position past the end of the file is left to the SD driver: on the device `f_lseek` grows the file at seek time (the gap holds undefined data), so `tell` reports the requested position. The simulator differs: it does not clamp or extend on a seek, only on a later write, so keep seeks within the file if the result matters.
+- **Errors:** raises on an unknown `whence`, a negative `offset` with `"set"`, and a resulting position that is before the start of the file or beyond 2^31-1. A rejected seek leaves the position alone. A position past the end of the file is left to the SD driver: on the device a read-only handle stops at the end of the file (`tell` reports the file length), while a writable handle grows the file at seek time (the gap holds undefined data) and `tell` reports the requested position. The simulator differs: it does not clamp or extend on a seek, only on a later write, so keep seeks within the file if the result matters.
 
 ```lua
 picocalc.fs.seek(f, 0)            -- Seek to beginning
