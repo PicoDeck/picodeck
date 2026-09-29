@@ -633,6 +633,92 @@ static void test_alt_pressed_mid_hold(void) {
   check_nothing_held();
 }
 
+// Held while Alt is held: the controller rewrites only the press and the
+// release of B, I and Space under Alt (B and Space silent, I as Insert); its
+// repeats come as plain PRESSED 'B' / 'I' / ' '. They must not press the
+// button (the release would never come); once Alt is up, the next repeat
+// presses it and the real release releases it.
+static void test_alt_held_key_repeats(void) {
+  static const struct {
+    uint8_t key, pressed, repeat, released; // what the controller sends
+  } c[] = {{'b', 0, 'B', 0}, {'i', KEY_INSERT, 'I', KEY_INSERT},
+           {' ', 0, ' ', 0}};
+  for (size_t i = 0; i < sizeof(c) / sizeof(c[0]); i++) {
+    reset();
+    map.key[4][1] = c[i].key;   // A's alternate
+    poll_start(false);
+    apply(KBD_FIFO_PRESSED, KEY_MOD_ALT);
+    if (c[i].pressed)
+      apply(KBD_FIFO_PRESSED, c[i].pressed);
+    for (int r = 0; r < 4; r++) {           // 300 ms, then every 100 ms
+      poll_start(false);
+      apply(KBD_FIFO_PRESSED, c[i].repeat);
+      CHECK_EQ_U32(btn.pad.curr, 0);
+    }
+    poll_start(false);
+    if (c[i].released)
+      apply(KBD_FIFO_RELEASED, c[i].released);
+    apply(KBD_FIFO_RELEASED, KEY_MOD_ALT);
+    check_nothing_held();
+    // Held on after Alt is up: the next repeat presses, the release releases.
+    reset();
+    map.key[4][1] = c[i].key;
+    poll_start(false);
+    apply(KBD_FIFO_PRESSED, KEY_MOD_ALT);
+    poll_start(false);
+    apply(KBD_FIFO_PRESSED, c[i].repeat);
+    apply(KBD_FIFO_RELEASED, KEY_MOD_ALT);
+    poll_start(false);
+    apply(KBD_FIFO_PRESSED, c[i].key);      // Alt's flag has cleared
+    CHECK_EQ_U32(pad_pressed(), PAD_A);
+    poll_start(false);
+    apply(KBD_FIFO_RELEASED, c[i].key);
+    CHECK_EQ_U32(pad_released(), PAD_A);
+    check_nothing_held();
+  }
+}
+
+// I pressed within a scan of Alt going up while Shift is held: the
+// controller's Alt flag lags a scan too, so the press still comes as Insert,
+// which Shift would make Shift+Enter. Enter's button is only tapped by it,
+// so nothing sticks when I's own release follows.
+static void test_alt_release_lag_insert(void) {
+  reset();
+  map.key[7][1] = KEY_ENTER;   // Y's alternate
+  map.key[4][1] = 'i';         // A's alternate
+  poll_start(false);
+  apply(KBD_FIFO_PRESSED, KEY_MOD_SHL);
+  apply(KBD_FIFO_PRESSED, KEY_MOD_ALT);
+  poll_start(false);
+  apply(KBD_FIFO_RELEASED, KEY_MOD_ALT);
+  apply(KBD_FIFO_PRESSED, KEY_INSERT);   // I, Alt's flag not yet clear
+  CHECK_EQ_U32(pad_pressed(), PAD_Y);    // a tap at most
+  poll_start(false);
+  CHECK_EQ_U32(pad_released(), PAD_Y);
+  apply(KBD_FIFO_PRESSED, 'I');          // I's repeats, under Shift
+  CHECK_EQ_U32(pad_pressed(), PAD_A);
+  poll_start(false);
+  apply(KBD_FIFO_RELEASED, 'I');
+  apply(KBD_FIFO_RELEASED, KEY_MOD_SHL);
+  check_nothing_held();
+  // Shift+Enter held: tapped by its press, held from its first repeat on,
+  // released with it.
+  reset();
+  map.key[7][1] = KEY_ENTER;
+  poll_start(false);
+  apply(KBD_FIFO_PRESSED, KEY_MOD_SHL);
+  apply(KBD_FIFO_PRESSED, KEY_INSERT);
+  CHECK_EQ_U32(pad_pressed(), PAD_Y);
+  poll_start(false);
+  apply(KBD_FIFO_HOLD, KEY_INSERT);
+  CHECK_EQ_U32(btn.pad.curr, PAD_Y);
+  poll_start(false);
+  apply(KBD_FIFO_RELEASED, KEY_INSERT);
+  CHECK_EQ_U32(pad_released(), PAD_Y);
+  apply(KBD_FIFO_RELEASED, KEY_MOD_SHL);
+  check_nothing_held();
+}
+
 // Both Shift keys: the controller stays shifted while either is down.
 static void test_two_shift_keys(void) {
   reset();
@@ -691,6 +777,8 @@ int main(void) {
   test_shift_release_lag();
   test_shift_silences_keys();
   test_alt_pressed_mid_hold();
+  test_alt_held_key_repeats();
+  test_alt_release_lag_insert();
   test_two_shift_keys();
   test_menu_key_held_across_clear();
   return check_report("test_kbd_pad");

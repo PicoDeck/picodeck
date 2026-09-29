@@ -216,18 +216,28 @@ static inline void kbd_keyset_clear(kbd_keyset_t *s, uint8_t key) {
 //     only Shift produces them (keyboard.ino has no key that sends them
 //     unshifted). F10 (the system menu key) and Brk (the screenshot key) are
 //     the OS's when pressed: they only ever release a button, never press
-//     or hold one. Insert is also Alt+I, so it presses only while Shift is
-//     tracked, and releases unless Alt alone is tracked;
+//     or hold one. Insert is also Alt+I (with or without Shift): its press
+//     only taps Enter's button (while Shift alone is tracked), its HOLD
+//     (only Enter repeats as one) holds it, and its release releases it
+//     unless Alt alone is tracked;
 //   - releases Left, Right, Backspace and Space when Shift goes down while
 //     they are held: the controller reports nothing for them under Shift;
-//   - releases B, I and Space when Alt goes down while they are held: under
-//     Alt the controller reports nothing for B and Space, and I as Insert.
+//   - releases B, I and Space when Alt goes down while they are held, and
+//     ignores their presses while Alt is held: under Alt the controller
+//     rewrites their press and release (nothing for B and Space, Insert for
+//     I) but not their repeats, which come as plain PRESSED items, so a
+//     button pressed by a repeat would never see its release.
 // Held on through Shift / Alt, those keys come back at their next repeat
-// (a PRESSED) once the modifier is up. So no button stays held, with one
-// exception: Enter released within a scan of Shift going up while Alt is
-// still held (its Insert then reads as Alt+I) stays held until the next
-// kbd_clear_state. A key pressed within a scan of Shift going up may miss
-// its press edge (Left, Right, Backspace, Space, Enter), never sticks.
+// (a PRESSED) once the modifier is up. A key pressed within a scan of Shift
+// going up may miss its press edge (Left, Right, Backspace, Space, Enter),
+// but never sticks. Two cases can leave a button held until the next
+// kbd_clear_state (the system menu, an app exit, input.clearState()):
+//   - Enter released within a scan of Shift going up while Alt is still
+//     held (its Insert then reads as Alt+I);
+//   - B, I or Space held while the controller's num lock is on: LShift and
+//     Alt pressed together turn it on, it acts as Alt held, and it stays on
+//     until Shift is pressed alone. The gamepad cannot see it (only a
+//     register read could, and the bus engine does not do one).
 // kbd_clear_state and a map change drop the whole state.
 
 // The key behind a code the controller sends while Shift is held, 0 when the
@@ -343,6 +353,12 @@ static inline void kbd_pad_drop_keys(kbd_pad_t *p, const kbd_padmap_t *m,
   kbd_pad_up(p, slots & p->down);
 }
 
+// The keys whose press and release the controller rewrites under Alt.
+static inline bool kbd_key_alt_mangled(uint8_t key) {
+  key = kbd_key_fold(key);
+  return key == 'b' || key == 'i' || key == ' ';
+}
+
 // A Shift or Alt transition (KBD_PADMOD_* bit `mod`).
 static inline void kbd_pad_mod(kbd_pad_t *p, const kbd_padmap_t *m,
                                uint8_t state, uint8_t mod) {
@@ -369,10 +385,14 @@ static inline uint8_t kbd_pad_unshift(const kbd_pad_t *p, uint8_t state,
     return key;
   if (key == KEY_F10 || key == KEY_BRK)  // the menu / screenshot key
     return state == KBD_FIFO_RELEASED ? base : 0;
-  if (key == KEY_INSERT) {  // Shift+Enter, or Alt+I
+  if (key == KEY_INSERT) {  // Shift+Enter, or Alt+I (also with Shift)
     bool shift = (p->mods & KBD_PADMOD_SHIFT) != 0;
     bool alt = (p->mods & KBD_PADMOD_ALT) != 0;
-    return (shift || (state == KBD_FIFO_RELEASED && !alt)) ? base : key;
+    if (state == KBD_FIFO_HOLD)
+      return base;  // only Enter repeats as a HOLD Insert (I: PRESSED 'I')
+    if (state == KBD_FIFO_RELEASED)
+      return (shift || !alt) ? base : key;
+    return key;     // PRESSED: kbd_pad_key taps Enter's button at most
   }
   return base;
 }
@@ -389,6 +409,24 @@ static inline void kbd_pad_key(kbd_pad_t *p, const kbd_padmap_t *m,
     return;
   }
   key = kbd_pad_unshift(p, state, key);
+  if ((p->mods & KBD_PADMOD_ALT) && state != KBD_FIFO_RELEASED &&
+      kbd_key_alt_mangled(key))
+    return;  // a repeat under Alt: its release will not come
+  if (key == KEY_INSERT && state == KBD_FIFO_PRESSED) {
+    // Shift+Enter, or I pressed within a scan of Alt going up (the
+    // controller's Alt flag lags too): a tap of Enter's button, held for
+    // this poll only, since the release may be I's. Enter's first repeat (a
+    // HOLD Insert) then holds it quietly.
+    int s = (p->mods & KBD_PADMOD_SHIFT) && !(p->mods & KBD_PADMOD_ALT)
+                ? kbd_pad_slot(m, KEY_ENTER)
+                : -1;
+    if (s >= 0) {
+      uint16_t tap = (uint16_t)(1u << (s / KBD_PAD_SLOTS));
+      kbd_pad_press(p, tap);
+      kbd_pad_settle(p, tap);
+    }
+    return;
+  }
   int slot = kbd_pad_slot(m, key);
   if (slot < 0)
     return;
