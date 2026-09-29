@@ -96,7 +96,7 @@ void hal_input_discard_pending(void);
 uint32_t hal_input_last_issued_seq(void);
 // consumed: highest seq such that it and every earlier seq are consumed.
 void hal_input_get_seq_state(uint32_t *issued, uint32_t *consumed);
-void hal_input_note_menu_injected(void);
-void hal_input_note_menu_consumed(void);
+void hal_input_raise_menu(bool injected);  // injected: also note its input seq
+bool hal_input_take_menu(void);            // test-and-clear the flag and its seq
 
 #endif // HAL_INPUT_H

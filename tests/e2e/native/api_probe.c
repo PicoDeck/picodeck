@@ -11,6 +11,9 @@
 //     simulator lays its trampoline tables out back to back
 //     (unicorn_build_api_struct), so gap != sizeof means its slot count
 //     drifted from os.h, which shifts every later table and `version`.
+// It also logs one "PERF ..." line (not a PROBE line) for
+// test_native.py::test_native_app_does_not_inherit_perf_pacing: the state
+// perf->getFPS() and an unpaced perf->endFrame() see at app start.
 #include "app_abi.h"
 #include "os.h"
 
@@ -44,6 +47,15 @@ void picodeck_main(const PicoCalcAPI *api, const char *app_dir,
     const table_t t[] = {TABLES(ROW)};
 #undef ROW
     const unsigned n = sizeof(t) / sizeof(t[0]);
+
+    // Perf state as this app finds it: an earlier app's setTargetFPS or frame
+    // history must not leak in. Two endFrame calls, because the first only
+    // starts the pacing schedule.
+    int fps0 = api->perf->getFPS();
+    uint32_t t0 = api->sys->getTimeMs();
+    api->perf->endFrame();
+    api->perf->endFrame();
+    log("PERF fps=%d endframe_ms=%u", fps0, (unsigned)(api->sys->getTimeMs() - t0));
 
     log("PROBE version=%u", (unsigned)api->version);
     log("PROBE api size=%u version_off=%u tables=%u",
