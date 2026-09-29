@@ -107,11 +107,17 @@ typedef enum {
 
 // ── Background save/restore helpers
 // ──────────────────────────────────────────────────────────
-// Save the current back buffer (darkened app background) to PSRAM.
-// Must be called once after display_darken() at menu entry.
-static void bg_save(void) {
+// Allocate the backdrop copy in PSRAM. Called at menu entry before anything
+// else the menu allocates, so the menu keeps its backdrop whenever it did
+// before it also kept the app's screen.
+static void bg_alloc(void) {
   if (!s_saved_bg)
     s_saved_bg = (uint16_t *)umm_malloc(FB_WIDTH * FB_HEIGHT * sizeof(uint16_t));
+}
+
+// Save the current back buffer (darkened app background) into it.
+// Must be called once after display_darken() at menu entry.
+static void bg_save(void) {
   if (s_saved_bg)
     memcpy(s_saved_bg, display_get_back_buffer(),
            FB_WIDTH * FB_HEIGHT * sizeof(uint16_t));
@@ -705,10 +711,17 @@ static bool menu_loop(lua_State *L, int context) {
 
   // Keep the app's screen to give back on close: both framebuffers, in their
   // roles (display_restore_buffers). 400 KB of PSRAM, held only while the
-  // menu is open. Without the memory (a fragmented heap) the menu closes
-  // over the darkened screen, as it always did, until the app redraws.
-  uint16_t *app_screen = (uint16_t *)umm_malloc(
-      2 * FB_WIDTH * FB_HEIGHT * sizeof(uint16_t));
+  // menu is open. It is the extra: taken after the menu's own backdrop, and
+  // only if it leaves the Controls page its block, so on any heap the menu
+  // does at least what it did without it. Without the memory (a nearly full
+  // or fragmented heap) the menu closes over the darkened screen, as it
+  // always did, until the app redraws.
+  bg_alloc();
+  uint16_t *app_screen = NULL;
+  if (lua_psram_alloc_largest_block() >=
+      2 * FB_WIDTH * FB_HEIGHT * sizeof(uint16_t) + CTL_HEAP_MIN)
+    app_screen = (uint16_t *)umm_malloc(
+        2 * FB_WIDTH * FB_HEIGHT * sizeof(uint16_t));
   if (app_screen)
     display_save_buffers(app_screen);
 
