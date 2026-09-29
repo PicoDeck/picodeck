@@ -4,7 +4,7 @@ title: "Library Download"
 
 Stream an HTTP(S) response straight to a file on the SD card. The library wraps `picocalc.network.http` in a single blocking call with redirect handling, progress reporting and automatic cleanup of partial files, so an app can fetch an asset pack or an update with one function call.
 
-The library ships with the firmware at `/system/lib/download.lua`. Load it with:
+The library's source is `system/lib/download.lua` in the repo; it must be on the SD card at `/system/lib/download.lua`. Load it with:
 
 ```lua
 local download = picocalc.sys.loadlib("download")

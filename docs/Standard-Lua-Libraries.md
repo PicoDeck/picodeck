@@ -28,6 +28,7 @@ Code written for older Lua fails at run time, not at load, with `attempt to call
 | `math.pow(x, y)` | `x ^ y` |
 | `math.log10(x)` | `math.log(x, 10)` |
 | `math.cosh`, `sinh`, `tanh`, `frexp`, `ldexp` | none (`sinh`, `cosh`, `tanh` can be written with `math.exp`) |
+| `bit32.*` | none: use the bitwise operators (`&`, `\|`, `~`, `<<`, `>>`) |
 | `loadstring(s)` | `load(s)` |
 | `setfenv`, `getfenv` | none: pass an environment as `load`'s fourth argument |
 | `table.getn(t)` | `#t` |

@@ -39,7 +39,7 @@ Creating an app is incredibly straightforward. You only need two files in a dire
 18     end
 ```
 
-The loop needs no `sleep`: `flush()` waits for the previous frame's transfer to the panel (about 15.6 ms for a full frame), which already limits a simple app to roughly 40-60 frames per second. To hold a lower rate, such as 30 FPS to save battery, bracket each frame with `picocalc.perf.beginFrame()` and `picocalc.perf.endFrame()` and call `picocalc.perf.setTargetFPS(30)` once; see [API Performance](API-Performance.md). `picocalc.sys.sleep(ms)` is for waiting, not for pacing.
+The loop needs no `sleep`: `flush()` waits for the previous frame's transfer to the panel (about 16 ms for a full frame), which already limits a simple app to roughly 40-60 frames per second. To hold a lower rate, such as 30 FPS to save battery, bracket each frame with `picocalc.perf.beginFrame()` and `picocalc.perf.endFrame()` and call `picocalc.perf.setTargetFPS(30)` once; see [API Performance](API-Performance.md). `picocalc.sys.sleep(ms)` is for waiting, not for pacing.
 
 ### Add an icon (optional)
 

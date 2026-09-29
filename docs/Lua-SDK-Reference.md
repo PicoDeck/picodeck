@@ -50,8 +50,7 @@ while true do
     picocalc.perf.drawFPS()
     picocalc.display.flush()
     
-    picocalc.perf.endFrame()
-    picocalc.sys.sleep(16)  -- ~60 FPS
+    picocalc.perf.endFrame()  -- flush() already paces the loop; see perf.setTargetFPS
 end
 ```
 
