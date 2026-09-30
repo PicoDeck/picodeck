@@ -2,7 +2,8 @@
 # native_api_probe (api_probe.c), native_leaky (leaky.c) and
 # native_pad_probe (pad_probe.c: the gbc / c64 gamepad adapters).
 # The outputs are committed so the E2E job needs no ARM toolchain; rebuild
-# and commit them whenever sdk/native/os.h changes:
+# and commit them whenever sdk/native/os.h changes, and the pad probe also
+# whenever apps/gbc/input.[ch] or apps/c64/pad_input.h changes:
 #
 #   make -C tests/e2e/native
 #

@@ -5,7 +5,8 @@
 // player's bindings (Settings -> Controls) apply. Older firmware has no
 // gamepad table: translate the keys the game has always used (arrows, F4 = A,
 // F5 = B, F1 = Select, F2 = Start) into the same PAD_* mask, so the joypad
-// code below is written once.
+// code below is written once. The E2E pad probe is built from this file:
+// after a change, rebuild its committed ELF (make -C tests/e2e/native).
 static uint32_t legacy_to_pad(uint32_t keys) {
     uint32_t pad = 0;
     if (keys & BTN_UP)    pad |= PAD_UP;

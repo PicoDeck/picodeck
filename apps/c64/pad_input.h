@@ -1,5 +1,6 @@
 // Gamepad -> C64 joystick adapter, kept free of the chip headers so the E2E
-// pad probe (tests/e2e/native/pad_probe.c) can build the same code.
+// pad probe (tests/e2e/native/pad_probe.c) can build the same code. After a
+// change, rebuild the probe's committed ELF (make -C tests/e2e/native).
 #pragma once
 
 #include <stdint.h>
