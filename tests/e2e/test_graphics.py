@@ -68,6 +68,25 @@ def test_animator_nil_easing_is_absent(graphics_app):
     assert _marker(graphics_app, "ANIMNIL") == "OK 100.0 true"
 
 
+def test_animator_unknown_easing_name_raises(graphics_app):
+    """#56: an unrecognised name used to be linear without a word."""
+    for name in ("EASEBAD", "EASEEMPTY"):
+        err = _marker(graphics_app, name)
+        assert err.startswith("ERR "), err
+        assert "unknown easing" in err and "quadInOut" in err, err
+        # the whole list survives the message formatting, last name included
+        assert err.rstrip().endswith("cubicInOut))"), err
+    assert '"easeIn"' in _marker(graphics_app, "EASEBAD")
+
+
+def test_animator_valid_easing_name_still_works(graphics_app):
+    assert _marker(graphics_app, "EASEOK").startswith("OK true")
+
+
+def test_animator_absent_easing_is_linear(graphics_app):
+    assert _marker(graphics_app, "EASELINEAR").startswith("OK same")
+
+
 def test_animator_delay_holds_the_start_value_then_animates(graphics_app):
     """A 400 ms delay: the value stays at `from` with progress 0 (no uint32
     wrap ending it at once), then reaches `to` after delay + duration."""

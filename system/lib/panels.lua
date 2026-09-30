@@ -517,11 +517,22 @@ end
 
 -- ── Layer rendering ─────────────────────────────────────────────────────────
 
+local warnedEase = {}  -- ease names already reported, so a re-armed layer logs once
+
 local function newAnimator(duration, from, to, ease, delay)
     local ok, a = pcall(gfx.animation.animator.new, duration, from, to,
                         ease or "cubicOut", delay or 0)
     if ok then return a end
-    return nil
+    -- animator.new raises on an unrecognised easing name. Keep the comic
+    -- running on a linear curve, but log the name so the typo can be found.
+    ok, a = pcall(gfx.animation.animator.new, duration, from, to, "linear", delay or 0)
+    if not ok then return nil end
+    local key = tostring(ease)
+    if not warnedEase[key] then
+        warnedEase[key] = true
+        sys.log('PANELS:ERR unknown ease "' .. key .. '", using linear')
+    end
+    return a
 end
 
 local function layerRuntime(comic, layer)

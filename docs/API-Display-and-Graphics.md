@@ -1235,18 +1235,21 @@ print(info.width, info.height, info.format)
 ---
 
 #### `picocalc.graphics.image.loadRegion(path, x, y, w, h)`
-Loads an image and keeps only the given sub-rectangle. The region is clamped to the image bounds.
+Loads an image and keeps only the given sub-rectangle. The region is clamped to the image bounds, so the result can be smaller than the size you asked for: compare the returned `w`, `h` with the request to detect it.
+
+The loaded region is its own image. Its pixel coordinates start at `(0, 0)`, not at the `x`, `y` you passed, so read it back with `region:getPixels(0, 0, w, h)`. (Unlike `loadRegion`, `img:getPixels` and `img:setPixels` do not clamp: a rectangle that is not fully inside the image raises.)
 
 - **Parameters:**
   - `path` (string): Absolute file path
   - `x`, `y` (number): Top-left of the region
   - `w`, `h` (number): Region dimensions in pixels
-- **Returns:** (userdata) Image object
-- **Errors:** If the file fails to load or the region lies outside the image
+- **Returns:** (userdata, integer, integer) The image, then its width and height after clamping. As the last argument of a call, all three values are passed on, so wrap it in parentheses where only the image is wanted: `table.insert(tiles, (loadRegion(...)))`.
+- **Errors:** If the file fails to load or the region does not overlap the image at all
 
 ```lua
 -- Load just the top-left 64x64 corner of a large image
-local corner = picocalc.graphics.image.loadRegion("/apps/myapp/big.png", 0, 0, 64, 64)
+local corner, w, h = picocalc.graphics.image.loadRegion("/apps/myapp/big.png", 0, 0, 64, 64)
+local raw = corner:getPixels(0, 0, w, h)   -- region coordinates, not the source's
 ```
 
 ---
@@ -1534,7 +1537,7 @@ Returns the pixels of the rectangle (default: the whole image) as a string of `w
 - **Parameters:**
   - `x`, `y`, `w`, `h` (number, optional): Rectangle inside the image; give all four or none. A zero width or height returns `""`.
 - **Returns:** (string) Pixel data
-- **Errors:** If the rectangle is not inside the image
+- **Errors:** If the rectangle is not inside the image. It is never clamped; `loadRegion` does clamp, and its result is a separate image whose coordinates start at `(0, 0)`.
 
 ```lua
 local s = img:getPixels(0, 0, 4, 1)           -- the first 4 pixels of row 0
@@ -1550,7 +1553,7 @@ Writes the rectangle (default: the whole image) from a string of exactly `w * h 
   - `data` (string): Pixel data
   - `x`, `y`, `w`, `h` (number, optional): Rectangle inside the image; give all four or none
 - **Returns:** None
-- **Errors:** If `data` is not a string of exactly `w * h * 2` bytes, or the rectangle is not inside the image
+- **Errors:** If `data` is not a string of exactly `w * h * 2` bytes, or the rectangle is not inside the image (never clamped, unlike `loadRegion`)
 
 ```lua
 -- A 64x64 checkerboard floor for mode 7
@@ -2522,9 +2525,10 @@ Creates and starts an animator. The duration comes first.
 - **Parameters:**
   - `durationMs` (number): Length of the animation in milliseconds
   - `from`, `to` (number): Start and end values
-  - `easing` (string, optional): `"linear"` (default), `"sineIn"`, `"sineOut"`, `"sineInOut"`, `"quadIn"`, `"quadOut"`, `"quadInOut"`, `"cubicIn"`, `"cubicOut"` or `"cubicInOut"`. An unknown name is linear; a function is not accepted.
+  - `easing` (string, optional): `"linear"` (default), `"sineIn"`, `"sineOut"`, `"sineInOut"`, `"quadIn"`, `"quadOut"`, `"quadInOut"`, `"cubicIn"`, `"cubicOut"` or `"cubicInOut"` (the capitalised forms such as `"SineIn"` also work). Omitting it or passing `nil` is linear. Any other name raises an error listing these; a function is not accepted.
   - `delayMs` (number, optional): Wait this long before starting
 - **Returns:** (userdata) Animator object
+- **Errors:** If `easing` is a string that is not one of the names above
 
 ```lua
 local a = picocalc.graphics.animation.animator.new(500, 0, 100, "cubicOut")
