@@ -1243,7 +1243,7 @@ The loaded region is its own image. Its pixel coordinates start at `(0, 0)`, not
   - `path` (string): Absolute file path
   - `x`, `y` (number): Top-left of the region
   - `w`, `h` (number): Region dimensions in pixels
-- **Returns:** (userdata, integer, integer) The image, then its width and height after clamping
+- **Returns:** (userdata, integer, integer) The image, then its width and height after clamping. As the last argument of a call, all three values are passed on, so wrap it in parentheses where only the image is wanted: `table.insert(tiles, (loadRegion(...)))`.
 - **Errors:** If the file fails to load or the region does not overlap the image at all
 
 ```lua
