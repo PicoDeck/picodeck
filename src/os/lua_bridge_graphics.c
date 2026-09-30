@@ -3656,6 +3656,12 @@ static float easing_cubicInOut(float t) {
 
 typedef float (*easing_fn)(float);
 
+#define EASING_NAMES \
+  "linear, sineIn, sineOut, sineInOut, quadIn, quadOut, quadInOut, cubicIn, " \
+  "cubicOut, cubicInOut"
+
+// NULL for a name that is not one of EASING_NAMES (the capitalised spellings
+// "SineIn" etc. are also accepted); the caller raises.
 static easing_fn get_easing_fn(const char *name) {
   if (!strcmp(name, "linear")) return easing_linear;
   if (!strcmp(name, "sineIn") || !strcmp(name, "SineIn")) return easing_sineIn;
@@ -3667,7 +3673,7 @@ static easing_fn get_easing_fn(const char *name) {
   if (!strcmp(name, "cubicIn") || !strcmp(name, "CubicIn")) return easing_cubicIn;
   if (!strcmp(name, "cubicOut") || !strcmp(name, "CubicOut")) return easing_cubicOut;
   if (!strcmp(name, "cubicInOut") || !strcmp(name, "CubicInOut")) return easing_cubicInOut;
-  return easing_linear;
+  return NULL;
 }
 
 // ── Animator ─────────────────────────────────────────────────────────────────
@@ -3722,6 +3728,13 @@ static int l_animator_new(lua_State *L) {
       (top >= 4 && !lua_isnil(L, 4)) ? luaL_checkstring(L, 4) : NULL;
   lua_Integer delay = (top >= 5 && !lua_isnil(L, 5)) ? lb_checkint(L, 5) : 0;
 
+  easing_fn easing_f = easing_linear;
+  if (easing) {
+    easing_f = get_easing_fn(easing);
+    if (!easing_f)
+      return luaL_argerror(L, 4, lua_pushfstring(L, "unknown easing \"%s\" (expected one of: " EASING_NAMES ")", easing));
+  }
+
   lua_animator_t *a = (lua_animator_t *)lua_newuserdata(L, sizeof(lua_animator_t));
   a->duration_ms = duration;
   a->start_value = from;
@@ -3733,7 +3746,7 @@ static int l_animator_new(lua_State *L) {
   a->current_repeat = 0;
   a->reverses = false;
   a->ended = false;
-  a->easing = easing ? get_easing_fn(easing) : easing_linear;
+  a->easing = easing_f;
   a->destroyed = false;
 
   luaL_setmetatable(L, GRAPHICS_ANIMATOR_MT);

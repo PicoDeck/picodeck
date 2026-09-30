@@ -521,6 +521,9 @@ local function newAnimator(duration, from, to, ease, delay)
     local ok, a = pcall(gfx.animation.animator.new, duration, from, to,
                         ease or "cubicOut", delay or 0)
     if ok then return a end
+    -- an unrecognised easing name raises; a comic's typo falls back to linear
+    ok, a = pcall(gfx.animation.animator.new, duration, from, to, "linear", delay or 0)
+    if ok then return a end
     return nil
 end
 

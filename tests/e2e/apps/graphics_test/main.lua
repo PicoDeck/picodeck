@@ -96,6 +96,17 @@ try("ANIMDELAY", function()
     return held .. "/" .. p, a:currentValue() .. "/" .. tostring(a:ended())
 end)
 
+-- An easing name that is not recognised raises and names the valid set; a
+-- valid name constructs, and so does an absent one (linear).
+try("EASEBAD", function() return anim.new(100, 0, 100, "easeIn") end)
+try("EASEEMPTY", function() return anim.new(100, 0, 100, "") end)
+try("EASEOK", function() return anim.new(100, 0, 100, "quadInOut") ~= nil end)
+try("EASELINEAR", function()
+    local a = anim.new(1000, 0, 100, nil)
+    local b = anim.new(1000, 0, 100, "linear")
+    return a:currentValue() == b:currentValue() and "same", "x"
+end)
+
 log("GT DONE")
 -- Hold the frame for pixel probes until ESC.
 local input = pc.input

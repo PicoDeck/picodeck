@@ -2522,9 +2522,10 @@ Creates and starts an animator. The duration comes first.
 - **Parameters:**
   - `durationMs` (number): Length of the animation in milliseconds
   - `from`, `to` (number): Start and end values
-  - `easing` (string, optional): `"linear"` (default), `"sineIn"`, `"sineOut"`, `"sineInOut"`, `"quadIn"`, `"quadOut"`, `"quadInOut"`, `"cubicIn"`, `"cubicOut"` or `"cubicInOut"`. An unknown name is linear; a function is not accepted.
+  - `easing` (string, optional): `"linear"` (default), `"sineIn"`, `"sineOut"`, `"sineInOut"`, `"quadIn"`, `"quadOut"`, `"quadInOut"`, `"cubicIn"`, `"cubicOut"` or `"cubicInOut"` (the capitalised forms such as `"SineIn"` also work). Omitting it or passing `nil` is linear. Any other name raises an error listing these; a function is not accepted.
   - `delayMs` (number, optional): Wait this long before starting
 - **Returns:** (userdata) Animator object
+- **Errors:** If `easing` is a string that is not one of the names above
 
 ```lua
 local a = picocalc.graphics.animation.animator.new(500, 0, 100, "cubicOut")

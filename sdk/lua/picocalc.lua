@@ -2357,7 +2357,7 @@ local PicoDeckAnimator = {}
 ---@param duration_ms integer Duration comes first
 ---@param from number
 ---@param to number
----@param easing? string Easing name: "linear" (default), "sineIn", "sineOut", "sineInOut", "quadIn", "quadOut", "quadInOut", "cubicIn", "cubicOut", "cubicInOut" (an unknown name is linear; a function is not accepted)
+---@param easing? string Easing name: "linear" (default), "sineIn", "sineOut", "sineInOut", "quadIn", "quadOut", "quadInOut", "cubicIn", "cubicOut", "cubicInOut" (nil is linear; any other name raises; a function is not accepted)
 ---@param delay_ms? integer Wait this long before starting
 ---@return PicoDeckAnimator
 function picocalc.graphics.animation.animator.new(duration_ms, from, to, easing, delay_ms) end
