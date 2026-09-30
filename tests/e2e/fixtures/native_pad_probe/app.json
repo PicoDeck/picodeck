@@ -1,0 +1,7 @@
+{
+    "id": "com.test.native_pad_probe",
+    "name": "Native Pad Probe",
+    "description": "E2E fixture: the gbc / c64 gamepad adapters (source: tests/e2e/native/pad_probe.c)",
+    "version": "1.0",
+    "author": "PicoDeck E2E"
+}

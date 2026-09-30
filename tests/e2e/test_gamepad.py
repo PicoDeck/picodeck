@@ -10,11 +10,14 @@ latches) are covered by tests/unit/test_kbd_pad.c.
 """
 
 import json
+import re
+import shutil
 import time
 from pathlib import Path
 
 from helpers import stage_lua_app
 
+PAD_PROBE = Path(__file__).parent / "fixtures" / "native_pad_probe"
 FIXTURE = Path(__file__).parent / "apps" / "gamepad_test" / "main.lua"
 
 BTN_UP = 1 << 0
@@ -189,3 +192,70 @@ def test_injection_pending_at_a_clear_keeps_its_press(simulator):
     sim.keypress("f4")
     line = sim.wait_for_log(r"^GC:PRESSED ", timeout=10, since_seq=seq)
     assert line == "GC:PRESSED pad=true btn=true", _texts(sim, seq)
+
+
+# --- native games (issue #25) -------------------------------------------------
+# fixtures/native_pad_probe is built from the games' own adapters: gbc's
+# input.c (the Game Boy joypad) and c64's pad_input.h (the joystick source).
+# gbc needs a ROM and c64 the chip core, neither of which a test can observe,
+# so the probe logs what those adapters produce for the keys we inject.
+# Fields: gbc = up down left right a b select start, legacy = the same from a
+# copy of the API that looks like firmware without the gamepad, c64 = up down
+# left right fire.
+
+def _pad_lines(sim, since):
+    return [re.search(r"PAD (gbc=\w+ legacy=\w+ c64=\w+)", t).group(1)
+            for t in _texts(sim, since) if "PAD gbc=" in t]
+
+
+def _pad_start(sim):
+    # Staged at run time: one more app under tests/e2e/apps would push the
+    # launcher past its 64-app cap.
+    shutil.copytree(PAD_PROBE, Path(sim.sd_card_path) / "apps" / "native_pad_probe",
+                    dirs_exist_ok=True)
+    seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
+    sim.launch_app("native_pad_probe")
+    sim.wait_for_log(r"PADREADY", timeout=10, since_seq=seq)
+    return seq
+
+
+def _pad_finish(sim):
+    sim.keypress("esc")
+    sim.wait_for_exit(timeout=10)
+
+
+def _pad_press(sim, key, expect):
+    """Inject `key`; return the PAD lines of its press and release."""
+    mark = sim.get_log_buffer(tail=1).get("next_seq", 0)
+    sim.keypress(key)
+    sim.wait_for_log(re.escape(expect), timeout=10, since_seq=mark)
+    time.sleep(0.3)
+    return _pad_lines(sim, mark)
+
+
+def test_native_games_follow_default_bound_keys(simulator):
+    sim = simulator
+    _pad_start(sim)
+    # F4 = A: gbc A and the C64 fire button; the old path agrees.
+    lines = _pad_press(sim, "f4", "gbc=00001000 legacy=00001000 c64=00001")
+    assert lines[-1] == "gbc=00000000 legacy=00000000 c64=00000", lines
+    # An arrow is a D-pad direction for both games.
+    lines = _pad_press(sim, "up", "gbc=10000000 legacy=10000000 c64=10000")
+    # New layout: Tab = Select, F1 = Start. The old firmware path keeps
+    # F1 = Select, F2 = Start (F2 is now the gamepad's L: no Game Boy button).
+    lines = _pad_press(sim, "tab", "gbc=00000010 legacy=00000000 c64=00000")
+    lines = _pad_press(sim, "f1", "gbc=00000001 legacy=00000010 c64=00000")
+    lines = _pad_press(sim, "f2", "gbc=00000000 legacy=00000001 c64=00000")
+    _pad_finish(sim)
+
+
+def test_native_games_follow_rebinding(simulator):
+    """A per-app override moves A to Z: the game follows the bound key, and
+    F4 (no longer bound) does nothing on the gamepad path."""
+    sim = simulator
+    _write(sim, "data/com.test.native_pad_probe/gamepad.json", {"a": ["Z"]})
+    _pad_start(sim)
+    _pad_press(sim, "z", "gbc=00001000 legacy=00000000 c64=00001")
+    lines = _pad_press(sim, "f4", "gbc=00000000 legacy=00001000 c64=00000")
+    assert all(l.startswith("gbc=00000000") for l in lines), lines
+    _pad_finish(sim)
