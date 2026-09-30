@@ -4,7 +4,8 @@
 // (launcher_run() never returns; apps spin in their own loops). A browser tab
 // has one thread and freezes unless code returns to the event loop, so here:
 //
-//   * Core 1's 5 ms service loop becomes web_core1_tick(), run cooperatively.
+//   * Core 1's 5 ms service loop becomes web_core1_tick(), which runs the
+//     core's sim_core1_service() cooperatively.
 //   * Every place the OS already waits (hal_sleep_*, display present, the Lua
 //     watchdog hook, kbd_poll) calls web_yield*(), which uses ASYNCIFY's
 //     emscripten_sleep() to unwind to the browser and resume afterwards.
@@ -16,12 +17,12 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include "web_platform.h"
-#include "sim_socket.h"  // sim_socket_notify* stubs below
-
-extern void hal_audio_update(void);
-extern void mod_player_update(void);
-extern void wifi_poll(void);
+#include "hal/web_platform.h"
+#include "hal/hal_input.h"       // hal_input_inject_char
+// The desktop-only hooks this file defines (see hal/web_platform.h):
+#include "sim_socket.h"          // sim_socket_notify*
+#include "sim_socket_handler.h"  // sim_*_active_terminal
+#include "unicorn_runner.h"      // unicorn_run_app
 
 // Longest the OS may run without handing the tab back to the browser. Longer
 // than a frame so apps that flush every frame are paced by present, not this.
@@ -37,9 +38,7 @@ void web_core1_tick(void) {
     if (s_in_core1 || now - s_last_core1_ms < WEB_CORE1_PERIOD_MS) return;
     s_in_core1 = true;
     s_last_core1_ms = now;
-    hal_audio_update();
-    mod_player_update();
-    wifi_poll();
+    sim_core1_service();
     s_in_core1 = false;
 }
 
@@ -99,8 +98,6 @@ void web_fs_init(const char *sd_root) {
 // ── Soft-keyboard text ───────────────────────────────────────────────────────
 // SDL derives characters from the unshifted US key (Shift+= arrives as '='), so
 // the page's phone-keyboard path types exact ASCII straight into the char queue.
-extern void hal_input_inject_char(char c);
-
 EMSCRIPTEN_KEEPALIVE void web_type_char(int c) {
     if (c >= 32 && c < 127) hal_input_inject_char((char)c);
 }
