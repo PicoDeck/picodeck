@@ -102,9 +102,15 @@ try("EASEBAD", function() return anim.new(100, 0, 100, "easeIn") end)
 try("EASEEMPTY", function() return anim.new(100, 0, 100, "") end)
 try("EASEOK", function() return anim.new(100, 0, 100, "quadInOut") ~= nil end)
 try("EASELINEAR", function()
-    local a = anim.new(1000, 0, 100, nil)
-    local b = anim.new(1000, 0, 100, "linear")
-    return a:currentValue() == b:currentValue() and "same", "x"
+    -- Sampled mid-curve, where linear (~50) and quadIn (~25) are far apart;
+    -- at t = 0 every curve reads 0 and nothing would be compared.
+    local a = anim.new(2000, 0, 100, nil)
+    local b = anim.new(2000, 0, 100, "linear")
+    local q = anim.new(2000, 0, 100, "quadIn")
+    pc.sys.sleep(1000)
+    local va, vb, vq = a:currentValue(), b:currentValue(), q:currentValue()
+    return math.abs(va - vb) <= 1 and va - vq > 15 and "same",
+           string.format("%.1f/%.1f/%.1f", va, vb, vq)
 end)
 
 log("GT DONE")

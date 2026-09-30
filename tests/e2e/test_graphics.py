@@ -74,6 +74,9 @@ def test_animator_unknown_easing_name_raises(graphics_app):
         err = _marker(graphics_app, name)
         assert err.startswith("ERR "), err
         assert "unknown easing" in err and "quadInOut" in err, err
+        # the whole list survives the message formatting, last name included
+        assert err.rstrip().endswith("cubicInOut))"), err
+    assert '"easeIn"' in _marker(graphics_app, "EASEBAD")
 
 
 def test_animator_valid_easing_name_still_works(graphics_app):
