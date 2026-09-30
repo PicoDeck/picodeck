@@ -2,7 +2,7 @@
     "id": "net.picodeck.c64",
     "name": "C64 Emulator",
     "description": "Commodore 64 emulator - SID audio, full keyboard",
-    "version": "0.1",
+    "version": "0.2",
     "author": "PicoDeck",
     "system_clock_khz": 300000,
     "requirements": ["filesystem", "audio"],
