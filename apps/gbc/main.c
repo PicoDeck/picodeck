@@ -264,7 +264,7 @@ static int run_game(char *rom_path, int rom_path_len) {
         {
             PROF_MARK(t0);
             sys->poll();
-            gbc_input_update(&s_input, in->getButtons);
+            gbc_input_update(&s_input, api);
             // --- system-menu request handling (Load ROM / states) ---
             if (s_req_load_rom) {
                 s_req_load_rom = false;
@@ -320,14 +320,19 @@ static int run_game(char *rom_path, int rom_path_len) {
         }
         for (int f = 0; f < GB_FRAMES_PER_FLUSH && running; f++) {
             api->perf->beginFrame();
-            s_gb.direct.joypad_bits.a      = (s_input.buttons & BTN_F4)    ? 0 : 1;
-            s_gb.direct.joypad_bits.b      = (s_input.buttons & BTN_F5)    ? 0 : 1;
-            s_gb.direct.joypad_bits.select = (s_input.buttons & BTN_F1)    ? 0 : 1;
-            s_gb.direct.joypad_bits.start  = (s_input.buttons & BTN_F2)    ? 0 : 1;
-            s_gb.direct.joypad_bits.right  = (s_input.buttons & BTN_RIGHT) ? 0 : 1;
-            s_gb.direct.joypad_bits.left   = (s_input.buttons & BTN_LEFT)  ? 0 : 1;
-            s_gb.direct.joypad_bits.up     = (s_input.buttons & BTN_UP)    ? 0 : 1;
-            s_gb.direct.joypad_bits.down   = (s_input.buttons & BTN_DOWN)  ? 0 : 1;
+            {
+                uint8_t up, down, left, right, a, b, sel, start;
+                gbc_input_get_joypad(&s_input, &up, &down, &left, &right,
+                                     &a, &b, &sel, &start);
+                s_gb.direct.joypad_bits.a      = a;
+                s_gb.direct.joypad_bits.b      = b;
+                s_gb.direct.joypad_bits.select = sel;
+                s_gb.direct.joypad_bits.start  = start;
+                s_gb.direct.joypad_bits.right  = right;
+                s_gb.direct.joypad_bits.left   = left;
+                s_gb.direct.joypad_bits.up     = up;
+                s_gb.direct.joypad_bits.down   = down;
+            }
 
             if (in->getButtonsPressed() & BTN_ESC) {
                 running = false;
