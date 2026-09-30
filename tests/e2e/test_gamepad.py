@@ -203,6 +203,9 @@ def test_injection_pending_at_a_clear_keeps_its_press(simulator):
 # copy of the API that looks like firmware without the gamepad, c64 = up down
 # left right fire.
 
+PAD_IDLE = "gbc=00000000 legacy=00000000 c64=00000"
+
+
 def _pad_lines(sim, since):
     return [re.search(r"PAD (gbc=\w+ legacy=\w+ c64=\w+)", t).group(1)
             for t in _texts(sim, since) if "PAD gbc=" in t]
@@ -216,6 +219,9 @@ def _pad_start(sim):
     seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
     sim.launch_app("native_pad_probe")
     sim.wait_for_log(r"PADREADY", timeout=10, since_seq=seq)
+    # The probe logs its idle state once at start: wait for it here, so the
+    # first press below never collects it.
+    sim.wait_for_log(re.escape("PAD " + PAD_IDLE), timeout=10, since_seq=seq)
     return seq
 
 
@@ -225,27 +231,29 @@ def _pad_finish(sim):
 
 
 def _pad_press(sim, key, expect):
-    """Inject `key`; return the PAD lines of its press and release."""
+    """Inject `key` and check that the probe logs exactly its press
+    (`expect`) and then its release (idle): the probe logs each change once,
+    so a stray button lit on the way in or out fails too."""
     mark = sim.get_log_buffer(tail=1).get("next_seq", 0)
     sim.keypress(key)
     sim.wait_for_log(re.escape(expect), timeout=10, since_seq=mark)
-    time.sleep(0.3)
-    return _pad_lines(sim, mark)
+    sim.wait_for_log(re.escape(PAD_IDLE), timeout=10, since_seq=mark)
+    lines = _pad_lines(sim, mark)
+    assert lines == [expect, PAD_IDLE], (key, lines)
 
 
 def test_native_games_follow_default_bound_keys(simulator):
     sim = simulator
     _pad_start(sim)
     # F4 = A: gbc A and the C64 fire button; the old path agrees.
-    lines = _pad_press(sim, "f4", "gbc=00001000 legacy=00001000 c64=00001")
-    assert lines[-1] == "gbc=00000000 legacy=00000000 c64=00000", lines
+    _pad_press(sim, "f4", "gbc=00001000 legacy=00001000 c64=00001")
     # An arrow is a D-pad direction for both games.
-    lines = _pad_press(sim, "up", "gbc=10000000 legacy=10000000 c64=10000")
+    _pad_press(sim, "up", "gbc=10000000 legacy=10000000 c64=10000")
     # New layout: Tab = Select, F1 = Start. The old firmware path keeps
     # F1 = Select, F2 = Start (F2 is now the gamepad's L: no Game Boy button).
-    lines = _pad_press(sim, "tab", "gbc=00000010 legacy=00000000 c64=00000")
-    lines = _pad_press(sim, "f1", "gbc=00000001 legacy=00000010 c64=00000")
-    lines = _pad_press(sim, "f2", "gbc=00000000 legacy=00000001 c64=00000")
+    _pad_press(sim, "tab", "gbc=00000010 legacy=00000000 c64=00000")
+    _pad_press(sim, "f1", "gbc=00000001 legacy=00000010 c64=00000")
+    _pad_press(sim, "f2", "gbc=00000000 legacy=00000001 c64=00000")
     _pad_finish(sim)
 
 
@@ -256,6 +264,5 @@ def test_native_games_follow_rebinding(simulator):
     _write(sim, "data/com.test.native_pad_probe/gamepad.json", {"a": ["Z"]})
     _pad_start(sim)
     _pad_press(sim, "z", "gbc=00001000 legacy=00000000 c64=00001")
-    lines = _pad_press(sim, "f4", "gbc=00000000 legacy=00001000 c64=00000")
-    assert all(l.startswith("gbc=00000000") for l in lines), lines
+    _pad_press(sim, "f4", "gbc=00000000 legacy=00001000 c64=00000")
     _pad_finish(sim)
