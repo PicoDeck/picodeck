@@ -334,6 +334,19 @@ T.case("loadRegion_returns_clamped_size", function()
     T.raises(function() gfx.image.loadRegion(PNG, 100, 100, 8, 8) end, "outside")
 end)
 
+-- x + w and y + h past the 32-bit integer range must not wrap: a wrapped sum
+-- skipped the clamp and copied rows from far outside the decoded image.
+T.case("loadRegion_extreme_rect_does_not_wrap", function()
+    local PNG = APP_DIR .. "/pattern.png"
+    local MAX, MIN = math.maxinteger, math.mininteger
+    local _, w, h = gfx.image.loadRegion(PNG, 8, 4, MAX, MAX)
+    T.eq(w, 56); T.eq(h, 44)
+    T.raises(function() gfx.image.loadRegion(PNG, MIN, 0, -1, 8) end, "outside")
+    T.raises(function() gfx.image.loadRegion(PNG, 0, MIN, 8, -1) end, "outside")
+    T.raises(function() gfx.image.loadRegion(PNG, MAX - 7, 0, 100, 8) end, "outside")
+    T.raises(function() gfx.image.loadRegion(PNG, 0, MAX - 7, 8, 100) end, "outside")
+end)
+
 T.case("loadRegion_pixels_are_region_relative", function()
     local PNG = APP_DIR .. "/pattern.png"
     local full = gfx.image.load(PNG)

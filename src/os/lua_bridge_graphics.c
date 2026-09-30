@@ -570,15 +570,23 @@ static int l_graphics_image_loadRegion(lua_State *L) {
   if (!loaded)
     return luaL_error(L, "failed to load image: %s", path);
 
-  // Clamp region to image bounds
-  if (rx < 0) { rw += rx; rx = 0; }
-  if (ry < 0) { rh += ry; ry = 0; }
-  if (rx + rw > loaded->w) rw = loaded->w - rx;
-  if (ry + rh > loaded->h) rh = loaded->h - ry;
-  if (rw <= 0 || rh <= 0) {
+  // Clamp region to image bounds. The edges are 64-bit: x + w and y + h of
+  // full-range 32-bit arguments would overflow, skip the clamp and copy from
+  // outside the image.
+  int64_t x0 = rx, y0 = ry;
+  int64_t x1 = x0 + rw, y1 = y0 + rh;
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 > loaded->w) x1 = loaded->w;
+  if (y1 > loaded->h) y1 = loaded->h;
+  if (x1 <= x0 || y1 <= y0) {
     image_free(loaded);
     return luaL_error(L, "region outside image bounds");
   }
+  rx = (int)x0;
+  ry = (int)y0;
+  rw = (int)(x1 - x0);
+  rh = (int)(y1 - y0);
 
   uint16_t *crop = (uint16_t *)umm_malloc((size_t)rw * rh * sizeof(uint16_t));
   if (!crop) {
