@@ -459,6 +459,16 @@ end
 
 A play scene that follows a player sprite with the camera and saves the high score on exit.
 
+The scene reads `picocalc.gamepad` (see [API Gamepad](API-Gamepad.md)), which needs firmware with API version 9. To also run on older firmware, check for it once and fall back to `picocalc.input`:
+
+```lua
+local pad = picocalc.gamepad
+local input = picocalc.input
+-- held mask, and the masks to test it against
+local read = pad and pad.getButtons or input.getButtons
+local RIGHT = pad and pad.PAD_RIGHT or input.BTN_RIGHT
+```
+
 ```lua
 local camera = picocalc.game.camera.new()
 
@@ -478,11 +488,14 @@ end
 
 function play:update(dt)
     picocalc.input.update()
-    local buttons = picocalc.input.getButtons()
-    if buttons & picocalc.input.BTN_RIGHT ~= 0 then player.x = player.x + 2 end
-    if buttons & picocalc.input.BTN_LEFT  ~= 0 then player.x = player.x - 2 end
-    if buttons & picocalc.input.BTN_DOWN  ~= 0 then player.y = player.y + 2 end
-    if buttons & picocalc.input.BTN_UP    ~= 0 then player.y = player.y - 2 end
+    -- The gamepad is the recommended way to read game input: players can
+    -- rebind it in Settings > Controls. Esc stays on picocalc.input.
+    local pad = picocalc.gamepad
+    local buttons = pad.getButtons()
+    if buttons & pad.PAD_RIGHT ~= 0 then player.x = player.x + 2 end
+    if buttons & pad.PAD_LEFT  ~= 0 then player.x = player.x - 2 end
+    if buttons & pad.PAD_DOWN  ~= 0 then player.y = player.y + 2 end
+    if buttons & pad.PAD_UP    ~= 0 then player.y = player.y - 2 end
     score = score + 1
     camera:setTarget(player.x, player.y)
     camera:update(dt)
