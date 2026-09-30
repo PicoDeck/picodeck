@@ -141,7 +141,7 @@ static inline void sleep_us(uint64_t us) {
 #ifdef __EMSCRIPTEN__
 // Called from the Lua hook every 256 opcodes: the web build's escape hatch for
 // Lua loops that never sleep or flush.
-extern void web_yield_if_due(void);
+#include "../hal/web_platform.h"
 static inline void watchdog_update(void) { web_yield_if_due(); }
 #else
 static inline void watchdog_update(void) {}

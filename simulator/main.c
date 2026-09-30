@@ -9,9 +9,8 @@
 #include <unistd.h>
 #ifndef __EMSCRIPTEN__
 #include <execinfo.h>
-#else
-#include "hal/web_platform.h"
 #endif
+#include "hal/web_platform.h"  // sim_core1_service(); the web build's hooks
 #include <fcntl.h>
 #include "hal/hal_display.h"
 #include "hal/hal_input.h"
@@ -35,9 +34,12 @@
 #include "drivers/fileplayer.h"
 #include "drivers/mp3_player.h"
 #include "drivers/http.h"
+#include "drivers/mod_player.h"
 #ifdef PICODECK_SIM_FIRMWARE_NET
 #include "drivers/wifi.h"
 #include "net/sim_net.h"
+#else
+#include "sim_wifi.h"
 #endif
 #include "drivers/keyboard.h"
 #include "appconfig.h"
@@ -311,6 +313,21 @@ static void show_boot_splash(void) {
     fflush(stdout);
 }
 
+// One Core 1 tick, with no sleep. core1_thread repeats it every 5 ms; the web
+// build has no threads, so its web_core1_tick() paces it instead (see
+// hal/web_platform.h). A new Core 1 duty goes here, so it runs in both.
+void sim_core1_service(void) {
+    // Update audio
+    hal_audio_update();
+
+    // MOD player: render PCM and push to audio stream
+    mod_player_update();
+
+    // Network polling — drain IPC queue, run curl_multi, poll TCP sockets
+    wifi_poll();
+    http_fire_c_pending();
+}
+
 // Core 1 entry point (simulates the second core)
 static void* core1_thread(void* arg) {
     (void)arg;
@@ -325,18 +342,7 @@ static void* core1_thread(void* arg) {
     
     // Core 1 main loop
     while (g_running) {
-        // Update audio
-        hal_audio_update();
-
-        // MOD player: render PCM and push to audio stream
-        extern void mod_player_update(void);
-        mod_player_update();
-
-        // Network polling — drain IPC queue, run curl_multi, poll TCP sockets
-        extern void wifi_poll(void);
-        wifi_poll();
-        extern void http_fire_c_pending(void);
-        http_fire_c_pending();
+        sim_core1_service();
 
         // 5ms delay (same as hardware)
         hal_sleep_ms(5);
@@ -632,8 +638,8 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef __EMSCRIPTEN__
-    // No threads in the browser: Core 1's loop runs cooperatively from every
-    // yield point (see web/web_platform.c).
+    // No threads in the browser: the web sources' web_core1_tick() runs
+    // sim_core1_service() cooperatively from every yield point.
     hal_audio_init();
 #else
     // Start Core 1 thread (simulates second core)

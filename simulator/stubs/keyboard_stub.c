@@ -4,6 +4,7 @@
 #include "../../src/drivers/keyboard.h"
 #include "../../src/drivers/kbd_event_queue.h"
 #include "../hal/hal_input.h"
+#include "../hal/web_platform.h"  // web_yield_if_due (web build)
 #include "../../src/os/os.h"
 #include <SDL2/SDL.h>
 #include <string.h>
@@ -69,7 +70,6 @@ bool kbd_init(void) {
 void kbd_poll(void) {
 #ifdef __EMSCRIPTEN__
     // Input-polling loops that never flush must still let key events arrive.
-    extern void web_yield_if_due(void);
     web_yield_if_due();
 #endif
     kbd_pad_begin_poll(&s_pad);
