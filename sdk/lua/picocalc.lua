@@ -1668,7 +1668,9 @@ function picocalc.graphics.image.load(path) end
 ---@param y integer Source y offset
 ---@param w integer Region width
 ---@param h integer Region height
----@return PicoDeckImage img Raises on failure
+---@return PicoDeckImage img Raises on failure. Its pixel coordinates start at (0, 0)
+---@return integer w Width actually produced (the region is clamped to the image)
+---@return integer h Height actually produced
 function picocalc.graphics.image.loadRegion(path, x, y, w, h) end
 
 ---Load and scale an image from the SD card.

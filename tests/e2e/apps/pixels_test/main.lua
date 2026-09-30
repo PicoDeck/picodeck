@@ -315,4 +315,31 @@ T.case("drawPlane_generated", function()
     T.eq(disp.getPixel(160, 100), 0, "sky untouched")
 end)
 
+-- pattern.png is 64x48. loadRegion clamps to the image and returns the size it
+-- produced; the region is its own image with origin (0, 0) (#57).
+T.case("loadRegion_returns_clamped_size", function()
+    local PNG = APP_DIR .. "/pattern.png"
+    local img, w, h = gfx.image.loadRegion(PNG, 0, 0, 16, 8)
+    T.eq(w, 16); T.eq(h, 8)
+    local cw, ch = img:getSize()
+    T.eq(cw, 16); T.eq(ch, 8)
+    -- asked for 32x32 at (48, 32): only 16x16 is left
+    local r, rw, rh = gfx.image.loadRegion(PNG, 48, 32, 32, 32)
+    T.eq(rw, 16); T.eq(rh, 16)
+    T.eq(r:getSize(), 16)
+    -- negative origin clamps the near edge and shrinks the size
+    local _, nw, nh = gfx.image.loadRegion(PNG, -4, -2, 10, 10)
+    T.eq(nw, 6); T.eq(nh, 8)
+    -- entirely outside still raises
+    T.raises(function() gfx.image.loadRegion(PNG, 100, 100, 8, 8) end, "outside")
+end)
+
+T.case("loadRegion_pixels_are_region_relative", function()
+    local PNG = APP_DIR .. "/pattern.png"
+    local full = gfx.image.load(PNG)
+    local r, w, h = gfx.image.loadRegion(PNG, 20, 10, 8, 4)
+    T.eq(r:getPixels(0, 0, w, h), full:getPixels(20, 10, 8, 4))
+    T.raises(function() r:getPixels(20, 10, 8, 4) end, "outside the 8x4 image")
+end)
+
 T.done()

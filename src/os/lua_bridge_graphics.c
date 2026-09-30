@@ -553,7 +553,9 @@ static int l_graphics_image_getInfo(lua_State *L) {
 }
 
 // loadRegion(path, x, y, w, h) — load an image and keep only the given
-// sub-rectangle (clamped to the image bounds).
+// sub-rectangle (clamped to the image bounds). Returns the image and the
+// width and height actually produced, so a caller can detect clamping. A
+// region with no overlap raises, like every other failure here.
 static int l_graphics_image_loadRegion(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
   int rx = lb_checkint(L, 2);
@@ -594,7 +596,9 @@ static int l_graphics_image_loadRegion(lua_State *L) {
   img->data = crop;
   img->transparent_color = 0;
   luaL_setmetatable(L, GRAPHICS_IMAGE_MT);
-  return 1;
+  lua_pushinteger(L, rw);
+  lua_pushinteger(L, rh);
+  return 3;
 }
 
 // loadScaled(path, w, h) — load an image and resample it to w×h (bilinear).
