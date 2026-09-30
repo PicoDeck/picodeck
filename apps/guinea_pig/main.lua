@@ -6,6 +6,24 @@ local disp = pc.display
 local input = pc.input
 local game = pc.game
 
+-- Input: the logical gamepad (rebindable in Settings > Controls) where the
+-- firmware has it, raw keys on older firmware. P.* are masks that work with
+-- either read; key() names the key to show in on-screen hints.
+local gp = pc.gamepad
+local P, read_buttons, key
+if gp then
+    P = {UP = gp.PAD_UP, DOWN = gp.PAD_DOWN, LEFT = gp.PAD_LEFT, RIGHT = gp.PAD_RIGHT,
+         A = gp.PAD_A, B = gp.PAD_B, X = gp.PAD_X}
+    read_buttons = function() return gp.getButtons(), gp.getButtonsPressed() end
+    key = function(btn) return gp.getLabel(btn) or "?" end
+else
+    P = {UP = input.BTN_UP, DOWN = input.BTN_DOWN, LEFT = input.BTN_LEFT,
+         RIGHT = input.BTN_RIGHT, A = input.BTN_ENTER, B = input.BTN_F2, X = input.BTN_F1}
+    read_buttons = function() return input.getButtons(), input.getButtonsPressed() end
+    local names = {[P.A] = "Enter", [P.B] = "F2", [P.X] = "F1"}
+    key = function(btn) return names[btn] end
+end
+
 -- ============================================================
 -- [1] CONSTANTS & COLORS
 -- ============================================================
@@ -827,8 +845,7 @@ end
 local function update_player(dt)
     if player.dead then return end
 
-    local pressed = input.getButtonsPressed()
-    local held = input.getButtons()
+    local held, pressed = read_buttons()
 
     -- Timers
     if player.invuln_timer > 0 then player.invuln_timer = player.invuln_timer - dt end
@@ -849,8 +866,8 @@ local function update_player(dt)
 
     -- Hiding
     if player.hiding then
-        if held & input.BTN_DOWN == 0 or
-           held & input.BTN_LEFT ~= 0 or held & input.BTN_RIGHT ~= 0 then
+        if held & P.DOWN == 0 or
+           held & P.LEFT ~= 0 or held & P.RIGHT ~= 0 then
             player.hiding = false
         end
         return
@@ -868,7 +885,7 @@ local function update_player(dt)
     end
 
     -- Squeak charging
-    if held & input.BTN_F1 ~= 0 and player.squeak_cooldown <= 0 then
+    if held & P.X ~= 0 and player.squeak_cooldown <= 0 then
         player.squeak_charging = true
         player.squeak_charge = player.squeak_charge + dt
     else
@@ -887,8 +904,8 @@ local function update_player(dt)
     end
 
     -- Movement direction (with inversion)
-    local move_left = held & input.BTN_LEFT ~= 0
-    local move_right = held & input.BTN_RIGHT ~= 0
+    local move_left = held & P.LEFT ~= 0
+    local move_right = held & P.RIGHT ~= 0
     if player.inverted_controls then
         move_left, move_right = move_right, move_left
     end
@@ -921,7 +938,7 @@ local function update_player(dt)
                 if touching and (move_left or move_right) then
                     player.gripping_wall = true
                     player.vy = 0
-                    if held & input.BTN_UP ~= 0 then
+                    if held & P.UP ~= 0 then
                         player.y = player.y - NAIL_GRIP_CLIMB_SPEED * dt
                     end
                     break
@@ -931,7 +948,7 @@ local function update_player(dt)
     end
 
     -- Jump
-    local jump_pressed = pressed & input.BTN_UP ~= 0 or pressed & input.BTN_ENTER ~= 0
+    local jump_pressed = pressed & (P.UP | P.A) ~= 0
     if jump_pressed then
         if player.on_ground or player.gripping_wall then
             player.vy = JUMP_POWER
@@ -961,8 +978,8 @@ local function update_player(dt)
         end
     end
 
-    -- Dash (F2)
-    if pressed & input.BTN_F2 ~= 0 and player.dash_cooldown <= 0 and not player.dashing then
+    -- Dash (B)
+    if pressed & P.B ~= 0 and player.dash_cooldown <= 0 and not player.dashing then
         player.dashing = true
         player.dash_timer = DASH_DURATION
         player.dash_dir = player.facing
@@ -973,7 +990,7 @@ local function update_player(dt)
     end
 
     -- Hay hiding
-    if pressed & input.BTN_DOWN ~= 0 and player.on_ground then
+    if pressed & P.DOWN ~= 0 and player.on_ground then
         for _, hay in ipairs(hay_piles) do
             if aabb_overlap(player.x, player.y, player.w, player.h, hay.x, hay.y, hay.w, hay.h) then
                 player.hiding = true
@@ -1566,12 +1583,12 @@ local menu_scene = {
     end,
     update = function(dt)
         game_time = game_time + dt
-        local pressed = input.getButtonsPressed()
-        if pressed & input.BTN_ENTER ~= 0 then
+        local _, pressed = read_buttons()
+        if pressed & P.A ~= 0 then
             sfx.play("menu_select")
             game.scene.switch("play")
         end
-        if pressed & input.BTN_ESC ~= 0 then
+        if input.getButtonsPressed() & input.BTN_ESC ~= 0 then
             game.quit = true
         end
     end,
@@ -1605,14 +1622,14 @@ local menu_scene = {
         -- Footer panel
         local panel = disp.rgb(30, 60, 30)
         disp.fillRect(0, FOOTER_TOP, SCREEN_W, SCREEN_H - FOOTER_TOP, panel)
-        disp.drawText(12, 244, "Arrows: Move   Up/Enter: Jump", WHITE, panel)
-        disp.drawText(12, 258, "F1: Sonic Squeak (hold)", WHITE, panel)
-        disp.drawText(12, 272, "F2: Dash   Down: Hide in hay", WHITE, panel)
+        disp.drawText(12, 244, "Arrows: Move   Up/" .. key(P.A) .. ": Jump", WHITE, panel)
+        disp.drawText(12, 258, key(P.X) .. ": Sonic Squeak (hold)", WHITE, panel)
+        disp.drawText(12, 272, key(P.B) .. ": Dash   Down: Hide in hay", WHITE, panel)
         if high_score > 0 then
             disp.drawText(12, 288, "Best: " .. high_score, GOLD, panel)
         end
         if math.floor(game_time * 2) % 2 == 0 then
-            disp.drawText(196, 288, "Press ENTER", YELLOW, panel)
+            disp.drawText(196, 288, "Press " .. key(P.A), YELLOW, panel)
         end
         disp.drawText(196, 302, "ESC to Exit", GRAY, panel)
     end
@@ -1630,8 +1647,8 @@ local play_scene = {
     end,
     update = function(dt)
         game_time = game_time + dt
-        local pressed = input.getButtonsPressed()
-        if pressed & input.BTN_ESC ~= 0 then
+        local _, pressed = read_buttons()
+        if input.getButtonsPressed() & input.BTN_ESC ~= 0 then
             if pc.ui.confirm("Exit to menu?") then
                 save_high_score()
                 game.scene.switch("menu")
@@ -1639,7 +1656,7 @@ local play_scene = {
             return
         end
         if player.dead then
-            if pressed & input.BTN_ENTER ~= 0 then
+            if pressed & P.A ~= 0 then
                 save_high_score()
                 game.scene.switch("play")
             end
@@ -1677,7 +1694,7 @@ local play_scene = {
             disp.drawText(116, 130, "GAME OVER", RED, BLACK)
             disp.drawText(100, 150, "Score: " .. player.score, WHITE, BLACK)
             disp.drawText(84, 168, "Veggies: " .. veggies_collected .. "/" .. total_veggies, GREEN, BLACK)
-            disp.drawText(84, 186, "ENTER: Try Again", GRAY, BLACK)
+            disp.drawText(84, 186, key(P.A) .. ": Try Again", GRAY, BLACK)
         end
     end
 }
@@ -1694,9 +1711,9 @@ local win_scene = {
         win_time = win_time + dt
         game_time = game_time + dt
         update_particles(dt)
-        local pressed = input.getButtonsPressed()
-        if pressed & input.BTN_ENTER ~= 0 then game.scene.switch("play") end
-        if pressed & input.BTN_ESC ~= 0 then game.scene.switch("menu") end
+        local _, pressed = read_buttons()
+        if pressed & P.A ~= 0 then game.scene.switch("play") end
+        if input.getButtonsPressed() & input.BTN_ESC ~= 0 then game.scene.switch("menu") end
     end,
     draw = function()
         local PANEL_TOP = 116
@@ -1726,7 +1743,7 @@ local win_scene = {
         else
             disp.drawText(80, 196, "Best: " .. high_score, GRAY, panel)
         end
-        disp.drawText(74, 212, "ENTER: Play Again", WHITE, panel)
+        disp.drawText(74, 212, key(P.A) .. ": Play Again", WHITE, panel)
         disp.drawText(92, 226, "ESC: Menu", GRAY, panel)
         -- Foreground ground echo, matching the gameplay platform look
         disp.fillRect(0, 280, SCREEN_W, SCREEN_H - 280, BROWN)
