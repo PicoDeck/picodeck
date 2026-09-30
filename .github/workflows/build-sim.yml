@@ -94,20 +94,3 @@ jobs:
 
       - name: Compare the ABI copies
         run: python3 tools/check_native_abi.py --cc arm-none-eabi-gcc
-
-  # The browser build (picodeck.net/try) on every push, so a WASM-only break
-  # (a stub whose signature drifted) shows up before release day.
-  build-web:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Cache Emscripten
-        uses: actions/cache@v4
-        with:
-          path: ~/emsdk
-          key: ${{ runner.os }}-emsdk-6.0.10
-      - name: Build the web simulator
-        run: scripts/ci/build-web-sim.sh

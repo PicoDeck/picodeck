@@ -1,7 +1,7 @@
 # PicoDeck Makefile
 # Automated setup, build, and deployment for ClockworkPi PicoCalc
 
-.PHONY: help setup build clean flash flash-ota rebuild check-env test-lua test-unit test-numfmt-sweep fuzz fuzz-build simulator simulator-asan simulator-tsan simulator-net simulator-net-asan simulator-net-tsan simulator-run simulator-clean simulator-web simulator-web-serve
+.PHONY: help setup build clean flash flash-ota rebuild check-env test-lua test-unit test-numfmt-sweep fuzz fuzz-build simulator simulator-asan simulator-tsan simulator-net simulator-net-asan simulator-net-tsan simulator-run simulator-clean
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -40,8 +40,6 @@ help:
 	@echo "                        also simulator-net-asan / simulator-net-tsan)"
 	@echo "  make simulator-run  - Build and run the simulator"
 	@echo "  make simulator-clean - Clean simulator build files"
-	@echo "  make simulator-web  - Build the browser (WASM) demo (needs Emscripten)"
-	@echo "  make simulator-web-serve - Build and serve the web demo on :8765"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test-lua       - Test Lua app syntax before deployment"
@@ -273,31 +271,6 @@ simulator: simulator-check download-lua
 	@echo "For help:"
 	@echo "  $(SIM_BINARY) --help"
 	@echo ""
-
-# Browser demo: the same simulator compiled to WASM with Emscripten (Lua apps
-# only — no networking or native apps). EMSDK defaults to ~/emsdk.
-EMSDK ?= $(HOME)/emsdk
-WEB_BUILD_DIR := build_web
-EMCMAKE := $(EMSDK)/upstream/emscripten/emcmake
-
-simulator-web: download-lua
-	@test -x $(EMCMAKE) || { \
-		echo "ERROR: Emscripten not found at $(EMSDK) (set EMSDK=...)"; \
-		echo "       Install: https://emscripten.org/docs/getting_started/downloads.html"; \
-		exit 1; \
-	}
-	@$(EMCMAKE) cmake -S simulator -B $(WEB_BUILD_DIR) -DCMAKE_BUILD_TYPE=Release
-	@cmake --build $(WEB_BUILD_DIR) -j$$(nproc 2>/dev/null || echo 4)
-	@test -f $(WEB_BUILD_DIR)/picodeck_simulator.wasm || { \
-		echo "ERROR: build finished but $(WEB_BUILD_DIR)/picodeck_simulator.wasm is missing"; \
-		exit 1; \
-	}
-	@echo ""
-	@echo "✓ Web demo built: $(WEB_BUILD_DIR)/picodeck_simulator.{html,js,wasm,data}"
-
-simulator-web-serve: simulator-web
-	@echo "Serving http://127.0.0.1:8765/picodeck_simulator.html"
-	@cd $(WEB_BUILD_DIR) && python3 -m http.server 8765 --bind 127.0.0.1
 
 simulator-debug: simulator-check download-lua
 	@echo "Building PicoDeck PC Simulator (Debug)..."

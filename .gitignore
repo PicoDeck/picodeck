@@ -84,8 +84,4 @@ apps/**/*.su
 .playwright-mcp/
 .codegraph/
 
-# scripts/ci/build-web-sim.sh outputs
-web-build.log
-/web-sim/
-/picodeck-web-sim.zip
 /launcher.png

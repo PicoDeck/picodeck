@@ -531,7 +531,7 @@ int main(int argc, char** argv) {
 #ifdef __EMSCRIPTEN__
     // Read keys from the canvas, not the whole window: keys reach the simulator
     // while it has focus, and the page around it (picodeck.net) still scrolls
-    // and takes typing. simulator/web/shell.js sends the touch pad's keys there.
+    // and takes typing. PicoDeck/web-sim's page/shell.js sends the touch pad's keys there.
     SDL_SetHint(SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT, "#canvas");
 #endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS) < 0) {

@@ -34,9 +34,11 @@ if(EMSCRIPTEN)
     set(SIM_SIZEOF_LONG 4)
     # The web project's half of the build (simulator/CLAUDE.md, "Web build
     # seam"): PICODECK_WEB_DIR holds web.cmake, which sets the platform and
-    # network-stub sources and defines picodeck_web_package(target).
+    # network-stub sources and defines picodeck_web_package(target). The
+    # browser demo lives in PicoDeck/web-sim.
     if(NOT PICODECK_WEB_DIR)
-        set(PICODECK_WEB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/web)
+        message(FATAL_ERROR "The browser build lives in PicoDeck/web-sim: build it there "
+            "(make build), or pass -DPICODECK_WEB_DIR=<a PicoDeck/web-sim checkout>")
     endif()
     get_filename_component(PICODECK_WEB_DIR "${PICODECK_WEB_DIR}" ABSOLUTE)
     if(NOT EXISTS ${PICODECK_WEB_DIR}/web.cmake)
