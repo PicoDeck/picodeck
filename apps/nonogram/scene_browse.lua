@@ -15,6 +15,7 @@ local T      = require("theme")
 local Render = require("render")
 local Store  = require("store")
 local Share  = require("sharecode")
+local Pad    = require("pad")
 
 local S = {}
 
@@ -82,20 +83,20 @@ local function doExport(rec)
 end
 
 function S.update(dt)
-    local pressed = input.getButtonsPressed()
-    local edges = NG_CAP.repeatIn and input.getButtonsRepeated() or pressed
+    local _, padPressed = Pad.read()
+    local edges = Pad.dpadEdges()
 
-    if pressed & input.BTN_ESC ~= 0 then
+    if input.getButtonsPressed() & input.BTN_ESC ~= 0 then
         NG_SCENES.switch("menu")
         return
     end
 
     if #items == 0 then return end
 
-    if edges & input.BTN_DOWN ~= 0 then
+    if edges & Pad.DOWN ~= 0 then
         sel = sel + 1; if sel > #items then sel = 1 end
     end
-    if edges & input.BTN_UP ~= 0 then
+    if edges & Pad.UP ~= 0 then
         sel = sel - 1; if sel < 1 then sel = #items end
     end
     if sel - 1 < scroll then scroll = sel - 1 end
@@ -104,7 +105,7 @@ function S.update(dt)
 
     local it = items[sel]
 
-    if pressed & input.BTN_ENTER ~= 0 then
+    if padPressed & Pad.A ~= 0 then
         if it.kind == "import" then
             doImport()
         elseif it.kind == "puzzle" then
@@ -117,11 +118,11 @@ function S.update(dt)
         end
     end
 
-    if pressed & input.BTN_F5 ~= 0 and it.kind == "puzzle" then
+    if padPressed & Pad.B ~= 0 and it.kind == "puzzle" then
         doExport(it.rec)
     end
 
-    if pressed & input.BTN_DEL ~= 0 and it.kind == "puzzle" then
+    if padPressed & Pad.X ~= 0 and it.kind == "puzzle" then
         if ui.confirm("Delete " .. it.rec.name .. "?") then
             Store.delete(it.rec.id)
             refresh()
@@ -177,7 +178,8 @@ function S.draw()
     end
 
     Render.header("LIBRARY", ("%d"):format(#items - 1))
-    Render.footer("ENTER open  F5 export  DEL delete", "ESC back")
+    Render.footer(Pad.label(Pad.A) .. " open  " .. Pad.label(Pad.B) .. " export  " ..
+                  Pad.label(Pad.X) .. " delete", "ESC back")
 end
 
 return S
