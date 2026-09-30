@@ -24,7 +24,12 @@ local comic = {
             panels = {
                 {
                     frame = { height = 320 },
-                    layers = { { text = "panel one", x = 20, y = 40 } },
+                    layers = {
+                        { text = "panel one", x = 20, y = 40 },
+                        -- misspelled ease: logged once, animates linearly
+                        { text = "slide", x = 20, y = 80,
+                          animate = { x = 60, duration = 200, ease = "cubik" } },
+                    },
                     renderFunction = function(panel, ox, oy, pct)
                         if not drew_marker then
                             drew_marker = true
