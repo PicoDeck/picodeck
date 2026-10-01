@@ -65,6 +65,21 @@ def audiostat(target, arg=""):
     raise AssertionError(f"no Audio reply to 'audiostat {arg}': {lines}")
 
 
+def mp3_restarts(target):
+    """The restart line of one `mp3stats` reply as a dict of ints: restarts
+    of a video's playing MP3 audio since the last call (it resets them).
+    gap_us is the silence on Core 0's clock from the old audio stopping
+    (its fade-out rendered, or its stage run dry) to the new audio's
+    fade-in being set; the next 2.9 ms render starts it, after the
+    fade-out render's silent tail (<= 1.5 ms)."""
+    lines = target.command("mp3stats", timeout=3.0)
+    for line in lines:
+        if "[DEV] mp3 restarts:" in line:
+            return {k: int(v) for k, v in
+                    re.findall(r"(\w+)=(-?\d+)", line.split("restarts:", 1)[1])}
+    raise AssertionError(f"no restart line in the 'mp3stats' reply: {lines}")
+
+
 def assert_passed(results):
     bad = [c for c in results.get("cases", []) if c["status"] != "PASS"]
     assert results.get("done") and not bad, results
@@ -632,19 +647,34 @@ def test_video_resume_after_a_paused_seek_plays_audio(video_audio_app):
     assert m["mp3_volume"] == 40, m
 
 
-def test_video_seeks_keep_the_audio_fed(video_audio_app):
-    """A seek every 700 ms. Each restarts the audio session from the
-    chunks read before the old audio stopped (#20), and the restarted
-    audio is playing when seek() returns and keeps pace until the next
-    seek: the session's MP3 position against the time since seek()
-    returned (95% at worst over ~700 ms), and under 1% of the window's
-    frames find no MP3. This does not measure the gap inside a seek (a
-    detached MP3 counts no underruns, and the old audio plays on while the
-    new chunks are read); the longest seek() it prints bounds it."""
+# A seek's silence (mp3_restarts' gap_us): from the old audio's fade-out to
+# the new audio's fade-in being set, a stage reset and a copy of one decoded
+# frame from PIO PSRAM (~0.1-0.5 ms; ~1.5 ms if the chip fell back to
+# serial mode). Under one render period, the fade-in starts at the next
+# render. Restarting through start_fed it was the whole pre-roll decode
+# (three frames, ~10 ms and more) plus the s_mp3_mutex waits.
+SEEK_GAP_MAX_US = 2900
+
+
+def test_video_seeks_keep_the_audio_fed(video_audio_app, target):
+    """A seek every 700 ms. Each restarts the playing audio in place (#20):
+    the new position's chunks are read and its first frames decoded while
+    the old audio plays on, then the old fades into the new, with less
+    than a render period between the old audio's fade-out and the new
+    audio's fade-in being set (mp3stats; the old audio must also have
+    outlasted the decode, or its stage ran dry and the gap says so). The
+    restarted audio is playing when seek() returns and keeps pace until
+    the next seek: the session's MP3 position against the time since
+    seek() returned (95% at worst over ~700 ms), and under 1% of the
+    window's frames find no MP3. Prints the longest seek()."""
+    mp3_restarts(target)                     # zero the restart counters
     stats, m, outcome, results = video_audio_app("seeks", seconds=10, measure_s=8)
-    print("video seeks:", stats, m)
+    rs = mp3_restarts(target)
+    print("video seeks:", stats, m, rs)
     assert outcome["result"] == "returned", outcome
     assert_passed(results)
     assert m["seeks"] >= 10, m
     assert m["pace_min"] >= 0.95, m
     assert stats["mp3_underruns"] * 100 < 44.1 * stats["window_ms"], stats
+    assert rs["restarts"] >= m["seeks"] and rs["fallbacks"] == 0, rs
+    assert rs["gap_max_us"] < SEEK_GAP_MAX_US, rs

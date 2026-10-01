@@ -192,6 +192,9 @@ picodeck_unit_test(test_mp3_fed SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE}
 target_link_libraries(test_mp3_fed PRIVATE libmad_host)
 # The pico/critical_section.h stub leaves a parameter unused.
 target_compile_options(test_mp3_fed PRIVATE -Wno-unused-parameter)
+# The restart tests model a frame's decode time: the test's
+# __wrap_mad_synth_frame renders output after each frame.
+target_link_options(test_mp3_fed PRIVATE -Wl,--wrap=mad_synth_frame)
 # ...and its decode loop at the ends of the input buffer (no frame lost
 # where a refill ends), from a file (the SD fake) and fed.
 picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE}
