@@ -42,7 +42,7 @@ title: "Simulator and Testing"
 - `pad <buttons|none|off> [hold_ms]` drives a test gamepad, as a connected
   controller would: `pad up+a` holds Up and A until the next `pad` command,
   `pad a 100` holds A for 100 ms, `pad none` releases everything, `pad off`
-  disconnects it, and `home` opens the system menu (`pad home 100`). Buttons:
+  disconnects it, and `home` opens the system menu, and closes it when it is open (`pad home 100`). Buttons:
   `up down left right a b x y l r start select home`, joined by `+`. Replies
   `Pad: up+a`. The MCP `pad` tool sends it (`pad("home, up, a")` presses each
   in turn).

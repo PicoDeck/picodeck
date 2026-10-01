@@ -786,6 +786,14 @@ static bool menu_loop(lua_State *L, int context) {
       running = false;
       continue;
     }
+    // The menu key (Sym, or a pad's Home) toggles: pressed with the menu
+    // open it closes the whole menu, from any page, like Esc at the top
+    // level. Taking the press here is also what stops it opening the menu
+    // again once this one has closed (issue #59).
+    if (kbd_consume_menu_press()) {
+      running = false;
+      continue;
+    }
     // A pad drives the menu too (D-pad, A = Enter, B = Esc), so a player
     // with only a gamepad can leave a game: Home opens it, Up reaches Exit.
     uint32_t pressed = kbd_get_buttons_pressed() | kbd_get_pad_nav_pressed();
@@ -992,6 +1000,10 @@ static bool menu_loop(lua_State *L, int context) {
   }
   bg_free();
   kbd_clear_state();
+  // kbd_clear_state() keeps a latched menu press, which the app's service
+  // pass would turn into a second menu: one that arrived while a modal of the
+  // menu's own (Wi-Fi, time zone) had the keyboard, or after the last poll.
+  kbd_consume_menu_press();
   save_brightness_if_changed(entry_brightness);
   display_set_clip_rect(saved_clip_x, saved_clip_y, saved_clip_w, saved_clip_h);
   os_overlay_reload();  // the Show FPS setting; the menu drew over the overlays
