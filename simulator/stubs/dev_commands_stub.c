@@ -114,10 +114,14 @@ static void dc_run(void *arg) {
         job->ok = dev_op_unzip(job->cmd + 6, job->reply, sizeof(job->reply));
     } else if (strncmp(job->cmd, "rm ", 3) == 0) {
         job->ok = dev_op_rm(job->cmd + 3, job->reply, sizeof(job->reply));
+    } else if (strcmp(job->cmd, "audiostat") == 0 ||
+               strcmp(job->cmd, "audiostat reset") == 0) {
+        job->ok = dev_op_audiostat(strcmp(job->cmd, "audiostat reset") == 0,
+                                   job->reply, sizeof(job->reply));
     } else {
         snprintf(job->reply, sizeof(job->reply),
-                 "Unknown command: %s (simulator supports ping, exit, unzip, rm)",
-                 job->cmd);
+                 "Unknown command: %s (simulator supports ping, exit, unzip, "
+                 "rm, audiostat)", job->cmd);
         job->ok = false;
     }
     printf("[DEV] %s\n", job->reply);

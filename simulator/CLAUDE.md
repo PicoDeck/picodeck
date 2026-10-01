@@ -22,7 +22,8 @@
 - `app.exited` carries `{name, id, found, result: returned|error|exit_sentinel|load_failed, error, runtime_ms, launch_id}`; `launch_app` returns `{queued, busy, launch_id}` and `get_last_outcome` returns the last `app.exited` params (backfill when a notification was dropped). `get_running_app` always returns `{running, name|null}`.
 - `display_stats.present_count`; `inject_*` return `input_seq` and `get_input_state` reports `consumed_seq`.
 - `set_battery {percent, charging}` sets what `kbd_get_battery_percent` / `kbd_is_charging` report (default 100, false). `set_wifi_state {"status": "connecting"|"failed"}` pins the status `wifi_get_status` reports (network access unchanged) until the next `set_wifi_state`; `disconnected`/`not_available` make WiFi unavailable, `connected`/`online` restore the real state.
-- The `dev_command` RPC (`{"cmd": "unzip ..."}`) runs `ping`/`exit`/`unzip`/`rm` through the firmware handlers (`src/dev_ops.c`).
+- The `dev_command` RPC (`{"cmd": "unzip ..."}`) runs `ping`/`exit`/`unzip`/`rm`/`audiostat [reset]` through the firmware handlers (`src/dev_ops.c`); `hw_target.SimTarget.command()` wraps it. The simulator's `audiostat` times its own Core 1 thread (5 ms ticks, `missed` always 0; `main.c`) and its render passes (`sim_audio.c`) in place of the refill interrupt, and reports `sys_khz=125000`; the stream fields are the firmware mixer's.
+- `set_sd_busy {ms, after_reads}`: once `after_reads` (default 0) more of Core 1's `sdcard_try_fread_at` calls have gone through, they return `SDCARD_BUSY` for `ms`, as if Core 0 held the card (the simulator has no cross-core SD mutex, and its SD reads take no time). The fileplayer tests stall the stream with it (`tests/e2e/test_fileplayer.py`).
 - The TCP listener binds 127.0.0.1 only; `--unix-socket PATH|none` overrides or disables the `./picodeck_control` UNIX socket (the E2E harness passes `none`). Python client: `tests/e2e/picodeck_simulator.py`.
 
 ## `--test-mode`

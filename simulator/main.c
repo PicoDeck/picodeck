@@ -49,6 +49,9 @@
 #include "idle_dim.h"
 #include "system_menu.h"
 #include "sim_test_control.h"
+#include "core1_stats.h"
+#include <stdatomic.h>
+#include <time.h>
 
 // Simulator configuration
 #define SIM_WINDOW_TITLE "PicoDeck Simulator"
@@ -328,6 +331,55 @@ void sim_core1_service(void) {
     http_fire_c_pending();
 }
 
+// core1_stats.h, for `audiostat` (src/dev_ops.c): the desktop Core 1
+// thread's service passes, timed on the host's monotonic clock (Core 1 is
+// never on virtual time). Nothing merges ticks here, so `missed` stays 0,
+// and a tick is 5 ms, not the device's 1 ms. The web build's cooperative
+// tick (web_core1_tick) is not timed: its counters stay 0.
+static _Atomic uint32_t s_c1_ticks, s_c1_over, s_c1_max_us;
+static _Atomic uint64_t s_c1_window_t0_us;
+static atomic_bool s_c1_reset_req;
+
+static uint64_t core1_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+void core1_get_tick_stats(core1_tick_stats_t *out) {
+    // A reset the Core 1 thread has not carried out yet reads as the empty
+    // window it asked for.
+    bool reset = atomic_load(&s_c1_reset_req);
+    out->window_ms = reset ? 0
+        : (uint32_t)((core1_now_us() - atomic_load(&s_c1_window_t0_us)) / 1000);
+    out->ticks = reset ? 0 : atomic_load(&s_c1_ticks);
+    out->over = reset ? 0 : atomic_load(&s_c1_over);
+    out->missed = 0;
+    out->max_us = reset ? 0 : atomic_load(&s_c1_max_us);
+}
+
+void core1_reset_tick_stats(void) {
+    atomic_store(&s_c1_reset_req, true);
+}
+
+// One timed service pass (the Core 1 thread only).
+static void core1_timed_service(void) {
+    if (atomic_exchange(&s_c1_reset_req, false)) {
+        atomic_store(&s_c1_ticks, 0);
+        atomic_store(&s_c1_over, 0);
+        atomic_store(&s_c1_max_us, 0);
+        atomic_store(&s_c1_window_t0_us, core1_now_us());
+    }
+    uint64_t t0 = core1_now_us();
+    sim_core1_service();
+    uint32_t dt = (uint32_t)(core1_now_us() - t0);
+    atomic_fetch_add(&s_c1_ticks, 1);
+    if (dt > 1000)
+        atomic_fetch_add(&s_c1_over, 1);
+    if (dt > atomic_load(&s_c1_max_us))
+        atomic_store(&s_c1_max_us, dt);
+}
+
 // Core 1 entry point (simulates the second core)
 static void* core1_thread(void* arg) {
     (void)arg;
@@ -341,8 +393,9 @@ static void* core1_thread(void* arg) {
     hal_audio_init();
     
     // Core 1 main loop
+    atomic_store(&s_c1_window_t0_us, core1_now_us());
     while (g_running) {
-        sim_core1_service();
+        core1_timed_service();
 
         // 5ms delay (same as hardware)
         hal_sleep_ms(5);

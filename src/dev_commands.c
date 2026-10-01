@@ -504,36 +504,13 @@ static void dev_command_run(void *arg) {
         mp3_player_reset_diag();
     } else if (strcmp(s_cmd_buf, "audiostat") == 0 ||
                strcmp(s_cmd_buf, "audiostat reset") == 0) {
-        // Core 1's tick cost and the audio output's refill interrupt
-        // (tests/e2e/test_audio_hw.py). "reset" starts a new window; Core 1
-        // zeroes its tick counters at its next tick (1 ms) and the refill
-        // interrupt its own at its next refill (~2.9 ms), so give them both
-        // time.
-        if (strcmp(s_cmd_buf, "audiostat reset") == 0) {
-            core1_reset_tick_stats();
-            audio_output_reset_stats();
-            audio_stream_reset_underruns();
-            mp3_player_reset_staging_underruns();
-            sleep_ms(5);
-        }
-        core1_tick_stats_t t;
-        core1_get_tick_stats(&t);
-        audio_output_stats_t o;
-        audio_output_get_stats(&o);
-        uint32_t stream_underruns = 0;
-        audio_stream_debug(NULL, &stream_underruns, NULL);
-        printf("[DEV] Audio: window_ms=%lu ticks=%lu tick_over=%lu "
-               "tick_missed=%lu tick_max_us=%lu out=%d isr=%lu isr_us=%lu "
-               "isr_max_us=%lu stream_underruns=%lu mp3_underruns=%lu "
-               "voices=%d sys_khz=%lu\n",
-               (unsigned long)t.window_ms, (unsigned long)t.ticks,
-               (unsigned long)t.over, (unsigned long)t.missed,
-               (unsigned long)t.max_us, o.running ? 1 : 0,
-               (unsigned long)o.isr_count, (unsigned long)o.isr_us,
-               (unsigned long)o.isr_max_us, (unsigned long)stream_underruns,
-               (unsigned long)mp3_player_staging_underruns(),
-               sound_get_playing_source_count(),
-               (unsigned long)(clock_get_hz(clk_sys) / 1000));
+        // Core 1's tick cost, the refill interrupt and the stream's
+        // underruns (tests/e2e/test_audio_hw.py); dev_ops.c, shared with
+        // the simulator's dev_command RPC.
+        char reply[DEV_OP_REPLY_MAX];
+        dev_op_audiostat(strcmp(s_cmd_buf, "audiostat reset") == 0, reply,
+                         sizeof(reply));
+        printf("[DEV] %s\n", reply);
     } else if (strcmp(s_cmd_buf, "kbdstat") == 0 ||
                strcmp(s_cmd_buf, "kbdstat reset") == 0 ||
                strcmp(s_cmd_buf, "kbdstat fault") == 0) {

@@ -802,6 +802,22 @@ static char *h_get_audio_state(const char *params) {
     return strdup(buf);
 }
 
+// {"ms": N, "after_reads": K}: once K more of Core 1's SD try-reads have
+// gone through (default 0), they report the card busy for N ms, as if Core
+// 0 held it that long (driver_stubs.c). The audio tests stall the
+// fileplayer with it (tests/e2e/test_fileplayer.py).
+static char *h_set_sd_busy(const char *params) {
+    int ms = 0, after = 0;
+    if (!json_get_int(params, "ms", &ms) || ms < 0 || ms > 60000)
+        return strdup("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"ms (0-60000) required\"}}");
+    json_get_int(params, "after_reads", &after);
+    if (after < 0)
+        after = 0;
+    extern void sim_sd_set_busy(uint32_t ms, uint32_t after_reads);
+    sim_sd_set_busy((uint32_t)ms, (uint32_t)after);
+    return strdup("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true}}");
+}
+
 static char *h_get_wifi_state(const char *params) {
     (void)params;
     wifi_status_t st = wifi_get_status();
@@ -1297,6 +1313,7 @@ static struct {
     { "get_button_state",   h_get_button_state },
     { "get_heap_info",      h_get_heap_info },
     { "get_audio_state",     h_get_audio_state },
+    { "set_sd_busy",         h_set_sd_busy },
     { "get_wifi_state",     h_get_wifi_state },
     { "set_wifi_state",     h_set_wifi_state },
     { "set_battery",        h_set_battery },

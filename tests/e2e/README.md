@@ -94,7 +94,9 @@ use the `target` fixture only: it gets `hw_target.SimTarget` over its
 simulator, or the session's `hw_target.HwTarget`. Both offer `launch_app`,
 `wait_for_exit`, `exit_app`, `keypress(_sequence)`, `screenshot`,
 `read_file`/`write_file`/`delete_file`, `push_app`/`stage_lua_app`,
-`run_lua_app`, `wait_for_results`, `status` and log reading. Hardware-only
+`run_lua_app`, `wait_for_results`, `status`, log reading and `command` (a
+dev-command line; the simulator runs `ping`, `exit`, `unzip`, `rm` and
+`audiostat`). Hardware-only
 fixture apps live in `hw_apps/` (pushed by the test, never staged on
 simulator SD cards).
 
