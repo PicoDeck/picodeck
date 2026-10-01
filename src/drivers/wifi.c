@@ -705,7 +705,17 @@ static uint32_t radio_resume(void *param) {
 
 void wifi_pause_radio(void) {
 #ifndef PICODECK_SIM_FIRMWARE_NET
-  if (!s_available || !wifi_hw_disconnected())
+  // Only with Core 1 off the driver. wifi_hw_disconnected() alone does not
+  // say so: it stays true from boot, and from the last disconnect, through
+  // a connect (wifi_connect never clears it). Core 1 polls the CYW43 only
+  // while connecting or connected, so those states rule a pause out: a
+  // paused driver reads as powered off (cyw43_poll NULL), and the next
+  // call into it from Core 1 would power-cycle the chip and reload its
+  // firmware.
+  wifi_status_t st = wifi_get_status();
+  if (!s_available || !wifi_hw_disconnected() ||
+      st == WIFI_STATUS_CONNECTED || st == WIFI_STATUS_CONNECTING ||
+      st == WIFI_STATUS_ONLINE)
     return;
   async_context_execute_sync(cyw43_arch_async_context(), radio_pause, NULL);
 #endif
@@ -713,7 +723,10 @@ void wifi_pause_radio(void) {
 
 void wifi_resume_radio(void) {
 #ifndef PICODECK_SIM_FIRMWARE_NET
-  if (!s_available)
+  // s_paused_poll changes only in radio_pause/radio_resume, which run here
+  // on Core 0: read unlocked, it spares every wifi_connect the context's
+  // lock, which Core 1 holds through each of its calls into the driver.
+  if (!s_available || !s_paused_poll)
     return;
   async_context_execute_sync(cyw43_arch_async_context(), radio_resume, NULL);
 #endif

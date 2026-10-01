@@ -72,7 +72,8 @@ bool wifi_has_internet(void);
 bool wifi_hw_disconnected(void);
 
 // Quiets the CYW43 driver for a sysclk change, once wifi_hw_disconnected()
-// (a no-op otherwise): puts its SPI bus to sleep at the current clock and
+// and not connecting or connected (a no-op otherwise: Core 1 may be
+// polling the chip): puts its SPI bus to sleep at the current clock and
 // stops its polling until wifi_resume_radio(). The driver does its work in
 // its async context's low-priority interrupt on Core 0, and sleeps the bus
 // by itself ~2.5 s after its last activity (50 checks 50 ms apart); at a
