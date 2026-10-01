@@ -12,13 +12,13 @@
 //
 // picodeck_lua_arm_hook() sets the hook exactly as lua_sethook(L, hook,
 // LUA_MASKCOUNT, 1) does, but sets the trap of only the innermost Lua frame,
-// looking past at most PICODECK_LUA_ARM_MAX_FRAMES frames from the top. That
-// is enough for a hook that fires once and disarms: the running Lua frame
-// sees its trap at its next jump, loop, call or return; a running C function
-// that calls Lua enters luaV_execute, which reads L->hookmask; one that
-// returns lands in the trapped Lua frame. The only case it leaves to the
-// next tick is a return across a C boundary into an outer, untrapped Lua
-// frame, so the hook fires at most one period later than stock would.
+// passing over the C frames above it. That is enough for a hook that fires
+// once and disarms: the running Lua frame sees its trap at its next jump,
+// loop, call or return; a running C function that calls Lua enters
+// luaV_execute, which reads L->hookmask; one that returns lands in the
+// trapped Lua frame. What it leaves to a later tick is a return across a C
+// boundary into an outer, untrapped Lua frame (or an error unwinding past
+// the trapped one): the next tick finds that frame innermost and traps it.
 //
 // Async-signal safe in the same way as lua_sethook (lua.c's SIGINT handler
 // relies on it): it stores the hook, the counts and the mask, then trap
@@ -28,9 +28,14 @@
 
 #include "lua.h"
 
-// Frames examined from the top of the chain: the running frame plus the C
-// functions above the innermost Lua frame (each nested C-to-C call also
-// counts towards LUAI_MAXCCALLS, so a deep pure-C stack is rare).
-#define PICODECK_LUA_ARM_MAX_FRAMES 16
+// Frames examined from the top of the chain: a safety bound, never reached
+// on a sound chain. Each C frame stacked on another C frame was made by a
+// call through C (luaD_call, or lua_resume at a coroutine's base), and each
+// of those counts towards LUAI_MAXCCALLS (overflow handling allows ~10%
+// more), so the innermost Lua frame is at most ~68 frames from the top
+// (lua_hook_arm.c asserts it): ~70 us of PSRAM misses for a contrived
+// C-to-C chain, one or two frames in practice. A lower cap could leave a
+// loop that spends its time under a deep C chain without its hook for good.
+#define PICODECK_LUA_ARM_MAX_FRAMES 80
 
 void picodeck_lua_arm_hook(lua_State *L, lua_Hook hook);

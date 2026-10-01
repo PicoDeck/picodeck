@@ -188,9 +188,14 @@ static void test_arm_through_c_frames(void) {
   lua_close(L);
 }
 
-// More C frames than the walk examines: no frame is trapped, yet the hook
-// still fires at the next Lua call (luaV_execute reads L->hookmask on entry).
-static void test_arm_beyond_frame_cap(void) {
+// The deepest run of C frames the VM nests (each pcall-to-pcall call counts
+// towards LUAI_MAXCCALLS; luaL_dostring's call is one more): the walk still
+// reaches the Lua frame under it, so the hook fires as soon as the C calls
+// return there, not at the next Lua call (noop). Were the walk to stop short,
+// a loop that spends its time under such a chain could keep its hook off.
+#define C_CHAIN (LUAI_MAXCCALLS - 4)
+
+static void test_arm_through_deepest_c_chain(void) {
   alloc_state_t st = {0};
   lua_State *L = new_state(&st);
   char code[512];
@@ -201,11 +206,13 @@ static void test_arm_beyond_frame_cap(void) {
            "pcall(table.unpack(f))\n"
            "local function noop() end\n"
            "noop()\n",
-           PICODECK_LUA_ARM_MAX_FRAMES + 4);
+           C_CHAIN);
   run(L, code);
+  CHECK_EQ_INT(s_armed_depth, 1);  // arm ran: no "C stack overflow"
   CHECK_EQ_INT(s_pre_trapped, 0);
-  CHECK_EQ_INT(s_trapped, 0);
+  CHECK_EQ_INT(s_trapped, 1);
   CHECK_EQ_INT(s_fired, 1);
+  CHECK_EQ_INT(s_fired_depth, s_armed_depth);
   lua_close(L);
 }
 
@@ -225,7 +232,7 @@ int main(void) {
   test_arm_from_c_at_depth();
   test_arm_inside_running_lua_frame();
   test_arm_through_c_frames();
-  test_arm_beyond_frame_cap();
+  test_arm_through_deepest_c_chain();
   test_hook_state_matches_sethook();
   return check_report("test_lua_hook_arm");
 }
