@@ -13,6 +13,7 @@
 #include "os/launcher.h"
 #include "os/app_stack.h"
 #include "os/os.h"
+#include "os/xip_stats.h"
 #include "tusb.h"
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
@@ -409,6 +410,42 @@ static void dev_send_file_b64(const char *path) {
     s_transfer_quiet = false;
 }
 
+// `xipstat [reset|off|prio core0|prio none]`: the XIP cache and the XIP
+// ports' contention counters over a window (os/xip_stats.h; issue #28).
+// "reset" starts a window, which ends by itself when the app it measured
+// exits; a bare `xipstat` reports it (and keeps it running). "prio" is a bus
+// priority experiment. One line of key=value integers, as audiostat.
+static void dev_xipstat(const char *arg) {
+    if (strcmp(arg, "reset") == 0)
+        xip_stats_start();
+    else if (strcmp(arg, "off") == 0)
+        xip_stats_stop();
+    else if (strcmp(arg, "prio core0") == 0)
+        xip_stats_set_core0_priority(true);
+    else if (strcmp(arg, "prio none") == 0)
+        xip_stats_set_core0_priority(false);
+    else if (arg[0]) {
+        printf("[DEV] Error: xipstat [reset|off|prio core0|prio none]\n");
+        return;
+    }
+    xip_stats_t x;
+    xip_stats_get(&x);
+    uint64_t miss = x.accesses - x.hits;
+    unsigned long hit_pm = x.accesses
+        ? (unsigned long)(x.hits * 1000u / x.accesses) : 0ul;
+    printf("[DEV] XIP: window_ms=%lu running=%d frozen=%d saturated=%d "
+           "acc=%llu hit=%llu miss=%llu hit_pm=%lu stall0=%llu stall1=%llu "
+           "contested0=%llu contested1=%llu prio0=%d sys_khz=%lu\n",
+           (unsigned long)x.window_ms, x.running, x.frozen, x.saturated,
+           (unsigned long long)x.accesses, (unsigned long long)x.hits,
+           (unsigned long long)miss, hit_pm,
+           (unsigned long long)x.stall[0], (unsigned long long)x.stall[1],
+           (unsigned long long)x.contested[0],
+           (unsigned long long)x.contested[1],
+           xip_stats_core0_priority(),
+           (unsigned long)(clock_get_hz(clk_sys) / 1000u));
+}
+
 // Executes the line in s_cmd_buf. Runs on an app stack (see
 // dev_commands_process): the file commands below reach FatFs and miniz,
 // whose frames do not fit the 4 KB main stack.
@@ -558,6 +595,9 @@ static void dev_command_run(void *arg) {
                (unsigned long)k.max_gap_us, (unsigned long)k.max_read_us,
                (unsigned long)k.isr_us, (unsigned long)k.interval_us,
                k.battery, (unsigned long)(clock_get_hz(clk_sys) / 1000u));
+    } else if (strcmp(s_cmd_buf, "xipstat") == 0 ||
+               strncmp(s_cmd_buf, "xipstat ", 8) == 0) {
+        dev_xipstat(s_cmd_buf[7] ? s_cmd_buf + 8 : "");
     } else if (strncmp(s_cmd_buf, "keypress ", 9) == 0 ||
                strncmp(s_cmd_buf, "keydown ", 8) == 0 ||
                strncmp(s_cmd_buf, "keyup ", 6) == 0) {
@@ -746,6 +786,7 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   ver            - Show firmware build date/time\n");
         printf("[DEV]   stack          - Main, app and OS-command stack peak use\n");
         printf("[DEV]   kbdstat [reset|fault] - Keyboard bus engine counters\n");
+        printf("[DEV]   xipstat [reset|off|prio core0|prio none] - XIP cache and bus contention counters\n");
         printf("[DEV]   exit           - Signal current app to exit (error if none)\n");
         printf("[DEV]   usb            - Enable USB storage mode\n");
         printf("[DEV]   reboot         - Reboot device\n");
