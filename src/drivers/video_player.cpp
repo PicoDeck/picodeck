@@ -670,9 +670,9 @@ static uint32_t read_audio_prefeed(video_priv_t *priv, uint32_t cursor,
 // earlier: the first frame heard is the one an unprimed restart from the
 // cursor's chunk played first (libmad drops that chunk's own frame, whose
 // bit reservoir it never saw).  Paused, or with nothing playing, the
-// session restarts on the ring it has (fade-out, then silence until its
-// pre-roll is decoded); the output starts at once unless `defer_output`
-// (paused: resume starts it).
+// session restarts on the ring it has from the cursor's chunk (fade-out,
+// then silence until its pre-roll is decoded); the output starts at once
+// unless `defer_output` (paused: resume starts it).
 static void audio_start_at(video_priv_t *priv, video_player_t *player,
                            uint32_t frame, bool defer_output) {
     if (!priv->has_audio || priv->audio_format != 0x0055 || priv->audio_muted ||
@@ -703,6 +703,17 @@ static void audio_start_at(video_priv_t *priv, video_player_t *player,
         return;
     }
 
+    // Refused (nothing audible: play() on a paused video, or audio that ran
+    // out before the video): start_fed does not prime, so the primer chunk
+    // goes and the audio starts from the cursor's chunk, as it always has.
+    uint32_t skip = 0;
+    if (first < cursor && pre_chunks > 0) {
+        skip = priv->audio_index.entries[first].chunk_size;
+        pre_bytes -= skip;
+        pre_chunks--;
+        first = cursor;
+    }
+
     if (!mp3_player_start_fed(priv->audio_sample_rate, priv->audio_channels)) {
         audio_stop(priv);
         return;
@@ -713,7 +724,7 @@ static void audio_start_at(video_priv_t *priv, video_player_t *player,
     priv->audio_output_pending = defer_output;
     priv->audio_feed_cursor = cursor;
     if (pre_bytes) {
-        mp3_player_feed(priv->audio_prefeed, pre_bytes);
+        mp3_player_feed(priv->audio_prefeed + skip, pre_bytes);
         priv->audio_feed_cursor = first + pre_chunks;
     } else {
         video_feed_audio(priv, player, 50);  // pre-fill fed ring with compressed data
