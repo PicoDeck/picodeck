@@ -694,8 +694,10 @@ static void audio_start_at(video_priv_t *priv, video_player_t *player,
     if (priv->audio_active)
         pre_bytes = read_audio_prefeed(priv, first, &pre_chunks);
 
+    // Primed whenever the primer chunk leads, chunk 0 included: unprimed,
+    // a seek to chunk 1 would play chunk 0 (it needs no bit reservoir).
     if (pre_bytes && !defer_output &&
-        mp3_player_restart_fed(priv->audio_prefeed, pre_bytes, first > 0)) {
+        mp3_player_restart_fed(priv->audio_prefeed, pre_bytes, first < cursor)) {
         mp3_player_set_volume(mp3_player_create(), priv->audio_volume);
         priv->audio_loop_pending = false;  // the restart cleared the mark
         priv->audio_output_pending = false;
