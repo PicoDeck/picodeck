@@ -74,6 +74,9 @@ set_source_files_properties(${PICODECK_ROOT}/third_party/qoa/qoa.c
 picodeck_unit_test(test_audio_ring INCLUDES ${SRC}/drivers)
 # The MP3 staging buffer as a mixer source (header-only, like audio_ring.h).
 picodeck_unit_test(test_pcm_stage INCLUDES ${SRC}/drivers)
+# When Core 1's MP3 decoder decodes (header-only), with a model of the ring,
+# the stage, the mixer and a paced or unpaced Core 0.
+picodeck_unit_test(test_mp3_sched INCLUDES ${SRC}/drivers)
 # The video player's audio chunk index: sizing and growth (header-only).
 picodeck_unit_test(test_avi_index INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_event_queue INCLUDES ${SRC}/drivers)
@@ -213,7 +216,8 @@ target_compile_definitions(libmad_host PRIVATE FPM_64BIT HAVE_STDINT_H=1
             SIZEOF_INT=4 SIZEOF_LONG=${CMAKE_SIZEOF_VOID_P} SIZEOF_LONG_LONG=8
             NDEBUG=1 OPT_SPEED=1 OPT_SSO=1 PROGMEM=)
 target_compile_options(libmad_host PRIVATE -O2 -w)
-picodeck_unit_test(test_mp3_fed SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE}
+picodeck_unit_test(test_mp3_fed SOURCES ${SRC}/drivers/mp3_player.c
+                ${SRC}/os/core0_idle.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_fed PRIVATE libmad_host)
 # The pico/critical_section.h stub leaves a parameter unused.
@@ -223,10 +227,18 @@ target_compile_options(test_mp3_fed PRIVATE -Wno-unused-parameter)
 target_link_options(test_mp3_fed PRIVATE -Wl,--wrap=mad_synth_frame)
 # ...and its decode loop at the ends of the input buffer (no frame lost
 # where a refill ends), from a file (the SD fake) and fed.
-picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE}
+picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c
+                ${SRC}/os/core0_idle.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_refill PRIVATE libmad_host)
 target_compile_options(test_mp3_refill PRIVATE -Wno-unused-parameter)
+# ...and what its decoder writes (a mono frame's samples, in order) and when
+# (ahead, in Core 0's idle windows).
+picodeck_unit_test(test_mp3_decode SOURCES ${SRC}/drivers/mp3_player.c
+                ${SRC}/os/core0_idle.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES})
+target_link_libraries(test_mp3_decode PRIVATE libmad_host)
+target_compile_options(test_mp3_decode PRIVATE -Wno-unused-parameter)
 # The MOD player (mod_player.c + pocketmod): Core 0 load/free vs Core 1
 # update on two threads.
 picodeck_unit_test(test_mod_player SOURCES ${SRC}/drivers/mod_player.c ${SD_FAKE}

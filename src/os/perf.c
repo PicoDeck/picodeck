@@ -1,7 +1,10 @@
 #include "perf.h"
 #include "os_overlay.h"
+#include "core0_idle.h"
 #include "pico/stdlib.h"
-#include "hardware/structs/xip.h"
+#ifndef PICODECK_SIMULATOR
+#include "xip_stats.h"
+#endif
 #include <stdio.h>
 #include <string.h>
 
@@ -52,10 +55,15 @@ void perf_end_frame(void) {
         else
             s_perf_next_end_us += s_perf_target_us;
         now = perf_now_us();
-        if (now < s_perf_next_end_us)
+        if (now < s_perf_next_end_us) {
+            // Core 0 sleeps until the deadline: Core 1 may decode MP3 ahead
+            // meanwhile, off Core 0's working time (core0_idle.h, #28).
+            core0_idle_begin(now, s_perf_next_end_us);
             sleep_us(s_perf_next_end_us - now);
-        else
+            core0_idle_end(perf_now_us());
+        } else {
             s_perf_next_end_us = now;
+        }
     }
     uint64_t end = perf_now_us();
     if (s_perf_last_end_us != 0) {
@@ -90,32 +98,12 @@ void perf_set_target_fps(uint32_t fps) {
     s_perf_next_end_us = 0;
 }
 
-// ── XIP cache performance counters ──────────────────────────────────────────
-// RP2350 XIP controller has two counters:
-//   ctr_acc — total cache accesses (reads from XIP address space)
-//   ctr_hit — cache hits (served from cache without flash/PSRAM fetch)
-// Both are 32-bit and auto-reset on read of ctr_acc.
-
-void perf_xip_cache_reset(void) {
-    // Reading ctr_acc clears both counters (datasheet §10.4)
-    (void)xip_ctrl_hw->ctr_acc;
-}
-
+// The XIP cache's hit rate since the previous call (sys.getMemInfo()). The
+// counters are cleared by a write, not a read: xip_stats.c owns them.
 int perf_xip_cache_hit_rate(void) {
-    uint32_t hits = xip_ctrl_hw->ctr_hit;
-    uint32_t total = xip_ctrl_hw->ctr_acc;  // clears both
-    if (total == 0) return -1;
-    return (int)((uint64_t)hits * 100 / total);
-}
-
-void perf_xip_cache_report(void) {
-    uint32_t hits = xip_ctrl_hw->ctr_hit;
-    uint32_t total = xip_ctrl_hw->ctr_acc;  // clears both
-    if (total == 0) {
-        printf("[XIP] No cache accesses recorded\n");
-        return;
-    }
-    int rate = (int)((uint64_t)hits * 100 / total);
-    printf("[XIP] Cache: %lu accesses, %lu hits (%d%% hit rate)\n",
-           (unsigned long)total, (unsigned long)hits, rate);
+#ifdef PICODECK_SIMULATOR
+    return -1;  // no XIP cache to count
+#else
+    return xip_stats_hit_rate_since_last();
+#endif
 }

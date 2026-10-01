@@ -95,8 +95,9 @@ simulator, or the session's `hw_target.HwTarget`. Both offer `launch_app`,
 `wait_for_exit`, `exit_app`, `keypress(_sequence)`, `pad`, `screenshot`,
 `read_file`/`write_file`/`delete_file`, `push_app`/`stage_lua_app`,
 `run_lua_app`, `wait_for_results`, `status` and log reading. Hardware-only
-fixture apps live in `hw_apps/` (pushed by the test, never staged on
-simulator SD cards).
+fixture apps live in `hw_apps/` (pushed by the test, never on the
+simulator's default SD card; `test_mp3_pacing.py` stages `mp3_bench` on its
+own card to run the same app in the simulator).
 
 `HwTarget` drives the device through `tools/picodeck_mcp.py`'s serial helpers
 and builds the device's traps in:

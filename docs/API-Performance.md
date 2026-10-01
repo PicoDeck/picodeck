@@ -85,6 +85,8 @@ picocalc.perf.drawFPS()  -- Draw at default position
 #### `picocalc.perf.setTargetFPS(fps)`
 Set target frame rate for automatic frame pacing. When set, `endFrame()` waits until the frame's deadline, which advances by 1/fps from the previous one (in microseconds, so 30 fps is 33 333 µs, not 33 ms). A frame that ends late restarts the schedule from that moment instead of rushing later frames. Pass `0` to disable frame limiting.
 
+While `endFrame()` waits, the second core does work that would otherwise slow your frames: the [MP3Player](API-Audio-and-Sound.md#mp3player) decodes ahead then. A frame that ends late has no wait, so leave some time to spare.
+
 - **Parameters:**
   - `fps` (number): Target frames per second (`0` = unlimited)
 - **Returns:** None

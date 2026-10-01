@@ -48,6 +48,20 @@ void mp3_player_reset_staging_underruns(void);
 void mp3_player_get_diag(uint32_t out[11]);
 void mp3_player_reset_diag(void);
 
+// When the decoder decoded (mp3_sched.h, issue #28): frames decoded because
+// the PCM ring was low, frames decoded ahead in Core 0's idle windows (and
+// of those, how many ran past the window's end), the estimate of one
+// frame's uncontended decode time, and whether decoding ahead is on.
+typedef struct {
+    uint32_t low_frames, idle_frames, overran, frame_us;
+    bool decode_ahead;
+} mp3_sched_stats_t;
+void mp3_player_get_sched_stats(mp3_sched_stats_t *out);
+void mp3_player_reset_sched_stats(void);
+// On by default; off decodes as before (only when the ring is low), for an
+// A/B measurement (the `xipstat mp3idle` dev command).
+void mp3_player_set_decode_ahead(bool on);
+
 // Fed mode: decoder reads from an external ring buffer instead of SD file.
 // Used by video player to feed interleaved AVI audio data. Calling
 // start_fed on a running session restarts it (fade out, empty the rings,

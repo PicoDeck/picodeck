@@ -571,6 +571,8 @@ The MP3 plays through the same mixer as samples, the stream and tones, so music 
 
 **Performance.** MP3 decoding runs on the second core, but it shares the flash and PSRAM cache with your app, so it slows your app's own code. Measured in a gfx3d game at 200 MHz: 44.1 kHz stereo MP3 music made every frame about 2.1× slower, 22.05 kHz mono about 1.24×. A looping WAV streamed with a [FilePlayer](#fileplayer) (`play(0)`) cost 2.5% at 22.05 kHz mono and 15% at 44.1 kHz stereo, because it reads the SD card over its own bus. A tracker module on the [MOD player](API-Modplayer.md) sits between the two: 14% with 4 channels, 24% with 8. Measured in a gfx3d racing game (six ships, 200 MHz), a looping [FilePlayer](#fileplayer) track of real music cost QOA 2.4% at 22.05 kHz mono and 5.3% at 44.1 kHz stereo, against 3.9% and 14% for the same music as WAV; at 300 MHz, QOA 2.1% and 4.6%, WAV 2.7% and 11%. For music in a real-time game, use QOA, then WAV, or a MOD if you can spare the frame time.
 
+**Paced apps.** When your app paces itself with [`perf.setTargetFPS`](API-Performance.md), the MP3Player decodes ahead while `perf.endFrame()` waits for the frame's deadline, so less of its decoding overlaps your frames. It needs that wait: frames that use their whole period (or an app that never paces) leave it nowhere else to go, and it decodes during your frames as before. The figures above were measured before it decoded ahead.
+
 #### `picocalc.sound.mp3player()`
 Creates an MP3Player.
 
