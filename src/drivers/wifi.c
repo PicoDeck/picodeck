@@ -11,6 +11,9 @@
 #include "http.h"
 
 #include "mongoose.h"
+#ifndef PICODECK_SIM_FIRMWARE_NET
+#include "pico/cyw43_arch.h"
+#endif
 #include "umm_malloc.h"
 #include "hardware/sync.h"
 #include "pico/multicore.h"
@@ -607,6 +610,7 @@ void wifi_init(void) {
 bool wifi_is_available(void) { return s_available; }
 
 void wifi_connect(const char *ssid, const char *password) {
+  wifi_resume_radio();  // a connect needs the driver polling again
   if (!s_available || !ssid || !ssid[0])
     return;
 
@@ -665,6 +669,54 @@ bool wifi_has_internet(void) {
 
 bool wifi_hw_disconnected(void) {
   return atomic_load_explicit(&s_hw_disconnected, memory_order_acquire);
+}
+
+#ifndef PICODECK_SIM_FIRMWARE_NET
+// cyw43_poll while the radio is paused (NULL otherwise).
+static void (*s_paused_poll)(void);
+
+// Both run under the CYW43 async context's lock, on its core (Core 0, where
+// wifi_init ran cyw43_arch_init).
+static uint32_t radio_pause(void *param) {
+  (void)param;
+  if (!cyw43_poll)
+    return 0;  // paused already
+  cyw43_ll_bus_sleep(&cyw43_state.cyw43_ll, true);
+  cyw43_sleep = 0;  // nothing left for the driver's sleep countdown
+  // With no poll function the context's worker does nothing: the host-wake
+  // interrupt fires at most once (its handler disables it, and only a poll
+  // enables it again) and the sleep checks stop.
+  s_paused_poll = cyw43_poll;
+  cyw43_poll = NULL;
+  return 0;
+}
+
+static uint32_t radio_resume(void *param) {
+  (void)param;
+  if (!s_paused_poll)
+    return 0;
+  cyw43_poll = s_paused_poll;
+  s_paused_poll = NULL;
+  // Whatever the chip raised meanwhile, and the host-wake interrupt again.
+  cyw43_schedule_internal_poll_dispatch(cyw43_poll);
+  return 0;
+}
+#endif
+
+void wifi_pause_radio(void) {
+#ifndef PICODECK_SIM_FIRMWARE_NET
+  if (!s_available || !wifi_hw_disconnected())
+    return;
+  async_context_execute_sync(cyw43_arch_async_context(), radio_pause, NULL);
+#endif
+}
+
+void wifi_resume_radio(void) {
+#ifndef PICODECK_SIM_FIRMWARE_NET
+  if (!s_available)
+    return;
+  async_context_execute_sync(cyw43_arch_async_context(), radio_resume, NULL);
+#endif
 }
 
 const char *wifi_get_ip(void) {
