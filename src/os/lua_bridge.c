@@ -286,21 +286,23 @@ void lua_bridge_raise_exit(lua_State *L) {
     // flag; they unwind instead of waiting for a key the app will never read.
     dev_commands_set_exit();
   }
-  // Re-raise before every instruction from now on, on every raise: hook
-  // counts are per thread, so a raise from a coroutine that was created
-  // before the first one (or never ran since) arms that thread too. The main
-  // thread as well: a coroutine that raised is dead once resume returns, and
-  // the thread that resumed it has its own count. Check the mask too, not
-  // just the count: a hook disarmed mid-way (count already 1, but mask 0 —
-  // e.g. the async timer's window between menu_lua_hook disarming it and the
-  // next 1 ms re-arm) must be re-armed immediately rather than waiting for
-  // the timer. The first raise installs even over an armed count-1 hook:
-  // the timer's arming (picodeck_lua_arm_hook) traps only the innermost Lua
-  // frame, and lua_sethook traps them all (once, here, in thread context),
-  // so whichever frame a pcall returns to raises at its next instruction.
-  if (first || lua_gethookcount(L) != 1 ||
-      !(lua_gethookmask(L) & LUA_MASKCOUNT))
-    lua_bridge_install_hook(L, 1);
+  // Re-raise before every instruction from now on: a count-1 hook installed
+  // with lua_sethook, which traps every Lua frame on the chain (here, in
+  // thread context, its walk may take as long as it needs), so whichever
+  // frame a pcall returns to raises at its next instruction. The raising
+  // thread on every raise, even over an armed count-1 hook: hook state is
+  // per thread, and a coroutine that existed before the first raise (or never
+  // ran since) carries at most the timer's arming, which traps only its
+  // innermost Lua frame (picodeck_lua_arm_hook). The main thread as well: a
+  // coroutine that raised is dead once resume returns, and the thread that
+  // resumed it has its own hook. Main is installed on the first raise and
+  // again whenever its hook is not armed; check the mask too, not just the
+  // count: a hook disarmed mid-way (count already 1, but mask 0 — e.g. the
+  // async timer's window between menu_lua_hook disarming it and the next
+  // 1 ms re-arm) must be re-armed immediately rather than waiting for the
+  // timer. Once installed, a thread's mask and traps stay set until the
+  // runner's lua_bridge_exit_reset.
+  lua_bridge_install_hook(L, 1);
   lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
   lua_State *main = lua_tothread(L, -1);
   lua_pop(L, 1);
