@@ -77,10 +77,11 @@ bool wifi_hw_disconnected(void);
 // stops its polling until wifi_resume_radio(). The driver does its work in
 // its async context's low-priority interrupt on Core 0, and sleeps the bus
 // by itself ~2.5 s after its last activity (50 checks 50 ms apart); at a
-// sysclk its PIO SPI was not set up for (the video's 300 MHz) that
-// handshake fails 64 times 1 ms apart ("cyw43_kso_set(0): failed"): Core 0
-// stalls for ~68 ms. A connect still in flight when the radio went idle
-// can wake the bus again later, hence the pause, not only the sleep. Core 0.
+// sysclk its PIO SPI was not set up for (the video's 300 MHz, an app's
+// system_clock_khz) that handshake fails 64 times 1 ms apart
+// ("cyw43_kso_set(0): failed"): Core 0 stalls for ~68 ms. A connect still
+// in flight when the radio went idle can wake the bus again later, hence
+// the pause, not only the sleep. Core 0.
 void wifi_pause_radio(void);
 // Undoes wifi_pause_radio() (a no-op when not paused): call it once sysclk
 // is back to the one the CYW43's PIO SPI was set up for (200 MHz).

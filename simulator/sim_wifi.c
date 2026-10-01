@@ -101,6 +101,10 @@ bool wifi_hw_disconnected(void) {
     return false;
 }
 
+// No CYW43 driver to quiet across a clock change (wifi.h).
+void wifi_pause_radio(void) {}
+void wifi_resume_radio(void) {}
+
 // ── IPC queue ───────────────────────────────────────────────────────────────
 
 bool wifi_req_push(const conn_req_t *req) {
