@@ -248,6 +248,108 @@ def test_nonogram_follows_a_rebinding(simulator):
     sim.keypress("esc")
 
 
+# ── minesweeper ──────────────────────────────────────────────────────────────
+#
+# The 9x9 grid of 32 px cells starts at (16, 36) and the cursor at cell (5, 5).
+# The app logs nothing, so the tests compare crops of the screen.
+
+_MINE_CELL = 32
+
+
+def _mine_cell(sim, cx, cy):
+    """The pixels of 1-based cell (cx, cy)."""
+    x, y = 16 + (cx - 1) * _MINE_CELL, 36 + (cy - 1) * _MINE_CELL
+    return sim.screenshot_pil().convert("RGB").crop(
+        (x, y, x + _MINE_CELL, y + _MINE_CELL)).tobytes()
+
+
+def _spy_footer(sim, name, **kw):
+    """Stages `name` with its drawText wrapped to log the footer hint.
+
+    The 9x9 grid of 32 px cells ends at y=324, so on the 320 px screen the
+    footer hint is drawn off the bottom and a screenshot cannot show it.
+    """
+    _stage(sim, name, **kw)
+    main = Path(sim.sd_card_path) / "apps" / name / "main.lua"
+    main.write_text(
+        "local dt = picocalc.display.drawText\n"
+        "picocalc.display.drawText = function(x, y, t, ...)\n"
+        "  if t:find('Esc:', 1, true) then picocalc.sys.log('HINT:' .. t) end\n"
+        "  return dt(x, y, t, ...)\n"
+        "end\n" + main.read_text())
+
+
+def _hint(sim):
+    seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
+    sim.launch_app("minesweeper")
+    return sim.wait_for_log(r"HINT:", timeout=10, since_seq=seq)
+
+
+def test_minesweeper_moves_and_acts_on_the_bound_keys(simulator):
+    sim = simulator
+    _launch(sim, "minesweeper")
+    start, right = _mine_cell(sim, 5, 5), _mine_cell(sim, 6, 5)
+    _tap(sim, "right")                   # PAD_RIGHT: the cursor leaves (5, 5)
+    assert _mine_cell(sim, 5, 5) != start
+    assert _mine_cell(sim, 6, 5) != right
+    _tap(sim, "left")
+    assert _mine_cell(sim, 5, 5) == start
+    _tap(sim, "f5")                      # PAD_B flags the cell
+    flagged = _mine_cell(sim, 5, 5)
+    assert flagged != start
+    _tap(sim, "f5")
+    assert _mine_cell(sim, 5, 5) == start
+    _tap(sim, "backspace")               # PAD_Y marks it with a question mark
+    marked = _mine_cell(sim, 5, 5)
+    assert marked not in (start, flagged)
+    _tap(sim, "backspace")
+    assert _mine_cell(sim, 5, 5) == start
+    _tap(sim, "f4")                      # PAD_A reveals it
+    time.sleep(0.3)
+    assert _mine_cell(sim, 5, 5) != start
+    assert _still_running(sim)
+    sim.keypress("esc")
+    assert sim.wait_for_exit(timeout=10)["result"] == "returned"
+
+
+def test_minesweeper_does_not_reveal_on_enter_in_play(simulator):
+    sim = simulator
+    _launch(sim, "minesweeper")
+    start = _mine_cell(sim, 5, 5)
+    _tap(sim, "enter")
+    assert _mine_cell(sim, 5, 5) == start
+    sim.keypress("esc")
+    sim.wait_for_exit(timeout=10)
+
+
+def test_minesweeper_follows_a_rebinding_and_relabels_its_hint(simulator):
+    sim = simulator
+    _spy_footer(sim, "minesweeper")
+    assert "HINT:F4:Reveal F5:Flag Del:Chord Bksp:? Esc:Exit" in _hint(sim)
+    sim.exit_app()
+    sim.wait_for_exit(timeout=10)
+
+    _spy_footer(sim, "minesweeper", rebind={"a": ["Z"], "b": ["X"], "right": ["D"]})
+    assert "HINT:Z:Reveal X:Flag Del:Chord Bksp:? Esc:Exit" in _hint(sim)
+    time.sleep(1.0)
+    start = _mine_cell(sim, 5, 5)
+    _tap(sim, "f4")                      # no longer A
+    _tap(sim, "f5")                      # no longer B
+    _tap(sim, "right")                   # no longer PAD_RIGHT
+    assert _mine_cell(sim, 5, 5) == start
+    _tap(sim, "x")                       # B is X now
+    assert _mine_cell(sim, 5, 5) != start
+    _tap(sim, "x")
+    _tap(sim, "d")                       # PAD_RIGHT is D now
+    assert _mine_cell(sim, 5, 5) != start
+    _tap(sim, "left")
+    _tap(sim, "z")                       # A is Z now
+    time.sleep(0.3)
+    assert _mine_cell(sim, 5, 5) != start
+    sim.keypress("esc")
+    sim.wait_for_exit(timeout=10)
+
+
 # ── Without a gamepad (firmware older than API version 9) ────────────────────
 
 
@@ -311,4 +413,27 @@ def test_nonogram_without_gamepad_plays_on_the_old_keys(simulator):
     sim.keypress("esc")                          # back to the menu
     time.sleep(0.5)
     sim.keypress("esc")                          # quit
+    assert sim.wait_for_exit(timeout=10)["result"] == "returned"
+
+
+def test_minesweeper_without_gamepad_plays_on_the_old_keys(simulator):
+    sim = simulator
+    _spy_footer(sim, "minesweeper", no_gamepad=True)
+    assert "HINT:F4:Reveal F5:Flag Del:Chord Bksp:? Esc:Exit" in _hint(sim)
+    time.sleep(1.0)
+    start = _mine_cell(sim, 5, 5)
+    _tap(sim, "f5")                      # flag
+    assert _mine_cell(sim, 5, 5) != start
+    _tap(sim, "f5")
+    assert _mine_cell(sim, 5, 5) == start
+    _tap(sim, "right")
+    assert _mine_cell(sim, 5, 5) != start
+    _tap(sim, "left")
+    _tap(sim, "f4")                      # reveal
+    time.sleep(0.3)
+    assert _mine_cell(sim, 5, 5) != start
+    for key in ("backspace", "delete"):
+        _tap(sim, key)                   # mark, chord
+    assert _still_running(sim)
+    sim.keypress("esc")
     assert sim.wait_for_exit(timeout=10)["result"] == "returned"

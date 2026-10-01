@@ -6,6 +6,33 @@ local disp  = pc.display
 local input = pc.input
 local gfx   = pc.graphics
 
+-- Input: the logical gamepad (rebindable in Settings > Controls) where the
+-- firmware has it, the keys this game always used on older firmware. Esc stays
+-- on picocalc.input.
+local gp = pc.gamepad
+local P, read_buttons, key_label
+if gp then
+    P = {UP = gp.PAD_UP, DOWN = gp.PAD_DOWN, LEFT = gp.PAD_LEFT, RIGHT = gp.PAD_RIGHT,
+         REVEAL = gp.PAD_A, FLAG = gp.PAD_B, CHORD = gp.PAD_X, MARK = gp.PAD_Y}
+    read_buttons = function() return gp.getButtons(), gp.getButtonsPressed() end
+    key_label = function(btn) return gp.getLabel(btn) or "?" end
+else
+    P = {UP = input.BTN_UP, DOWN = input.BTN_DOWN, LEFT = input.BTN_LEFT, RIGHT = input.BTN_RIGHT,
+         REVEAL = input.BTN_F4, FLAG = input.BTN_F5, CHORD = input.BTN_DEL, MARK = input.BTN_BACKSPACE}
+    local names = {[P.REVEAL] = "F4", [P.FLAG] = "F5", [P.CHORD] = "Del", [P.MARK] = "Bksp"}
+    read_buttons = function() return input.getButtons(), input.getButtonsPressed() end
+    key_label = function(btn) return names[btn] end
+end
+
+-- Reveal (A) also answers "play again", as does Enter as before the gamepad.
+-- Enter counts only when it pressed no gamepad button: a player who bound it
+-- to one gets that button's meaning alone.
+local function confirm_pressed(pad_pressed)
+    if pad_pressed & P.REVEAL ~= 0 then return true end
+    return gp ~= nil and pad_pressed == 0
+        and input.getButtonsPressed() & input.BTN_ENTER ~= 0
+end
+
 -- ── Config ────────────────────────────────────────────────────────────────────
 
 local COLS         = 9
@@ -378,11 +405,13 @@ local function draw_footer()
     disp.fillRect(0, footer_y, disp.getWidth(), disp.getHeight() - footer_y, HEADER_BG)
 
     if game_state == STATE_LOST then
-        disp.drawText(8, footer_y + 4, "Enter: Play again  Esc: Exit", DIM_COLOR, HEADER_BG)
+        disp.drawText(8, footer_y + 4, key_label(P.REVEAL) .. ": Play again  Esc: Exit", DIM_COLOR, HEADER_BG)
     elseif game_state == STATE_WON then
-        disp.drawText(8, footer_y + 4, "Enter: Play again  Esc: Exit", DIM_COLOR, HEADER_BG)
+        disp.drawText(8, footer_y + 4, key_label(P.REVEAL) .. ": Play again  Esc: Exit", DIM_COLOR, HEADER_BG)
     else
-        disp.drawText(8, footer_y + 4, "F4:Reveal F5:Flag Del:Chord Bksp:? Esc:Exit", DIM_COLOR, HEADER_BG)
+        disp.drawText(8, footer_y + 4, string.format("%s:Reveal %s:Flag %s:Chord %s:? Esc:Exit",
+            key_label(P.REVEAL), key_label(P.FLAG), key_label(P.CHORD), key_label(P.MARK)),
+            DIM_COLOR, HEADER_BG)
     end
 end
 
@@ -394,26 +423,26 @@ local REPEAT_RATE   = 80   -- ms between repeats
 local last_dpad     = 0    -- last held d-pad bitmask
 local dpad_time     = 0    -- timestamp of last d-pad move
 
-local DPAD_MASK = input.BTN_UP | input.BTN_DOWN | input.BTN_LEFT | input.BTN_RIGHT
+local DPAD_MASK = P.UP | P.DOWN | P.LEFT | P.RIGHT
 
 local function handle_input()
     input.update()
-    local pressed = input.getButtonsPressed()
+    local held_all, pressed = read_buttons()
 
     -- Exit
-    if pressed & input.BTN_ESC ~= 0 then
+    if input.getButtonsPressed() & input.BTN_ESC ~= 0 then
         return "exit"
     end
 
     if game_state ~= STATE_PLAYING then
-        if pressed & input.BTN_ENTER ~= 0 then
+        if confirm_pressed(pressed) then
             init_board()
         end
         return
     end
 
     -- D-pad movement with key repeat
-    local held = input.getButtons() & DPAD_MASK
+    local held = held_all & DPAD_MASK
     local now  = pc.sys.getTimeMs()
     local move = false
 
@@ -438,22 +467,22 @@ local function handle_input()
     last_dpad = held
 
     if move then
-        if held & input.BTN_UP ~= 0 and cursor.y > 1 then
+        if held & P.UP ~= 0 and cursor.y > 1 then
             cursor.y = cursor.y - 1
         end
-        if held & input.BTN_DOWN ~= 0 and cursor.y < ROWS then
+        if held & P.DOWN ~= 0 and cursor.y < ROWS then
             cursor.y = cursor.y + 1
         end
-        if held & input.BTN_LEFT ~= 0 and cursor.x > 1 then
+        if held & P.LEFT ~= 0 and cursor.x > 1 then
             cursor.x = cursor.x - 1
         end
-        if held & input.BTN_RIGHT ~= 0 and cursor.x < COLS then
+        if held & P.RIGHT ~= 0 and cursor.x < COLS then
             cursor.x = cursor.x + 1
         end
     end
     
     -- Reveal cell
-    if pressed & input.BTN_F4 ~= 0 then
+    if pressed & P.REVEAL ~= 0 then
         local x, y = cursor.x, cursor.y
         if first_click then
             first_click = false
@@ -468,17 +497,17 @@ local function handle_input()
     end
     
     -- Toggle flag
-    if pressed & input.BTN_F5 ~= 0 then
+    if pressed & P.FLAG ~= 0 then
         toggle_flag(cursor.x, cursor.y)
     end
     
     -- Chord reveal
-    if pressed & input.BTN_DEL ~= 0 then
+    if pressed & P.CHORD ~= 0 then
         chord_reveal(cursor.x, cursor.y)
     end
     
     -- Toggle question mark
-    if pressed & input.BTN_BACKSPACE ~= 0 then
+    if pressed & P.MARK ~= 0 then
         toggle_question(cursor.x, cursor.y)
     end
     
