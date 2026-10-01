@@ -359,6 +359,32 @@ def test_pad_home_opens_the_menu_and_a_pad_leaves_the_game(simulator):
     assert "PM:APP_A" not in texts and "PM:TIMEOUT" not in texts, texts
 
 
+def test_keyboard_aliases_do_not_navigate_the_menus(simulator):
+    """Only pad sources read as menu navigation: F4 and F5 (the keyboard's
+    gamepad A and B) stay plain keys in the system menu, not Enter and Esc
+    (kbd_get_pad_nav_pressed reads the sources alone)."""
+    sim = simulator
+    stage_lua_app(Path(sim.sd_card_path), "pad_menu", PAD_MENU)
+    seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
+    sim.launch_app("pad_menu")
+    sim.wait_for_log(r"^PM:READY$", timeout=10, since_seq=seq)
+
+    sim.keypress("menu")
+    _menu_open(sim)
+    sim.keypress("f4")  # as Enter it would choose the app's item and close
+    time.sleep(GAP)
+    sim.keypress("f5")  # as Esc it would close the menu
+    time.sleep(0.5)
+    _menu_open(sim, timeout=0)  # still open
+    assert "PM:ITEM" not in _texts(sim, seq), _texts(sim, seq)
+
+    sim.keypress("enter")  # the first item is the app's own
+    sim.wait_for_log(r"^PM:ITEM$", timeout=10, since_seq=seq)
+    sim.exit_app()
+    sim.wait_for_exit(timeout=15)
+    assert _texts(sim, seq).count("PM:ITEM") == 1, _texts(sim, seq)
+
+
 # The same path on either target: the device's serial capture drops log
 # lines, so this fixture writes its edges to a file.
 PAD_TARGET_ID = "com.test.pad_target"
