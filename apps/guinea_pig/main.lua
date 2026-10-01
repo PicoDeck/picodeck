@@ -20,7 +20,7 @@ else
     P = {UP = input.BTN_UP, DOWN = input.BTN_DOWN, LEFT = input.BTN_LEFT,
          RIGHT = input.BTN_RIGHT, A = input.BTN_ENTER, B = input.BTN_F2, X = input.BTN_F1}
     read_buttons = function() return input.getButtons(), input.getButtonsPressed() end
-    local names = {[P.A] = "Enter", [P.B] = "F2", [P.X] = "F1"}
+    local names = {[P.UP] = "Up", [P.DOWN] = "Down", [P.A] = "Enter", [P.B] = "F2", [P.X] = "F1"}
     key = function(btn) return names[btn] end
 end
 
@@ -1631,9 +1631,9 @@ local menu_scene = {
         -- Footer panel
         local panel = disp.rgb(30, 60, 30)
         disp.fillRect(0, FOOTER_TOP, SCREEN_W, SCREEN_H - FOOTER_TOP, panel)
-        disp.drawText(12, 244, "Arrows: Move   Up/" .. key(P.A) .. ": Jump", WHITE, panel)
+        disp.drawText(12, 244, "Arrows: Move   " .. key(P.UP) .. "/" .. key(P.A) .. ": Jump", WHITE, panel)
         disp.drawText(12, 258, key(P.X) .. ": Sonic Squeak (hold)", WHITE, panel)
-        disp.drawText(12, 272, key(P.B) .. ": Dash   Down: Hide in hay", WHITE, panel)
+        disp.drawText(12, 272, key(P.B) .. ": Dash   " .. key(P.DOWN) .. ": Hide in hay", WHITE, panel)
         if high_score > 0 then
             disp.drawText(12, 288, "Best: " .. high_score, GOLD, panel)
         end

@@ -226,7 +226,9 @@ function S.draw()
 
     local solved = select(1, Records.summary())
     Render.header("NEUROGRAM", ("%d done"):format(solved))
-    Render.footer("L/R size  UP/DN pick  " .. Pad.label(Pad.A) .. " open", "ESC quit")
+    Render.footer(Pad.label(Pad.LEFT) .. "/" .. Pad.label(Pad.RIGHT) .. " size  " ..
+                  Pad.label(Pad.UP) .. "/" .. Pad.label(Pad.DOWN) .. " pick  " ..
+                  Pad.label(Pad.A) .. " open", "ESC quit")
 end
 
 return S

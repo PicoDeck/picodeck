@@ -181,7 +181,7 @@ local menu_scene = {
         
         -- Instructions
         disp.drawText(40, 160, "D-pad: Move", GRAY, BLACK)
-        disp.drawText(40, 180, "Up/" .. pad_label(PAD.A) .. ": Jump", GRAY, BLACK)
+        disp.drawText(40, 180, pad_label(PAD.UP) .. "/" .. pad_label(PAD.A) .. ": Jump", GRAY, BLACK)
         disp.drawText(40, 200, "Collect coins!", YELLOW, BLACK)
         
         -- High score

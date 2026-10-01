@@ -33,6 +33,7 @@ else
     Pad.L, Pad.R, Pad.START, Pad.SELECT = input.BTN_F2, input.BTN_F3, input.BTN_F4, input.BTN_TAB
 
     local names = {
+        [Pad.UP] = "UP", [Pad.DOWN] = "DOWN", [Pad.LEFT] = "LEFT", [Pad.RIGHT] = "RIGHT",
         [Pad.A] = "ENTER", [Pad.B] = "F5", [Pad.X] = "DEL", [Pad.Y] = "BKSP",
         [Pad.L] = "F2", [Pad.R] = "F3", [Pad.START] = "F4", [Pad.SELECT] = "TAB",
     }
