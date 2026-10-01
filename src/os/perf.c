@@ -98,7 +98,7 @@ void perf_set_target_fps(uint32_t fps) {
     s_perf_next_end_us = 0;
 }
 
-// The XIP cache's hit rate since the previous call (sys.getStats()). The
+// The XIP cache's hit rate since the previous call (sys.getMemInfo()). The
 // counters are cleared by a write, not a read: xip_stats.c owns them.
 int perf_xip_cache_hit_rate(void) {
 #ifdef PICODECK_SIMULATOR

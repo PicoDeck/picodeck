@@ -3,7 +3,7 @@
 
 // The XIP cache's and the bus fabric's contention counters, summed over a
 // window: the `xipstat` dev command (src/dev_commands.c) and
-// sys.getStats().xip_cache_hit_rate. Firmware only; Core 0 only.
+// sys.getMemInfo().xip_cache_hit_rate. Firmware only; Core 0 only.
 //
 // Both cores, the DMA and every XIP alias share one 16 KB, 2-way cache of
 // 8-byte lines in front of the QMI (flash on CS0, QMI PSRAM on CS1). None of
