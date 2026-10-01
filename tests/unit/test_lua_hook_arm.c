@@ -8,9 +8,12 @@
 // Built against the real Lua core with the device's VM configuration
 // (cmake/picodeck_lua.cmake). The VM sets trap flags itself (a stack
 // reallocation traps every Lua frame so each luaV_execute reloads its base),
-// so just before arming the test marks every Lua frame's trap with 2: any
-// non-zero value means "check", so that changes nothing for the VM, and a 1
-// afterwards is a frame the arm wrote.
+// and a frame trapped already would fire the hook whatever the arm did, so
+// each state pre-grows its stack and stops the collector (whose stack shrink
+// would reallocate later), and each test checks that no Lua frame was
+// trapped when it armed. Just before arming, a frame trapped anyway is
+// re-marked 2 (still "check" to the VM), so a 1 afterwards is one the arm
+// wrote.
 #include "check.h"
 
 #include "lauxlib.h"
@@ -26,6 +29,7 @@ static int s_fired;        // hook calls
 static int s_fired_depth;  // Lua frames on the chain when it ran
 static int s_armed_depth;  // Lua frames on the chain when it was armed
 static int s_trapped;      // Lua frames the arm set the trap of
+static int s_pre_trapped;  // Lua frames already trapped when it was armed
 
 static int lua_frames(lua_State *L) {
   int n = 0;
@@ -36,9 +40,16 @@ static int lua_frames(lua_State *L) {
 
 #define TRAP_UNTOUCHED 2
 
-static void mark_traps(lua_State *L) {
+// Re-marks the frames already trapped (non-zero stays non-zero, zero stays
+// zero, so the VM sees no change) and counts them.
+static int mark_traps(lua_State *L) {
+  int n = 0;
   for (CallInfo *ci = L->ci; ci != NULL; ci = ci->previous)
-    if (isLua(ci)) ci->u.l.trap = TRAP_UNTOUCHED;
+    if (isLua(ci) && ci->u.l.trap) {
+      ci->u.l.trap = TRAP_UNTOUCHED;
+      n++;
+    }
+  return n;
 }
 
 static int trapped_frames(lua_State *L) {
@@ -57,7 +68,7 @@ static void service_hook(lua_State *L, lua_Debug *ar) {
 }
 
 static void arm_now(lua_State *L) {
-  mark_traps(L);
+  s_pre_trapped = mark_traps(L);
   picodeck_lua_arm_hook(L, service_hook);
   s_trapped = trapped_frames(L);
   s_armed_depth = lua_frames(L);
@@ -98,7 +109,9 @@ static lua_State *new_state(alloc_state_t *st) {
   st->L = L;
   luaL_openlibs(L);
   lua_register(L, "arm", l_arm);
-  s_fired = s_fired_depth = s_armed_depth = s_trapped = 0;
+  lua_gc(L, LUA_GCSTOP);       // no stack shrink, so no reallocation later
+  CHECK(lua_checkstack(L, 900));  // the deepest dive's slots, grown up front
+  s_fired = s_fired_depth = s_armed_depth = s_trapped = s_pre_trapped = 0;
   return L;
 }
 
@@ -132,6 +145,7 @@ static void test_arm_from_c_at_depth(void) {
   char code[512];
   snprintf(code, sizeof(code), "%s dive(%d, arm)", DIVE, DEPTH);
   run(L, code);
+  CHECK_EQ_INT(s_pre_trapped, 0);
   CHECK(s_armed_depth > DEPTH);
   CHECK_EQ_INT(s_trapped, 1);
   CHECK_EQ_INT(s_fired, 1);
@@ -150,6 +164,7 @@ static void test_arm_inside_running_lua_frame(void) {
   snprintf(code, sizeof(code), "%s dive(%d, function() end)", DIVE, DEPTH + 20);
   run(L, code);
   CHECK_EQ_INT(st.armed, 1);
+  CHECK_EQ_INT(s_pre_trapped, 0);
   CHECK(s_trapped <= 1);
   CHECK_EQ_INT(s_fired, 1);
   CHECK(s_fired_depth >= s_armed_depth);
@@ -166,6 +181,7 @@ static void test_arm_through_c_frames(void) {
   snprintf(code, sizeof(code),
            "%s dive(%d, function() pcall(pcall, arm) end)", DIVE, DEPTH);
   run(L, code);
+  CHECK_EQ_INT(s_pre_trapped, 0);
   CHECK_EQ_INT(s_trapped, 1);
   CHECK_EQ_INT(s_fired, 1);
   CHECK(s_fired_depth >= s_armed_depth);
@@ -187,6 +203,7 @@ static void test_arm_beyond_frame_cap(void) {
            "noop()\n",
            PICODECK_LUA_ARM_MAX_FRAMES + 4);
   run(L, code);
+  CHECK_EQ_INT(s_pre_trapped, 0);
   CHECK_EQ_INT(s_trapped, 0);
   CHECK_EQ_INT(s_fired, 1);
   lua_close(L);
