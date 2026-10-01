@@ -104,6 +104,9 @@ def _press(target, how: str):
         target.keypress("menu")
     else:
         target.pad("home", hold_ms=100)
+        # Held for 100 ms from the first poll that sees it: wait it out, or a
+        # second Home set under load finds it still down (no new edge).
+        time.sleep(0.4)
 
 
 @pytest.fixture
