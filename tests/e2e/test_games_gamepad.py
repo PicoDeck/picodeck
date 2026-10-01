@@ -499,7 +499,7 @@ def _won(sim):
     return _header_pixels(sim, lambda r, g, b: g > 200 and r < 100 and b < 100)
 
 
-def _lose(sim, quick_tap=False):
+def _lose(sim, quick_tap=False, think=0.0):
     """Reveals (5, 5), then the mine at (6, 7); returns the fresh board's cell.
 
     quick_tap presses A again at once, as a player who taps twice would.
@@ -508,6 +508,7 @@ def _lose(sim, quick_tap=False):
     fresh = _mine_cell(sim, 5, 5)
     _tap(sim, "f4")
     cur.goto(6, 7)
+    time.sleep(think)
     _tap(sim, "f4")
     if quick_tap:
         r = sim.keypress("f4")
@@ -535,7 +536,7 @@ def test_minesweeper_plays_again_after_a_loss(simulator, key, no_gamepad):
 def test_minesweeper_end_screen_shows_the_time_the_game_took(simulator):
     sim = simulator
     _launch_mines(sim, _MINES_LOSE, spy_time=True)
-    _lose(sim)                           # several seconds after the first reveal
+    _lose(sim, think=1.5)                # over a second after the first reveal
     seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
     text = sim.wait_for_log(r"TIME:", timeout=5, since_seq=seq)
     assert int(text.split(":", 1)[1]) >= 1, text
