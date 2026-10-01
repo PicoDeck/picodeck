@@ -1022,6 +1022,11 @@ static void video_boost_clock(video_priv_t *priv) {
         if (!wifi_hw_disconnected())
             printf("[VIDEO] WiFi not idle after %d ms; boosting anyway\n",
                    WIFI_HW_DISCONNECT_WAIT_MS);
+        // While the radio idles, its driver would put the SPI bus to sleep
+        // a few seconds into the video, at 300 MHz, where that handshake
+        // fails and stalls Core 0 for ~68 ms (wifi.h): sleep it now, at
+        // 200, and keep the driver quiet until the clock is back.
+        wifi_pause_radio();
     }
 
     // Boost to 300 MHz for video playback
@@ -1034,6 +1039,7 @@ static void video_restore_clock(video_priv_t *priv) {
 
     launcher_apply_clock(200000);
     priv->overclocked = false;
+    wifi_resume_radio();
 
     // Reconnect WiFi if it was connected before
     if (priv->wifi_was_connected && wifi_is_available()) {

@@ -814,6 +814,9 @@ static bool run_app(int idx) {
     if (!wifi_hw_disconnected())
       printf("[LAUNCHER] WiFi not idle after %d ms; changing clock anyway\n",
              WIFI_HW_DISCONNECT_WAIT_MS);
+    // As the video player's boost (wifi.h): the driver would sleep the SPI
+    // bus by itself ~2.5 s in, at the app's clock, and stall Core 0 ~68 ms.
+    wifi_pause_radio();
   }
 
   if (app->system_clock_khz > 0) {
@@ -874,6 +877,7 @@ static bool run_app(int idx) {
 
   if (app->system_clock_khz > 0) {
     launcher_apply_clock(200000); // Reset to system default
+    wifi_resume_radio();          // paused above (a no-op if not)
   }
 
   system_menu_clear_items();

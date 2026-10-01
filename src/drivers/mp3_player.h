@@ -70,10 +70,13 @@ void mp3_player_set_decode_ahead(bool on);
 // audio's first frames.
 bool     mp3_player_start_fed(uint32_t sample_rate, uint16_t channels);
 // Restarts a fed session whose audio is playing (mixed, the output
-// running) at new data, `data` (a seek): the decoder starts on it while the
-// old audio plays on from the stage, and once the new audio's first frame
-// is decoded the old fades out and the new fades in, so only the render
-// that ends the fade-out is silent. `mid_stream`: the data does not start
+// running) at new data, `data` (a seek): the stage is topped up with the
+// old audio, the decoder starts on the new data while the old audio plays
+// on from the stage, and once the new audio's first frame is decoded the
+// old fades out and the new fades in, so only the render that ends the
+// fade-out is silent. (A decode that could outlast the old audio stops
+// first: the old fades out while it still plays, and the rest of the
+// decode is silent.) `mid_stream`: the data does not start
 // at the stream's start, so the first frame decoded only primes the
 // decoder (from nothing it would play as a ramp up from silence) and is
 // not heard: start the data a frame before the one to be heard (and one
@@ -119,6 +122,9 @@ typedef struct {
     uint32_t gap_max_us;      // the longest
     uint32_t preroll_max_us;  // in place: the longest decode behind the old audio
     uint32_t margin_min_us;   // in place: the least old audio left when one began
+    uint32_t late;            // in place, but the old audio faded out before the
+                              // new audio's first frame was decoded (it would
+                              // have run out first): the rest of it was a gap
 } mp3_fed_restart_stats_t;
 void     mp3_player_fed_restart_stats(mp3_fed_restart_stats_t *out, bool reset);
 

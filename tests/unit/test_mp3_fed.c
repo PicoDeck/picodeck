@@ -373,6 +373,7 @@ static void test_restart_in_place_leaves_no_gap(void) {
   mp3_fed_restart_stats_t st = restart_stats();
   CHECK_EQ_U32(st.restarts, 1);
   CHECK_EQ_U32(st.fallbacks, 0);
+  CHECK_EQ_U32(st.late, 0);
   CHECK_EQ_U32(st.gap_us, 0);                   // the fade-in's render is the next
   CHECK_EQ_U32(st.gap_max_us, 0);
   // Two frames decoded (the primer and the first heard), the old audio
@@ -408,6 +409,70 @@ static void test_restart_in_place_leaves_no_gap(void) {
   CHECK_EQ_U32(st.fallbacks, 1);
   CHECK_EQ_U32(st.gap_us, 3 * RENDER_US);
   CHECK_EQ_U32(st.gap_max_us, 3 * RENDER_US);
+  mp3_player_stop_fed();
+  s_capturing = false;
+  s_output_on = false;
+}
+
+// The device's time (issue #20 on hardware): a frame's decode behind the
+// old audio took 8.4-9.2 ms on Core 0 at the video's 300 MHz (libmad's
+// decode, its synthesis and the PCM ring write; three renders here), so
+// with the primer, libmad's state reset and the prefeed's copy the new
+// audio's first frame was ready ~22 ms after the restart began. The
+// refill keeps the stage only over half (1024 frames, ~23 ms) and lets it
+// run lower while Core 1 is mid-burst: the old audio ran out first, 2-6 ms
+// of gap at one seek in five. The restart now tops the stage up from the
+// PCM ring first (2048 frames, ~46 ms), so a stage left low (six renders
+// without a refill here) still outlasts the decode: no underrun, no gap.
+static void test_restart_in_place_outlasts_a_low_stage(void) {
+  uint32_t off = frame_offset(10);
+  playing_session();
+  s_renders_per_decode = 3;
+  for (int i = 0; i < 6; i++)
+    render();                                   // Core 1 late: the stage below half
+  uint32_t underruns = mp3_player_staging_underruns();
+  capture_from_scratch();
+  CHECK(mp3_player_restart_fed(s_mp3 + off, s_mp3_len - off, true));
+  play_until(10000);
+  CHECK(longest_silence() < RENDER_FRAMES);
+  CHECK_EQ_U32(mp3_player_staging_underruns(), underruns);
+  mp3_fed_restart_stats_t st = restart_stats();
+  CHECK_EQ_U32(st.restarts, 1);
+  CHECK_EQ_U32(st.late, 0);
+  CHECK_EQ_U32(st.gap_max_us, 0);
+  CHECK_EQ_U32(st.preroll_max_us, 6 * RENDER_US);
+  CHECK(st.margin_min_us >= (2048u - 32u) * 1000000u / 44100u);
+  mp3_player_stop_fed();
+  s_capturing = false;
+  s_output_on = false;
+}
+
+// A decode slower than the old audio lasts (nine renders a frame, ~26 ms:
+// three times the device's): the restart decodes the primer behind the
+// old audio, sees that the next frame could outlast what is left of it,
+// fades the old audio out while it still plays, and decodes the new
+// audio's first frame from silence. The gap is that one frame (counted as
+// late), never the old audio running dry, and shorter than the fallback
+// through start_fed (its three-frame pre-roll after the fade-out).
+static void test_slow_restart_switches_before_the_old_audio_runs_out(void) {
+  uint32_t off = frame_offset(10);
+  playing_session();
+  s_renders_per_decode = 9;
+  uint32_t underruns = mp3_player_staging_underruns();
+  capture_from_scratch();
+  render();
+  CHECK(mp3_player_restart_fed(s_mp3 + off, s_mp3_len - off, true));
+  CHECK_EQ_U32(mp3_player_staging_underruns(), underruns);
+  s_renders_per_decode = 1;     // (as slow as this, Core 1 would fall behind)
+  play_until(10000);
+  uint32_t silence = longest_silence();
+  CHECK(silence >= 9 * RENDER_FRAMES);
+  CHECK(silence < 11 * RENDER_FRAMES);
+  mp3_fed_restart_stats_t st = restart_stats();
+  CHECK_EQ_U32(st.restarts, 1);
+  CHECK_EQ_U32(st.late, 1);
+  CHECK_EQ_U32(st.preroll_max_us, 9 * RENDER_US);   // the primer, behind it
+  CHECK_EQ_U32(st.gap_max_us, 9 * RENDER_US);       // the first frame heard
   mp3_player_stop_fed();
   s_capturing = false;
   s_output_on = false;
@@ -573,6 +638,8 @@ int main(void) {
   test_restart_and_stop_clear_the_mark();
   test_mark_after_a_partial_pass();
   test_restart_in_place_leaves_no_gap();
+  test_restart_in_place_outlasts_a_low_stage();
+  test_slow_restart_switches_before_the_old_audio_runs_out();
   test_restart_in_place_plays_the_new_audio_whole();
   test_primed_restart_keeps_the_position();
   test_mark_after_a_restart_in_place();

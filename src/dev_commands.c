@@ -565,10 +565,11 @@ static void dev_command_run(void *arg) {
         mp3_fed_restart_stats_t rs;
         mp3_player_fed_restart_stats(&rs, true);
         printf("[DEV] mp3 restarts: restarts=%lu fallbacks=%lu gap_us=%lu "
-               "gap_max_us=%lu preroll_max_us=%lu margin_min_us=%lu (reset)\n",
+               "gap_max_us=%lu preroll_max_us=%lu margin_min_us=%lu late=%lu (reset)\n",
                (unsigned long)rs.restarts, (unsigned long)rs.fallbacks,
                (unsigned long)rs.gap_us, (unsigned long)rs.gap_max_us,
-               (unsigned long)rs.preroll_max_us, (unsigned long)rs.margin_min_us);
+               (unsigned long)rs.preroll_max_us, (unsigned long)rs.margin_min_us,
+               (unsigned long)rs.late);
     } else if (strcmp(s_cmd_buf, "audiostat") == 0 ||
                strcmp(s_cmd_buf, "audiostat reset") == 0) {
         // Core 1's tick cost, the refill interrupt and the stream's
