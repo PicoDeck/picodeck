@@ -686,7 +686,8 @@ class HardwareMonitor:
 
 # Response lines that terminate a dev command exchange.
 _CMD_END_MARKERS = ["pong", "Total:", "Error:", "Launching", "Rebooting",
-                    "Unknown", "Status:", "Created:", "Unzipped", "Deleted:"]
+                    "Unknown", "Status:", "Created:", "Unzipped", "Deleted:",
+                    "Pad:", "Usage: pad"]
 
 
 def _is_cmd_end(line: str) -> bool:
@@ -1398,6 +1399,104 @@ async def keypress(key: str, count: int = 1, delay_ms: int = 100,
         return f"Error: {e}"
     bad = [s for s in sent if not s.endswith(": ok")]
     summary = f"{len(keys)} key(s) injected: " + ", ".join(sent)
+    return summary if not bad else f"PARTIAL FAILURE — {summary}"
+
+
+# ── Gamepad (the `pad` dev command) ─────────────────────────────────────────
+
+# Button names the firmware's `pad` command takes (src/dev_ops.c), joined by
+# '+'; "none" releases everything (the pad stays connected), "off"
+# disconnects it.
+_PAD_BUTTONS = {"up", "down", "left", "right", "a", "b", "x", "y", "l", "r",
+                "start", "select", "home"}
+
+
+def _parse_pad_states(spec: str) -> list[str]:
+    """Split a pad spec into the states to set in turn, normalized.
+
+    "A+Right" -> ["a+right"]; "home, up, a" or "home up a" -> ["home", "up",
+    "a"]; "none" and "off" stand alone. Raises ValueError on an unknown
+    button or an empty spec.
+    """
+    states = []
+    for tok in re.split(r"[\s,]+", spec.strip()):
+        if not tok:
+            continue
+        tok = tok.lower()
+        if tok in ("none", "off"):
+            states.append(tok)
+            continue
+        names = tok.split("+")
+        bad = [n for n in names if n not in _PAD_BUTTONS]
+        if bad:
+            raise ValueError(f"unknown pad button {bad[0]!r} (buttons: "
+                             + ", ".join(sorted(_PAD_BUTTONS)) + ")")
+        states.append("+".join(names))
+    if not states:
+        raise ValueError("empty pad state")
+    return states
+
+
+def _pad_commands(spec: str, hold_ms: int = 0) -> list[str]:
+    """The `pad` dev commands for a spec. One state is set as given (held
+    until the next command, or hold_ms); several are pressed in turn, each
+    held hold_ms (100 ms when 0) so each reads as its own press."""
+    states = _parse_pad_states(spec)
+    if len(states) > 1 and hold_ms <= 0:
+        hold_ms = 100
+    hold = f" {int(hold_ms)}" if hold_ms > 0 else ""
+    return [f"pad {st}{'' if st in ('none', 'off') else hold}"
+            for st in states]
+
+
+def _pad_reply(lines: list[str]) -> str:
+    """The firmware's answer to one `pad` command ("Pad: up+a",
+    "Error: ...", "Usage: pad ..."), or "no reply"."""
+    for ln in lines:
+        if ln.startswith("[DEV] ") and not ln.startswith("[DEV] Command:"):
+            text = ln[len("[DEV] "):]
+            if text.startswith(("Pad:", "Error:", "Usage:", "Unknown")):
+                return text
+    return "no reply"
+
+
+@mcp.tool()
+async def pad(state: str, hold_ms: int = 0, delay_ms: int = 150,
+              device: str | None = None) -> str:
+    """Drive the test gamepad on the simulator or hardware (the `pad` dev
+    command): apps read it through picocalc.gamepad / api->gamepad, ORed with
+    the keyboard, like a physical controller.
+
+    state: buttons joined by '+' ("a", "up+a"; up down left right a b x y l
+    r start select, and home, which opens the system menu), "none" (release
+    everything, stay connected) or "off" (disconnect). A single state is held
+    until the next call, or for hold_ms. A list ("home, up, a") presses each
+    in turn, each held hold_ms (default 100), delay_ms apart (default 150).
+    """
+    try:
+        cmds = _pad_commands(state, hold_ms)
+    except ValueError as e:
+        return f"Error: {e}"
+    replies = []
+    port = resolve_port(device)
+    try:
+        conn = None if port else get_connection()
+        for i, cmd in enumerate(cmds):
+            if port:
+                lines = await asyncio.to_thread(do_command_hardware, cmd, port,
+                                                timeout=3)
+                replies.append(_pad_reply(lines))
+            else:
+                r = await asyncio.to_thread(conn.call, "dev_command",
+                                            {"cmd": cmd}, timeout=10)
+                replies.append(r.get("output", "") if isinstance(r, dict)
+                               else str(r))
+            if i < len(cmds) - 1:
+                await asyncio.sleep(max(0, delay_ms) / 1000.0)
+    except Exception as e:
+        return f"Error: {e}"
+    bad = [r for r in replies if not r.startswith("Pad:")]
+    summary = "; ".join(replies)
     return summary if not bad else f"PARTIAL FAILURE — {summary}"
 
 

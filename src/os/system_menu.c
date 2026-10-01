@@ -786,7 +786,9 @@ static bool menu_loop(lua_State *L, int context) {
       running = false;
       continue;
     }
-    uint32_t pressed = kbd_get_buttons_pressed();
+    // A pad drives the menu too (D-pad, A = Enter, B = Esc), so a player
+    // with only a gamepad can leave a game: Home opens it, Up reaches Exit.
+    uint32_t pressed = kbd_get_buttons_pressed() | kbd_get_pad_nav_pressed();
 
     if (pressed & BTN_UP) {
       sel = (sel > 0) ? sel - 1 : count - 1;

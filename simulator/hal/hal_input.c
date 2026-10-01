@@ -1,6 +1,7 @@
 // HAL Input - SDL2 Implementation
 
 #include "hal_input.h"
+#include "hal_pad.h"
 #include "hal_timing.h"
 #include "../../src/drivers/kbd_event_queue.h"
 #include <string.h>
@@ -150,6 +151,9 @@ void hal_input_shutdown(void) {
 }
 
 void hal_input_handle_event(const SDL_Event* event) {
+    // Game controllers are a gamepad source of their own (hal_pad.c).
+    if (hal_pad_handle_event(event))
+        return;
     if (event->type == SDL_KEYDOWN || event->type == SDL_KEYUP) {
         bool pressed = (event->type == SDL_KEYDOWN);
         SDL_Keycode key = event->key.keysym.sym;

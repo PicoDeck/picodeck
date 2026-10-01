@@ -334,6 +334,7 @@ add_executable(picodeck
     src/drivers/keyboard.c
     src/drivers/kbd_bus.c
     src/drivers/kbd_i2c.c
+    src/drivers/pad_source.c
     src/drivers/sdcard.c
     src/drivers/wifi.c
     src/drivers/rng.c

@@ -737,6 +737,19 @@ class PicodeckSimulator:
         else:
             return self.call("inject_button", {"button": key, "action": "click"})
 
+    def pad(self, state: str, hold_ms: int = 0) -> str:
+        """Set the test gamepad source through the `pad` dev command (the
+        firmware's handler, src/dev_ops.c): buttons joined by '+' ("up+a",
+        "home"), "none" (nothing held, still connected) or "off"
+        (disconnected). Held until the next call, or for hold_ms from the
+        first poll that sees it. Returns the reply ("Pad: up+a"); raises on
+        an error reply."""
+        cmd = f"pad {state}" + (f" {int(hold_ms)}" if hold_ms else "")
+        r = self.call("dev_command", {"cmd": cmd})
+        if not r.get("ok"):
+            raise RuntimeError(f"{cmd!r}: {r.get('output')}")
+        return r.get("output", "")
+
     def get_input_state(self) -> dict:
         """{issued_seq, consumed_seq}: every injection with seq <= consumed_seq
         has been read by the OS input layer."""

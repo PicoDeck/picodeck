@@ -92,7 +92,7 @@ other test is deselected. On the simulator (`--target sim`, the default)
 `hardware` tests skip, allow-listed, and `both` tests run. A `both` test must
 use the `target` fixture only: it gets `hw_target.SimTarget` over its
 simulator, or the session's `hw_target.HwTarget`. Both offer `launch_app`,
-`wait_for_exit`, `exit_app`, `keypress(_sequence)`, `screenshot`,
+`wait_for_exit`, `exit_app`, `keypress(_sequence)`, `pad`, `screenshot`,
 `read_file`/`write_file`/`delete_file`, `push_app`/`stage_lua_app`,
 `run_lua_app`, `wait_for_results`, `status` and log reading. Hardware-only
 fixture apps live in `hw_apps/` (pushed by the test, never staged on

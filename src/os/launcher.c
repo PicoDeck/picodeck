@@ -1125,7 +1125,8 @@ void launcher_run(void) {
     if (screenshot_check_scheduled())
       screenshot_save();
 
-    uint32_t pressed = kbd_get_buttons_pressed();
+    // A pad picks and launches apps too (D-pad, A = Enter).
+    uint32_t pressed = kbd_get_buttons_pressed() | kbd_get_pad_nav_pressed();
 
     if (pressed)
       handle_input(pressed, &dirty);

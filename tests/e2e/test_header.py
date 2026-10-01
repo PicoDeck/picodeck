@@ -228,6 +228,42 @@ def test_wifi_failure_adds_a_red_slash(simulator):
     assert (px[:, 0] > px[:, 2] + 40).any(), "failed WiFi shows no red slash"
 
 
+# ── Gamepad ─────────────────────────────────────────────────────────────────
+
+# Drawn left of the WiFi icon while a pad source is connected (ui.c k_pad).
+PAD_GLYPH = [
+    ".###########.",
+    "#############",
+    "##.######.###",
+    "#...####.#.##",
+    "##.######.###",
+    "#############",
+    "####.....####",
+    ".##.......##.",
+]
+PAD_W, PAD_H = 13, 8
+PAD_X = WIFI_X0 - 8 - PAD_W             # 255
+PAD_Y = (HEADER_H - PAD_H) // 2         # 6
+PAD_MASK = np.array([[c == "#" for c in row] for row in PAD_GLYPH])
+
+
+def _pad_shown(arr) -> bool:
+    ink = ink_mask(arr, PAD_X, PAD_X + PAD_W)[PAD_Y:PAD_Y + PAD_H]
+    return bool((ink == PAD_MASK).all())
+
+
+def test_connected_pad_shows_a_gamepad_icon(simulator):
+    """A connected pad source (here the `pad` dev command's) puts a gamepad
+    left of the WiFi icon; disconnecting it takes the icon away again."""
+    assert not _pad_shown(launcher_header(simulator))
+    simulator.pad("none")  # connected, nothing held
+    arr = launcher_header(simulator, _pad_shown)
+    assert _pad_shown(arr), "no gamepad icon while a pad is connected"
+    simulator.pad("off")
+    arr = launcher_header(simulator, lambda a: not _pad_shown(a))
+    assert not _pad_shown(arr), "gamepad icon still drawn after the disconnect"
+
+
 # ── Overlays ────────────────────────────────────────────────────────────────
 
 

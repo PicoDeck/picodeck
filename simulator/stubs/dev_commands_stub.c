@@ -114,9 +114,11 @@ static void dc_run(void *arg) {
         job->ok = dev_op_unzip(job->cmd + 6, job->reply, sizeof(job->reply));
     } else if (strncmp(job->cmd, "rm ", 3) == 0) {
         job->ok = dev_op_rm(job->cmd + 3, job->reply, sizeof(job->reply));
+    } else if (strncmp(job->cmd, "pad ", 4) == 0 || strcmp(job->cmd, "pad") == 0) {
+        job->ok = dev_op_pad(job->cmd + 3, job->reply, sizeof(job->reply));
     } else {
         snprintf(job->reply, sizeof(job->reply),
-                 "Unknown command: %s (simulator supports ping, exit, unzip, rm)",
+                 "Unknown command: %s (simulator supports ping, exit, unzip, rm, pad)",
                  job->cmd);
         job->ok = false;
     }

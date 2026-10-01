@@ -594,6 +594,11 @@ static void dev_command_run(void *arg) {
             if (ch) kbd_inject_char(ch);
         }
         printf("[DEV] Key injected: %s\n", key);
+    } else if (strncmp(s_cmd_buf, "pad ", 4) == 0 ||
+               strcmp(s_cmd_buf, "pad") == 0) {
+        char reply[DEV_OP_REPLY_MAX];
+        dev_op_pad(s_cmd_buf + 3, reply, sizeof(reply));
+        printf("[DEV] %s\n", reply);
     } else if (strncmp(s_cmd_buf, "put ", 4) == 0) {
         const char *args = s_cmd_buf + 4;
         uint32_t size = 0;
@@ -764,6 +769,7 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   screenshot     - Capture screen\n");
         printf("[DEV]   keypress <key> - Inject keypress\n");
         printf("[DEV]   keydown <key> / keyup <key> - Hold/release a key (chords)\n");
+        printf("[DEV]   pad <btns|none|off> [ms] - Test gamepad: e.g. 'pad up+a', 'pad home 100'\n");
         printf("[DEV]   put <path> <size> - Receive file from host (USB CDC only)\n");
         printf("[DEV]   get <path>     - Send file to host (USB CDC only)\n");
         printf("[DEV]   putb64 <path> <size> - Receive file as base64 (any transport)\n");
