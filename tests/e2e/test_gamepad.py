@@ -403,7 +403,7 @@ d.flush()
 save()
 local deadline = sys.getTimeMs() + 60000
 while sys.getTimeMs() < deadline do
-    sys.resetIdleTimer()  -- an injected Home is no activity for the dimmer
+    sys.resetIdleTimer()  -- never dim: a press that wakes the screen is swallowed
     pc.input.update()
     local p, r = gp.getButtonsPressed(), gp.getButtonsReleased()
     if p ~= 0 or r ~= 0 then
@@ -454,18 +454,22 @@ def test_pad_source_on_target(target):
     assert target.launch_app("pad_target")["launched"]
     _read_edges(target)  # the app is up
 
-    target.pad("a+right")
-    time.sleep(0.3)
-    target.pad("none")
-    assert _read_edges(target, want=2) == ["P24 R0 H24", "P0 R24 H0"]
+    try:
+        target.pad("a+right")
+        time.sleep(0.3)
+        target.pad("none")
+        assert _read_edges(target, want=2) == ["P24 R0 H24", "P0 R24 H0"]
 
-    target.pad("home", hold_ms=150)
-    _target_menu_open(target)
-    target.pad("up", hold_ms=150)
-    time.sleep(0.3)
-    target.pad("a", hold_ms=150)
-    out = target.wait_for_exit(timeout=20)
-    # The device cannot tell the exit sentinel from a return.
-    assert out["result"] in ("exit_sentinel", "returned"), out
-    assert _read_edges(target) == ["P24 R0 H24", "P0 R24 H0"]  # no A press
-    target.pad("off")
+        target.pad("home", hold_ms=150)
+        _target_menu_open(target)
+        target.pad("up", hold_ms=150)
+        time.sleep(0.3)
+        target.pad("a", hold_ms=150)
+        out = target.wait_for_exit(timeout=20)
+        # The device cannot tell the exit sentinel from a return.
+        assert out["result"] in ("exit_sentinel", "returned"), out
+        assert _read_edges(target) == ["P24 R0 H24", "P0 R24 H0"]  # no A
+    finally:
+        # The hardware session outlives this test: never leave the test pad
+        # connected (header icon, launcher navigation) for the next one.
+        target.pad("off")
