@@ -4,6 +4,12 @@ Each test stages the real app from apps/ and drives it with the keys the
 gamepad binds (F4 for A, an arrow for a D-pad direction), never through BTN_*
 directly. The rebinding tests write a per-app /data/<id>/gamepad.json before
 launch and check that the bound key, not the default one, drives the game.
+The "without a gamepad" tests stage the app with `picocalc.gamepad = nil` put
+before its main.lua, as on firmware older than API version 9, and drive it
+with the keys it used before the gamepad.
+
+Each test stages one app, so its card holds only hello besides it
+(tests/e2e/README.md, "App cap").
 """
 
 import json
@@ -11,14 +17,21 @@ import shutil
 import time
 from pathlib import Path
 
+import pytest
+
 from helpers import app_id_of
+
+pytestmark = pytest.mark.sd(fixtures=[], reserve=1)
 
 APPS = Path(__file__).resolve().parents[2] / "apps"
 
 
-def _stage(sim, name, rebind=None):
+def _stage(sim, name, rebind=None, no_gamepad=False):
     sd = Path(sim.sd_card_path)
     shutil.copytree(APPS / name, sd / "apps" / name, dirs_exist_ok=True)
+    if no_gamepad:
+        main = sd / "apps" / name / "main.lua"
+        main.write_text("picocalc.gamepad = nil\n" + main.read_text())
     if rebind:
         path = sd / "data" / app_id_of(sd, name) / "gamepad.json"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -31,8 +44,8 @@ def _tap(sim, key):
     time.sleep(0.15)
 
 
-def _launch(sim, name, rebind=None):
-    _stage(sim, name, rebind)
+def _launch(sim, name, rebind=None, no_gamepad=False):
+    _stage(sim, name, rebind, no_gamepad)
     sim.launch_app(name)
     time.sleep(1.0)
 
@@ -197,3 +210,69 @@ def test_nonogram_follows_a_rebinding(simulator):
     _tap(sim, "z")
     sim.wait_for_log(r"^NG:FILL ", timeout=10, since_seq=mark)
     sim.keypress("esc")
+
+
+# ── Without a gamepad (firmware older than API version 9) ────────────────────
+
+
+def _still_running(sim):
+    """No Lua error has ended the app (--test-mode returns from one at once)."""
+    return sim.get_status()["app"].get("running") is True
+
+
+def test_snake_without_gamepad_steers_on_the_arrows(simulator):
+    sim = simulator
+    _launch(sim, "snake", no_gamepad=True)
+    x0, y0 = _snake_head(sim)
+    _tap(sim, "up")
+    time.sleep(1.0)
+    x1, y1 = _snake_head(sim)
+    assert y1 < y0 - 20, (y0, y1)
+    sim.keypress("esc")
+    assert sim.wait_for_exit(timeout=10)["result"] == "returned"
+
+
+def test_platformer_without_gamepad_starts_on_enter(simulator):
+    sim = simulator
+    _launch(sim, "platformer_demo", no_gamepad=True)
+    assert _platformer_in_menu(sim)
+    _tap(sim, "enter")
+    time.sleep(0.5)
+    assert not _platformer_in_menu(sim)
+    for key in ("right", "up", "left", "enter"):
+        _tap(sim, key)                   # move, jump
+    assert _still_running(sim)
+    sim.exit_app()
+    assert sim.wait_for_exit(timeout=10)["result"] != "error"
+
+
+def test_guinea_pig_without_gamepad_plays_on_the_old_keys(simulator):
+    sim = simulator
+    _launch(sim, "guinea_pig", no_gamepad=True)
+    assert _guinea_in_menu(sim)
+    _tap(sim, "enter")                   # start
+    time.sleep(0.8)
+    assert not _guinea_in_menu(sim)
+    for key in ("right", "enter", "f2", "f1", "up", "down", "left"):
+        _tap(sim, key)                   # move, jump, dash, squeak, hide
+    time.sleep(0.5)
+    assert _still_running(sim)
+    sim.exit_app()
+    assert sim.wait_for_exit(timeout=10)["result"] != "error"
+
+
+def test_nonogram_without_gamepad_plays_on_the_old_keys(simulator):
+    sim = simulator
+    _stage(sim, "nonogram", no_gamepad=True)
+    sim.launch_app("nonogram")
+    mark = _nonogram_to_play(sim, "enter")       # Enter opens the first puzzle
+    _tap(sim, "enter")                           # Enter fills
+    sim.wait_for_log(r"^NG:FILL ", timeout=10, since_seq=mark)
+    for key in ("right", "down", "f5", "backspace", "f2", "f3", "f4", "tab",
+                "right", "tab"):
+        _tap(sim, key)                   # move, block, mark, undo, redo, auto-X, latch
+    assert _still_running(sim)
+    sim.keypress("esc")                          # back to the menu
+    time.sleep(0.5)
+    sim.keypress("esc")                          # quit
+    assert sim.wait_for_exit(timeout=10)["result"] == "returned"
