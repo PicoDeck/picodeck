@@ -72,8 +72,9 @@ PicoDeck Lua uses **32-bit integers and single-precision floats** (`LUA_32BITS`)
 
 ## Limits
 
-- `LUAI_MAXSTACK = 1000` slots (a frame costs 10-13 slots: recursion tops out
-  around 80-100 Lua levels).
+- `LUAI_MAXSTACK = 1000` slots (a typical frame costs 10-13 slots: recursion
+  tops out around 80-100 Lua levels; the smallest frames cost about 1, up to
+  ~990 levels). Unbounded recursion ends in a catchable `"stack overflow"`.
 - `LUAI_MAXCCALLS = 60`: Lua→C→Lua nesting (e.g. `string.gsub` callbacks
   calling `gsub`) stops at ~58 levels with a catchable `"C stack overflow"`.
 - The Lua VM runs on its own 64 KB stack in PSRAM.
