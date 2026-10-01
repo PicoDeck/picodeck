@@ -74,6 +74,7 @@ local cursor       = {x = 4, y = 4}
 local game_state   = STATE_PLAYING
 local mines_remaining = MINES
 local timer        = 0
+local end_elapsed  = nil  -- seconds the finished game took
 local start_time   = 0
 local first_click  = true
 
@@ -135,6 +136,7 @@ local function init_board()
     start_time  = pc.sys.getTimeMs()
     first_click = true
     ended_at    = nil
+    end_elapsed = nil
 end
 
 local function place_mines(safe_x, safe_y)
@@ -390,8 +392,14 @@ local function draw_header()
     
     -- Timer
     local elapsed = 0
-    if game_state == STATE_PLAYING and not first_click then
-        elapsed = math.floor((pc.sys.getTimeMs() - start_time) / 1000)
+    if game_state == STATE_PLAYING then
+        if not first_click then
+            elapsed = math.floor((pc.sys.getTimeMs() - start_time) / 1000)
+        end
+    else
+        -- The end screen shows the time the game took, frozen.
+        end_elapsed = end_elapsed or math.floor((pc.sys.getTimeMs() - start_time) / 1000)
+        elapsed = end_elapsed
     end
     disp.drawText(disp.getWidth() // 2 - 20, 4, "Time:", DIM_COLOR, HEADER_BG)
     disp.drawText(disp.getWidth() // 2 + 12, 4, string.format("%3d", elapsed), TEXT_COLOR, HEADER_BG)

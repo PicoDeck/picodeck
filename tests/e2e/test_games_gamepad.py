@@ -453,12 +453,19 @@ _MINES_LOSE = [1, 7, 2, 7, 3, 7, 4, 7, 6, 7, 7, 7, 8, 7, 9, 7, 1, 9, 9, 9]
 _MINES_WIN = [9, 1, 9, 2, 9, 3, 9, 4, 9, 5, 9, 6, 9, 7, 9, 8, 1, 8, 2, 9]
 
 
-def _launch_mines(sim, mines, no_gamepad=False):
+def _launch_mines(sim, mines, no_gamepad=False, spy_time=False):
     _stage(sim, "minesweeper", no_gamepad=no_gamepad)
     main = Path(sim.sd_card_path) / "apps" / "minesweeper" / "main.lua"
     seq = ", ".join(map(str, mines))
+    spy = ""
+    if spy_time:                         # logs each Time: value the header draws
+        spy = ("local dt = picocalc.display.drawText\n"
+               "picocalc.display.drawText = function(x, y, t, ...)\n"
+               "  if x == 172 and y == 4 then picocalc.sys.log('TIME:' .. t) end\n"
+               "  return dt(x, y, t, ...)\n"
+               "end\n")
     main.write_text(
-        f"do local s = {{{seq}}} local i = 0\n"
+        spy + f"do local s = {{{seq}}} local i = 0\n"
         "math.random = function() i = i + 1 return s[(i - 1) % #s + 1] end end\n"
         + main.read_text())
     sim.launch_app("minesweeper")
@@ -521,6 +528,17 @@ def test_minesweeper_plays_again_after_a_loss(simulator, key, no_gamepad):
     assert _boom(sim) == 0
     assert _mine_cell(sim, 5, 5) == fresh
     assert _still_running(sim)
+    sim.keypress("esc")
+    sim.wait_for_exit(timeout=10)
+
+
+def test_minesweeper_end_screen_shows_the_time_the_game_took(simulator):
+    sim = simulator
+    _launch_mines(sim, _MINES_LOSE, spy_time=True)
+    _lose(sim)                           # several seconds after the first reveal
+    seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
+    text = sim.wait_for_log(r"TIME:", timeout=5, since_seq=seq)
+    assert int(text.split(":", 1)[1]) >= 1, text
     sim.keypress("esc")
     sim.wait_for_exit(timeout=10)
 
