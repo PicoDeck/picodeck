@@ -649,11 +649,18 @@ def test_video_resume_after_a_paused_seek_plays_audio(video_audio_app):
 
 # A seek's silence (mp3_restarts' gap_us): from the old audio's fade-out to
 # the new audio's fade-in being set, a stage reset and a copy of one decoded
-# frame from PIO PSRAM (~0.1-0.5 ms; ~1.5 ms if the chip fell back to
-# serial mode). Under one render period, the fade-in starts at the next
-# render. Restarting through start_fed it was the whole pre-roll decode
-# (three frames, ~10 ms and more) plus the s_mp3_mutex waits.
+# frame from PIO PSRAM: 0.48-0.55 ms measured (~1.5 ms if the chip fell
+# back to serial mode). Under one render period, the fade-in starts at the
+# next render. Restarting through start_fed it was the whole pre-roll decode
+# (three frames, ~26 ms on Core 0 at 300 MHz) plus the s_mp3_mutex waits.
 SEEK_GAP_MAX_US = 2900
+# The old audio a restart plays on (margin_min_us): the stage, topped up
+# first, 43.5-46.4 ms measured. The decode behind it (preroll_max_us) took
+# 21-26 ms; unfilled, the stage held 20-46 ms, and one seek in five ran dry
+# (#20 on hardware). A ~91 ms decode is Core 0 stalled under it, as the
+# CYW43 driver's bus sleep at 300 MHz did once per video (68 ms) until the
+# video player slept the bus before its boost (src/drivers/CLAUDE.md, WiFi).
+SEEK_MARGIN_MIN_US = 40000
 
 
 def test_video_seeks_keep_the_audio_fed(video_audio_app, target):
@@ -661,8 +668,11 @@ def test_video_seeks_keep_the_audio_fed(video_audio_app, target):
     the new position's chunks are read and its first frames decoded while
     the old audio plays on, then the old fades into the new, with less
     than a render period between the old audio's fade-out and the new
-    audio's fade-in being set (mp3stats; the old audio must also have
-    outlasted the decode, or its stage ran dry and the gap says so). The
+    audio's fade-in being set (mp3stats). Each restart tops the stage up
+    with the old audio first, so it begins with over 40 ms of it (a full
+    stage holds 46 ms), and every decode behind it finishes in time: none
+    is late (the old audio faded out early because it could have run
+    dry). The
     restarted audio is playing when seek() returns and keeps pace until
     the next seek: the session's MP3 position against the time since
     seek() returned (95% at worst over ~700 ms), and under 1% of the
@@ -677,4 +687,6 @@ def test_video_seeks_keep_the_audio_fed(video_audio_app, target):
     assert m["pace_min"] >= 0.95, m
     assert stats["mp3_underruns"] * 100 < 44.1 * stats["window_ms"], stats
     assert rs["restarts"] >= m["seeks"] and rs["fallbacks"] == 0, rs
+    assert rs["late"] == 0, rs
+    assert rs["margin_min_us"] >= SEEK_MARGIN_MIN_US, rs
     assert rs["gap_max_us"] < SEEK_GAP_MAX_US, rs

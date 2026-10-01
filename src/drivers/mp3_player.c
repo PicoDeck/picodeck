@@ -132,8 +132,21 @@ static _Atomic int s_mark_state = MARK_NONE;
 // A restart in place (mp3_player_restart_fed) decodes the new audio's
 // first frame while the stage still plays the old: nothing may move into
 // the stage meanwhile (refill_staging_buf), and the decode stops at that
-// one frame. Set and cleared by Core 0 inside one hold of s_mp3_mutex.
+// one frame, or before a frame that might not be done before the old audio
+// runs out: s_hold_deadline (time_us_64), less s_hold_frame_us (the
+// longest frame decoded behind it so far, seeded with RESTART_FRAME_US).
+// Set and cleared by Core 0 inside one hold of s_mp3_mutex.
 static bool s_stage_held = false;
+static uint64_t s_hold_deadline = 0;
+static uint32_t s_hold_frame_us = 0;
+static bool s_hold_late = false;    // the decode stopped at the deadline
+// One frame's decode on Core 0 behind the old audio, before one is
+// measured: 44.1 kHz stereo at 96 kbps took 8.4-10.4 ms (decode, synthesis
+// and the PCM ring write) at the video's 300 MHz.
+#define RESTART_FRAME_US  12000u
+// The old audio the switch itself needs: its fade-out renders in the next
+// refill (every 2.9 ms), then Core 0 resets the stage.
+#define RESTART_GUARD_US  6000u
 // Frames to decode and not play: a restart mid-stream primes the decoder
 // with one, since from nothing (the synthesis filterbank and the IMDCT
 // overlap empty) its first frame plays as a ramp up from silence, ~5 ms of
@@ -212,10 +225,16 @@ static void ring_write(const uint8_t *data, size_t len) {
 // ── Refill the staging buffer from the PCM ring ─────────────────────────────
 // Core 1's update (and Core 0's pre-fill in play, with the stage detached)
 // keeps the stage topped up between decodes.
+static void stage_fill(void);
+
 static void refill_staging_buf(void) {
     if (s_stage_held || s_stage.avail >= STAGING_BUF_SIZE / 2)
         return;
+    stage_fill();
+}
 
+// Copies as much of the PCM ring as fits into the stage.
+static void stage_fill(void) {
     s_diag_refill_calls++;
     // Compact under the lock: the mixer reads [pos, pos + avail) and moves
     // both (a memmove it could preempt used to double or drop whole blocks).
@@ -502,6 +521,10 @@ static void decode_fill_ring(void) {
     // (capped), or leaves: the loop is bounded within one update.
     while (frames_decoded < max_frames && ring_free() >= 1152 * 2 * 2) {
         uint64_t t0 = time_us_64();
+        if (s_stage_held && t0 + s_hold_frame_us > s_hold_deadline) {
+            s_hold_late = true;  // the old audio could run out first
+            break;
+        }
         mp3_sched_why_t why = mp3_sched_next(&s_sched, low, frames_decoded,
                                              ahead ? core0_idle_left_us(t0) : 0);
         if (why == MP3_SCHED_NONE)
@@ -573,6 +596,11 @@ static void decode_fill_ring(void) {
         s_diag_decode_frames++;
         if (s_prime_frames > 0) {   // it primed the decoder: not heard
             s_prime_frames--;
+            if (s_stage_held) {
+                // The frame heard next takes as long, and its ring write.
+                uint32_t us = (uint32_t)(time_us_64() - t0);
+                if (us > s_hold_frame_us) s_hold_frame_us = us;
+            }
             continue;
         }
         frames_decoded++;
@@ -951,8 +979,8 @@ void mp3_player_set_loop(mp3_player_t *player, bool loop) {
 
 // Records a restart of a playing session: its gap, and for one in place
 // the decode behind the old audio and the old audio it had left. Core 0.
-static void restart_note(bool in_place, uint64_t gap_us, uint64_t preroll_us,
-                         uint64_t margin_us) {
+static void restart_note(bool in_place, bool late, uint64_t gap_us,
+                         uint64_t preroll_us, uint64_t margin_us) {
     mp3_fed_restart_stats_t *st = &s_restart_stats;
     uint32_t gap = gap_us > UINT32_MAX ? UINT32_MAX : (uint32_t)gap_us;
     st->gap_us = gap;
@@ -966,6 +994,7 @@ static void restart_note(bool in_place, uint64_t gap_us, uint64_t preroll_us,
     if (pre > st->preroll_max_us) st->preroll_max_us = pre;
     if (st->restarts == 0 || margin < st->margin_min_us) st->margin_min_us = margin;
     st->restarts++;
+    if (late) st->late++;
 }
 
 void mp3_player_fed_restart_stats(mp3_fed_restart_stats_t *out, bool reset) {
@@ -1052,7 +1081,7 @@ void mp3_player_start_fed_output(void) {
     refill_staging_buf();
     attach();
     if (s_fallback_silent_at) {
-        restart_note(false, time_us_64() - s_fallback_silent_at, 0, 0);
+        restart_note(false, false, time_us_64() - s_fallback_silent_at, 0, 0);
         s_fallback_silent_at = 0;
     }
     mutex_exit(&s_mp3_mutex);
@@ -1071,6 +1100,11 @@ bool mp3_player_restart_fed(const uint8_t *data, uint32_t len, bool mid_stream) 
         mutex_exit(&s_mp3_mutex);
         return false;
     }
+    // The old audio left to play on is what the stage holds: as much as
+    // it takes (the refill keeps it only over half, ~23 ms at 44.1 kHz
+    // stereo, and less while Core 1 is mid-burst; the decode behind it
+    // takes ~22 ms).
+    stage_fill();
     uint64_t t0 = time_us_64();
     stage_lock();
     uint64_t margin_us = (uint64_t)pcm_stage_frames(&s_stage) * 1000000u / s_stage.rate;
@@ -1078,8 +1112,12 @@ bool mp3_player_restart_fed(const uint8_t *data, uint32_t len, bool mid_stream) 
 
     // Everything behind the stage starts again at the new data, while the
     // stage plays the old audio on (Core 1's update is locked out: nothing
-    // refills it, and it has at least the ~23 ms the refill keeps).
+    // refills it). The decode stops at the new audio's first frame, or
+    // before a frame that might outlast the old audio (s_hold_deadline).
     s_stage_held = true;
+    s_hold_late = false;
+    s_hold_frame_us = RESTART_FRAME_US;
+    s_hold_deadline = t0 + (margin_us > RESTART_GUARD_US ? margin_us - RESTART_GUARD_US : 0);
     s_fed_wr = 0;
     s_fed_rd = 0;
     s_fed_fed = s_fed_taken = s_fed_frames = 0;
@@ -1103,6 +1141,14 @@ bool mp3_player_restart_fed(const uint8_t *data, uint32_t len, bool mid_stream) 
     // first frame, and the render after fades it in.
     fade_out_and_wait();
     uint64_t t2 = time_us_64();
+    bool late = s_hold_late;
+    if (late) {
+        // The old audio has faded out before it ran dry: decode the rest of
+        // the way to the new audio's first frame, as a restart from silence
+        // would (start_fed then three frames' pre-roll).
+        s_hold_deadline = UINT64_MAX;
+        decode_fill_ring();
+    }
     stage_lock();
     pcm_stage_reset(&s_stage);
     stage_unlock();
@@ -1115,10 +1161,10 @@ bool mp3_player_restart_fed(const uint8_t *data, uint32_t len, bool mid_stream) 
     // The old audio stopped when its fade-out ended, or earlier if its
     // stage ran dry during the decode.
     uint64_t stopped = t0 + margin_us < t2 ? t0 + margin_us : t2;
-    restart_note(true, t3 - stopped, t1 - t0, margin_us);
-    printf("[MP3] Fed restart: gap %lu us, decode %lu us behind %lu us of old audio\n",
+    restart_note(true, late, t3 - stopped, t1 - t0, margin_us);
+    printf("[MP3] Fed restart: gap %lu us, decode %lu us behind %lu us of old audio%s\n",
            (unsigned long)(t3 - stopped), (unsigned long)(t1 - t0),
-           (unsigned long)margin_us);
+           (unsigned long)margin_us, late ? " LATE" : "");
     return true;
 }
 
