@@ -28,6 +28,9 @@
 #include "system_menu.h"
 #include "ui.h"
 #include "umm_malloc.h"
+#ifndef PICODECK_SIMULATOR
+#include "xip_stats.h"
+#endif
 
 #include <ctype.h>
 #include <stdatomic.h>
@@ -863,6 +866,11 @@ static bool run_app(int idx) {
   display_set_font(0);            // nor the previous app's font selection
   font_registry_unload_all();     // nor its loaded fonts
   perf_init();                    // nor its perf pacing target
+#ifndef PICODECK_SIMULATOR
+  // Nor a dev run's `xipstat prio core0`: Core 0 winning every bus
+  // arbitration would leave Core 1 and the DMA (audio) the scraps.
+  xip_stats_set_core0_priority(false);
+#endif
 
   if (app->system_clock_khz > 0) {
     launcher_apply_clock(200000); // Reset to system default

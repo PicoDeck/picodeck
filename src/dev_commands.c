@@ -417,7 +417,8 @@ static void dev_send_file_b64(const char *path) {
 // (os/core0_idle.h) and when the MP3 decoder decoded (mp3_sched.h) since
 // the reset. "reset" starts a window, which ends by itself when the app it
 // measured exits; a bare `xipstat` reports it (and keeps it running).
-// "prio" and "mp3idle" are switches for A/B runs. One line of key=value
+// "prio" and "mp3idle" are switches for A/B runs ("prio core0" lasts until
+// the next app exits: the launcher clears it). One line of key=value
 // integers, as audiostat.
 static void dev_xipstat(const char *arg) {
     if (strcmp(arg, "reset") == 0) {

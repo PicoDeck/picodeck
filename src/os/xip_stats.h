@@ -55,7 +55,8 @@ int xip_stats_hit_rate_since_last(void);
 
 // Bus priority experiment (BUSCTRL BUS_PRIORITY): Core 0 high priority wins
 // every arbitration against Core 1 and the DMA (all ports, not only XIP).
-// Off at boot.
+// Off at boot, and switched off by the launcher when an app exits, so a
+// forgotten `xipstat prio core0` lasts one app at most.
 void xip_stats_set_core0_priority(bool high);
 bool xip_stats_core0_priority(void);
 
