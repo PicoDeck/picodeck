@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include "hal/hal_display.h"
 #include "hal/hal_input.h"
+#include "hal/hal_pad.h"
 #include "hal/hal_sdcard.h"
 #include "hal/hal_psram.h"
 #include "hal/hal_timing.h"
@@ -70,6 +71,8 @@ static char g_launch_app[128] = "";  // App to auto-launch
 static int g_auto_launch_done = 0;   // Flag to track if auto-launch was attempted
 static int g_show_splash = 0;        // Show boot splash screen
 static int g_virtual_time = 0;       // --virtual-time (needs --test-mode)
+static int g_host_gamepad = -1;      // --gamepad 1 / --no-gamepad 0; -1: on
+                                     // unless --test-mode
 static int g_tcp_port = 7878;        // TCP port for RPC socket
 static char g_instance_id[64] = "";  // Instance ID for unique socket paths
 static char g_unix_socket[256] = ""; // --unix-socket PATH|none ("" = default)
@@ -169,6 +172,9 @@ static void print_usage(const char* program) {
            "                       2026-01-01T00:00:00Z at boot\n");
     printf("  --virtual-time       (with --test-mode) virtual clock: Core 0 sleeps\n"
            "                       advance it instead of waiting (step_time RPC)\n");
+    printf("  --gamepad            Read the host's game controllers (the default,\n"
+           "                       except under --test-mode)\n");
+    printf("  --no-gamepad         Ignore the host's game controllers\n");
     printf("  --debug              Enable debug logging\n");
     printf("  --real-umm           Run umm_* on the firmware's umm_malloc (device heap\n"
            "                       size, 200 B blocks) instead of the counting allocator\n");
@@ -219,6 +225,10 @@ static void parse_args(int argc, char** argv) {
             sim_set_test_mode(true);
         } else if (strcmp(argv[i], "--virtual-time") == 0) {
             g_virtual_time = 1;
+        } else if (strcmp(argv[i], "--gamepad") == 0) {
+            g_host_gamepad = 1;
+        } else if (strcmp(argv[i], "--no-gamepad") == 0) {
+            g_host_gamepad = 0;
         } else if (strcmp(argv[i], "--debug") == 0) {
             hal_set_debug_mode(1);
         } else if (strcmp(argv[i], "--real-umm") == 0) {
@@ -557,6 +567,14 @@ int main(int argc, char** argv) {
         SDL_Quit();
         return 1;
     }
+    // The host's game controllers as a gamepad source (hal_pad.c). Off in
+    // --test-mode unless asked for, so a test never sees whatever controller
+    // the host has; the web build has none.
+#ifdef __EMSCRIPTEN__
+    hal_pad_init(false);
+#else
+    hal_pad_init(g_host_gamepad < 0 ? !sim_test_mode() : g_host_gamepad != 0);
+#endif
     
 #ifdef __EMSCRIPTEN__
     web_fs_init(g_sd_card_path);
@@ -697,6 +715,7 @@ int main(int argc, char** argv) {
     sim_socket_close();
     hal_psram_shutdown();
     hal_sdcard_shutdown();
+    hal_pad_shutdown();
     hal_input_shutdown();
     hal_display_shutdown();
     SDL_Quit();

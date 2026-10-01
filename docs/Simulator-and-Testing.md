@@ -16,7 +16,12 @@ title: "Simulator and Testing"
 - Flags: `--test-mode` (error screens return at once; constant `math.random`
   seed and string hash seed; clock pinned to 2026-01-01), `--virtual-time`,
   `--unix-socket PATH|none`, `--real-umm` (firmware allocator; real
-  fragmentation), `--build-info`.
+  fragmentation), `--build-info`, `--gamepad` / `--no-gamepad`.
+- A game controller plugged into the computer drives `picocalc.gamepad`
+  (D-pad or left stick, A/B/X/Y, shoulders = L/R, Start, Back = Select, Guide
+  opens the system menu), with hotplug. It is read unless `--no-gamepad`, and
+  not under `--test-mode` unless `--gamepad` is given, so tests never see the
+  host's controller.
 
 ## Running the tests
 
