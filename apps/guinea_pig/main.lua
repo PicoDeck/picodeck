@@ -267,8 +267,8 @@ local function snd_damage() sfx.play("damage") end
 local function snd_hawk() sfx.play("hawk_screech") end
 local function snd_win() sfx.play("win_jingle") end
 
--- BGM: streamed loop via fileplayer; replay-on-finish (panels.lua pattern)
-local bgm = { fp = nil, want = nil, restart = false }
+-- BGM: streamed loop via fileplayer's own looping (play(0): no gap at the loop)
+local bgm = { fp = nil, want = nil }
 local BGM_VOLUME = { menu = 70, play = 40, win = 70 }
 
 function bgm.play(scene)
@@ -279,21 +279,15 @@ function bgm.play(scene)
         local loaded = pcall(function() fp:load(APP_DIR .. "/sfx/bgm.wav") end)
         if not loaded then return end
         bgm.fp = fp
-        pcall(function()
-            bgm.fp:setFinishCallback(function() bgm.restart = true end)
-        end)
     end
     pcall(function() bgm.fp:setVolume(BGM_VOLUME[scene] or 50) end)
     if bgm.fp.isPlaying and not bgm.fp:isPlaying() then
-        pcall(function() bgm.fp:play(1) end)
+        pcall(function() bgm.fp:play(0) end)
     end
 end
 
 function bgm.update()
-    if bgm.fp and bgm.restart and bgm.want then
-        bgm.restart = false
-        pcall(function() bgm.fp:play(1) end)
-    end
+    -- Looping is the stream's own (play(0)); nothing to poll.
 end
 
 function bgm.stop()
