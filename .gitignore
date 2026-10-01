@@ -18,7 +18,8 @@ build_sim_*/
 build_unit/
 build_fuzz/
 build_web/
-tools/__pycache__/
+# Python bytecode, anywhere (tools/, scripts/ci/, tests/)
+__pycache__/
 build.log
 pico-sdk/
 generated/
@@ -64,7 +65,6 @@ system/lib/*
 !system/lib/*.lua
 sim_*.log
 
-tests/e2e/__pycache__/
 *.patch
 
 saves/
