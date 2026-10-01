@@ -8,7 +8,8 @@ its simulator, or the session's HwTarget on --target hw:<port>. Both offer the
 same calls: launch_app / wait_for_exit / exit_app, keypress(_sequence), pad,
 screenshot, read_file / write_file / delete_file, push_app / stage_lua_app,
 run_lua_app / wait_for_results (the Lua test kit's results file), status,
-log_cursor / get_log_lines / wait_for_log.
+log_cursor / get_log_lines / wait_for_log, and command (a dev-command line;
+on the simulator only those it runs: ping, exit, unzip, rm, audiostat).
 
 Collection rules (apply_target_rules):
   - @pytest.mark.hardware: runs only on --target hw; skipped (allow-listed)
@@ -326,6 +327,16 @@ class SimTarget(Target):
         if p != self.sd and self.sd not in p.parents:
             raise ValueError(f"{path!r} escapes the SD card")
         return p
+
+    def command(self, cmd: str, timeout: Optional[float] = None) -> list:
+        """One dev-command line through the simulator's `dev_command` RPC,
+        which runs the commands it shares with the firmware (dev_ops.c:
+        ping, exit, unzip, rm, audiostat), and the reply as the device
+        prints it: ["[DEV] <reply>"]."""
+        t = timeout or 5.0
+        r = self.sim.call("dev_command", {"cmd": cmd, "timeout_ms": int(t * 1000)},
+                          timeout=t + 5.0)
+        return ["[DEV] " + r.get("output", "")]
 
     def status(self) -> dict:
         """The subset of the device's `status` the simulator can answer."""

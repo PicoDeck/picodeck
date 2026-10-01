@@ -341,8 +341,11 @@ bool fileplayer_play(fileplayer_t *player, uint8_t repeat_count) {
     player->underran = false;
     s_active_player = player;
     uint32_t rate = player->sample_rate;
-    // Start the stream (clears the ring) before Core 1 can push into it.
-    audio_start_stream(rate);
+    // Start the stream (clears the ring) before Core 1 can push into it,
+    // held: update() releases it once the ring is full (#34). Started on
+    // an empty ring, it ran dry whenever Core 0 took the SD card right
+    // after play() (loading a sample, say), before the first read.
+    audio_start_stream_held(rate);
     mutex_exit(&s_lock);
     return true;
 }
@@ -357,20 +360,27 @@ void fileplayer_stop(fileplayer_t *player) {
         audio_stop_stream();
 }
 
+// Pause holds the stream: the sound stops at once and the ring keeps what
+// it has (it used to play out, then count as underruns until resume).
 void fileplayer_pause(fileplayer_t *player) {
     if (!player || !atomic_load(&s_initialized)) return;
     mutex_enter_blocking(&s_lock);
-    if (player->state == FILEPLAYER_STATE_PLAYING)
+    if (player->state == FILEPLAYER_STATE_PLAYING) {
         player->state = FILEPLAYER_STATE_PAUSED;
+        if (s_active_player == player)
+            audio_stream_hold();
+    }
     mutex_exit(&s_lock);
 }
 
+// Resume plays on from the paused frame: the next update() tops the ring
+// up and releases the stream, as after play().
 void fileplayer_resume(fileplayer_t *player) {
     if (!player || !atomic_load(&s_initialized)) return;
     mutex_enter_blocking(&s_lock);
     if (player->state == FILEPLAYER_STATE_PAUSED && s_active_player == player) {
         player->state = FILEPLAYER_STATE_PLAYING;
-        player->under_armed = false;  // the ring drained while paused
+        player->under_armed = false;  // re-armed by the next push
     }
     mutex_exit(&s_lock);
 }
@@ -447,6 +457,12 @@ void fileplayer_set_offset(fileplayer_t *player, uint32_t seconds) {
         player->position = (uint32_t)offset;
         if (player->type == FILEPLAYER_TYPE_QOA)
             qoa_reposition_locked(player);
+        // Paused (or still filling after play()), the stream is held and
+        // its ring holds audio from before the seek: drop it, so resume
+        // (or the start) plays the new position. Playing, the ring plays
+        // out first, as it always has.
+        if (s_active_player == player)
+            audio_stream_flush_held();
     }
     mutex_exit(&s_lock);
 }
@@ -590,6 +606,31 @@ static void arm_underrun_locked(fileplayer_t *p) {
     p->under_armed = true;
 }
 
+// The active player p finished (s_lock held): the stream plays out what
+// the ring holds, and its running dry then is the end, not an underrun.
+static fp_callback_t finish_locked(fileplayer_t *p) {
+    p->state = FILEPLAYER_STATE_STOPPED;
+    s_active_player = NULL;
+    audio_stream_drain();
+    return (fp_callback_t){p->finish_callback, p->finish_callback_arg};
+}
+
+// p's pass ended and the next starts at the loop start (s_lock held). The
+// stream notes the loop point for `audiostat`.
+static fp_callback_t wrap_locked(fileplayer_t *p) {
+    p->position = wrap_position(p);
+    if (p->type == FILEPLAYER_TYPE_QOA)
+        qoa_reposition_locked(p);
+    p->pass_pushed = false;
+    audio_stream_mark_loop();
+    return (fp_callback_t){p->loop_callback, p->loop_callback_arg};
+}
+
+// Whether another pass follows the one that just ended (counts the pass).
+static bool plays_again(fileplayer_t *p) {
+    return p->loop || p->repeats == 0 || ++p->plays < p->repeats;
+}
+
 // One streaming step for the active player p (s_lock held).
 static fp_callback_t update_locked(fileplayer_t *p) {
     fp_callback_t cb = {NULL, NULL};
@@ -605,8 +646,12 @@ static fp_callback_t update_locked(fileplayer_t *p) {
     uint32_t remaining = p->position < limit ? limit - p->position : 0;
     uint32_t to_read = bytes_that_fit(p, limit);
     if (remaining >= p->block_align &&
-        (to_read == 0 || (to_read < FILEPLAYER_READ_MIN && to_read < remaining)))
-        return cb;  // ring (nearly) full: wait for the DMA to drain it
+        (to_read == 0 || (to_read < FILEPLAYER_READ_MIN && to_read < remaining))) {
+        // The ring is (nearly) full: wait for the DMA to drain it. The
+        // stream plays from here (after play() or resume(), it starts now).
+        audio_stream_release();
+        return cb;
+    }
 
     // Read at our own offset (to_read == 0 at the end of the data chunk
     // takes the end-of-data path below). Skip the tick if Core 0 owns the
@@ -625,24 +670,18 @@ static fp_callback_t update_locked(fileplayer_t *p) {
         p->position += br;
         p->pass_pushed = true;
         arm_underrun_locked(p);
-    } else if (n >= 0 && p->pass_pushed &&
-               (p->loop || p->repeats == 0 || ++p->plays < p->repeats)) {
-        // End of data after a pass that played something: go round again.
-        // A read error (n < 0), or a pass that found no frames at all (an
-        // empty data chunk), finishes instead of rewinding every tick.
-        p->position = wrap_position(p);
-        p->pass_pushed = false;
-        cb.fn = p->loop_callback;
-        cb.arg = p->loop_callback_arg;
-    } else {
-        // End of data (or a read error): finished. The stream keeps
-        // playing out what the ring still holds.
-        p->state = FILEPLAYER_STATE_STOPPED;
-        s_active_player = NULL;
-        cb.fn = p->finish_callback;
-        cb.arg = p->finish_callback_arg;
+        if (p->position < limit)
+            return cb;
+        // That read ended the pass: loop (or finish) on this tick, so the
+        // next tick reads the next pass's first block.
+    } else if (n < 0 || !p->pass_pushed) {
+        // A read error, or a pass that found no frames at all (an empty
+        // data chunk): finish instead of rewinding every tick.
+        return finish_locked(p);
     }
-    return cb;
+    // End of the pass: go round again, or finish (the stream keeps playing
+    // out what the ring still holds).
+    return plays_again(p) ? wrap_locked(p) : finish_locked(p);
 }
 
 // One streaming step for the active QOA player p (s_lock held).  Each tick
@@ -668,9 +707,14 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
     for (;;) {
         uint32_t remaining = p->position < limit ? limit - p->position : 0;
         uint32_t budget = bytes_that_fit(p, limit);  // virtual PCM bytes
-        if (remaining == 0 ||
-            (budget < FILEPLAYER_READ_MIN && budget < remaining))
-            break;  // done, or the ring is (nearly) full: next tick
+        if (remaining == 0)
+            break;  // the end of the pass
+        if (budget < FILEPLAYER_READ_MIN && budget < remaining) {
+            // The ring is (nearly) full: next tick. The stream plays from
+            // here (after play() or resume(), it starts now).
+            audio_stream_release();
+            break;
+        }
         if (!p->qoa_loaded) {
             if (read)
                 break;
@@ -691,11 +735,7 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
                                        (size_t)n) == 0) {
                 // Read error or a corrupt frame mid-file: finish (never
                 // loop into the same bad frame), as a WAV read error does.
-                p->state = FILEPLAYER_STATE_STOPPED;
-                s_active_player = NULL;
-                cb.fn = p->finish_callback;
-                cb.arg = p->finish_callback_arg;
-                return cb;
+                return finish_locked(p);
             }
             // The next frame starts where this one's size field says.
             p->qoa_file_pos += qoa_frame_bytes(s_wav_buffer, (size_t)n);
@@ -740,21 +780,9 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
 
     // End of data (every frame delivered, or the file ended early): loop or
     // finish, as WAV does.
-    if (p->position >= limit || eof) {
-        if (p->pass_pushed &&
-            (p->loop || p->repeats == 0 || ++p->plays < p->repeats)) {
-            p->position = wrap_position(p);
-            qoa_reposition_locked(p);
-            p->pass_pushed = false;
-            cb.fn = p->loop_callback;
-            cb.arg = p->loop_callback_arg;
-        } else {
-            p->state = FILEPLAYER_STATE_STOPPED;
-            s_active_player = NULL;
-            cb.fn = p->finish_callback;
-            cb.arg = p->finish_callback_arg;
-        }
-    }
+    if (p->position >= limit || eof)
+        return p->pass_pushed && plays_again(p) ? wrap_locked(p)
+                                                : finish_locked(p);
     return cb;
 }
 
