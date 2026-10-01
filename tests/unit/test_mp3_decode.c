@@ -1,17 +1,26 @@
-// Host unit tests for what mp3_player.c's decoder writes (issue #28).
+// Host unit tests for what mp3_player.c's decoder writes and when it
+// decodes (issue #28).
 //
 // - Mono: every sample reaches the mixer, in order (the decoder packs a
 //   frame's samples and writes the ring once, not once per sample).
+// - Decoding ahead: while Core 0 waits in a paced app's frame deadline
+//   (os/core0_idle.h), the decoder fills the PCM ring past the half-full
+//   mark it otherwise stops at, losing and repeating nothing. Without a
+//   window, with decoding ahead switched off, and in fed mode (the video
+//   player), it never does.
 //
 // fixtures/mp3/chord22m.mp3: 1 s of test_mp3_fed's chord, 22.05 kHz mono
 // MPEG-2 at 32 kbps (39 frames of 576 samples, no ID3 tag, no Xing frame),
 //   ffmpeg -f lavfi -i "aevalsrc=<the chord>:s=22050:d=1" -ac 1
 //     -c:a libmp3lame -b:a 32k -write_xing 0 -id3v2_version 0
 //     -fflags +bitexact -flags:a +bitexact -f mp3 chord22m.mp3
+// fixtures/mp3/chord128.mp3: test_mp3_refill's (44.1 kHz stereo, 116 frames).
 #include "check.h"
 #include "mp3_player.h"
+#include "mp3_sched.h"
 #include "audio.h"
 #include "pio_psram.h"
+#include "core0_idle.h"
 #include "fakes/sdcard_fake.h"
 #define FPM_DEFAULT  // as mp3_player.c
 #include "mad.h"
@@ -61,6 +70,19 @@ static blob_t load_fixture(const char *name) {
 static void put_file(const char *path, blob_t b) {
   sdfake_reset();
   sdfake_put(path, (const char *)b.data, b.len);
+}
+
+static uint32_t diag(int i) {
+  uint32_t d[11];
+  mp3_player_get_diag(d);
+  return d[i];
+}
+#define DIAG_FRAMES 6
+
+static mp3_sched_stats_t sched(void) {
+  mp3_sched_stats_t s;
+  mp3_player_get_sched_stats(&s);
+  return s;
 }
 
 // libmad straight over the whole file: channel 0 of every frame.
@@ -126,9 +148,111 @@ static void test_mono_plays_every_sample_in_order(void) {
   free(b.data);
 }
 
+// Frames decoded by `updates` Core 1 updates after play(), with nothing
+// mixed meanwhile (so the ring only fills).
+static uint32_t frames_after(int updates) {
+  uint32_t before = diag(DIAG_FRAMES);
+  for (int i = 0; i < updates; i++)
+    mp3_player_update();
+  return diag(DIAG_FRAMES) - before;
+}
+
+static void start_music(void) {
+  mp3_player_t *p = mp3_player_create();
+  CHECK(mp3_player_load(p, "/music.mp3"));
+  CHECK(mp3_player_play(p, 1));
+  mp3_player_reset_sched_stats();
+}
+
+static void test_decoding_ahead_needs_core0_idle(void) {
+  blob_t b = load_fixture("chord128.mp3");
+  put_file("/music.mp3", b);
+  mp3_player_t *p = mp3_player_create();
+
+  // Core 0 working: the ring stops filling past half.
+  s_now_us = 1000000;
+  start_music();
+  uint32_t working = frames_after(20);
+  CHECK_EQ_U32(sched().idle_frames, 0);
+  mp3_player_stop(p);
+
+  // Core 0 idle for the next 20 ms: the decoder fills the ring.
+  start_music();
+  core0_idle_begin(s_now_us, s_now_us + 20000);
+  uint32_t idle = frames_after(20);
+  core0_idle_end(s_now_us);
+  printf("  frames decoded ahead: %u with Core 0 working, %u idle\n", working, idle);
+  CHECK(idle > working);
+  CHECK(sched().idle_frames > 0);
+  CHECK_EQ_U32(sched().idle_frames, idle - working);
+  mp3_player_stop(p);
+
+  // A window shorter than a frame's estimate starts nothing.
+  start_music();
+  core0_idle_begin(s_now_us, s_now_us + MP3_SCHED_SEED_US - 1);
+  CHECK_EQ_U32(frames_after(20), working);
+  core0_idle_end(s_now_us);
+  mp3_player_stop(p);
+
+  // Switched off (xipstat mp3idle off): as if Core 0 never idled.
+  mp3_player_set_decode_ahead(false);
+  start_music();
+  core0_idle_begin(s_now_us, s_now_us + 20000);
+  CHECK_EQ_U32(frames_after(20), working);
+  CHECK_EQ_U32(sched().idle_frames, 0);
+  core0_idle_end(s_now_us);
+  mp3_player_stop(p);
+  mp3_player_set_decode_ahead(true);
+  free(b.data);
+}
+
+// Decoding ahead the whole way through loses and repeats nothing.
+static void test_decoding_ahead_loses_no_frame(void) {
+  blob_t b = load_fixture("chord128.mp3");
+  put_file("/music.mp3", b);
+  mp3_player_t *p = mp3_player_create();
+  mp3_player_reset_diag();
+  start_music();
+  core0_idle_begin(s_now_us, s_now_us + 1000000);
+  static int32_t l[128], r[128];
+  uint32_t furthest = 0;
+  for (int i = 0; i < 5000 && mp3_player_is_playing(p); i++) {
+    mp3_player_update();
+    mp3_player_mix(l, r, 128);
+    uint32_t pos = mp3_player_get_position(p);
+    if (pos > furthest) furthest = pos;
+  }
+  core0_idle_end(s_now_us);
+  CHECK_EQ_U32(furthest, 116u * 1152u);
+  CHECK_EQ_U32(diag(DIAG_FRAMES), 116);
+  CHECK(sched().idle_frames > 0);
+  CHECK_EQ_U32(mp3_player_staging_underruns(), 0);
+  mp3_player_stop(p);
+  free(b.data);
+}
+
+// The video player's fed session decodes as before, window or not.
+static void test_fed_mode_never_decodes_ahead(void) {
+  blob_t b = load_fixture("chord128.mp3");
+  CHECK(mp3_player_start_fed(44100, 2));
+  CHECK_EQ_U32(mp3_player_feed(b.data, b.len), b.len);
+  mp3_player_start_fed_output();
+  mp3_player_reset_sched_stats();
+  core0_idle_begin(s_now_us, s_now_us + 1000000);
+  for (int i = 0; i < 20; i++)
+    mp3_player_update();
+  core0_idle_end(s_now_us);
+  CHECK_EQ_U32(sched().idle_frames, 0);
+  mp3_player_stop_fed();
+  free(b.data);
+}
+
 int main(void) {
   CHECK(mp3_player_init());
   test_mono_plays_every_sample_in_order();
+  test_decoding_ahead_needs_core0_idle();
+  test_decoding_ahead_loses_no_frame();
+  test_fed_mode_never_decodes_ahead();
   mp3_player_deinit();
   return check_report("test_mp3_decode");
 }

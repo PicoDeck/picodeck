@@ -1,6 +1,8 @@
 #include "mp3_player.h"
 #include "audio.h"
 #include "pcm_stage.h"
+#include "mp3_sched.h"
+#include "../os/core0_idle.h"
 #include "sdcard.h"
 #include "pio_psram.h"
 #include "pico/platform.h"
@@ -93,6 +95,14 @@ static volatile uint32_t s_diag_decode_errs = 0;   // mad errors
 static volatile uint32_t s_diag_sd_fail = 0;       // SD refill: mutex busy or read failed
 static volatile uint32_t s_diag_max_us = 0;        // longest single update
 static volatile uint64_t s_diag_total_us = 0;
+
+// When to decode (mp3_sched.h, issue #28): the decode-time estimate (Core 1,
+// under s_mp3_mutex), the switch (xipstat mp3idle on|off) and the counts.
+static mp3_sched_t s_sched = {MP3_SCHED_SEED_US};
+static atomic_bool s_decode_ahead = true;
+static volatile uint32_t s_sched_low_frames = 0;   // decoded: the ring was low
+static volatile uint32_t s_sched_idle_frames = 0;  // decoded ahead, Core 0 idle
+static volatile uint32_t s_sched_overran = 0;      // ...that ran past the window
 
 // ── Fed mode: compressed MP3 ring in QMI PSRAM, written by Core 0 (video) ───
 // Uses umm_malloc (not PIO PSRAM) because both cores access this ring
@@ -251,6 +261,22 @@ void mp3_player_get_diag(uint32_t out[11]) {
     out[8] = s_diag_sd_fail;
     out[9] = s_diag_max_us;
     out[10] = (uint32_t)(s_diag_total_us & 0xFFFFFFFFu);
+}
+
+void mp3_player_get_sched_stats(mp3_sched_stats_t *out) {
+    out->low_frames = s_sched_low_frames;
+    out->idle_frames = s_sched_idle_frames;
+    out->overran = s_sched_overran;
+    out->frame_us = s_sched.frame_us;
+    out->decode_ahead = atomic_load(&s_decode_ahead);
+}
+
+void mp3_player_reset_sched_stats(void) {
+    s_sched_low_frames = s_sched_idle_frames = s_sched_overran = 0;
+}
+
+void mp3_player_set_decode_ahead(bool on) {
+    atomic_store(&s_decode_ahead, on);
 }
 
 void mp3_player_reset_diag(void) {
@@ -431,22 +457,31 @@ static void decode_fill_ring(void) {
     if (!s_fed_mode && !s_file)
         return;
 
-    // Batch decode: only decode when ring buffer is below 50% capacity,
-    // then decode up to 3 frames to refill quickly.  This creates bursty
-    // PSRAM access (~10ms decode burst, ~30-40ms idle) instead of constant
-    // pressure every 5ms, reducing QMI contention with Core 0's XIP cache.
-    size_t avail = ring_available();
-    if (avail > PCM_RING_SIZE / 2)
-        return;  // ring buffer is >50% full, skip this cycle
+    // When to decode (mp3_sched.h): a burst of up to 3 frames when the ring
+    // is at or below half (whatever Core 0 does: nothing starves), or ahead
+    // while a paced app's Core 0 waits for its frame's deadline
+    // (os/core0_idle.h), so the decoder's sweep of the shared XIP cache and
+    // QMI lands on Core 0's idle time. Fed mode (the video player, which
+    // does not pace through perf) decodes on the low ring only, as before.
+    // A call from Core 0 (play's pre-fill) never sees a window.
+    bool low = mp3_sched_low((uint32_t)ring_available(), PCM_RING_SIZE);
+    bool ahead = !s_fed_mode &&
+                 atomic_load_explicit(&s_decode_ahead, memory_order_relaxed);
+    if (!low && !(ahead && core0_idle_left_us(time_us_64()) >= s_sched.frame_us))
+        return;  // the ring is over half full and Core 0 is working
 
     s_diag_decode_runs++;
-    int max_frames = 3;
-    int frames_decoded = 0;
+    uint32_t frames_decoded = 0;
     int errors_this_update = 0;
     bool rewound = false;
     // Every pass either decodes a frame, gets new input, counts an error
     // (capped), or leaves: the loop is bounded within one update.
-    while (frames_decoded < max_frames && ring_free() >= 1152 * 2 * 2) {
+    while (ring_free() >= 1152 * 2 * 2) {
+        uint64_t t0 = time_us_64();
+        mp3_sched_why_t why = mp3_sched_next(&s_sched, low, frames_decoded,
+                                             ahead ? core0_idle_left_us(t0) : 0);
+        if (why == MP3_SCHED_NONE)
+            break;
         const uint8_t *base = s_decode_buffer + s_buffer_pos;
         uint32_t valid = (uint32_t)s_bytes_in_buffer;
         // (The guard bytes after the data are always zeroed by the refill.)
@@ -541,6 +576,19 @@ static void decode_fill_ring(void) {
         // longer than the staging cushion, so refilling only once per update
         // lets the mixer drain the stage dry and crackles.
         refill_staging_buf();
+
+        if (why == MP3_SCHED_IDLE) {
+            // A frame that finished inside Core 0's window ran uncontended:
+            // its time refines the estimate the next window is judged by.
+            uint64_t t1 = time_us_64();
+            s_sched_idle_frames++;
+            if (core0_idle_left_us(t1) > 0)
+                mp3_sched_note(&s_sched, (uint32_t)(t1 - t0));
+            else
+                s_sched_overran++;
+        } else {
+            s_sched_low_frames++;
+        }
     }
 }
 
@@ -594,6 +642,7 @@ static bool rewind_locked(void) {
     s_ring_rd = s_ring_wr = 0;
     s_eof = false;
     s_input_end = false;
+    mp3_sched_init(&s_sched);  // a new file: its own decode time
     return true;
 }
 

@@ -358,6 +358,7 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_bridge_appconfig.c
     ${PICODECK_ROOT}/src/os/lua_bridge_perf.c
     ${PICODECK_ROOT}/src/os/perf.c
+    ${PICODECK_ROOT}/src/os/core0_idle.c
     ${PICODECK_ROOT}/src/os/fps_counter.c
     ${PICODECK_ROOT}/src/os/lua_bridge_graphics.c
     ${PICODECK_ROOT}/src/os/lua_bridge_3d.c

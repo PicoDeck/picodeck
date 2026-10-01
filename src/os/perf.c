@@ -1,5 +1,6 @@
 #include "perf.h"
 #include "os_overlay.h"
+#include "core0_idle.h"
 #include "pico/stdlib.h"
 #ifndef PICODECK_SIMULATOR
 #include "xip_stats.h"
@@ -54,10 +55,15 @@ void perf_end_frame(void) {
         else
             s_perf_next_end_us += s_perf_target_us;
         now = perf_now_us();
-        if (now < s_perf_next_end_us)
+        if (now < s_perf_next_end_us) {
+            // Core 0 sleeps until the deadline: Core 1 may decode MP3 ahead
+            // meanwhile, off Core 0's working time (core0_idle.h, #28).
+            core0_idle_begin(now, s_perf_next_end_us);
             sleep_us(s_perf_next_end_us - now);
-        else
+            core0_idle_end(perf_now_us());
+        } else {
             s_perf_next_end_us = now;
+        }
     }
     uint64_t end = perf_now_us();
     if (s_perf_last_end_us != 0) {
