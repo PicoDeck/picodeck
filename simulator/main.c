@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include "hal/hal_display.h"
 #include "hal/hal_input.h"
+#include "hal/hal_pad.h"
 #include "hal/hal_sdcard.h"
 #include "hal/hal_psram.h"
 #include "hal/hal_timing.h"
@@ -49,6 +50,9 @@
 #include "idle_dim.h"
 #include "system_menu.h"
 #include "sim_test_control.h"
+#include "core1_stats.h"
+#include <stdatomic.h>
+#include <time.h>
 
 // Simulator configuration
 #define SIM_WINDOW_TITLE "PicoDeck Simulator"
@@ -70,6 +74,8 @@ static char g_launch_app[128] = "";  // App to auto-launch
 static int g_auto_launch_done = 0;   // Flag to track if auto-launch was attempted
 static int g_show_splash = 0;        // Show boot splash screen
 static int g_virtual_time = 0;       // --virtual-time (needs --test-mode)
+static int g_host_gamepad = -1;      // --gamepad 1 / --no-gamepad 0; -1: on
+                                     // unless --test-mode
 static int g_tcp_port = 7878;        // TCP port for RPC socket
 static char g_instance_id[64] = "";  // Instance ID for unique socket paths
 static char g_unix_socket[256] = ""; // --unix-socket PATH|none ("" = default)
@@ -169,6 +175,9 @@ static void print_usage(const char* program) {
            "                       2026-01-01T00:00:00Z at boot\n");
     printf("  --virtual-time       (with --test-mode) virtual clock: Core 0 sleeps\n"
            "                       advance it instead of waiting (step_time RPC)\n");
+    printf("  --gamepad            Read the host's game controllers (the default,\n"
+           "                       except under --test-mode)\n");
+    printf("  --no-gamepad         Ignore the host's game controllers\n");
     printf("  --debug              Enable debug logging\n");
     printf("  --real-umm           Run umm_* on the firmware's umm_malloc (device heap\n"
            "                       size, 200 B blocks) instead of the counting allocator\n");
@@ -219,6 +228,10 @@ static void parse_args(int argc, char** argv) {
             sim_set_test_mode(true);
         } else if (strcmp(argv[i], "--virtual-time") == 0) {
             g_virtual_time = 1;
+        } else if (strcmp(argv[i], "--gamepad") == 0) {
+            g_host_gamepad = 1;
+        } else if (strcmp(argv[i], "--no-gamepad") == 0) {
+            g_host_gamepad = 0;
         } else if (strcmp(argv[i], "--debug") == 0) {
             hal_set_debug_mode(1);
         } else if (strcmp(argv[i], "--real-umm") == 0) {
@@ -328,6 +341,55 @@ void sim_core1_service(void) {
     http_fire_c_pending();
 }
 
+// core1_stats.h, for `audiostat` (src/dev_ops.c): the desktop Core 1
+// thread's service passes, timed on the host's monotonic clock (Core 1 is
+// never on virtual time). Nothing merges ticks here, so `missed` stays 0,
+// and a tick is 5 ms, not the device's 1 ms. The web build's cooperative
+// tick (web_core1_tick) is not timed: its counters stay 0.
+static _Atomic uint32_t s_c1_ticks, s_c1_over, s_c1_max_us;
+static _Atomic uint64_t s_c1_window_t0_us;
+static atomic_bool s_c1_reset_req;
+
+static uint64_t core1_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+void core1_get_tick_stats(core1_tick_stats_t *out) {
+    // A reset the Core 1 thread has not carried out yet reads as the empty
+    // window it asked for.
+    bool reset = atomic_load(&s_c1_reset_req);
+    out->window_ms = reset ? 0
+        : (uint32_t)((core1_now_us() - atomic_load(&s_c1_window_t0_us)) / 1000);
+    out->ticks = reset ? 0 : atomic_load(&s_c1_ticks);
+    out->over = reset ? 0 : atomic_load(&s_c1_over);
+    out->missed = 0;
+    out->max_us = reset ? 0 : atomic_load(&s_c1_max_us);
+}
+
+void core1_reset_tick_stats(void) {
+    atomic_store(&s_c1_reset_req, true);
+}
+
+// One timed service pass (the Core 1 thread only).
+static void core1_timed_service(void) {
+    if (atomic_exchange(&s_c1_reset_req, false)) {
+        atomic_store(&s_c1_ticks, 0);
+        atomic_store(&s_c1_over, 0);
+        atomic_store(&s_c1_max_us, 0);
+        atomic_store(&s_c1_window_t0_us, core1_now_us());
+    }
+    uint64_t t0 = core1_now_us();
+    sim_core1_service();
+    uint32_t dt = (uint32_t)(core1_now_us() - t0);
+    atomic_fetch_add(&s_c1_ticks, 1);
+    if (dt > 1000)
+        atomic_fetch_add(&s_c1_over, 1);
+    if (dt > atomic_load(&s_c1_max_us))
+        atomic_store(&s_c1_max_us, dt);
+}
+
 // Core 1 entry point (simulates the second core)
 static void* core1_thread(void* arg) {
     (void)arg;
@@ -341,8 +403,9 @@ static void* core1_thread(void* arg) {
     hal_audio_init();
     
     // Core 1 main loop
+    atomic_store(&s_c1_window_t0_us, core1_now_us());
     while (g_running) {
-        sim_core1_service();
+        core1_timed_service();
 
         // 5ms delay (same as hardware)
         hal_sleep_ms(5);
@@ -557,6 +620,14 @@ int main(int argc, char** argv) {
         SDL_Quit();
         return 1;
     }
+    // The host's game controllers as a gamepad source (hal_pad.c). Off in
+    // --test-mode unless asked for, so a test never sees whatever controller
+    // the host has; the web build has none.
+#ifdef __EMSCRIPTEN__
+    hal_pad_init(false);
+#else
+    hal_pad_init(g_host_gamepad < 0 ? !sim_test_mode() : g_host_gamepad != 0);
+#endif
     
 #ifdef __EMSCRIPTEN__
     web_fs_init(g_sd_card_path);
@@ -697,6 +768,7 @@ int main(int argc, char** argv) {
     sim_socket_close();
     hal_psram_shutdown();
     hal_sdcard_shutdown();
+    hal_pad_shutdown();
     hal_input_shutdown();
     hal_display_shutdown();
     SDL_Quit();

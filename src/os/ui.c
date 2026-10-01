@@ -2,6 +2,7 @@
 #include "../dev_commands.h"
 #include "../drivers/display.h"
 #include "../drivers/keyboard.h"
+#include "../drivers/pad_source.h"
 #include "../drivers/wifi.h"
 #include "../splash_logo.h"
 #include "clock.h"
@@ -20,7 +21,8 @@
 
 // ── Header ──────────────────────────────────────────────────────────────────
 // A UI_HEADER_H bar shaded from top to bottom, then a 1px C_BORDER line.
-// Title on the left; clock, WiFi, charging bolt and battery on the right.
+// Title on the left; clock, gamepad, WiFi, charging bolt and battery on the
+// right.
 // The icons carry the state, so the header stays grey and navy: colour only
 // flags a problem (low battery, WiFi failure).
 
@@ -76,6 +78,21 @@ static const char *const k_wifi[] = {
 };
 #define WIFI_W 11
 #define WIFI_H 8
+
+// A gamepad (D-pad and four face buttons cut out), shown while a pad source
+// is connected (pad_source.h).
+static const char *const k_pad[] = {
+    ".###########.",
+    "#############",
+    "##.######.###",
+    "#...####.#.##",
+    "##.######.###",
+    "#############",
+    "####.....####",
+    ".##.......##.",
+};
+#define PAD_W 13
+#define PAD_H 8
 
 // 3x5 digits for the battery percentage (battery_pct setting).
 static const char *const k_digits[10][5] = {
@@ -143,6 +160,7 @@ static int s_last_bat = -999;
 static bool s_last_charging = false;
 static bool s_last_bat_pct = false;
 static int s_last_wifi_status = -1;
+static bool s_last_pad = false;
 static char s_last_clock[16] = "";
 
 static int header_wifi_status(void) {
@@ -157,6 +175,8 @@ bool ui_needs_header_redraw(void) {
   if (ui_battery_pct_enabled() != s_last_bat_pct)
     return true;
   if (header_wifi_status() != s_last_wifi_status)
+    return true;
+  if ((pad_sources_connected() != 0) != s_last_pad)
     return true;
 
   if (clock_is_set()) {
@@ -205,6 +225,13 @@ int ui_draw_header(const char *title) {
   s_last_wifi_status = header_wifi_status();
   if (draw_wifi(x - WIFI_W, (UI_HEADER_H - WIFI_H) / 2, s_last_wifi_status))
     x -= WIFI_W + HDR_ICON_GAP;
+
+  s_last_pad = pad_sources_connected() != 0;
+  if (s_last_pad) {
+    x -= PAD_W;
+    draw_glyph(x, (UI_HEADER_H - PAD_H) / 2, k_pad, PAD_H, C_HDR_TEXT);
+    x -= HDR_ICON_GAP;
+  }
 
   if (clock_is_set()) {
     char clk_buf[16];

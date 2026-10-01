@@ -11,6 +11,7 @@
 #include <string.h>
 #include <dirent.h>
 #include <stdatomic.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include "../hal/hal_display.h"
@@ -702,8 +703,41 @@ int sdcard_list_dir(const char* path,
 sdfile_t sdcard_fopen(const char* path, const char* mode) { return hal_sdcard_open(path, mode); }
 void sdcard_fclose(sdfile_t f) { hal_sdcard_close(f); }
 int sdcard_fread(sdfile_t f, void* buf, int len) { return (int)hal_sdcard_read(f, buf, (size_t)len); }
-// No cross-core SD mutex in the simulator: the try-read never finds it busy.
+// No cross-core SD mutex in the simulator: the try-read finds the card busy
+// only when a test asks (the `set_sd_busy` RPC: for `ms` once `after_reads`
+// more try-reads have gone through, as if Core 0 then held the card that
+// long, e.g. loading a sample). The window is Core 1's (the only thread
+// that try-reads).
+static _Atomic uint32_t s_sd_busy_arm_ms;
+static _Atomic uint32_t s_sd_busy_after;
+static uint64_t s_sd_busy_until_us;
+
+void sim_sd_set_busy(uint32_t ms, uint32_t after_reads) {
+    atomic_store(&s_sd_busy_after, after_reads);
+    atomic_store(&s_sd_busy_arm_ms, ms);
+}
+
+static uint64_t sd_busy_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
 int sdcard_try_fread_at(sdfile_t f, uint32_t offset, void* buf, int len) {
+    uint32_t arm = atomic_load(&s_sd_busy_arm_ms);
+    if (arm) {
+        if (atomic_load(&s_sd_busy_after) > 0) {
+            atomic_fetch_sub(&s_sd_busy_after, 1);  // this one goes through
+        } else {
+            atomic_store(&s_sd_busy_arm_ms, 0);
+            s_sd_busy_until_us = sd_busy_now_us() + (uint64_t)arm * 1000u;
+        }
+    }
+    if (s_sd_busy_until_us) {
+        if (sd_busy_now_us() < s_sd_busy_until_us)
+            return SDCARD_BUSY;
+        s_sd_busy_until_us = 0;
+    }
     if (!f) return -1;
     if (hal_sdcard_seek(f, (long)offset) != 0) return -1;
     return len > 0 ? sdcard_fread(f, buf, len) : 0;

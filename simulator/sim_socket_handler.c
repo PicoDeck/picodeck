@@ -13,6 +13,8 @@
 #include "drivers/keyboard.h"
 #include "drivers/audio_mix.h"
 #include "drivers/sound.h"
+#include "drivers/mp3_player.h"
+#include "os/core0_idle.h"
 #include "os/launcher.h"
 #include "os/lua_psram_alloc.h"
 #include "os/screenshot.h"
@@ -802,6 +804,22 @@ static char *h_get_audio_state(const char *params) {
     return strdup(buf);
 }
 
+// {"ms": N, "after_reads": K}: once K more of Core 1's SD try-reads have
+// gone through (default 0), they report the card busy for N ms, as if Core
+// 0 held it that long (driver_stubs.c). The audio tests stall the
+// fileplayer with it (tests/e2e/test_fileplayer.py).
+static char *h_set_sd_busy(const char *params) {
+    int ms = 0, after = 0;
+    if (!json_get_int(params, "ms", &ms) || ms < 0 || ms > 60000)
+        return strdup("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"ms (0-60000) required\"}}");
+    json_get_int(params, "after_reads", &after);
+    if (after < 0)
+        after = 0;
+    extern void sim_sd_set_busy(uint32_t ms, uint32_t after_reads);
+    sim_sd_set_busy((uint32_t)ms, (uint32_t)after);
+    return strdup("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true}}");
+}
+
 static char *h_get_wifi_state(const char *params) {
     (void)params;
     wifi_status_t st = wifi_get_status();
@@ -1014,6 +1032,30 @@ static char *h_shutdown(const char *params) {
 #define SIM_ASAN_BUILD 1
 #endif
 #endif
+
+// The MP3 decoder's schedule and output since boot (issue #28): output
+// frames the mixer found no MP3 data for, frames decoded because the PCM
+// ring was low or ahead in Core 0's idle windows (perf pacing), and those
+// windows. tests/e2e/test_mp3_pacing.py.
+static char *h_get_mp3_stats(const char *params) {
+    (void)params;
+    mp3_sched_stats_t m;
+    mp3_player_get_sched_stats(&m);
+    uint32_t windows;
+    uint64_t idle_us;
+    core0_idle_stats(&windows, &idle_us);
+    static char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{\"jsonrpc\":\"2.0\",\"result\":{\"underruns\":%u,"
+             "\"low_frames\":%u,\"idle_frames\":%u,\"overran\":%u,"
+             "\"frame_us\":%u,\"decode_ahead\":%s,\"idle_windows\":%u,"
+             "\"idle_ms\":%llu}}",
+             (unsigned)mp3_player_staging_underruns(), (unsigned)m.low_frames,
+             (unsigned)m.idle_frames, (unsigned)m.overran,
+             (unsigned)m.frame_us, m.decode_ahead ? "true" : "false",
+             (unsigned)windows, (unsigned long long)(idle_us / 1000u));
+    return strdup(buf);
+}
 
 static char *h_sanitizer_selftest(const char *params) {
     (void)params;
@@ -1297,6 +1339,7 @@ static struct {
     { "get_button_state",   h_get_button_state },
     { "get_heap_info",      h_get_heap_info },
     { "get_audio_state",     h_get_audio_state },
+    { "set_sd_busy",         h_set_sd_busy },
     { "get_wifi_state",     h_get_wifi_state },
     { "set_wifi_state",     h_set_wifi_state },
     { "set_battery",        h_set_battery },
@@ -1316,6 +1359,7 @@ static struct {
     { "subscribe",          h_subscribe },
     { "get_input_state",    h_get_input_state },
     { "sanitizer_selftest", h_sanitizer_selftest },
+    { "get_mp3_stats",      h_get_mp3_stats },
     { NULL, NULL },
 };
 

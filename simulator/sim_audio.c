@@ -30,6 +30,13 @@
 static atomic_bool s_output_on;
 static atomic_uint s_render_calls;
 
+// audio_output_get_stats (`audiostat`): the render passes standing in for
+// the refill interrupt (one per Core 1 tick that rendered), as audio.c
+// counts its refills. The render thread carries out a reset (Core 0 only
+// raises the flag), as on the device.
+static atomic_uint s_pass_count, s_pass_us, s_pass_max_us;
+static atomic_bool s_pass_reset_req;
+
 static uint64_t sim_time_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -66,11 +73,28 @@ uint32_t audio_output_isr_count(void) {
     return atomic_load(&s_render_calls);
 }
 
+void audio_output_get_stats(audio_output_stats_t *out) {
+    bool reset = atomic_load(&s_pass_reset_req);
+    out->running = atomic_load(&s_output_on);
+    out->isr_count = reset ? 0 : atomic_load(&s_pass_count);
+    out->isr_us = reset ? 0 : atomic_load(&s_pass_us);
+    out->isr_max_us = reset ? 0 : atomic_load(&s_pass_max_us);
+}
+
+void audio_output_reset_stats(void) {
+    atomic_store(&s_pass_reset_req, true);
+}
+
 // The DMA refill ISR's part, on the Core 1 thread every tick: render the
 // frames the output rate has consumed since the last call.
 static void sim_output_render(void) {
     static bool s_was_on;
     static uint64_t s_last_us, s_rem;  // s_rem: sub-frame remainder, in frame-microseconds
+    if (atomic_exchange(&s_pass_reset_req, false)) {
+        atomic_store(&s_pass_count, 0);
+        atomic_store(&s_pass_us, 0);
+        atomic_store(&s_pass_max_us, 0);
+    }
     uint64_t now = sim_time_us();
     if (!atomic_load(&s_output_on)) {
         s_was_on = false;
@@ -89,6 +113,7 @@ static void sim_output_render(void) {
     if (frames > SIM_MAX_RENDER_FRAMES)
         frames = SIM_MAX_RENDER_FRAMES;
     int16_t buf[2 * SIM_RENDER_CHUNK];
+    bool rendered = frames > 0;
     while (frames > 0) {
         int n = frames > SIM_RENDER_CHUNK ? SIM_RENDER_CHUNK : (int)frames;
         audio_mix_render(buf, n);
@@ -96,6 +121,13 @@ static void sim_output_render(void) {
         if (hal_audio_queued_frames() < SIM_MAX_QUEUED_FRAMES)
             hal_audio_push_samples(buf, n);
         frames -= (uint64_t)n;
+    }
+    if (rendered) {
+        uint32_t dt = (uint32_t)(sim_time_us() - now);
+        atomic_fetch_add(&s_pass_count, 1);
+        atomic_fetch_add(&s_pass_us, dt);
+        if (dt > atomic_load(&s_pass_max_us))
+            atomic_store(&s_pass_max_us, dt);
     }
 }
 

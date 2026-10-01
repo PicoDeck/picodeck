@@ -74,11 +74,17 @@ set_source_files_properties(${PICODECK_ROOT}/third_party/qoa/qoa.c
 picodeck_unit_test(test_audio_ring INCLUDES ${SRC}/drivers)
 # The MP3 staging buffer as a mixer source (header-only, like audio_ring.h).
 picodeck_unit_test(test_pcm_stage INCLUDES ${SRC}/drivers)
+# When Core 1's MP3 decoder decodes (header-only), with a model of the ring,
+# the stage, the mixer and a paced or unpaced Core 0.
+picodeck_unit_test(test_mp3_sched INCLUDES ${SRC}/drivers)
 # The video player's audio chunk index: sizing and growth (header-only).
 picodeck_unit_test(test_avi_index INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_event_queue INCLUDES ${SRC}/drivers)
 # The gamepad layer of the same decode (keys -> PAD_* through the pad map).
 picodeck_unit_test(test_kbd_pad INCLUDES ${SRC}/drivers)
+# Pad sources (the `pad` dev command, the simulator's controller, later a BT
+# or USB pad) ORed into the same gamepad.
+picodeck_unit_test(test_pad_source SOURCES ${SRC}/drivers/pad_source.c INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_bus SOURCES ${SRC}/drivers/kbd_bus.c INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_pio_psram_range INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_pio_psram_xip INCLUDES ${SRC}/drivers)
@@ -107,6 +113,29 @@ add_executable(numfmt_sweep EXCLUDE_FROM_ALL
 target_include_directories(numfmt_sweep PRIVATE ${SRC}/os)
 target_compile_options(numfmt_sweep PRIVATE -O2 -Wno-error)
 target_link_libraries(numfmt_sweep PRIVATE m)
+
+# The Lua core as the firmware builds it (cmake/picodeck_lua.cmake: the VM
+# configuration plus PicoDeck's sources in the Lua library), for tests of code
+# that uses VM internals. `make test-unit` fetches it (download-lua).
+set(LUA_SRC ${PICODECK_ROOT}/third_party/lua-5.4/src)
+if(EXISTS ${LUA_SRC}/lua.h)
+    include(${PICODECK_ROOT}/cmake/picodeck_lua.cmake)
+    picodeck_patch_luaconf(${LUA_SRC})
+    file(GLOB LUA_CORE_SOURCES ${LUA_SRC}/l*.c)
+    list(FILTER LUA_CORE_SOURCES EXCLUDE REGEX "/(lua|luac)\\.c$")
+    add_library(lua_host STATIC ${LUA_CORE_SOURCES} ${PICODECK_LUA_SOURCES})
+    target_include_directories(lua_host PUBLIC ${LUA_SRC} ${SRC}/os)
+    target_compile_definitions(lua_host PUBLIC ${PICODECK_LUA_DEFINITIONS})
+    target_compile_options(lua_host PRIVATE ${PICODECK_UNIT_SAN_FLAGS})
+    set_source_files_properties(${LUA_CORE_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+    target_link_libraries(lua_host PUBLIC m)
+    # The service hook's interrupt-safe, depth-independent arming (issue #21).
+    picodeck_unit_test(test_lua_hook_arm)
+    target_link_libraries(test_lua_hook_arm PRIVATE lua_host)
+else()
+    message(WARNING "Lua sources not found at ${LUA_SRC} (run `make download-lua`): "
+                    "test_lua_hook_arm is not built")
+endif()
 
 # The simulator's SD-root containment (host filesystem; sim_log_err faked).
 picodeck_unit_test(test_sim_sdcard SOURCES ${PICODECK_ROOT}/simulator/hal/hal_sdcard.c
@@ -187,17 +216,29 @@ target_compile_definitions(libmad_host PRIVATE FPM_64BIT HAVE_STDINT_H=1
             SIZEOF_INT=4 SIZEOF_LONG=${CMAKE_SIZEOF_VOID_P} SIZEOF_LONG_LONG=8
             NDEBUG=1 OPT_SPEED=1 OPT_SSO=1 PROGMEM=)
 target_compile_options(libmad_host PRIVATE -O2 -w)
-picodeck_unit_test(test_mp3_fed SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE}
+picodeck_unit_test(test_mp3_fed SOURCES ${SRC}/drivers/mp3_player.c
+                ${SRC}/os/core0_idle.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_fed PRIVATE libmad_host)
 # The pico/critical_section.h stub leaves a parameter unused.
 target_compile_options(test_mp3_fed PRIVATE -Wno-unused-parameter)
+# The restart tests model a frame's decode time: the test's
+# __wrap_mad_synth_frame renders output after each frame.
+target_link_options(test_mp3_fed PRIVATE -Wl,--wrap=mad_synth_frame)
 # ...and its decode loop at the ends of the input buffer (no frame lost
 # where a refill ends), from a file (the SD fake) and fed.
-picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE}
+picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c
+                ${SRC}/os/core0_idle.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_refill PRIVATE libmad_host)
 target_compile_options(test_mp3_refill PRIVATE -Wno-unused-parameter)
+# ...and what its decoder writes (a mono frame's samples, in order) and when
+# (ahead, in Core 0's idle windows).
+picodeck_unit_test(test_mp3_decode SOURCES ${SRC}/drivers/mp3_player.c
+                ${SRC}/os/core0_idle.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES})
+target_link_libraries(test_mp3_decode PRIVATE libmad_host)
+target_compile_options(test_mp3_decode PRIVATE -Wno-unused-parameter)
 # The MOD player (mod_player.c + pocketmod): Core 0 load/free vs Core 1
 # update on two threads.
 picodeck_unit_test(test_mod_player SOURCES ${SRC}/drivers/mod_player.c ${SD_FAKE}

@@ -26,7 +26,8 @@
 #     Fails the build if the upstream text is not found (version drift).
 #
 #  3. PICODECK_LUA_SOURCES: PicoDeck sources that belong in the Lua library itself
-#     (the formatter behind picodeck_lua_sprintf).
+#     (the formatter behind picodeck_lua_sprintf, and picodeck_lua_arm_hook,
+#     which uses VM internals to arm the service hook from an interrupt).
 #
 # Script mode, for places that extract the tarball outside CMake (Makefile
 # download-lua, CI workflows):
@@ -42,7 +43,10 @@ set(PICODECK_LUA_DEFINITIONS
     PICODECK_LUA_SPRINTF=1    # l_sprintf -> picodeck_lua_sprintf (src/os/lua_numfmt.c)
 )
 
-set(PICODECK_LUA_SOURCES "${CMAKE_CURRENT_LIST_DIR}/../src/os/lua_numfmt.c")
+set(PICODECK_LUA_SOURCES
+    "${CMAKE_CURRENT_LIST_DIR}/../src/os/lua_numfmt.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/os/lua_hook_arm.c"
+)
 
 set(_PICODECK_LUACONF_MARKER "/* PicoDeck: luaconf.h patched by cmake/picodeck_lua.cmake */")
 

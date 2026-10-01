@@ -120,9 +120,10 @@ if not CAP.fillTri then
 end
 
 if not CAP.repeatIn then
-    -- No shim: scenes already fall back to a hand-rolled delay/rate timer when
-    -- NG_CAP.repeatIn is false, because repeat needs per-button state that a
-    -- drop-in wrapper cannot hold correctly.
+    -- No shim: pad.lua's dpadEdges() repeats the d-pad with its own
+    -- delay/rate timer, as it always does with the gamepad (getButtonsRepeated
+    -- follows raw keys, not gamepad buttons), because repeat needs per-button
+    -- state that a drop-in wrapper cannot hold correctly.
     sys.log("NG:CAP using hand-rolled key repeat")
 end
 
@@ -170,6 +171,7 @@ end
 
 sys.log("NG:CAP blinker=" .. tostring(CAP.blinker))
 
+-- Only the no-gamepad path of pad.lua reads getButtonsRepeated.
 if CAP.repeatIn then input.setRepeat(200, 70) end
 
 -- ── Scene dispatcher ────────────────────────────────────────────────────────

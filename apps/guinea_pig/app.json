@@ -2,7 +2,7 @@
   "id": "net.picodeck.guineapig",
   "name": "Guinea Pig Run",
   "description": "Collect veggies, avoid enemies, and find your way home!",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "author": "PicoDeck",
   "requirements": ["audio"],
   "category": "demos",

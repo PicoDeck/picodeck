@@ -106,7 +106,7 @@ target_include_directories(lua PUBLIC ${LUA_DIR})
 include(${CMAKE_SOURCE_DIR}/cmake/picodeck_lua.cmake)
 picodeck_patch_luaconf(${LUA_DIR})
 target_compile_definitions(lua PUBLIC ${PICODECK_LUA_DEFINITIONS})
-target_sources(lua PRIVATE ${PICODECK_LUA_SOURCES})  # picodeck_lua_sprintf (float formatting)
+target_sources(lua PRIVATE ${PICODECK_LUA_SOURCES})  # picodeck_lua_sprintf, picodeck_lua_arm_hook
 # -O2, not -Os: hook-free, the VM gains ~10% on bytecode and 20-45% on C-call
 # paths at -O2 for +23 KB of flash (P0, specs/2026-09-27-p0-lua-perf-findings.md).
 target_compile_options(lua PRIVATE -O2)
@@ -263,6 +263,8 @@ add_executable(picodeck
     src/os/lua_bridge_appconfig.c
     src/os/lua_bridge_perf.c
     src/os/perf.c
+    src/os/core0_idle.c
+    src/os/xip_stats.c
     src/os/fps_counter.c
     src/os/lua_bridge_graphics.c
     src/os/lua_bridge_3d.c
@@ -334,6 +336,7 @@ add_executable(picodeck
     src/drivers/keyboard.c
     src/drivers/kbd_bus.c
     src/drivers/kbd_i2c.c
+    src/drivers/pad_source.c
     src/drivers/sdcard.c
     src/drivers/wifi.c
     src/drivers/rng.c

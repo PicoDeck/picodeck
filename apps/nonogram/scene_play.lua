@@ -1,13 +1,13 @@
 -- scene_play.lua — solving a puzzle.
 --
--- Input map:
---   arrows        move cursor (auto-repeat when held)
---   ENTER         toggle FILLED
---   space         toggle BLOCKED   (there is no BTN_SPACE; read via getChar)
---   BACKSPACE     toggle MAYBE
---   F2 / F3       undo / redo
---   F4            toggle auto-X assist
---   TAB           paint mode: movement applies the last tool as one undo group
+-- Input map (gamepad buttons, see pad.lua; the keys are the default bindings):
+--   D-pad         move cursor (auto-repeat when held)
+--   A  (F4)       toggle FILLED
+--   B  (F5)       toggle BLOCKED   (space does the same, read via getChar)
+--   Y  (Bksp)     toggle MAYBE
+--   L / R         undo / redo
+--   Start         toggle auto-X assist
+--   Select        paint mode: movement applies the last tool as one undo group
 --   ESC           back to the menu
 
 local pc    = picocalc
@@ -22,6 +22,7 @@ local Layout = require("layout")
 local Render = require("render")
 local CellRender = require("cellrender")
 local Records = require("records")
+local Pad = require("pad")
 
 local S = {}
 
@@ -43,12 +44,6 @@ local sticky = false
 -- a drag will stutter; must stay short or the stroke over-runs the release.
 local SPACE_HOLD_GRACE_MS = 260
 local lastSpaceMs = 0
-
--- Hand-rolled repeat, used only when input.getButtonsRepeated is unavailable.
-local REPEAT_DELAY, REPEAT_RATE = 200, 70
-local lastDpad, dpadMs = 0, 0
-
-local DPAD = input.BTN_UP | input.BTN_DOWN | input.BTN_LEFT | input.BTN_RIGHT
 
 function S.enter(params)
     puzzle = params and params.puzzle
@@ -128,32 +123,9 @@ local function strokeEnd()
     board:endGroup()
 end
 
--- Returns a mask of direction edges for this frame, from the SDK's auto-repeat
--- where available and a hand-rolled timer otherwise.
-local function dpadEdges()
-    if NG_CAP.repeatIn then
-        return input.getButtonsRepeated() & DPAD
-    end
-
-    local held = input.getButtons() & DPAD
-    local pressed = input.getButtonsPressed() & DPAD
-    local now = sys.getTimeMs()
-    local out = pressed
-
-    if held ~= 0 then
-        if held ~= lastDpad then
-            dpadMs = now
-        elseif now - dpadMs >= REPEAT_DELAY then
-            out = out | held
-            dpadMs = now - REPEAT_DELAY + REPEAT_RATE
-        end
-    end
-    lastDpad = held
-    return out
-end
-
 function S.update(dt)
-    local pressed = input.getButtonsPressed()
+    local held, padPressed = Pad.read()
+    local pressed = input.getButtonsPressed()   -- raw keys: Esc and "any key"
     local ch = input.getChar()
 
     -- System-menu requests arrive as flags because those callbacks fire from the
@@ -183,27 +155,31 @@ function S.update(dt)
         return
     end
 
-    local edges = dpadEdges()
-    if edges & input.BTN_UP    ~= 0 then moveCursor(0, -1) end
-    if edges & input.BTN_DOWN  ~= 0 then moveCursor(0,  1) end
-    if edges & input.BTN_LEFT  ~= 0 then moveCursor(-1, 0) end
-    if edges & input.BTN_RIGHT ~= 0 then moveCursor( 1, 0) end
+    local edges = Pad.dpadEdges()
+    if edges & Pad.UP    ~= 0 then moveCursor(0, -1) end
+    if edges & Pad.DOWN  ~= 0 then moveCursor(0,  1) end
+    if edges & Pad.LEFT  ~= 0 then moveCursor(-1, 0) end
+    if edges & Pad.RIGHT ~= 0 then moveCursor( 1, 0) end
 
     -- ── Stroke start / continue / end ────────────────────────────────────────
     --
     -- A tap is just a stroke of length one, so taps and drags share one path.
 
-    local held = input.getButtons()
-    local enterHeld = (held & input.BTN_ENTER) ~= 0
-    local shiftHeld = (held & input.BTN_SHIFT) ~= 0
+    local fillHeld  = (held & Pad.A) ~= 0
+    local blockHeld = (held & Pad.B) ~= 0
+    local shiftHeld = (input.getButtons() & input.BTN_SHIFT) ~= 0
     local now = sys.getTimeMs()
 
     if ch == " " then lastSpaceMs = now end
     local spaceHeld = (now - lastSpaceMs) <= SPACE_HOLD_GRACE_MS
 
-    if pressed & input.BTN_ENTER ~= 0 then
-        -- SHIFT+ENTER strokes BLOCKED. Unlike space this is fully observable
-        -- from the button mask, so it is the reliable way to drag-block.
+    if padPressed & Pad.B ~= 0 then
+        -- B strokes BLOCKED. Unlike space this is fully observable from the
+        -- button mask, so it is the reliable way to drag-block.
+        strokeEnd()
+        strokeBegin(Board.BLOCKED)
+        sticky = false
+    elseif padPressed & Pad.A ~= 0 then
         strokeEnd()
         strokeBegin(shiftHeld and Board.BLOCKED or Board.FILLED)
         sticky = false
@@ -212,7 +188,7 @@ function S.update(dt)
         strokeEnd()
         strokeBegin(Board.BLOCKED)
         sticky = false
-    elseif pressed & input.BTN_BACKSPACE ~= 0 then
+    elseif padPressed & Pad.Y ~= 0 then
         strokeEnd()
         strokeBegin(Board.MAYBE)
         sticky = false
@@ -224,28 +200,28 @@ function S.update(dt)
         local stillDown
         if stroke.tool == Board.BLOCKED then
             -- Either source could have started a BLOCKED stroke.
-            stillDown = spaceHeld or (enterHeld and shiftHeld)
+            stillDown = spaceHeld or blockHeld or (fillHeld and shiftHeld)
         elseif stroke.tool == Board.FILLED then
-            stillDown = enterHeld
+            stillDown = fillHeld
         else
-            stillDown = (held & input.BTN_BACKSPACE) ~= 0
+            stillDown = (held & Pad.Y) ~= 0
         end
         if not stillDown then strokeEnd() end
     end
 
-    if pressed & input.BTN_F2 ~= 0 then
+    if padPressed & Pad.L ~= 0 then
         if board:undo() then dirty = true end
     end
-    if pressed & input.BTN_F3 ~= 0 then
+    if padPressed & Pad.R ~= 0 then
         if board:redo() then dirty = true end
     end
-    if pressed & input.BTN_F4 ~= 0 then
+    if padPressed & Pad.START ~= 0 then
         board.autoX = not board.autoX
         pc.ui.toast("Auto-X " .. (board.autoX and "on" or "off"))
     end
 
-    -- TAB latches a stroke on, for filling long runs without holding a key.
-    if pressed & input.BTN_TAB ~= 0 then
+    -- Select latches a stroke on, for filling long runs without holding a key.
+    if padPressed & Pad.SELECT ~= 0 then
         if sticky then
             sticky = false
             strokeEnd()
@@ -332,10 +308,10 @@ function S.draw()
         elseif wasSolved then
             right = "BEST " .. Records.formatTime(Records.bestSecs(puzzle.id))
         else
-            right = board.autoX and "F4 auto-X ON" or "F4 auto-X off"
+            right = Pad.label(Pad.START) .. (board.autoX and " auto-X ON" or " auto-X off")
         end
-        Render.footer("hold ENTER/SPACE to drag  TAB latch",
-                      right)
+        Render.footer("hold " .. Pad.label(Pad.A) .. "/" .. Pad.label(Pad.B) ..
+                      " to drag  " .. Pad.label(Pad.SELECT) .. " latch", right)
     end
 end
 

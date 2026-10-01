@@ -53,7 +53,7 @@ picocalc.audio.setVolume(50)  -- half volume
 ### PCM Streaming
 
 #### `picocalc.audio.startStream(sampleRate)`
-Starts (or restarts) the PCM stream at `sampleRate` and empties its buffer. Other sounds keep playing. The FilePlayer and the MOD player use this stream while they play.
+Starts (or restarts) the PCM stream at `sampleRate` and empties its buffer. Other sounds keep playing. The FilePlayer and the MOD player use this stream while they play. The stream plays from the first samples you push: until then it is silent, and that silence does not count as an underrun.
 
 - **Parameters:**
   - `sampleRate` (number): Sample rate in Hz (e.g. `44100`)
@@ -473,12 +473,14 @@ file cut short (an interrupted copy) plays the whole frames it holds.
 ---
 
 #### `player:play([repeat])` / `player:stop()` / `player:pause()` / `player:resume()` / `player:isPlaying()`
-Standard playback controls. `repeat` works the same as SamplePlayer: `n` plays the file `n` times and `0` loops until stopped (see Repeat counts). A player with a loop range (`setLoopRange`) loops until stopped whatever `repeat` says. `pause()` halts playback keeping the position; `resume()` continues from the paused position.
+Standard playback controls. `repeat` works the same as SamplePlayer: `n` plays the file `n` times and `0` loops until stopped (see Repeat counts). A player with a loop range (`setLoopRange`) loops until stopped whatever `repeat` says. `pause()` halts playback at once, keeping the position and the audio already buffered; `resume()` continues from the same sample, or from the new position after a `setOffset()` while paused (the seek drops the buffered audio).
+
+`play()` fills the stream's buffer before the sound starts: about 10-60 ms after the call, depending on the format and the SD card (QOA is quickest, 44.1 kHz stereo WAV slowest) (the buffer holds 93 ms of 44.1 kHz audio, 186 ms of 22.05 kHz). Starting full means the SD card can be busy right after `play()` (your app loading a sample or a level, say) without a gap in the music; it just starts once the buffer is full.
 
 ---
 
 #### `player:getLength()` / `player:getSampleRate()` / `player:getOffset()` / `player:setOffset(seconds)`
-`getLength()` returns the file's length in sample frames (per channel), not seconds: divide by `getSampleRate()` for seconds. `getSampleRate()` returns the file's sample rate in Hz (`0` before a successful `load`). `getOffset()` returns the playback position and `setOffset()` seeks to one, both in whole seconds.
+`getLength()` returns the file's length in sample frames (per channel), not seconds: divide by `getSampleRate()` for seconds. `getSampleRate()` returns the file's sample rate in Hz (`0` before a successful `load`). `getOffset()` returns the playback position and `setOffset()` seeks to one, both in whole seconds. While the player plays, a seek is heard after the audio already buffered (up to 93 ms at 44.1 kHz, 186 ms at 22.05 kHz); paused, or right after `play()` before the sound starts, the buffered audio is dropped and the new position plays first.
 
 ---
 
@@ -497,7 +499,7 @@ The range stays until you `load()` another file, which clears it, so a player th
 ---
 
 #### `player:didUnderrun()`
-Returns whether the audio stream ran dry while this player was playing, since the last call (or since `play()`). An underrun means the player could not supply audio data fast enough (SD card busy, or the second core starved), and it is audible as a gap. The flag is sticky until you read it: a call returns `true` once for any number of underruns and then clears. The ring is empty between `play()` (or `resume()`) and the first data, which does not count.
+Returns whether the audio stream ran dry while this player was playing, since the last call (or since `play()`). An underrun means the player could not supply audio data fast enough (SD card busy, or the second core starved), and it is audible as a gap. The flag is sticky until you read it: a call returns `true` once for any number of underruns and then clears. The wait after `play()` (or `resume()`) while the player fills its buffer does not count, nor does the end of a file that finished.
 
 - **Returns:** (boolean) `true` if an underrun occurred
 
@@ -570,6 +572,8 @@ Streams an MP3 file from the SD card.
 The MP3 plays through the same mixer as samples, the stream and tones, so music and sound effects play together; `picocalc.audio.setVolume` scales it too. Sources add up: a full-volume MP3 plus loud samples clips, so leave headroom (music at about 60).
 
 **Performance.** MP3 decoding runs on the second core, but it shares the flash and PSRAM cache with your app, so it slows your app's own code. Measured in a gfx3d game at 200 MHz: 44.1 kHz stereo MP3 music made every frame about 2.1× slower, 22.05 kHz mono about 1.24×. A looping WAV streamed with a [FilePlayer](#fileplayer) (`play(0)`) cost 2.5% at 22.05 kHz mono and 15% at 44.1 kHz stereo, because it reads the SD card over its own bus. A tracker module on the [MOD player](API-Modplayer.md) sits between the two: 14% with 4 channels, 24% with 8. Measured in a gfx3d racing game (six ships, 200 MHz), a looping [FilePlayer](#fileplayer) track of real music cost QOA 2.4% at 22.05 kHz mono and 5.3% at 44.1 kHz stereo, against 3.9% and 14% for the same music as WAV; at 300 MHz, QOA 2.1% and 4.6%, WAV 2.7% and 11%. For music in a real-time game, use QOA, then WAV, or a MOD if you can spare the frame time.
+
+**Paced apps.** When your app paces itself with [`perf.setTargetFPS`](API-Performance.md), the MP3Player decodes ahead while `perf.endFrame()` waits for the frame's deadline, so less of its decoding overlaps your frames. It needs that wait: frames that use their whole period (or an app that never paces) leave it nowhere else to go, and it decodes during your frames as before. The figures above were measured before it decoded ahead.
 
 #### `picocalc.sound.mp3player()`
 Creates an MP3Player.

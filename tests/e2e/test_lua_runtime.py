@@ -8,7 +8,12 @@ overflowed the minesweeper flood fill); these tests pin the result down
 through the lua_runtime fixture app, which logs one "LR <NAME> <value>" line
 per probe.
 """
+import json
+import time
+
 import pytest
+
+from hw_target import HW_APPS_DIR
 
 
 def _lines(sim):
@@ -77,6 +82,40 @@ def test_lua_runtime_config(simulator):
     assert r["GSUB40"] == "x"
     assert r["GSUBDEEP"] == "ok=false cstack=true"
     assert 40 < int(r["GSUBDEPTH"]) < 60
+
+
+PROBE_ID = "com.test.hw_probe"
+
+
+@pytest.mark.sd(fixtures=[], reserve=1)
+def test_cstack_probe_cases(target):
+    """The hardware probe's cstack mode (tests/e2e/hw_apps/hw_probe, run on
+    the device by test_hw_device.py::test_c_stack_depth_on_device) in the
+    simulator: nested gsub callbacks, a 250-deep __index chain and unbounded
+    recursion each end in a catchable error, and the whole run takes well
+    under a second. Issue #21 was its last case freezing the device's
+    timer-armed service hook ~1000 frames deep; the simulator's synchronous
+    hook cannot show that (tests/unit/test_lua_hook_arm.c and
+    test_lua_hook_target.py::test_hook_reaches_deep_recursion do), so this
+    pins the cases' Lua outcomes and timing."""
+    target.push_app(HW_APPS_DIR / "hw_probe", "hw_probe")
+    target.write_file(f"/data/{PROBE_ID}/mode.json",
+                      json.dumps({"mode": "cstack"}).encode())
+    t0 = time.monotonic()
+    target.launch_app("hw_probe")
+    doc = target.wait_for_results(PROBE_ID, timeout=20)
+    elapsed = time.monotonic() - t0
+    cases = {c["name"]: c for c in doc["cases"]}
+    assert list(cases) == [
+        "mode_known", "gsub_40_deep", "gsub_runaway_is_c_stack_overflow",
+        "index_chain_40", "index_chain_250_is_c_stack_overflow",
+        "lua_recursion_is_stack_overflow"], doc
+    failed = {n: c for n, c in cases.items() if c["status"] != "PASS"}
+    assert not failed, failed
+    assert elapsed < 10.0, f"cstack cases took {elapsed:.1f}s"
+    target.exit_app()
+    out = target.wait_for_exit(timeout=15)
+    assert out["result"] == "exit_sentinel", out
 
 
 # Number formatting must not depend on the C library: the firmware links the

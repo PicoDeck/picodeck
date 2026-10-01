@@ -48,11 +48,41 @@ void mp3_player_reset_staging_underruns(void);
 void mp3_player_get_diag(uint32_t out[11]);
 void mp3_player_reset_diag(void);
 
+// When the decoder decoded (mp3_sched.h, issue #28): frames decoded because
+// the PCM ring was low, frames decoded ahead in Core 0's idle windows (and
+// of those, how many ran past the window's end), the estimate of one
+// frame's uncontended decode time, and whether decoding ahead is on.
+typedef struct {
+    uint32_t low_frames, idle_frames, overran, frame_us;
+    bool decode_ahead;
+} mp3_sched_stats_t;
+void mp3_player_get_sched_stats(mp3_sched_stats_t *out);
+void mp3_player_reset_sched_stats(void);
+// On by default; off decodes as before (only when the ring is low), for an
+// A/B measurement (the `xipstat mp3idle` dev command).
+void mp3_player_set_decode_ahead(bool on);
+
 // Fed mode: decoder reads from an external ring buffer instead of SD file.
 // Used by video player to feed interleaved AVI audio data. Calling
 // start_fed on a running session restarts it (fade out, empty the rings,
-// reset the decoder and the volume to 100) and keeps its ring allocated.
+// reset the decoder and the volume to 100) and keeps its ring allocated:
+// silent from the fade-out until start_fed_output has decoded the new
+// audio's first frames.
 bool     mp3_player_start_fed(uint32_t sample_rate, uint16_t channels);
+// Restarts a fed session whose audio is playing (mixed, the output
+// running) at new data, `data` (a seek): the decoder starts on it while the
+// old audio plays on from the stage, and once the new audio's first frame
+// is decoded the old fades out and the new fades in, so only the render
+// that ends the fade-out is silent. `mid_stream`: the data does not start
+// at the stream's start, so the first frame decoded only primes the
+// decoder (from nothing it would play as a ramp up from silence) and is
+// not heard: start the data a frame before the one to be heard (and one
+// more for the bit reservoir, which libmad drops the first frame without).
+// The volume stays, the loop mark and an end are cleared, the position
+// counts from the new audio. False, with nothing changed, when nothing
+// plays (no fed session, not started, paused, finished, the output off):
+// restart with start_fed then. Core 0.
+bool     mp3_player_restart_fed(const uint8_t *data, uint32_t len, bool mid_stream);
 // Decodes what has been fed so far and starts the mixer pulling it (fading
 // in). Call after feeding the first chunks, and again after a seek.
 void     mp3_player_start_fed_output(void);
@@ -76,6 +106,21 @@ void     mp3_player_fed_mark(void);
 // before it), and the mark cleared. False, *frames untouched, while it is
 // still ahead of the decoder or none is set. Core 0, lock-free.
 bool     mp3_player_fed_mark_reached(int32_t *frames);
+
+// Restarts of a playing fed session since the last reset (the mp3stats dev
+// command; tests/e2e/test_audio_hw.py), on Core 0's clock. The gap is the
+// silence from the old audio stopping (its fade-out rendered, or its stage
+// run dry) to the new audio's fade-in being set: the next render (every
+// 2.9 ms) starts it, after the fade-out render's silent tail (<= 1.5 ms).
+typedef struct {
+    uint32_t restarts;        // in place (mp3_player_restart_fed)
+    uint32_t fallbacks;       // through start_fed + start_fed_output
+    uint32_t gap_us;          // the last restart's gap
+    uint32_t gap_max_us;      // the longest
+    uint32_t preroll_max_us;  // in place: the longest decode behind the old audio
+    uint32_t margin_min_us;   // in place: the least old audio left when one began
+} mp3_fed_restart_stats_t;
+void     mp3_player_fed_restart_stats(mp3_fed_restart_stats_t *out, bool reset);
 
 // The mixer's MP3 source (audio_mix_render): adds `frames` frames of the
 // playing MP3 into l and r. Runs in Core 1's DMA refill ISR on the device.

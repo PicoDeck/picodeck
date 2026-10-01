@@ -107,7 +107,7 @@ target_include_directories(lua_sim PUBLIC ${LUA_DIR})
 include(${PICODECK_ROOT}/cmake/picodeck_lua.cmake)
 picodeck_patch_luaconf(${LUA_DIR})
 target_compile_definitions(lua_sim PUBLIC ${PICODECK_LUA_DEFINITIONS})
-target_sources(lua_sim PRIVATE ${PICODECK_LUA_SOURCES})  # picodeck_lua_sprintf (float formatting)
+target_sources(lua_sim PRIVATE ${PICODECK_LUA_SOURCES})  # picodeck_lua_sprintf, picodeck_lua_arm_hook
 target_compile_definitions(lua_sim PRIVATE PICODECK_SIMULATOR=1)
 target_compile_options(lua_sim PRIVATE -O2 -Wall)
 # The string hash seed comes from sim_test_control.c (sim_lua_seed.h): fixed
@@ -185,6 +185,8 @@ target_compile_options(image_decoders_sim PRIVATE -O2)
 add_library(sim_hal STATIC
     hal/hal_display.c
     hal/hal_input.c
+    hal/hal_pad.c
+    ${PICODECK_ROOT}/src/drivers/pad_source.c
     hal/hal_sdcard.c
     hal/hal_psram.c
     hal/hal_timing.c
@@ -358,6 +360,7 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_bridge_appconfig.c
     ${PICODECK_ROOT}/src/os/lua_bridge_perf.c
     ${PICODECK_ROOT}/src/os/perf.c
+    ${PICODECK_ROOT}/src/os/core0_idle.c
     ${PICODECK_ROOT}/src/os/fps_counter.c
     ${PICODECK_ROOT}/src/os/lua_bridge_graphics.c
     ${PICODECK_ROOT}/src/os/lua_bridge_3d.c

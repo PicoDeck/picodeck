@@ -27,13 +27,9 @@ uint32_t perf_get_frame_time(void);
 // Set target FPS for automatic frame pacing (0 = no limit).
 void perf_set_target_fps(uint32_t fps);
 
-// XIP cache performance counters (RP2350).
-// Reset counters and start counting.
-void perf_xip_cache_reset(void);
-// Get cache hit rate as 0-100 percentage.  Returns -1 if no accesses recorded.
+// The XIP cache's hit rate in percent since the previous call, -1 when
+// nothing was counted (or in the simulator). See xip_stats.h.
 int perf_xip_cache_hit_rate(void);
-// Log cache stats to UART (total accesses, hits, hit rate).
-void perf_xip_cache_report(void);
 
 #ifdef __cplusplus
 }

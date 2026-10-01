@@ -13,6 +13,8 @@
 #include "os/launcher.h"
 #include "os/app_stack.h"
 #include "os/os.h"
+#include "os/core0_idle.h"
+#include "os/xip_stats.h"
 #include "tusb.h"
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
@@ -409,6 +411,63 @@ static void dev_send_file_b64(const char *path) {
     s_transfer_quiet = false;
 }
 
+// `xipstat [reset|off|prio core0|prio none|mp3idle on|mp3idle off]`: the
+// XIP cache and the XIP ports' contention counters over a window
+// (os/xip_stats.h; issue #28), with Core 0's pacing idle time
+// (os/core0_idle.h) and when the MP3 decoder decoded (mp3_sched.h) since
+// the reset. "reset" starts a window, which ends by itself when the app it
+// measured exits; a bare `xipstat` reports it (and keeps it running).
+// "prio" and "mp3idle" are switches for A/B runs ("prio core0" lasts until
+// the next app exits: the launcher clears it). One line of key=value
+// integers, as audiostat.
+static void dev_xipstat(const char *arg) {
+    if (strcmp(arg, "reset") == 0) {
+        core0_idle_reset_stats();
+        mp3_player_reset_sched_stats();
+        xip_stats_start();
+    } else if (strcmp(arg, "mp3idle on") == 0)
+        mp3_player_set_decode_ahead(true);
+    else if (strcmp(arg, "mp3idle off") == 0)
+        mp3_player_set_decode_ahead(false);
+    else if (strcmp(arg, "off") == 0)
+        xip_stats_stop();
+    else if (strcmp(arg, "prio core0") == 0)
+        xip_stats_set_core0_priority(true);
+    else if (strcmp(arg, "prio none") == 0)
+        xip_stats_set_core0_priority(false);
+    else if (arg[0]) {
+        printf("[DEV] Error: xipstat [reset|off|prio core0|prio none|"
+               "mp3idle on|mp3idle off]\n");
+        return;
+    }
+    xip_stats_t x;
+    xip_stats_get(&x);
+    uint32_t idle_windows;
+    uint64_t idle_us;
+    core0_idle_stats(&idle_windows, &idle_us);
+    mp3_sched_stats_t m;
+    mp3_player_get_sched_stats(&m);
+    uint64_t miss = x.accesses - x.hits;
+    unsigned long hit_pm = x.accesses
+        ? (unsigned long)(x.hits * 1000u / x.accesses) : 0ul;
+    printf("[DEV] XIP: window_ms=%lu running=%d frozen=%d saturated=%d "
+           "acc=%llu hit=%llu miss=%llu hit_pm=%lu stall0=%llu stall1=%llu "
+           "contested0=%llu contested1=%llu prio0=%d idle_windows=%lu "
+           "idle_ms=%lu mp3_low_frames=%lu mp3_idle_frames=%lu "
+           "mp3_overran=%lu mp3_frame_us=%lu mp3idle=%d sys_khz=%lu\n",
+           (unsigned long)x.window_ms, x.running, x.frozen, x.saturated,
+           (unsigned long long)x.accesses, (unsigned long long)x.hits,
+           (unsigned long long)miss, hit_pm,
+           (unsigned long long)x.stall[0], (unsigned long long)x.stall[1],
+           (unsigned long long)x.contested[0],
+           (unsigned long long)x.contested[1],
+           xip_stats_core0_priority(), (unsigned long)idle_windows,
+           (unsigned long)(idle_us / 1000u), (unsigned long)m.low_frames,
+           (unsigned long)m.idle_frames, (unsigned long)m.overran,
+           (unsigned long)m.frame_us, m.decode_ahead,
+           (unsigned long)(clock_get_hz(clk_sys) / 1000u));
+}
+
 // Executes the line in s_cmd_buf. Runs on an app stack (see
 // dev_commands_process): the file commands below reach FatFs and miniz,
 // whose frames do not fit the 4 KB main stack.
@@ -502,38 +561,23 @@ static void dev_command_run(void *arg) {
                d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9],
                d[1] ? (unsigned long)(d[10] / d[1]) : 0ul);
         mp3_player_reset_diag();
+        // A video's seeks: restarts of its playing audio (mp3_player.h).
+        mp3_fed_restart_stats_t rs;
+        mp3_player_fed_restart_stats(&rs, true);
+        printf("[DEV] mp3 restarts: restarts=%lu fallbacks=%lu gap_us=%lu "
+               "gap_max_us=%lu preroll_max_us=%lu margin_min_us=%lu (reset)\n",
+               (unsigned long)rs.restarts, (unsigned long)rs.fallbacks,
+               (unsigned long)rs.gap_us, (unsigned long)rs.gap_max_us,
+               (unsigned long)rs.preroll_max_us, (unsigned long)rs.margin_min_us);
     } else if (strcmp(s_cmd_buf, "audiostat") == 0 ||
                strcmp(s_cmd_buf, "audiostat reset") == 0) {
-        // Core 1's tick cost and the audio output's refill interrupt
-        // (tests/e2e/test_audio_hw.py). "reset" starts a new window; Core 1
-        // zeroes its tick counters at its next tick (1 ms) and the refill
-        // interrupt its own at its next refill (~2.9 ms), so give them both
-        // time.
-        if (strcmp(s_cmd_buf, "audiostat reset") == 0) {
-            core1_reset_tick_stats();
-            audio_output_reset_stats();
-            audio_stream_reset_underruns();
-            mp3_player_reset_staging_underruns();
-            sleep_ms(5);
-        }
-        core1_tick_stats_t t;
-        core1_get_tick_stats(&t);
-        audio_output_stats_t o;
-        audio_output_get_stats(&o);
-        uint32_t stream_underruns = 0;
-        audio_stream_debug(NULL, &stream_underruns, NULL);
-        printf("[DEV] Audio: window_ms=%lu ticks=%lu tick_over=%lu "
-               "tick_missed=%lu tick_max_us=%lu out=%d isr=%lu isr_us=%lu "
-               "isr_max_us=%lu stream_underruns=%lu mp3_underruns=%lu "
-               "voices=%d sys_khz=%lu\n",
-               (unsigned long)t.window_ms, (unsigned long)t.ticks,
-               (unsigned long)t.over, (unsigned long)t.missed,
-               (unsigned long)t.max_us, o.running ? 1 : 0,
-               (unsigned long)o.isr_count, (unsigned long)o.isr_us,
-               (unsigned long)o.isr_max_us, (unsigned long)stream_underruns,
-               (unsigned long)mp3_player_staging_underruns(),
-               sound_get_playing_source_count(),
-               (unsigned long)(clock_get_hz(clk_sys) / 1000));
+        // Core 1's tick cost, the refill interrupt and the stream's
+        // underruns (tests/e2e/test_audio_hw.py); dev_ops.c, shared with
+        // the simulator's dev_command RPC.
+        char reply[DEV_OP_REPLY_MAX];
+        dev_op_audiostat(strcmp(s_cmd_buf, "audiostat reset") == 0, reply,
+                         sizeof(reply));
+        printf("[DEV] %s\n", reply);
     } else if (strcmp(s_cmd_buf, "kbdstat") == 0 ||
                strcmp(s_cmd_buf, "kbdstat reset") == 0 ||
                strcmp(s_cmd_buf, "kbdstat fault") == 0) {
@@ -558,6 +602,9 @@ static void dev_command_run(void *arg) {
                (unsigned long)k.max_gap_us, (unsigned long)k.max_read_us,
                (unsigned long)k.isr_us, (unsigned long)k.interval_us,
                k.battery, (unsigned long)(clock_get_hz(clk_sys) / 1000u));
+    } else if (strcmp(s_cmd_buf, "xipstat") == 0 ||
+               strncmp(s_cmd_buf, "xipstat ", 8) == 0) {
+        dev_xipstat(s_cmd_buf[7] ? s_cmd_buf + 8 : "");
     } else if (strncmp(s_cmd_buf, "keypress ", 9) == 0 ||
                strncmp(s_cmd_buf, "keydown ", 8) == 0 ||
                strncmp(s_cmd_buf, "keyup ", 6) == 0) {
@@ -586,6 +633,11 @@ static void dev_command_run(void *arg) {
             if (ch) kbd_inject_char(ch);
         }
         printf("[DEV] Key injected: %s\n", key);
+    } else if (strncmp(s_cmd_buf, "pad ", 4) == 0 ||
+               strcmp(s_cmd_buf, "pad") == 0) {
+        char reply[DEV_OP_REPLY_MAX];
+        dev_op_pad(s_cmd_buf + 3, reply, sizeof(reply));
+        printf("[DEV] %s\n", reply);
     } else if (strncmp(s_cmd_buf, "put ", 4) == 0) {
         const char *args = s_cmd_buf + 4;
         uint32_t size = 0;
@@ -746,6 +798,7 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   ver            - Show firmware build date/time\n");
         printf("[DEV]   stack          - Main, app and OS-command stack peak use\n");
         printf("[DEV]   kbdstat [reset|fault] - Keyboard bus engine counters\n");
+        printf("[DEV]   xipstat [reset|off|prio core0|prio none|mp3idle on|mp3idle off] - XIP cache, bus contention and MP3 decode timing\n");
         printf("[DEV]   exit           - Signal current app to exit (error if none)\n");
         printf("[DEV]   usb            - Enable USB storage mode\n");
         printf("[DEV]   reboot         - Reboot device\n");
@@ -756,6 +809,7 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   screenshot     - Capture screen\n");
         printf("[DEV]   keypress <key> - Inject keypress\n");
         printf("[DEV]   keydown <key> / keyup <key> - Hold/release a key (chords)\n");
+        printf("[DEV]   pad <btns|none|off> [ms] - Test gamepad: e.g. 'pad up+a', 'pad home 100'\n");
         printf("[DEV]   put <path> <size> - Receive file from host (USB CDC only)\n");
         printf("[DEV]   get <path>     - Send file to host (USB CDC only)\n");
         printf("[DEV]   putb64 <path> <size> - Receive file as base64 (any transport)\n");

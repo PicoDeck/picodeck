@@ -1668,7 +1668,9 @@ function picocalc.graphics.image.load(path) end
 ---@param y integer Source y offset
 ---@param w integer Region width
 ---@param h integer Region height
----@return PicoDeckImage img Raises on failure
+---@return PicoDeckImage img Raises on failure. Its pixel coordinates start at (0, 0)
+---@return integer w Width actually produced (the region is clamped to the image)
+---@return integer h Height actually produced
 function picocalc.graphics.image.loadRegion(path, x, y, w, h) end
 
 ---Load and scale an image from the SD card.
@@ -2357,7 +2359,7 @@ local PicoDeckAnimator = {}
 ---@param duration_ms integer Duration comes first
 ---@param from number
 ---@param to number
----@param easing? string Easing name: "linear" (default), "sineIn", "sineOut", "sineInOut", "quadIn", "quadOut", "quadInOut", "cubicIn", "cubicOut", "cubicInOut" (an unknown name is linear; a function is not accepted)
+---@param easing? string Easing name: "linear" (default), "sineIn", "sineOut", "sineInOut", "quadIn", "quadOut", "quadInOut", "cubicIn", "cubicOut", "cubicInOut" (nil is linear; any other name raises; a function is not accepted)
 ---@param delay_ms? integer Wait this long before starting
 ---@return PicoDeckAnimator
 function picocalc.graphics.animation.animator.new(duration_ms, from, to, easing, delay_ms) end

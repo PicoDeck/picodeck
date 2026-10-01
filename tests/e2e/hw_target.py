@@ -5,10 +5,11 @@
 
 A test asks for the `target` fixture (conftest.py) and gets a SimTarget over
 its simulator, or the session's HwTarget on --target hw:<port>. Both offer the
-same calls: launch_app / wait_for_exit / exit_app, keypress(_sequence),
+same calls: launch_app / wait_for_exit / exit_app, keypress(_sequence), pad,
 screenshot, read_file / write_file / delete_file, push_app / stage_lua_app,
 run_lua_app / wait_for_results (the Lua test kit's results file), status,
-log_cursor / get_log_lines / wait_for_log.
+log_cursor / get_log_lines / wait_for_log, and command (a dev-command line;
+on the simulator only those it runs: ping, exit, unzip, rm, audiostat).
 
 Collection rules (apply_target_rules):
   - @pytest.mark.hardware: runs only on --target hw; skipped (allow-listed)
@@ -327,6 +328,16 @@ class SimTarget(Target):
             raise ValueError(f"{path!r} escapes the SD card")
         return p
 
+    def command(self, cmd: str, timeout: Optional[float] = None) -> list:
+        """One dev-command line through the simulator's `dev_command` RPC,
+        which runs the commands it shares with the firmware (dev_ops.c:
+        ping, exit, unzip, rm, audiostat), and the reply as the device
+        prints it: ["[DEV] <reply>"]."""
+        t = timeout or 5.0
+        r = self.sim.call("dev_command", {"cmd": cmd, "timeout_ms": int(t * 1000)},
+                          timeout=t + 5.0)
+        return ["[DEV] " + r.get("output", "")]
+
     def status(self) -> dict:
         """The subset of the device's `status` the simulator can answer."""
         app = self.sim.call("get_running_app")
@@ -380,6 +391,9 @@ class SimTarget(Target):
 
     def keypress_sequence(self, keys, delay_ms: int = 100):
         return self.sim.keypress_sequence(list(keys), delay_ms)
+
+    def pad(self, state: str, hold_ms: int = 0) -> str:
+        return self.sim.pad(state, hold_ms)
 
     def screenshot(self) -> bytes:
         return self.sim.screenshot()
@@ -666,6 +680,14 @@ class HwTarget(Target):
         if bad:
             raise HwTargetError(f"keys not injected: {bad}")
         return results
+
+    def pad(self, state: str, hold_ms: int = 0) -> str:
+        """The test gamepad (`pad` dev command), as SimTarget.pad."""
+        cmd = f"pad {state}" + (f" {int(hold_ms)}" if hold_ms else "")
+        reply = self.pm._pad_reply(self.command(cmd, timeout=3.0))
+        if not reply.startswith("Pad:"):
+            raise HwTargetError(f"{cmd!r}: {reply}")
+        return reply
 
     def screenshot(self) -> bytes:
         """PNG of the framebuffer the panel shows (RGB565 as display.c

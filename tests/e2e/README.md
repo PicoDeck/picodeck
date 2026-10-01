@@ -92,11 +92,14 @@ other test is deselected. On the simulator (`--target sim`, the default)
 `hardware` tests skip, allow-listed, and `both` tests run. A `both` test must
 use the `target` fixture only: it gets `hw_target.SimTarget` over its
 simulator, or the session's `hw_target.HwTarget`. Both offer `launch_app`,
-`wait_for_exit`, `exit_app`, `keypress(_sequence)`, `screenshot`,
+`wait_for_exit`, `exit_app`, `keypress(_sequence)`, `pad`, `screenshot`,
 `read_file`/`write_file`/`delete_file`, `push_app`/`stage_lua_app`,
-`run_lua_app`, `wait_for_results`, `status` and log reading. Hardware-only
-fixture apps live in `hw_apps/` (pushed by the test, never staged on
-simulator SD cards).
+`run_lua_app`, `wait_for_results`, `status`, log reading and `command` (a
+dev-command line; the simulator runs `ping`, `exit`, `unzip`, `rm`, `pad` and
+`audiostat`). Hardware-only
+fixture apps live in `hw_apps/` (pushed by the test, never on the
+simulator's default SD card; `test_mp3_pacing.py` stages `mp3_bench` on its
+own card to run the same app in the simulator).
 
 `HwTarget` drives the device through `tools/picodeck_mcp.py`'s serial helpers
 and builds the device's traps in:
@@ -145,9 +148,11 @@ tests/e2e/
 ├── hw_apps/<name>/      hardware-only fixture apps, pushed to the device by the test
 ├── lib/picotest.lua     Lua test kit, staged to /system/lib/picotest.lua
 ├── apps/<name>/         fixture apps (app.json + main.lua), staged onto every SD card
-├── native/              source + Makefile of the native fixture (apps/native_api_probe/main.elf)
+├── native/              source + Makefile of the native fixtures (apps/native_api_probe,
+│                        apps/native_leaky, fixtures/native_pad_probe)
 ├── elfgen.py            struct.pack ELF32 builder, valid or malformed, for the loader tests
 ├── fixtures/fonts/      golden PNGs
+├── fixtures/native_pad_probe/  the gbc / c64 gamepad adapters (staged by test_gamepad.py)
 └── skip_allowlist.txt   tests that may skip; any other skip fails the run
 ```
 
@@ -170,6 +175,15 @@ images, players, a terminal and a `qmiAlloc` block and returns without
 freeing any of them, between runs of the Lua `apps/mem_report` (PSRAM free,
 largest block, how many of 16 simultaneous opens succeed) under
 `--real-umm`: after the native app exits, everything must be back.
+
+`test_gamepad.py` stages `fixtures/native_pad_probe` (source
+`native/pad_probe.c`, built by the same Makefile from the games' own
+`apps/gbc/input.c` and `apps/c64/pad_input.h`), which logs the Game Boy
+joypad and C64 joystick those adapters produce, on the gamepad and on a
+copy of the API that looks like firmware before it. It is not under
+`apps/` because the default card has no slot to spare (see "App cap").
+After changing either adapter, rebuild it with `make -C tests/e2e/native`
+and commit it.
 
 `test_native_malformed.py` stages one `elfgen.build_elf(...)` image per
 malformation (`specs/test-audit-2026-09-24.md` §3.5 plus the other

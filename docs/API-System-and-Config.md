@@ -170,6 +170,7 @@ Returns a snapshot of heap memory usage.
   - `sram_free` (number): Free bytes in the system SRAM heap (via `mallinfo`; the SRAM heap is only ~2.6 KB)
   - `sram_used` (number): Used bytes in the system SRAM heap
   - `pio_psram_available` (boolean), `pio_psram_size` (number): mainboard PIO PSRAM
+  - `xip_cache_hit_rate` (number): the flash/PSRAM cache's hit rate in percent (0-100) since the previous `getMemInfo()` call, or `-1` when nothing was counted, when the hardware counters filled up meanwhile (a busy app fills them in about 40 s), or in the simulator. Call `getMemInfo()` once to start a measurement and again to read it.
 
 ```lua
 local mem = picocalc.sys.getMemInfo()

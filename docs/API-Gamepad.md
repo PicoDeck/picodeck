@@ -11,6 +11,7 @@ A logical gamepad with 12 buttons. Read it instead of raw keys and your game get
 - **One button per key.** Within one map a key drives at most one button.
 - **Same polling as the input masks.** `picocalc.input.update()` updates the gamepad too. A tap shorter than one frame still gives one press edge and, on the next frame, one release edge.
 - **Esc is not a gamepad button.** Keep Esc as back/quit.
+- **A connected controller drives the same buttons.** A game controller and the keyboard work together: a button is held while either holds it, with one press edge and one release edge, and your game cannot tell which one pressed it, so it needs no code for controllers. `getLabel()` still names the keyboard key. A controller's Home button opens the system menu, and the D-pad and A/B move through it and the launcher, so a player with only a controller can leave a game. The header shows a gamepad icon while one is connected. Today this works in the simulator (a controller plugged into the computer); controllers on the device itself are coming ([issue #26](https://github.com/PicoDeck/picodeck/issues/26)).
 
 ### Default bindings
 

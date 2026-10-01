@@ -553,7 +553,9 @@ static int l_graphics_image_getInfo(lua_State *L) {
 }
 
 // loadRegion(path, x, y, w, h) — load an image and keep only the given
-// sub-rectangle (clamped to the image bounds).
+// sub-rectangle (clamped to the image bounds). Returns the image and the
+// width and height actually produced, so a caller can detect clamping. A
+// region with no overlap raises, like every other failure here.
 static int l_graphics_image_loadRegion(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
   int rx = lb_checkint(L, 2);
@@ -568,15 +570,23 @@ static int l_graphics_image_loadRegion(lua_State *L) {
   if (!loaded)
     return luaL_error(L, "failed to load image: %s", path);
 
-  // Clamp region to image bounds
-  if (rx < 0) { rw += rx; rx = 0; }
-  if (ry < 0) { rh += ry; ry = 0; }
-  if (rx + rw > loaded->w) rw = loaded->w - rx;
-  if (ry + rh > loaded->h) rh = loaded->h - ry;
-  if (rw <= 0 || rh <= 0) {
+  // Clamp region to image bounds. The edges are 64-bit: x + w and y + h of
+  // full-range 32-bit arguments would overflow, skip the clamp and copy from
+  // outside the image.
+  int64_t x0 = rx, y0 = ry;
+  int64_t x1 = x0 + rw, y1 = y0 + rh;
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 > loaded->w) x1 = loaded->w;
+  if (y1 > loaded->h) y1 = loaded->h;
+  if (x1 <= x0 || y1 <= y0) {
     image_free(loaded);
     return luaL_error(L, "region outside image bounds");
   }
+  rx = (int)x0;
+  ry = (int)y0;
+  rw = (int)(x1 - x0);
+  rh = (int)(y1 - y0);
 
   uint16_t *crop = (uint16_t *)umm_malloc((size_t)rw * rh * sizeof(uint16_t));
   if (!crop) {
@@ -594,7 +604,9 @@ static int l_graphics_image_loadRegion(lua_State *L) {
   img->data = crop;
   img->transparent_color = 0;
   luaL_setmetatable(L, GRAPHICS_IMAGE_MT);
-  return 1;
+  lua_pushinteger(L, rw);
+  lua_pushinteger(L, rh);
+  return 3;
 }
 
 // loadScaled(path, w, h) — load an image and resample it to w×h (bilinear).
@@ -3656,6 +3668,12 @@ static float easing_cubicInOut(float t) {
 
 typedef float (*easing_fn)(float);
 
+#define EASING_NAMES \
+  "linear, sineIn, sineOut, sineInOut, quadIn, quadOut, quadInOut, cubicIn, " \
+  "cubicOut, cubicInOut"
+
+// NULL for a name that is not one of EASING_NAMES (the capitalised spellings
+// "SineIn" etc. are also accepted); the caller raises.
 static easing_fn get_easing_fn(const char *name) {
   if (!strcmp(name, "linear")) return easing_linear;
   if (!strcmp(name, "sineIn") || !strcmp(name, "SineIn")) return easing_sineIn;
@@ -3667,7 +3685,7 @@ static easing_fn get_easing_fn(const char *name) {
   if (!strcmp(name, "cubicIn") || !strcmp(name, "CubicIn")) return easing_cubicIn;
   if (!strcmp(name, "cubicOut") || !strcmp(name, "CubicOut")) return easing_cubicOut;
   if (!strcmp(name, "cubicInOut") || !strcmp(name, "CubicInOut")) return easing_cubicInOut;
-  return easing_linear;
+  return NULL;
 }
 
 // ── Animator ─────────────────────────────────────────────────────────────────
@@ -3722,6 +3740,13 @@ static int l_animator_new(lua_State *L) {
       (top >= 4 && !lua_isnil(L, 4)) ? luaL_checkstring(L, 4) : NULL;
   lua_Integer delay = (top >= 5 && !lua_isnil(L, 5)) ? lb_checkint(L, 5) : 0;
 
+  easing_fn easing_f = easing_linear;
+  if (easing) {
+    easing_f = get_easing_fn(easing);
+    if (!easing_f)
+      return luaL_argerror(L, 4, lua_pushfstring(L, "unknown easing \"%s\" (expected one of: " EASING_NAMES ")", easing));
+  }
+
   lua_animator_t *a = (lua_animator_t *)lua_newuserdata(L, sizeof(lua_animator_t));
   a->duration_ms = duration;
   a->start_value = from;
@@ -3733,7 +3758,7 @@ static int l_animator_new(lua_State *L) {
   a->current_repeat = 0;
   a->reverses = false;
   a->ended = false;
-  a->easing = easing ? get_easing_fn(easing) : easing_linear;
+  a->easing = easing_f;
   a->destroyed = false;
 
   luaL_setmetatable(L, GRAPHICS_ANIMATOR_MT);

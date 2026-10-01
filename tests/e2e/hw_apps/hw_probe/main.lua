@@ -51,7 +51,12 @@ local function mode_color()
     hold()
 end
 
--- ── cstack: Lua -> C -> Lua recursion on the real 4 KB / app stacks ────────
+-- ── cstack: Lua -> C -> Lua recursion on the real app stack ────────────────
+-- Then unbounded pure-Lua recursion, ~976 frames deep at its "stack
+-- overflow": the timer-armed service hook used to walk every frame on each
+-- 1 ms tick there, never left the timer IRQ and the watchdog reset the
+-- device (issue #21). A hang shows in test_results.json as the cases before
+-- the one that hung.
 local function gsub_to(n)
     if n == 0 then return "x" end
     return (string.gsub("a", "a", function() return gsub_to(n - 1) end))

@@ -1,6 +1,8 @@
 #include "mp3_player.h"
 #include "audio.h"
 #include "pcm_stage.h"
+#include "mp3_sched.h"
+#include "../os/core0_idle.h"
 #include "sdcard.h"
 #include "pio_psram.h"
 #include "pico/platform.h"
@@ -94,6 +96,14 @@ static volatile uint32_t s_diag_sd_fail = 0;       // SD refill: mutex busy or r
 static volatile uint32_t s_diag_max_us = 0;        // longest single update
 static volatile uint64_t s_diag_total_us = 0;
 
+// When to decode (mp3_sched.h, issue #28): the decode-time estimate (Core 1,
+// under s_mp3_mutex), the switch (xipstat mp3idle on|off) and the counts.
+static mp3_sched_t s_sched = {MP3_SCHED_SEED_US};
+static atomic_bool s_decode_ahead = true;
+static volatile uint32_t s_sched_low_frames = 0;   // decoded: the ring was low
+static volatile uint32_t s_sched_idle_frames = 0;  // decoded ahead, Core 0 idle
+static volatile uint32_t s_sched_overran = 0;      // ...that ran past the window
+
 // ── Fed mode: compressed MP3 ring in QMI PSRAM, written by Core 0 (video) ───
 // Uses umm_malloc (not PIO PSRAM) because both cores access this ring
 // concurrently and PIO1 SPI is not thread-safe across cores.
@@ -118,6 +128,23 @@ static uint32_t    s_fed_frames = 0;
 static uint32_t    s_mark_at = 0;
 static uint32_t    s_mark_frame = 0;
 static _Atomic int s_mark_state = MARK_NONE;
+
+// A restart in place (mp3_player_restart_fed) decodes the new audio's
+// first frame while the stage still plays the old: nothing may move into
+// the stage meanwhile (refill_staging_buf), and the decode stops at that
+// one frame. Set and cleared by Core 0 inside one hold of s_mp3_mutex.
+static bool s_stage_held = false;
+// Frames to decode and not play: a restart mid-stream primes the decoder
+// with one, since from nothing (the synthesis filterbank and the IMDCT
+// overlap empty) its first frame plays as a ramp up from silence, ~5 ms of
+// zeros then ~7 ms quiet. Under s_mp3_mutex.
+static int s_prime_frames = 0;
+
+// Restart diagnostics (mp3_player_fed_restart_stats), Core 0 only.
+// s_fallback_silent_at: when start_fed faded out a playing session (0:
+// it did not), for start_fed_output to measure the gap at its attach.
+static mp3_fed_restart_stats_t s_restart_stats;
+static uint64_t s_fallback_silent_at = 0;
 
 static inline uint32_t fed_ring_available(void) {
     uint32_t wr = atomic_load_explicit(&s_fed_wr, memory_order_acquire);
@@ -186,7 +213,7 @@ static void ring_write(const uint8_t *data, size_t len) {
 // Core 1's update (and Core 0's pre-fill in play, with the stage detached)
 // keeps the stage topped up between decodes.
 static void refill_staging_buf(void) {
-    if (s_stage.avail >= STAGING_BUF_SIZE / 2)
+    if (s_stage_held || s_stage.avail >= STAGING_BUF_SIZE / 2)
         return;
 
     s_diag_refill_calls++;
@@ -251,6 +278,22 @@ void mp3_player_get_diag(uint32_t out[11]) {
     out[8] = s_diag_sd_fail;
     out[9] = s_diag_max_us;
     out[10] = (uint32_t)(s_diag_total_us & 0xFFFFFFFFu);
+}
+
+void mp3_player_get_sched_stats(mp3_sched_stats_t *out) {
+    out->low_frames = s_sched_low_frames;
+    out->idle_frames = s_sched_idle_frames;
+    out->overran = s_sched_overran;
+    out->frame_us = s_sched.frame_us;
+    out->decode_ahead = atomic_load(&s_decode_ahead);
+}
+
+void mp3_player_reset_sched_stats(void) {
+    s_sched_low_frames = s_sched_idle_frames = s_sched_overran = 0;
+}
+
+void mp3_player_set_decode_ahead(bool on) {
+    atomic_store(&s_decode_ahead, on);
 }
 
 void mp3_player_reset_diag(void) {
@@ -374,7 +417,10 @@ static void finish_if_drained(void) {
 // whole ramp (PCM_STAGE_FADE_FRAMES frames: the next one or two refills),
 // so detaching it afterwards cannot click. Returns at once when nothing
 // would render the ramp (not mixing, or the output off), and after 50 ms
-// at worst. Call WITHOUT s_mp3_mutex: Core 1's update keeps running.
+// at worst. The mixer renders it in the refill interrupt, whoever holds
+// s_mp3_mutex: callers wait without it so that Core 1's update keeps the
+// stage topped up, except a restart in place, which holds it so that
+// nothing new reaches the stage before the old audio has faded out.
 static void fade_out_and_wait(void) {
     if (!atomic_load(&s_stage_ready) || !audio_output_running())
         return;
@@ -431,22 +477,35 @@ static void decode_fill_ring(void) {
     if (!s_fed_mode && !s_file)
         return;
 
-    // Batch decode: only decode when ring buffer is below 50% capacity,
-    // then decode up to 3 frames to refill quickly.  This creates bursty
-    // PSRAM access (~10ms decode burst, ~30-40ms idle) instead of constant
-    // pressure every 5ms, reducing QMI contention with Core 0's XIP cache.
-    size_t avail = ring_available();
-    if (avail > PCM_RING_SIZE / 2)
-        return;  // ring buffer is >50% full, skip this cycle
+    // When to decode (mp3_sched.h): a burst of up to 3 frames when the ring
+    // is at or below half (whatever Core 0 does: nothing starves), or ahead
+    // while a paced app's Core 0 waits for its frame's deadline
+    // (os/core0_idle.h), so the decoder's sweep of the shared XIP cache and
+    // QMI lands on Core 0's idle time. Fed mode (the video player, which
+    // does not pace through perf) decodes on the low ring only, as before.
+    // A call from Core 0 (play's pre-fill) never sees a window.
+    bool low = mp3_sched_low((uint32_t)ring_available(), PCM_RING_SIZE);
+    bool ahead = !s_fed_mode &&
+                 atomic_load_explicit(&s_decode_ahead, memory_order_relaxed);
+    if (!low && !(ahead && core0_idle_left_us(time_us_64()) >= s_sched.frame_us))
+        return;  // the ring is over half full and Core 0 is working
 
     s_diag_decode_runs++;
-    int max_frames = 3;
-    int frames_decoded = 0;
+    // A restart in place needs one frame to start the new audio: more
+    // would only keep the old audio playing longer (and risk its stage
+    // running dry). Core 1 decodes on as soon as the restart ends.
+    uint32_t max_frames = s_stage_held ? 1u : MP3_SCHED_BURST;
+    uint32_t frames_decoded = 0;
     int errors_this_update = 0;
     bool rewound = false;
     // Every pass either decodes a frame, gets new input, counts an error
     // (capped), or leaves: the loop is bounded within one update.
     while (frames_decoded < max_frames && ring_free() >= 1152 * 2 * 2) {
+        uint64_t t0 = time_us_64();
+        mp3_sched_why_t why = mp3_sched_next(&s_sched, low, frames_decoded,
+                                             ahead ? core0_idle_left_us(t0) : 0);
+        if (why == MP3_SCHED_NONE)
+            break;
         const uint8_t *base = s_decode_buffer + s_buffer_pos;
         uint32_t valid = (uint32_t)s_bytes_in_buffer;
         // (The guard bytes after the data are always zeroed by the refill.)
@@ -511,8 +570,12 @@ static void decode_fill_ring(void) {
             fed_note_frame((uint32_t)(s_mad_stream->this_frame - base), valid);
 
         mad_synth_frame(s_mad_synth, s_mad_frame);
-        frames_decoded++;
         s_diag_decode_frames++;
+        if (s_prime_frames > 0) {   // it primed the decoder: not heard
+            s_prime_frames--;
+            continue;
+        }
+        frames_decoded++;
 
         struct mad_pcm *pcm = &s_mad_synth->pcm;
         s_pcm_channels = pcm->channels;
@@ -524,10 +587,16 @@ static void decode_fill_ring(void) {
             // Stereo: samplesX is already interleaved [sample][2] int16_t
             ring_write((const uint8_t *)pcm->samplesX, nsamples * 2 * sizeof(int16_t));
         } else {
-            // Mono: write only left channel (samplesX[n][0])
-            for (unsigned int i = 0; i < nsamples; i++) {
-                ring_write((const uint8_t *)&pcm->samplesX[i][0], sizeof(int16_t));
-            }
+            // Mono: the left channel (samplesX[n][0]) packed in place to the
+            // front of samplesX (sample n moves from byte 4n to 2n, so the
+            // forward copy never overwrites one it has yet to read), then
+            // one ring write. Writing each 2-byte sample on its own was 576
+            // PIO PSRAM transfers per frame, each with its own lock, XIP
+            // cache clean and DMA setup.
+            int16_t *packed = &pcm->samplesX[0][0];
+            for (unsigned int i = 1; i < nsamples; i++)
+                packed[i] = pcm->samplesX[i][0];
+            ring_write((const uint8_t *)packed, nsamples * sizeof(int16_t));
         }
 
         // Top up the staging buffer between frames: a 3-frame decode burst can
@@ -535,6 +604,19 @@ static void decode_fill_ring(void) {
         // longer than the staging cushion, so refilling only once per update
         // lets the mixer drain the stage dry and crackles.
         refill_staging_buf();
+
+        if (why == MP3_SCHED_IDLE) {
+            // A frame that finished inside Core 0's window ran uncontended:
+            // its time refines the estimate the next window is judged by.
+            uint64_t t1 = time_us_64();
+            s_sched_idle_frames++;
+            if (core0_idle_left_us(t1) > 0)
+                mp3_sched_note(&s_sched, (uint32_t)(t1 - t0));
+            else
+                s_sched_overran++;
+        } else {
+            s_sched_low_frames++;
+        }
     }
 }
 
@@ -588,6 +670,7 @@ static bool rewind_locked(void) {
     s_ring_rd = s_ring_wr = 0;
     s_eof = false;
     s_input_end = false;
+    mp3_sched_init(&s_sched);  // a new file: its own decode time
     return true;
 }
 
@@ -866,14 +949,44 @@ void mp3_player_set_loop(mp3_player_t *player, bool loop) {
 
 // ── Fed mode API (video player audio) ─────────────────────────────────────────
 
+// Records a restart of a playing session: its gap, and for one in place
+// the decode behind the old audio and the old audio it had left. Core 0.
+static void restart_note(bool in_place, uint64_t gap_us, uint64_t preroll_us,
+                         uint64_t margin_us) {
+    mp3_fed_restart_stats_t *st = &s_restart_stats;
+    uint32_t gap = gap_us > UINT32_MAX ? UINT32_MAX : (uint32_t)gap_us;
+    st->gap_us = gap;
+    if (gap > st->gap_max_us) st->gap_max_us = gap;
+    if (!in_place) {
+        st->fallbacks++;
+        return;
+    }
+    uint32_t pre = preroll_us > UINT32_MAX ? UINT32_MAX : (uint32_t)preroll_us;
+    uint32_t margin = margin_us > UINT32_MAX ? UINT32_MAX : (uint32_t)margin_us;
+    if (pre > st->preroll_max_us) st->preroll_max_us = pre;
+    if (st->restarts == 0 || margin < st->margin_min_us) st->margin_min_us = margin;
+    st->restarts++;
+}
+
+void mp3_player_fed_restart_stats(mp3_fed_restart_stats_t *out, bool reset) {
+    *out = s_restart_stats;
+    if (reset)
+        memset(&s_restart_stats, 0, sizeof s_restart_stats);
+}
+
 bool mp3_player_start_fed(uint32_t sample_rate, uint16_t channels) {
     if (!s_initialized) {
         if (!mp3_player_init()) return false;
     }
+    // A playing session restarted here (a seek's fallback) is silent from
+    // its fade-out until start_fed_output starts the new audio.
+    bool audible = s_fed_mode && s_mixing && audio_output_running();
     fade_out_and_wait();
+    uint64_t silent_at = time_us_64();
 
     mutex_enter_blocking(&s_mp3_mutex);
     detach();
+    s_fallback_silent_at = audible ? silent_at : 0;
     if (s_file) { sdcard_fclose(s_file); s_file = NULL; }
 
     // Init fed ring in QMI PSRAM
@@ -888,6 +1001,7 @@ bool mp3_player_start_fed(uint32_t sample_rate, uint16_t channels) {
     s_fed_mode = true;
     s_fed_wr = 0;
     s_fed_rd = 0;
+    s_prime_frames = 0;
     s_fed_fed = s_fed_taken = s_fed_frames = 0;
     atomic_store(&s_mark_state, MARK_NONE);
     atomic_store(&s_fed_end, false);
@@ -937,8 +1051,75 @@ void mp3_player_start_fed_output(void) {
     decode_fill_ring();    // compressed data from the fed ring into the PCM ring
     refill_staging_buf();
     attach();
+    if (s_fallback_silent_at) {
+        restart_note(false, time_us_64() - s_fallback_silent_at, 0, 0);
+        s_fallback_silent_at = 0;
+    }
     mutex_exit(&s_mp3_mutex);
     audio_output_ensure_running();
+}
+
+bool mp3_player_restart_fed(const uint8_t *data, uint32_t len, bool mid_stream) {
+    if (!s_initialized || !data || len == 0)
+        return false;
+    mutex_enter_blocking(&s_mp3_mutex);
+    // The old audio has to be playing to play on; otherwise the caller
+    // restarts through start_fed. (finish_if_drained, which ends a
+    // finished stream, runs under this mutex too.)
+    if (!s_fed_mode || !s_fed_ring_buf || !s_player.playing ||
+        s_player.paused || !s_mixing || !audio_output_running()) {
+        mutex_exit(&s_mp3_mutex);
+        return false;
+    }
+    uint64_t t0 = time_us_64();
+    stage_lock();
+    uint64_t margin_us = (uint64_t)pcm_stage_frames(&s_stage) * 1000000u / s_stage.rate;
+    stage_unlock();
+
+    // Everything behind the stage starts again at the new data, while the
+    // stage plays the old audio on (Core 1's update is locked out: nothing
+    // refills it, and it has at least the ~23 ms the refill keeps).
+    s_stage_held = true;
+    s_fed_wr = 0;
+    s_fed_rd = 0;
+    s_fed_fed = s_fed_taken = s_fed_frames = 0;
+    atomic_store(&s_mark_state, MARK_NONE);
+    atomic_store(&s_fed_end, false);
+    s_bytes_in_buffer = 0;
+    s_buffer_pos = 0;
+    s_ring_rd = s_ring_wr = 0;
+    s_eof = false;
+    s_input_end = false;
+    s_prime_frames = mid_stream ? 1 : 0;
+    mad_stream_init(s_mad_stream);
+    mad_frame_init(s_mad_frame);
+    mad_synth_init(s_mad_synth);
+    mp3_player_feed(data, len);
+    decode_fill_ring();    // (primed,) the new audio's first frame, into the PCM ring
+    uint64_t t1 = time_us_64();
+
+    // The switch: the next render ramps the old audio down; then the stage
+    // empties (the position restarts) and takes the new audio from its
+    // first frame, and the render after fades it in.
+    fade_out_and_wait();
+    uint64_t t2 = time_us_64();
+    stage_lock();
+    pcm_stage_reset(&s_stage);
+    stage_unlock();
+    s_stage_held = false;
+    refill_staging_buf();
+    attach();
+    uint64_t t3 = time_us_64();
+    mutex_exit(&s_mp3_mutex);
+
+    // The old audio stopped when its fade-out ended, or earlier if its
+    // stage ran dry during the decode.
+    uint64_t stopped = t0 + margin_us < t2 ? t0 + margin_us : t2;
+    restart_note(true, t3 - stopped, t1 - t0, margin_us);
+    printf("[MP3] Fed restart: gap %lu us, decode %lu us behind %lu us of old audio\n",
+           (unsigned long)(t3 - stopped), (unsigned long)(t1 - t0),
+           (unsigned long)margin_us);
+    return true;
 }
 
 uint32_t mp3_player_feed(const uint8_t *data, uint32_t len) {
@@ -992,6 +1173,8 @@ void mp3_player_stop_fed(void) {
     s_fed_mode = false;
     s_fed_wr = 0;
     s_fed_rd = 0;
+    s_prime_frames = 0;
+    s_fallback_silent_at = 0;
     atomic_store(&s_mark_state, MARK_NONE);
     atomic_store(&s_fed_end, false);
     if (s_fed_ring_buf) { umm_free(s_fed_ring_buf); s_fed_ring_buf = NULL; }

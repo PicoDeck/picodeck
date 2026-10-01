@@ -400,16 +400,10 @@ function Audio:startBgm(spec)
         return
     end
     if spec.volume then pcall(p.setVolume, p, spec.volume) end
-    if spec.loop then
-        -- Loop by replay-on-finish; the callback fires from the opcode hook,
-        -- so it only sets a flag that the next update() acts on.
-        local self_ = self
-        pcall(p.setFinishCallback, p, function() self_.bgmFinished = true end)
-    end
-    pcall(p.play, p)
+    -- play(0) loops inside the stream: no gap at the loop point (replaying
+    -- from a finish callback would wait for a full ring each time).
+    pcall(p.play, p, spec.loop and 0 or 1)
     self.bgm = p
-    self.bgmLoop = spec.loop and true or false
-    self.bgmFinished = false
 end
 
 function Audio:stopBgm()
@@ -417,7 +411,6 @@ function Audio:stopBgm()
         pcall(self.bgm.stop, self.bgm)
         self.bgm = nil
     end
-    self.bgmFinished = false
 end
 
 function Audio:playSfx(spec)
@@ -440,10 +433,7 @@ function Audio:playSfx(spec)
 end
 
 function Audio:update()
-    if self.bgm and self.bgmLoop and self.bgmFinished then
-        self.bgmFinished = false
-        pcall(self.bgm.play, self.bgm)
-    end
+    -- Background music loops in the stream (play(0)); nothing to poll.
 end
 
 function Audio:teardown()
@@ -517,11 +507,22 @@ end
 
 -- ── Layer rendering ─────────────────────────────────────────────────────────
 
+local warnedEase = {}  -- ease names already reported, so a re-armed layer logs once
+
 local function newAnimator(duration, from, to, ease, delay)
     local ok, a = pcall(gfx.animation.animator.new, duration, from, to,
                         ease or "cubicOut", delay or 0)
     if ok then return a end
-    return nil
+    -- animator.new raises on an unrecognised easing name. Keep the comic
+    -- running on a linear curve, but log the name so the typo can be found.
+    ok, a = pcall(gfx.animation.animator.new, duration, from, to, "linear", delay or 0)
+    if not ok then return nil end
+    local key = tostring(ease)
+    if not warnedEase[key] then
+        warnedEase[key] = true
+        sys.log('PANELS:ERR unknown ease "' .. key .. '", using linear')
+    end
+    return a
 end
 
 local function layerRuntime(comic, layer)
