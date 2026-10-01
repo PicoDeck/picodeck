@@ -27,9 +27,12 @@ end
 -- Reveal (A) also answers "play again", as does Enter as before the gamepad.
 -- Enter counts only when it pressed no gamepad button: a player who bound it
 -- to one gets that button's meaning alone.
+local END_LOCK_MS = 400  -- ignore play-again this long after the game ends
+local ended_at = nil     -- when the end screen first showed
+
 local function confirm_pressed(pad_pressed)
     if pad_pressed & P.REVEAL ~= 0 then return true end
-    return gp ~= nil and pad_pressed == 0
+    return (gp == nil or pad_pressed == 0)
         and input.getButtonsPressed() & input.BTN_ENTER ~= 0
 end
 
@@ -40,8 +43,8 @@ local ROWS         = 9
 local MINES        = 10
 local CELL_SIZE    = 32
 local GRID_OFFSET_X = (disp.getWidth() - COLS * CELL_SIZE) // 2
-local GRID_OFFSET_Y = 36
-local HEADER_HEIGHT = 28
+local GRID_OFFSET_Y = 16
+local HEADER_HEIGHT = 16
 
 -- Cell states
 local CELL_COVERED   = 0
@@ -131,6 +134,7 @@ local function init_board()
     timer       = 0
     start_time  = pc.sys.getTimeMs()
     first_click = true
+    ended_at    = nil
 end
 
 local function place_mines(safe_x, safe_y)
@@ -377,11 +381,11 @@ local function draw_board()
 end
 
 local function draw_header()
-    disp.fillRect(0, 0, disp.getWidth(), HEADER_HEIGHT + 8, HEADER_BG)
+    disp.fillRect(0, 0, disp.getWidth(), HEADER_HEIGHT, HEADER_BG)
     
     -- Mine count
-    disp.drawText(8, 6, "Mines:", TEXT_COLOR, HEADER_BG)
-    disp.drawText(56, 6, string.format("%2d", mines_remaining), 
+    disp.drawText(8, 4, "Mines:", TEXT_COLOR, HEADER_BG)
+    disp.drawText(56, 4, string.format("%2d", mines_remaining), 
                   mines_remaining < 0 and disp.RED or TEXT_COLOR, HEADER_BG)
     
     -- Timer
@@ -389,19 +393,19 @@ local function draw_header()
     if game_state == STATE_PLAYING and not first_click then
         elapsed = math.floor((pc.sys.getTimeMs() - start_time) / 1000)
     end
-    disp.drawText(disp.getWidth() // 2 - 20, 6, "Time:", DIM_COLOR, HEADER_BG)
-    disp.drawText(disp.getWidth() // 2 + 12, 6, string.format("%3d", elapsed), TEXT_COLOR, HEADER_BG)
+    disp.drawText(disp.getWidth() // 2 - 20, 4, "Time:", DIM_COLOR, HEADER_BG)
+    disp.drawText(disp.getWidth() // 2 + 12, 4, string.format("%3d", elapsed), TEXT_COLOR, HEADER_BG)
     
     -- Game state indicator
     if game_state == STATE_WON then
-        disp.drawText(disp.getWidth() - 70, 6, "WIN!", disp.rgb(50, 255, 50), HEADER_BG)
+        disp.drawText(disp.getWidth() - 70, 4, "WIN!", disp.rgb(50, 255, 50), HEADER_BG)
     elseif game_state == STATE_LOST then
-        disp.drawText(disp.getWidth() - 80, 6, "BOOM!", disp.RED, HEADER_BG)
+        disp.drawText(disp.getWidth() - 80, 4, "BOOM!", disp.RED, HEADER_BG)
     end
 end
 
 local function draw_footer()
-    local footer_y = GRID_OFFSET_Y + ROWS * CELL_SIZE + 8
+    local footer_y = GRID_OFFSET_Y + ROWS * CELL_SIZE
     disp.fillRect(0, footer_y, disp.getWidth(), disp.getHeight() - footer_y, HEADER_BG)
 
     if game_state == STATE_LOST then
@@ -435,7 +439,11 @@ local function handle_input()
     end
 
     if game_state ~= STATE_PLAYING then
-        if confirm_pressed(pressed) then
+        -- A is play again, so a reveal tap that just ended the game must not
+        -- restart it before the player has seen the board.
+        local now = pc.sys.getTimeMs()
+        ended_at = ended_at or now
+        if now - ended_at >= END_LOCK_MS and confirm_pressed(pressed) then
             init_board()
         end
         return
@@ -504,6 +512,10 @@ local function handle_input()
     -- Chord reveal
     if pressed & P.CHORD ~= 0 then
         chord_reveal(cursor.x, cursor.y)
+        check_game_state()
+        if game_state == STATE_LOST then
+            reveal_all_mines()
+        end
     end
     
     -- Toggle question mark

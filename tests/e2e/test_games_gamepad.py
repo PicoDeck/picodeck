@@ -266,15 +266,14 @@ def _mine_cell(sim, cx, cy):
 def _spy_footer(sim, name, **kw):
     """Stages `name` with its drawText wrapped to log the footer hint.
 
-    The 9x9 grid of 32 px cells ends at y=324, so on the 320 px screen the
-    footer hint is drawn off the bottom and a screenshot cannot show it.
+    Reading the text and its y is exact; `_hint` checks the line is on screen.
     """
     _stage(sim, name, **kw)
     main = Path(sim.sd_card_path) / "apps" / name / "main.lua"
     main.write_text(
         "local dt = picocalc.display.drawText\n"
         "picocalc.display.drawText = function(x, y, t, ...)\n"
-        "  if t:find('Esc:', 1, true) then picocalc.sys.log('HINT:' .. t) end\n"
+        "  if t:find('Esc:', 1, true) then picocalc.sys.log('HINT:' .. t .. '@' .. y) end\n"
         "  return dt(x, y, t, ...)\n"
         "end\n" + main.read_text())
 
@@ -282,7 +281,10 @@ def _spy_footer(sim, name, **kw):
 def _hint(sim):
     seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
     sim.launch_app("minesweeper")
-    return sim.wait_for_log(r"HINT:", timeout=10, since_seq=seq)
+    text = sim.wait_for_log(r"HINT:", timeout=10, since_seq=seq)
+    y = int(text.rsplit("@", 1)[1])
+    assert y + 8 <= 320, f"the hint at y={y} runs off the 320 px screen"
+    return text
 
 
 def test_minesweeper_moves_and_acts_on_the_bound_keys(simulator):
@@ -437,3 +439,137 @@ def test_minesweeper_without_gamepad_plays_on_the_old_keys(simulator):
     assert _still_running(sim)
     sim.keypress("esc")
     assert sim.wait_for_exit(timeout=10)["result"] == "returned"
+
+
+# ── minesweeper: end of game ─────────────────────────────────────────────────
+#
+# A deterministic math.random is prepended to the staged main.lua. Mines are
+# taken from MINES_LOSE / MINES_WIN in order; the first reveal is at (5, 5).
+
+# Row 7 except (5, 7), plus (1, 9) and (9, 9).
+_MINES_LOSE = [1, 7, 2, 7, 3, 7, 4, 7, 6, 7, 7, 7, 8, 7, 9, 7, 1, 9, 9, 9]
+# Column 9 rows 1-8, plus (1, 8) and (2, 9): a reveal at (5, 5) clears all but
+# (1, 9) and (9, 9), and (1, 9) is open only to a chord on (2, 8).
+_MINES_WIN = [9, 1, 9, 2, 9, 3, 9, 4, 9, 5, 9, 6, 9, 7, 9, 8, 1, 8, 2, 9]
+
+
+def _launch_mines(sim, mines, no_gamepad=False):
+    _stage(sim, "minesweeper", no_gamepad=no_gamepad)
+    main = Path(sim.sd_card_path) / "apps" / "minesweeper" / "main.lua"
+    seq = ", ".join(map(str, mines))
+    main.write_text(
+        f"do local s = {{{seq}}} local i = 0\n"
+        "math.random = function() i = i + 1 return s[(i - 1) % #s + 1] end end\n"
+        + main.read_text())
+    sim.launch_app("minesweeper")
+    time.sleep(1.0)
+
+
+class _Cursor:
+    """Moves the minesweeper cursor by taps, from its start at (5, 5)."""
+
+    def __init__(self, sim):
+        self.sim, self.x, self.y = sim, 5, 5
+
+    def goto(self, x, y):
+        for _ in range(abs(x - self.x)):
+            _tap(self.sim, "right" if x > self.x else "left")
+        for _ in range(abs(y - self.y)):
+            _tap(self.sim, "down" if y > self.y else "up")
+        self.x, self.y = x, y
+
+
+def _header_pixels(sim, pred):
+    px = sim.screenshot_pil().convert("RGB").load()
+    return sum(1 for y in range(2, 20) for x in range(230, 310) if pred(*px[x, y]))
+
+
+def _boom(sim):
+    return _header_pixels(sim, lambda r, g, b: r > 200 and g < 80 and b < 80)
+
+
+def _won(sim):
+    return _header_pixels(sim, lambda r, g, b: g > 200 and r < 100 and b < 100)
+
+
+def _lose(sim, quick_tap=False):
+    """Reveals (5, 5), then the mine at (6, 7); returns the fresh board's cell.
+
+    quick_tap presses A again at once, as a player who taps twice would.
+    """
+    cur = _Cursor(sim)
+    fresh = _mine_cell(sim, 5, 5)
+    _tap(sim, "f4")
+    cur.goto(6, 7)
+    _tap(sim, "f4")
+    if quick_tap:
+        r = sim.keypress("f4")
+        sim.wait_input_consumed(r["input_seq"], timeout=5.0)
+    time.sleep(0.3)
+    assert _boom(sim) > 0
+    return fresh
+
+
+@pytest.mark.parametrize("key,no_gamepad", [("enter", False), ("f4", False), ("enter", True)])
+def test_minesweeper_plays_again_after_a_loss(simulator, key, no_gamepad):
+    sim = simulator
+    _launch_mines(sim, _MINES_LOSE, no_gamepad)
+    fresh = _lose(sim)
+    time.sleep(0.5)                      # past the end-screen lockout
+    _tap(sim, key)
+    time.sleep(0.3)
+    assert _boom(sim) == 0
+    assert _mine_cell(sim, 5, 5) == fresh
+    assert _still_running(sim)
+    sim.keypress("esc")
+    sim.wait_for_exit(timeout=10)
+
+
+def test_minesweeper_end_screen_ignores_a_tap_that_ended_the_game(simulator):
+    sim = simulator
+    _launch_mines(sim, _MINES_LOSE)
+    _lose(sim, quick_tap=True)           # a second A within 400 ms of the mine
+    assert _boom(sim) > 0                # the board is still there
+    time.sleep(0.5)
+    _tap(sim, "f4")
+    time.sleep(0.3)
+    assert _boom(sim) == 0
+    sim.keypress("esc")
+    sim.wait_for_exit(timeout=10)
+
+
+def test_minesweeper_chord_into_a_mine_loses_at_once(simulator):
+    sim = simulator
+    _launch_mines(sim, _MINES_LOSE)
+    cur = _Cursor(sim)
+    _tap(sim, "f4")                      # first reveal: rows 1-6 open
+    cur.goto(5, 7)
+    _tap(sim, "f5")                      # a wrong flag
+    cur.goto(4, 7)
+    _tap(sim, "f5")                      # a right one
+    cur.goto(5, 6)                       # a 2: the chord opens (6, 7), a mine
+    _tap(sim, "delete")
+    time.sleep(0.3)
+    assert _boom(sim) > 0
+    sim.keypress("esc")
+    sim.wait_for_exit(timeout=10)
+
+
+def test_minesweeper_chord_on_the_last_cell_wins_at_once(simulator):
+    sim = simulator
+    _launch_mines(sim, _MINES_WIN)
+    cur = _Cursor(sim)
+    _tap(sim, "f4")                      # first reveal
+    cur.goto(9, 9)
+    _tap(sim, "f4")                      # an enclosed safe cell
+    assert _won(sim) == 0 and _boom(sim) == 0
+    cur.goto(1, 8)
+    _tap(sim, "f5")
+    cur.goto(2, 9)
+    _tap(sim, "f5")
+    cur.goto(2, 8)                       # a 2 whose last unrevealed neighbour is (1, 9)
+    _tap(sim, "delete")
+    time.sleep(0.3)
+    assert _won(sim) > 0
+    sim.keypress("esc")
+    sim.wait_for_exit(timeout=10)
