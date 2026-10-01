@@ -45,6 +45,11 @@ void audio_stream_release(void);
 // Stops taking frames and keeps the ones in the ring (a paused
 // fileplayer); audio_stream_release() plays on from the same frame.
 void audio_stream_hold(void);
+// While the stream is held, empties the ring: its producer moved (a
+// paused or still-filling fileplayer's seek), so the release plays the new
+// position. No effect on a stream that plays, or one another producer
+// restarted since (audio_start_stream does not hold).
+void audio_stream_flush_held(void);
 // The producer has no more data (a fileplayer that finished): the ring
 // plays out (a held stream is released), and its running dry is the end,
 // not an underrun. The next start counts underruns again.

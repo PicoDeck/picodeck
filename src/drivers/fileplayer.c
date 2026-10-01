@@ -457,6 +457,12 @@ void fileplayer_set_offset(fileplayer_t *player, uint32_t seconds) {
         player->position = (uint32_t)offset;
         if (player->type == FILEPLAYER_TYPE_QOA)
             qoa_reposition_locked(player);
+        // Paused (or still filling after play()), the stream is held and
+        // its ring holds audio from before the seek: drop it, so resume
+        // (or the start) plays the new position. Playing, the ring plays
+        // out first, as it always has.
+        if (s_active_player == player)
+            audio_stream_flush_held();
     }
     mutex_exit(&s_lock);
 }

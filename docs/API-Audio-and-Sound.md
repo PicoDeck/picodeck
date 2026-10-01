@@ -473,14 +473,14 @@ file cut short (an interrupted copy) plays the whole frames it holds.
 ---
 
 #### `player:play([repeat])` / `player:stop()` / `player:pause()` / `player:resume()` / `player:isPlaying()`
-Standard playback controls. `repeat` works the same as SamplePlayer: `n` plays the file `n` times and `0` loops until stopped (see Repeat counts). A player with a loop range (`setLoopRange`) loops until stopped whatever `repeat` says. `pause()` halts playback at once, keeping the position and the audio already buffered; `resume()` continues from the same sample.
+Standard playback controls. `repeat` works the same as SamplePlayer: `n` plays the file `n` times and `0` loops until stopped (see Repeat counts). A player with a loop range (`setLoopRange`) loops until stopped whatever `repeat` says. `pause()` halts playback at once, keeping the position and the audio already buffered; `resume()` continues from the same sample, or from the new position after a `setOffset()` while paused (the seek drops the buffered audio).
 
 `play()` fills the stream's buffer before the sound starts: about 10-60 ms after the call, depending on the format and the SD card (QOA is quickest, 44.1 kHz stereo WAV slowest) (the buffer holds 93 ms of 44.1 kHz audio, 186 ms of 22.05 kHz). Starting full means the SD card can be busy right after `play()` (your app loading a sample or a level, say) without a gap in the music; it just starts once the buffer is full.
 
 ---
 
 #### `player:getLength()` / `player:getSampleRate()` / `player:getOffset()` / `player:setOffset(seconds)`
-`getLength()` returns the file's length in sample frames (per channel), not seconds: divide by `getSampleRate()` for seconds. `getSampleRate()` returns the file's sample rate in Hz (`0` before a successful `load`). `getOffset()` returns the playback position and `setOffset()` seeks to one, both in whole seconds.
+`getLength()` returns the file's length in sample frames (per channel), not seconds: divide by `getSampleRate()` for seconds. `getSampleRate()` returns the file's sample rate in Hz (`0` before a successful `load`). `getOffset()` returns the playback position and `setOffset()` seeks to one, both in whole seconds. While the player plays, a seek is heard after the audio already buffered (up to 93 ms at 44.1 kHz, 186 ms at 22.05 kHz); paused, or right after `play()` before the sound starts, the buffered audio is dropped and the new position plays first.
 
 ---
 

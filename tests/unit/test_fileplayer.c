@@ -62,6 +62,12 @@ void audio_stream_release(void) {
 void audio_stream_hold(void) { s_held = true; s_holds++; }
 void audio_stream_drain(void) { s_ended = true; s_held = false; s_drains++; }
 void audio_stream_mark_loop(void) { s_marks++; }
+static int s_flushes;
+void audio_stream_flush_held(void) {
+  if (!s_held) return;
+  s_ring_used = 0;
+  s_flushes++;
+}
 void audio_stop_stream(void) { s_stops++; }
 uint32_t audio_ring_free(void) { return RING_FRAMES - s_ring_used; }
 void audio_push_samples(const int16_t *samples, int count) {
@@ -90,7 +96,7 @@ static void ring_reset(void) {
   s_ring_used = 0; s_pushed = s_dropped = 0; s_starts = s_stops = 0;
   s_underruns = 0; s_cap_n = 0;
   s_held = s_ended = false;
-  s_releases = s_holds = s_drains = s_marks = 0;
+  s_releases = s_holds = s_drains = s_marks = s_flushes = 0;
   s_used_at_release = 0;
 }
 
@@ -947,6 +953,62 @@ static void test_pause_holds_the_stream(void) {
   }
 }
 
+// A seek while the stream is held (paused, or filling after play()) drops
+// what the ring holds from before it: resume (or the start) plays the new
+// position, not up to a ring's worth of the old one. Steps 1000 / 5000 /
+// 9000 a second; the seek is to 2 s. QOA's lossy edges get `tol` frames.
+static void check_seek_while_held(bool qoa, bool paused) {
+  setup();
+  const int16_t v[3] = {1000, 5000, 9000};
+  if (qoa) {
+    enum { N = 66150 };
+    int16_t *pcm = malloc(N * 2);
+    for (int i = 0; i < N; i++) pcm[i] = v[i / 22050];
+    put_qoa_pcm("/k.qoa", pcm, N, 1, 22050);
+    free(pcm);
+  } else {
+    put_wav_steps("/k.wav", 3, 22050, v);
+  }
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, qoa ? "/k.qoa" : "/k.wav"));
+  CHECK(fileplayer_play(p, 0));
+  if (paused) {
+    for (int i = 0; i < 20; i++) { fileplayer_update(); drain(64); }
+    CHECK(!s_held);
+    fileplayer_pause(p);
+  } else {
+    fileplayer_update();  // part of the ring, still held
+  }
+  CHECK(s_held);
+  CHECK(s_ring_used > 0);
+  fileplayer_set_offset(p, 2);
+  CHECK_EQ_INT(s_flushes, 1);
+  CHECK_EQ_INT(s_ring_used, 0);
+  CHECK(s_held);
+  uint32_t from = s_cap_n;
+  if (paused) fileplayer_resume(p);
+  for (int i = 0; i < 100 && s_held; i++) { fileplayer_update(); drain(64); }
+  CHECK(!s_held);
+  // Everything the ring held at the release came after the seek.
+  CHECK(s_cap_n - from >= s_used_at_release);
+  uint32_t tol = qoa ? 40 : 0;
+  for (uint32_t i = from + tol; i < s_cap_n; i++)
+    CHECK(s_cap[i] > 7000);
+  // Playing, a seek leaves the ring alone (it plays out, then the new
+  // position), as it always did.
+  for (int i = 0; i < 20; i++) { fileplayer_update(); drain(64); }
+  uint32_t used = s_ring_used;
+  fileplayer_set_offset(p, 0);
+  CHECK_EQ_INT(s_ring_used, used);
+  CHECK_EQ_INT(s_flushes, 1);
+  fileplayer_destroy(p);
+}
+
+static void test_seek_while_held_drops_the_old_audio(void) {
+  for (int c = 0; c < 4; c++)
+    check_seek_while_held(c >= 2, c % 2 == 0);
+}
+
 int main(void) {
   test_flow_control_plays_every_frame();
   test_mono_and_rate_flow_control();
@@ -979,6 +1041,7 @@ int main(void) {
   test_a_short_file_plays_and_ends_without_underruns();
   test_loops_mark_the_stream_and_wrap_at_once();
   test_pause_holds_the_stream();
+  test_seek_while_held_drops_the_old_audio();
   fileplayer_reset();
   sdfake_reset();
   return check_report("test_fileplayer");

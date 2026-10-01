@@ -311,6 +311,19 @@ void audio_stream_hold(void) {
   src_unlock();
 }
 
+// Held, nothing in the ring has played since the producer's start or
+// pause: dropping it loses nothing anyone heard. The read counter restarts
+// with the ring, as at a start (the start window counts from here).
+void audio_stream_flush_held(void) {
+  src_lock();
+  if (s_stream_on && s_stream_held) {
+    audio_ring_clear(&s_ring);
+    s_ring.phase = 0;
+    s_diag.loop_marked = false;  // its write count was the old ring's
+  }
+  src_unlock();
+}
+
 void audio_stream_drain(void) {
   src_lock();
   s_stream_ended = true;

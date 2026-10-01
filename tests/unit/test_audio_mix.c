@@ -261,6 +261,38 @@ static void test_hold_keeps_the_ring(void) {
   CHECK_EQ_INT(left(0), ring_value(3000));
 }
 
+// A held stream's producer moved (a paused fileplayer's seek): the flush
+// empties the ring, so the release plays the new position. A stream that
+// plays, or one another producer restarted unheld, is left alone.
+static void test_flush_empties_only_a_held_stream(void) {
+  reset_all();
+  audio_start_stream_held(AUDIO_OUT_RATE);
+  push_const(1000, 100);
+  audio_stream_flush_held();
+  uint32_t used = 1;
+  audio_stream_debug(NULL, NULL, &used);
+  CHECK_EQ_INT(used, 0);
+  CHECK_EQ_INT(audio_ring_free(), 4096);
+  push_const(3000, 10);
+  audio_stream_release();
+  render(1);
+  CHECK_EQ_INT(left(0), ring_value(3000));
+  // Playing: no effect.
+  audio_stream_flush_held();
+  audio_stream_debug(NULL, NULL, &used);
+  CHECK_EQ_INT(used, 9);
+  // Restarted unheld (another producer): no effect either.
+  audio_start_stream(AUDIO_OUT_RATE);
+  push_const(2000, 10);
+  audio_stream_flush_held();
+  audio_stream_debug(NULL, NULL, &used);
+  CHECK_EQ_INT(used, 10);
+  // Stopped: nothing to flush, and pushes are dropped as before.
+  audio_stop_stream();
+  audio_stream_flush_held();
+  CHECK_EQ_INT(audio_ring_free(), 0);
+}
+
 // Drain: the producer has nothing more (a fileplayer that finished), so
 // the ring running dry is the end of the sound, not an underrun. A drain
 // also releases a held stream (a file shorter than the ring).
@@ -444,6 +476,7 @@ int main(void) {
   test_a_stream_begins_at_its_first_frame();
   test_a_held_stream_plays_when_released();
   test_hold_keeps_the_ring();
+  test_flush_empties_only_a_held_stream();
   test_a_drained_stream_ends_without_underruns();
   test_stream_stats_say_when();
   test_stream_stats_at_half_rate();
