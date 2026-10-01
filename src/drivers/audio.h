@@ -31,8 +31,27 @@ void audio_set_volume(uint8_t volume);
 // The PCM stream (fileplayer, MOD, the native/Lua stream API): stereo
 // interleaved int16 frames at the rate given to audio_start_stream.
 // Starting empties the ring; stopping stops only the stream: the output
-// and the other sources play on.
+// and the other sources play on. A started stream plays from its first
+// frame pushed: the empty ring before it is not an underrun.
 void audio_start_stream(uint32_t sample_rate);
+// As audio_start_stream, but the stream takes pushes and plays nothing
+// until audio_stream_release(): a producer that fills the ring first (the
+// fileplayer) never starts on an almost empty ring that one slow SD read
+// right after the start (Core 0 loading a sample, say) would starve.
+void audio_start_stream_held(uint32_t sample_rate);
+// A held stream plays from its next render chunk (from its first frame,
+// if the ring is still empty then). No effect on a stream that plays.
+void audio_stream_release(void);
+// Stops taking frames and keeps the ones in the ring (a paused
+// fileplayer); audio_stream_release() plays on from the same frame.
+void audio_stream_hold(void);
+// The producer has no more data (a fileplayer that finished): the ring
+// plays out (a held stream is released), and its running dry is the end,
+// not an underrun. The next start counts underruns again.
+void audio_stream_drain(void);
+// The producer's data wrapped to its loop start after the frames pushed so
+// far (`audiostat` tells underruns just after a loop point apart).
+void audio_stream_mark_loop(void);
 void audio_stop_stream(void);
 void audio_push_samples(const int16_t *samples, int count);  // count = frames
 // Free frames in the ring: check before rendering, overflow is dropped.
@@ -40,7 +59,27 @@ void audio_push_samples(const int16_t *samples, int count);  // count = frames
 // that paces on it waits until its stream is started again.
 uint32_t audio_ring_free(void);
 void audio_stream_debug(uint32_t *isr_count, uint32_t *underruns, uint32_t *ring_used);
+// Starts a new window for the underrun count and audio_stream_get_stats.
 void audio_stream_reset_underruns(void);
+
+// When the stream ran dry, for `audiostat` (since the last reset). An
+// underrun is an output frame the render found the ring empty for while
+// the stream played and its producer still had data to come; a gap is a
+// run of render chunks (32 frames) with underruns. Positions are ms into
+// the stream's own content (its playback, from the start or release), at
+// the rate of the stream that ran dry.
+typedef struct {
+    uint32_t underruns;        // output frames (44.1 kHz)
+    uint32_t start_underruns;  // of those, in a stream's first second
+    uint32_t loop_underruns;   // in the second after a loop point (not the start's)
+    uint32_t gaps;             // runs of starved chunks
+    int32_t first_ms;          // where the first gap began (-1: none)
+    int32_t last_ms;           // where the last gap began (-1: none)
+    int32_t low_ms;            // the ring's lowest fill while playing (-1: none)
+    uint32_t starts;           // streams started
+    uint32_t loops;            // loop points marked (audio_stream_mark_loop)
+} audio_stream_stats_t;
+void audio_stream_get_stats(audio_stream_stats_t *out);
 
 // ── The output (audio.c on the device, simulator/sim_audio.c) ───────────────
 // Runs from the first sound until the app's teardown stops it.

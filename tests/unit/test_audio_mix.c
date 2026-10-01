@@ -39,7 +39,7 @@ void mp3_player_mix(int32_t *l, int32_t *r, int frames) {
   }
 }
 
-static int16_t s_lr[2 * 512];
+static int16_t s_lr[2 * 8192];
 
 static void reset_all(void) {
   audio_mix_init();
@@ -189,9 +189,198 @@ static void test_underruns_count_only_while_streaming(void) {
   audio_stream_debug(NULL, &under, NULL);
   CHECK_EQ_INT(under, 0);
   audio_start_stream(AUDIO_OUT_RATE);
+  push_const(1000, 1);
   render(64);
   audio_stream_debug(NULL, &under, NULL);
-  CHECK_EQ_INT(under, 64);
+  CHECK_EQ_INT(under, 63);
+}
+
+// #34: a started stream plays from its first frame. The empty ring before
+// it is the stream not having begun, not an underrun.
+static void test_a_stream_begins_at_its_first_frame(void) {
+  reset_all();
+  audio_start_stream(AUDIO_OUT_RATE);
+  render(256);
+  uint32_t under = 1, used = 1;
+  audio_stream_debug(NULL, &under, &used);
+  CHECK_EQ_INT(under, 0);
+  push_const(2000, 10);
+  render(64);                          // 10 frames, then 54 missing
+  CHECK_EQ_INT(left(0), ring_value(2000));
+  CHECK_EQ_INT(left(9), ring_value(2000));
+  CHECK_EQ_INT(left(10), 0);
+  audio_stream_debug(NULL, &under, &used);
+  CHECK_EQ_INT(under, 54);
+  CHECK_EQ_INT(used, 0);
+}
+
+// A held stream (the fileplayer's play()) takes pushes but plays nothing
+// until its producer releases it, so it never starts on a nearly empty
+// ring that a slow SD read could starve.
+static void test_a_held_stream_plays_when_released(void) {
+  reset_all();
+  audio_start_stream_held(AUDIO_OUT_RATE);
+  CHECK(audio_stream_active());
+  CHECK_EQ_INT(audio_ring_free(), 4096);
+  push_const(2000, 100);
+  render(64);
+  CHECK_EQ_INT(left(0), 0);
+  uint32_t under = 1, used = 0;
+  audio_stream_debug(NULL, &under, &used);
+  CHECK_EQ_INT(under, 0);
+  CHECK_EQ_INT(used, 100);             // nothing was taken
+  audio_stream_release();
+  render(1);
+  CHECK_EQ_INT(left(0), ring_value(2000));
+  audio_stream_debug(NULL, NULL, &used);
+  CHECK_EQ_INT(used, 99);
+  // Starting again (another play()) holds again.
+  audio_start_stream_held(AUDIO_OUT_RATE);
+  push_const(2000, 10);
+  render(32);
+  CHECK_EQ_INT(left(0), 0);
+}
+
+// Hold (a paused fileplayer) stops taking frames and keeps the rest; the
+// release plays on from the same frame, and the pause is not an underrun.
+static void test_hold_keeps_the_ring(void) {
+  reset_all();
+  audio_start_stream(AUDIO_OUT_RATE);
+  push_const(1000, 50);
+  push_const(3000, 50);
+  render(50);
+  audio_stream_hold();
+  render(4096);
+  CHECK_EQ_INT(left(0), 0);
+  uint32_t under = 1, used = 0;
+  audio_stream_debug(NULL, &under, &used);
+  CHECK_EQ_INT(under, 0);
+  CHECK_EQ_INT(used, 50);
+  audio_stream_release();
+  render(1);
+  CHECK_EQ_INT(left(0), ring_value(3000));
+}
+
+// Drain: the producer has nothing more (a fileplayer that finished), so
+// the ring running dry is the end of the sound, not an underrun. A drain
+// also releases a held stream (a file shorter than the ring).
+static void test_a_drained_stream_ends_without_underruns(void) {
+  reset_all();
+  audio_start_stream_held(AUDIO_OUT_RATE);
+  push_const(2000, 10);
+  audio_stream_drain();
+  render(4096);
+  CHECK_EQ_INT(left(0), ring_value(2000));
+  uint32_t under = 1;
+  audio_stream_debug(NULL, &under, NULL);
+  CHECK_EQ_INT(under, 0);
+  audio_stream_stats_t st;
+  audio_stream_get_stats(&st);
+  CHECK_EQ_INT(st.gaps, 0);
+  // The next start counts again.
+  audio_start_stream(AUDIO_OUT_RATE);
+  push_const(2000, 1);
+  render(32);
+  audio_stream_debug(NULL, &under, NULL);
+  CHECK_EQ_INT(under, 31);
+}
+
+// Plays n frames of the stream (pushing as it goes, the ring never empty).
+static void play_through(int n) {
+  while (n > 0) {
+    int k = n > 1024 ? 1024 : n;
+    push_const(1000, k);
+    render(k);
+    n -= k;
+  }
+}
+
+// audiostat's stream fields: when the gaps were (ms into the stream, the
+// start and loop windows), how many, and the ring's low-water mark.
+static void test_stream_stats_say_when(void) {
+  reset_all();
+  audio_stream_stats_t st;
+  audio_stream_get_stats(&st);
+  CHECK_EQ_INT(st.underruns, 0);
+  CHECK_EQ_INT(st.gaps, 0);
+  CHECK_EQ_INT(st.first_ms, -1);
+  CHECK_EQ_INT(st.last_ms, -1);
+  CHECK_EQ_INT(st.low_ms, -1);
+  CHECK_EQ_INT(st.starts, 0);
+
+  audio_start_stream(AUDIO_OUT_RATE);
+  push_const(1000, 4096);
+  render(1000);                        // 3096 frames left: 70.2 ms
+  audio_stream_get_stats(&st);
+  CHECK_EQ_INT(st.starts, 1);
+  CHECK_EQ_INT(st.low_ms, 70);
+  render(3096 + 64);                   // a gap 92.9 ms in: the start window
+  audio_stream_get_stats(&st);
+  CHECK_EQ_INT(st.underruns, 64);
+  CHECK_EQ_INT(st.start_underruns, 64);
+  CHECK_EQ_INT(st.loop_underruns, 0);
+  CHECK_EQ_INT(st.gaps, 1);          // three starved chunks: one gap
+  CHECK_EQ_INT(st.first_ms, 92);
+  CHECK_EQ_INT(st.last_ms, 92);
+  CHECK_EQ_INT(st.low_ms, 0);
+
+  // 1.5 s in (past the start window), a second gap: neither start nor loop.
+  play_through(44100 * 3 / 2 - 4096);
+  render(32);
+  audio_stream_get_stats(&st);
+  CHECK_EQ_INT(st.underruns, 96);
+  CHECK_EQ_INT(st.start_underruns, 64);
+  CHECK_EQ_INT(st.loop_underruns, 0);
+  CHECK_EQ_INT(st.gaps, 2);
+  CHECK_EQ_INT(st.first_ms, 92);
+  CHECK_EQ_INT(st.last_ms, 1500);
+
+  // The producer loops, and the ring runs dry 50 ms past the loop point.
+  push_const(1000, 441);
+  audio_stream_mark_loop();
+  push_const(1000, 2205);
+  render(441 + 2205 + 32);
+  audio_stream_get_stats(&st);
+  CHECK_EQ_INT(st.loops, 1);
+  CHECK_EQ_INT(st.underruns, 128);
+  CHECK_EQ_INT(st.start_underruns, 64);
+  CHECK_EQ_INT(st.loop_underruns, 32);
+  CHECK_EQ_INT(st.gaps, 3);
+  CHECK_EQ_INT(st.first_ms, 92);
+  CHECK_EQ_INT(st.last_ms, 1560);
+
+  // A reset starts a new window; the stream plays on.
+  audio_stream_reset_underruns();
+  audio_stream_get_stats(&st);
+  CHECK_EQ_INT(st.underruns, 0);
+  CHECK_EQ_INT(st.start_underruns, 0);
+  CHECK_EQ_INT(st.loop_underruns, 0);
+  CHECK_EQ_INT(st.gaps, 0);
+  CHECK_EQ_INT(st.first_ms, -1);
+  CHECK_EQ_INT(st.last_ms, -1);
+  CHECK_EQ_INT(st.low_ms, -1);
+  CHECK_EQ_INT(st.starts, 0);
+  CHECK_EQ_INT(st.loops, 0);
+  push_const(1000, 2205);
+  render(32);
+  audio_stream_get_stats(&st);
+  CHECK_EQ_INT(st.low_ms, 49);         // 2173 frames: 49.3 ms
+}
+
+// Times are in the stream's own content: 22.05 kHz frames are 2 output
+// frames each, and a held stream's clock starts at its release.
+static void test_stream_stats_at_half_rate(void) {
+  reset_all();
+  audio_start_stream_held(22050);
+  push_const(1000, 2205);              // 100 ms of 22.05 kHz
+  render(1000);                        // held: nothing plays
+  audio_stream_release();
+  render(4410 + 64);                   // the 2205 frames, then 64 missing
+  audio_stream_stats_t st;
+  audio_stream_get_stats(&st);
+  CHECK_EQ_INT(st.underruns, 64);
+  CHECK_EQ_INT(st.first_ms, 100);
+  CHECK_EQ_INT(st.start_underruns, 64);
 }
 
 static void test_half_rate_stream_repeats_each_frame(void) {
@@ -252,6 +441,12 @@ int main(void) {
   test_a_tone_lasts_its_duration();
   test_a_timed_tone_replaces_an_untimed_one();
   test_underruns_count_only_while_streaming();
+  test_a_stream_begins_at_its_first_frame();
+  test_a_held_stream_plays_when_released();
+  test_hold_keeps_the_ring();
+  test_a_drained_stream_ends_without_underruns();
+  test_stream_stats_say_when();
+  test_stream_stats_at_half_rate();
   test_half_rate_stream_repeats_each_frame();
   test_zero_rate_streams_at_the_output_rate();
   test_pushes_while_stopped_are_dropped();
