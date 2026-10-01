@@ -6,21 +6,22 @@
 // shorter than the 71-minute wrap), published before s_open.
 static _Atomic uint32_t s_until;
 static atomic_bool s_open;
-// Core 0 only (stats; Core 1 may read them torn, which is harmless).
-static uint64_t s_began_us;
+// Core 0 only (stats; Core 1 may read them torn, which is harmless). The
+// window's start, low 32 bits like s_until.
+static uint32_t s_began_us;
 static volatile uint32_t s_windows;
 static volatile uint64_t s_idle_us;
 
 void core0_idle_begin(uint64_t now_us, uint64_t until_us) {
   atomic_store_explicit(&s_until, (uint32_t)until_us, memory_order_relaxed);
   atomic_store_explicit(&s_open, true, memory_order_release);
-  s_began_us = now_us;
+  s_began_us = (uint32_t)now_us;
 }
 
 void core0_idle_end(uint64_t now_us) {
   atomic_store_explicit(&s_open, false, memory_order_release);
   s_windows++;
-  s_idle_us += now_us - s_began_us;
+  s_idle_us += (uint32_t)now_us - s_began_us;
 }
 
 uint32_t core0_idle_left_us(uint64_t now_us) {
