@@ -21,6 +21,15 @@ else
     key_label = function() return "Enter" end
 end
 
+-- A, or Enter as before the gamepad, answers "play again". Enter counts only
+-- when it pressed no gamepad button: a player who bound it to one gets that
+-- button's meaning alone.
+local function confirm_pressed(pad_pressed)
+    if pad_pressed & P.A ~= 0 then return true end
+    return gp ~= nil and pad_pressed == 0
+        and input.getButtonsPressed() & input.BTN_ENTER ~= 0
+end
+
 -- ── Config ────────────────────────────────────────────────────────────────────
 
 local CELL  = 10          -- grid cell size in pixels
@@ -115,7 +124,7 @@ local function game_over_screen()
     while true do
         input.update()
         local _, p = read_buttons()
-        if p & P.A ~= 0 then return "restart" end
+        if confirm_pressed(p) then return "restart" end
         if input.getButtonsPressed() & input.BTN_ESC ~= 0 then return "quit" end
         pc.sys.sleep(16)
     end

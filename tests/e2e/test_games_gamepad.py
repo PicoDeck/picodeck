@@ -115,10 +115,29 @@ def test_platformer_starts_on_a(simulator):
     sim = simulator
     _launch(sim, "platformer_demo")
     assert _platformer_in_menu(sim)
-    _tap(sim, "enter")                   # not bound by default: no effect
+    _tap(sim, "f4")                      # PAD_A
+    time.sleep(0.5)
+    assert not _platformer_in_menu(sim)
+
+
+def test_platformer_menu_also_takes_enter(simulator):
+    """Enter is not bound by default, and the menu still starts on it."""
+    sim = simulator
+    _launch(sim, "platformer_demo")
+    assert _platformer_in_menu(sim)
+    _tap(sim, "enter")
+    time.sleep(0.5)
+    assert not _platformer_in_menu(sim)
+
+
+def test_platformer_menu_leaves_enter_to_its_button(simulator):
+    """With Enter bound to B, Enter is B alone and does not start the game."""
+    sim = simulator
+    _launch(sim, "platformer_demo", rebind={"b": ["Enter"]})
+    _tap(sim, "enter")
     time.sleep(0.3)
     assert _platformer_in_menu(sim)
-    _tap(sim, "f4")                      # PAD_A
+    _tap(sim, "f4")
     time.sleep(0.5)
     assert not _platformer_in_menu(sim)
 
@@ -154,10 +173,16 @@ def test_guinea_pig_starts_on_a(simulator):
     sim = simulator
     _launch(sim, "guinea_pig")
     assert _guinea_in_menu(sim)
-    _tap(sim, "enter")                   # not bound by default: no effect
-    time.sleep(0.3)
-    assert _guinea_in_menu(sim)
     _tap(sim, "f4")                      # PAD_A
+    time.sleep(0.8)
+    assert not _guinea_in_menu(sim)
+
+
+def test_guinea_pig_menu_also_takes_enter(simulator):
+    sim = simulator
+    _launch(sim, "guinea_pig")
+    assert _guinea_in_menu(sim)
+    _tap(sim, "enter")
     time.sleep(0.8)
     assert not _guinea_in_menu(sim)
 
@@ -197,6 +222,17 @@ def test_nonogram_fills_on_a(simulator):
     assert not [t for t in _lines(sim, mark) if t.startswith("NG:FILL")]
     _tap(sim, "f4")                              # A fills the cell
     sim.wait_for_log(r"^NG:FILL ", timeout=10, since_seq=mark)
+    sim.keypress("esc")
+
+
+def test_nonogram_menu_also_opens_on_enter(simulator):
+    """Enter opens a puzzle from the menu, as before; in play it is not A."""
+    sim = simulator
+    _stage(sim, "nonogram")
+    sim.launch_app("nonogram")
+    mark = _nonogram_to_play(sim, "enter")
+    _tap(sim, "enter")
+    assert not [t for t in _lines(sim, mark) if t.startswith("NG:FILL")]
     sim.keypress("esc")
 
 

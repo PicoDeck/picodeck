@@ -109,7 +109,7 @@ function S.update(dt)
     if sel > scroll + VISIBLE then scroll = sel - VISIBLE end
     if scroll < 0 then scroll = 0 end
 
-    if padPressed & Pad.A ~= 0 then
+    if Pad.confirmed(padPressed) then
         local it = items[sel]
         if it.kind == "puzzle" then
             NG_SCENES.switch("play", { puzzle = it.puzzle })

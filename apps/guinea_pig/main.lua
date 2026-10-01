@@ -24,6 +24,15 @@ else
     key = function(btn) return names[btn] end
 end
 
+-- Menus and the end screens take A, or Enter as before the gamepad. Enter
+-- counts only when it pressed no gamepad button: a player who bound it to one
+-- gets that button's meaning alone. Gameplay reads A only.
+local function confirm_pressed(pad_pressed)
+    if pad_pressed & P.A ~= 0 then return true end
+    return gp ~= nil and pad_pressed == 0
+        and input.getButtonsPressed() & input.BTN_ENTER ~= 0
+end
+
 -- ============================================================
 -- [1] CONSTANTS & COLORS
 -- ============================================================
@@ -1584,7 +1593,7 @@ local menu_scene = {
     update = function(dt)
         game_time = game_time + dt
         local _, pressed = read_buttons()
-        if pressed & P.A ~= 0 then
+        if confirm_pressed(pressed) then
             sfx.play("menu_select")
             game.scene.switch("play")
         end
@@ -1656,7 +1665,7 @@ local play_scene = {
             return
         end
         if player.dead then
-            if pressed & P.A ~= 0 then
+            if confirm_pressed(pressed) then
                 save_high_score()
                 game.scene.switch("play")
             end
@@ -1712,7 +1721,7 @@ local win_scene = {
         game_time = game_time + dt
         update_particles(dt)
         local _, pressed = read_buttons()
-        if pressed & P.A ~= 0 then game.scene.switch("play") end
+        if confirm_pressed(pressed) then game.scene.switch("play") end
         if input.getButtonsPressed() & input.BTN_ESC ~= 0 then game.scene.switch("menu") end
     end,
     draw = function()

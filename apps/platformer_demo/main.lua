@@ -10,17 +10,27 @@ local game = pc.game
 -- keys: players can rebind it in Settings > Controls with no code here, and
 -- hints use getLabel() so they stay right after a rebind. Esc is not a
 -- gamepad button; it stays on picocalc.input. Older firmware has no gamepad,
--- so this small adapter falls back to the keys the buttons default to.
+-- so this small adapter falls back to the keys the game read before it.
 local gp = pc.gamepad
-local PAD = {}
-local function read_pad() return input.getButtons(), input.getButtonsPressed() end
-local function pad_label(btn) return "Enter" end
+local PAD, read_pad, pad_label
 if gp then
     PAD = {LEFT = gp.PAD_LEFT, RIGHT = gp.PAD_RIGHT, UP = gp.PAD_UP, A = gp.PAD_A}
     read_pad = function() return gp.getButtons(), gp.getButtonsPressed() end
     pad_label = function(btn) return gp.getLabel(btn) or "?" end
 else
     PAD = {LEFT = input.BTN_LEFT, RIGHT = input.BTN_RIGHT, UP = input.BTN_UP, A = input.BTN_ENTER}
+    read_pad = function() return input.getButtons(), input.getButtonsPressed() end
+    local names = {[PAD.UP] = "Up", [PAD.A] = "Enter"}
+    pad_label = function(btn) return names[btn] or "?" end
+end
+
+-- Menus take A, or Enter as before the gamepad. Enter counts only when it
+-- pressed no gamepad button: a player who bound it to one gets that button's
+-- meaning alone. Gameplay reads A only.
+local function confirm_pressed(pad_pressed)
+    if pad_pressed & PAD.A ~= 0 then return true end
+    return gp ~= nil and pad_pressed == 0
+        and input.getButtonsPressed() & input.BTN_ENTER ~= 0
 end
 
 -- Colors
@@ -157,7 +167,7 @@ local menu_scene = {
     
     update = function(dt)
         local _, pressed = read_pad()
-        if pressed & PAD.A ~= 0 then
+        if confirm_pressed(pressed) then
             game.scene.switch("play")
         end
     end,
@@ -344,7 +354,7 @@ local gameover_scene = {
         camera:update(dt)
         
         local _, pressed = read_pad()
-        if pressed & PAD.A ~= 0 then
+        if confirm_pressed(pressed) then
             game.scene.switch("play")
         elseif input.getButtonsPressed() & input.BTN_ESC ~= 0 then
             game.scene.switch("menu")

@@ -1,13 +1,15 @@
 -- pad.lua — one place that reads the controls.
 --
 -- Uses the logical gamepad (picocalc.gamepad, rebindable in Settings >
--- Controls) when the firmware has it; on older firmware it reads the keys the
--- gamepad binds by default, so the game plays the same either way. Esc and
--- text entry stay on picocalc.input.
+-- Controls) when the firmware has it. Older firmware has no gamepad: there it
+-- reads keys directly, the ones this game used before the gamepad (Enter for
+-- A, F4 for Start) and the default bindings for the rest. Esc and text entry
+-- stay on picocalc.input.
 --
---   Pad.read()       -> held, pressed   masks of Pad.* buttons
---   Pad.dpadEdges()  -> mask of d-pad presses plus auto-repeat (call once a frame)
---   Pad.label(btn)   -> the name of the key bound to btn, for on-screen hints
+--   Pad.read()             -> held, pressed   masks of Pad.* buttons
+--   Pad.dpadEdges()        -> mask of d-pad presses plus auto-repeat (call once a frame)
+--   Pad.confirmed(pressed) -> A pressed, or Enter (menus), see below
+--   Pad.label(btn)         -> the name of the key bound to btn, for on-screen hints
 
 local input = picocalc.input
 local gp    = picocalc.gamepad
@@ -39,6 +41,15 @@ else
 end
 
 local DPAD = Pad.UP | Pad.DOWN | Pad.LEFT | Pad.RIGHT
+
+-- Menus take A, or Enter as before the gamepad. Enter counts only when it
+-- pressed no gamepad button: a player who bound it to one gets that button's
+-- meaning alone. `pressed` is this frame's Pad.read() press mask.
+function Pad.confirmed(pressed)
+    if pressed & Pad.A ~= 0 then return true end
+    return gp ~= nil and pressed == 0
+        and input.getButtonsPressed() & input.BTN_ENTER ~= 0
+end
 
 function Pad.dpadEdges()
     if not gp and type(input.getButtonsRepeated) == "function" then

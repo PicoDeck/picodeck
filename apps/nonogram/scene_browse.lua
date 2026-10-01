@@ -105,7 +105,7 @@ function S.update(dt)
 
     local it = items[sel]
 
-    if padPressed & Pad.A ~= 0 then
+    if Pad.confirmed(padPressed) then
         if it.kind == "import" then
             doImport()
         elseif it.kind == "puzzle" then
