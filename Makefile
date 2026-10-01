@@ -1,7 +1,7 @@
 # PicoDeck Makefile
 # Automated setup, build, and deployment for ClockworkPi PicoCalc
 
-.PHONY: help setup build clean flash flash-ota rebuild check-env test-lua test-unit test-numfmt-sweep fuzz fuzz-build simulator simulator-asan simulator-tsan simulator-net simulator-net-asan simulator-net-tsan simulator-run simulator-clean
+.PHONY: help setup build clean flash flash-ota rebuild check-env test-lua test-unit test-numfmt-sweep fuzz fuzz-build simulator simulator-asan simulator-tsan simulator-net simulator-net-asan simulator-net-tsan simulator-run simulator-clean simulator-web
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -357,6 +357,10 @@ simulator-clean:
 	@rm -rf $(SIM_BUILD_DIR) build_sim_asan build_sim_tsan \
 		build_sim_net build_sim_net_asan build_sim_net_tsan
 	@echo "✓ Simulator clean complete"
+
+simulator-web:
+	@echo "The browser build moved to PicoDeck/web-sim (https://github.com/PicoDeck/web-sim). Clone it next to this checkout and run: make -C ../web-sim build test"
+	@exit 1
 
 # ── Host unit tests ──────────────────────────────────────────────────────────
 

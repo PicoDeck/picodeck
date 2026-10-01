@@ -204,14 +204,20 @@ jobs:
             simulator/picodeck-simulator-linux
             site/picodeck-docs.zip
 
-      - name: Tell PicoDeck/web-sim to rebuild the browser demo
-        if: env.HAVE_WEB_SIM_TOKEN == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.WEB_SIM_DISPATCH_TOKEN }}
-        run: gh api repos/PicoDeck/web-sim/dispatches -f event_type=picodeck-release
-
       - name: Rebuild picodeck.net
         if: env.HAVE_PAGES_HOOK == 'true'
         env:
           PAGES_DEPLOY_HOOK: ${{ secrets.PAGES_DEPLOY_HOOK }}
         run: curl -fsS -X POST "$PAGES_DEPLOY_HOOK" > /dev/null
+
+      # Runs after the Pages hook, and may fail, so a dead or unapproved
+      # token never blocks PicoDeck's own site rebuild above. Web-sim's
+      # daily follow check is the fallback if this dispatch doesn't land;
+      # the step still goes red here so the token's owner sees it needs
+      # renewing.
+      - name: Tell PicoDeck/web-sim to rebuild the browser demo
+        if: env.HAVE_WEB_SIM_TOKEN == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.WEB_SIM_DISPATCH_TOKEN }}
+        run: gh api repos/PicoDeck/web-sim/dispatches -f event_type=picodeck-release

@@ -83,5 +83,3 @@ apps/**/*.su
 .understand-anything/
 .playwright-mcp/
 .codegraph/
-
-/launcher.png
