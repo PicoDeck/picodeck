@@ -108,6 +108,29 @@ target_include_directories(numfmt_sweep PRIVATE ${SRC}/os)
 target_compile_options(numfmt_sweep PRIVATE -O2 -Wno-error)
 target_link_libraries(numfmt_sweep PRIVATE m)
 
+# The Lua core as the firmware builds it (cmake/picodeck_lua.cmake: the VM
+# configuration plus PicoDeck's sources in the Lua library), for tests of code
+# that uses VM internals. `make test-unit` fetches it (download-lua).
+set(LUA_SRC ${PICODECK_ROOT}/third_party/lua-5.4/src)
+if(EXISTS ${LUA_SRC}/lua.h)
+    include(${PICODECK_ROOT}/cmake/picodeck_lua.cmake)
+    picodeck_patch_luaconf(${LUA_SRC})
+    file(GLOB LUA_CORE_SOURCES ${LUA_SRC}/l*.c)
+    list(FILTER LUA_CORE_SOURCES EXCLUDE REGEX "/(lua|luac)\\.c$")
+    add_library(lua_host STATIC ${LUA_CORE_SOURCES} ${PICODECK_LUA_SOURCES})
+    target_include_directories(lua_host PUBLIC ${LUA_SRC} ${SRC}/os)
+    target_compile_definitions(lua_host PUBLIC ${PICODECK_LUA_DEFINITIONS})
+    target_compile_options(lua_host PRIVATE ${PICODECK_UNIT_SAN_FLAGS})
+    set_source_files_properties(${LUA_CORE_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+    target_link_libraries(lua_host PUBLIC m)
+    # The service hook's interrupt-safe, depth-independent arming (issue #21).
+    picodeck_unit_test(test_lua_hook_arm)
+    target_link_libraries(test_lua_hook_arm PRIVATE lua_host)
+else()
+    message(WARNING "Lua sources not found at ${LUA_SRC} (run `make download-lua`): "
+                    "test_lua_hook_arm is not built")
+endif()
+
 # The simulator's SD-root containment (host filesystem; sim_log_err faked).
 picodeck_unit_test(test_sim_sdcard SOURCES ${PICODECK_ROOT}/simulator/hal/hal_sdcard.c
                 INCLUDES ${PICODECK_ROOT}/simulator/hal ${SRC}
