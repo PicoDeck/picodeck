@@ -502,6 +502,14 @@ static void dev_command_run(void *arg) {
                d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9],
                d[1] ? (unsigned long)(d[10] / d[1]) : 0ul);
         mp3_player_reset_diag();
+        // A video's seeks: restarts of its playing audio (mp3_player.h).
+        mp3_fed_restart_stats_t rs;
+        mp3_player_fed_restart_stats(&rs, true);
+        printf("[DEV] mp3 restarts: restarts=%lu fallbacks=%lu gap_us=%lu "
+               "gap_max_us=%lu preroll_max_us=%lu margin_min_us=%lu (reset)\n",
+               (unsigned long)rs.restarts, (unsigned long)rs.fallbacks,
+               (unsigned long)rs.gap_us, (unsigned long)rs.gap_max_us,
+               (unsigned long)rs.preroll_max_us, (unsigned long)rs.margin_min_us);
     } else if (strcmp(s_cmd_buf, "audiostat") == 0 ||
                strcmp(s_cmd_buf, "audiostat reset") == 0) {
         // Core 1's tick cost and the audio output's refill interrupt
