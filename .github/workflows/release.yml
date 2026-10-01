@@ -157,34 +157,16 @@ jobs:
           name: docs
           path: picodeck-docs.zip
 
-  build-web-sim:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Build and package the web simulator
-        run: scripts/ci/build-web-sim.sh
-      # picodeck.net's home page shows this screenshot of the launcher (the
-      # web demo's apps), so device UI changes need no website change.
-      - name: Install simulator dependencies
-        run: scripts/ci/install-sim-deps.sh
-      - name: Capture the launcher into the web simulator zip
-        run: scripts/ci/capture-launcher.sh
-      - name: Upload web simulator artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: web-sim
-          path: picodeck-web-sim.zip
-
   release:
-    needs: [build-firmware, build-simulator, build-docs, build-web-sim]
+    needs: [build-firmware, build-simulator, build-docs]
     runs-on: ubuntu-latest
     env:
       # Rebuild picodeck.net once the assets are up (Cloudflare Pages deploy
       # hook); only whether the secret is set is exposed, not its value.
       HAVE_PAGES_HOOK: ${{ secrets.PAGES_DEPLOY_HOOK != '' }}
+      # PicoDeck/web-sim rebuilds the browser demo for each release; this
+      # tells it at once (its daily check covers a missing token).
+      HAVE_WEB_SIM_TOKEN: ${{ secrets.WEB_SIM_DISPATCH_TOKEN != '' }}
     permissions:
       contents: write
     steps:
@@ -211,12 +193,6 @@ jobs:
           name: docs
           path: site/
 
-      - name: Download web simulator artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: web-sim
-          path: site/
-
       - name: Upload artifacts to release
         uses: softprops/action-gh-release@v2
         with:
@@ -227,10 +203,21 @@ jobs:
             firmware/picodeck.sig
             simulator/picodeck-simulator-linux
             site/picodeck-docs.zip
-            site/picodeck-web-sim.zip
 
       - name: Rebuild picodeck.net
         if: env.HAVE_PAGES_HOOK == 'true'
         env:
           PAGES_DEPLOY_HOOK: ${{ secrets.PAGES_DEPLOY_HOOK }}
         run: curl -fsS -X POST "$PAGES_DEPLOY_HOOK" > /dev/null
+
+      # Runs after the Pages hook, and may fail, so a dead or unapproved
+      # token never blocks PicoDeck's own site rebuild above. Web-sim's
+      # daily follow check is the fallback if this dispatch doesn't land;
+      # the step still goes red here so the token's owner sees it needs
+      # renewing.
+      - name: Tell PicoDeck/web-sim to rebuild the browser demo
+        if: env.HAVE_WEB_SIM_TOKEN == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.WEB_SIM_DISPATCH_TOKEN }}
+        run: gh api repos/PicoDeck/web-sim/dispatches -f event_type=picodeck-release

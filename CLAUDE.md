@@ -9,7 +9,7 @@ PicoDeck is a bare-metal embedded OS for the [ClockworkPi PicoCalc v2.0](https:/
 - `src/os/CLAUDE.md` — app runners and exit teardown, Lua bridge internals (object types, number rules, count hook, sticky exit), sandbox, file handles, config stores, save slots, OTA policy, crash records, Lua heap
 - `simulator/CLAUDE.md` — simulator divergences, the test control channel, `--test-mode` and virtual time, allocators, sanitizer and firmware-net builds. Read it before writing an E2E test or trusting a simulator result.
 - `docs/` — the app-facing API reference (Markdown in this repo), published at https://picodeck.net/docs/ from each release's `picodeck-docs.zip`. Change it in the same commit as the behaviour it documents; where it disagrees with the nested files, the nested files are right and the doc is a bug. `docs/_sidebar.json` is the site's sidebar.
-- The app store is `PicoDeck/store` (https://store.picodeck.net); the website is `PicoDeck/website` (https://picodeck.net), rebuilt from the latest release by a Pages deploy hook.
+- The app store is `PicoDeck/store` (https://store.picodeck.net); the website is `PicoDeck/website` (https://picodeck.net), rebuilt from the latest release by a Pages deploy hook. The browser demo (picodeck.net/try) is [PicoDeck/web-sim](https://github.com/PicoDeck/web-sim), built from this repo's simulator (`simulator/CLAUDE.md`, "Web build seam") and released on its own, following PicoDeck's releases.
 
 This file keeps only what applies across the tree. Record subsystem behaviour in the nested file (or header comment) nearest the code.
 

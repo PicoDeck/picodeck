@@ -3,9 +3,8 @@
 
 // The web build's seam: the whole contract between the simulator core and the
 // web project that builds it for the browser (the directory PICODECK_WEB_DIR
-// names: simulator/web in-tree, or a PicoDeck/web-sim checkout; see
-// simulator/CLAUDE.md, "Web build seam"). A change here is a change to that
-// contract.
+// names: a PicoDeck/web-sim checkout; see simulator/CLAUDE.md, "Web build
+// seam"). A change here is a change to that contract.
 //
 // The core provides, for the web sources to call:
 //   * sim_core1_service() (below): one Core 1 tick.

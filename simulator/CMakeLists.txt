@@ -23,7 +23,9 @@ set(PICODECK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 # Find required packages
 if(EMSCRIPTEN)
     # Web demo build (emcmake cmake ..): SDL2 comes from Emscripten's ports,
-    # and there are no threads, libcurl or Unicorn in a browser. See web/.
+    # and there are no threads, libcurl or Unicorn in a browser. The browser
+    # build itself lives in PicoDeck/web-sim (simulator/CLAUDE.md, "Web build
+    # seam").
     add_library(SDL2::SDL2 INTERFACE IMPORTED)
     set_target_properties(SDL2::SDL2 PROPERTIES
         INTERFACE_COMPILE_OPTIONS "-sUSE_SDL=2"
@@ -34,9 +36,13 @@ if(EMSCRIPTEN)
     set(SIM_SIZEOF_LONG 4)
     # The web project's half of the build (simulator/CLAUDE.md, "Web build
     # seam"): PICODECK_WEB_DIR holds web.cmake, which sets the platform and
-    # network-stub sources and defines picodeck_web_package(target).
+    # network-stub sources and defines picodeck_web_package(target). The
+    # browser demo lives in PicoDeck/web-sim.
+    set(PICODECK_WEB_DIR "" CACHE PATH
+        "A PicoDeck/web-sim checkout; its web.cmake builds the browser demo")
     if(NOT PICODECK_WEB_DIR)
-        set(PICODECK_WEB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/web)
+        message(FATAL_ERROR "The browser build lives in PicoDeck/web-sim: build it there "
+            "(make build), or pass -DPICODECK_WEB_DIR=<a PicoDeck/web-sim checkout>")
     endif()
     get_filename_component(PICODECK_WEB_DIR "${PICODECK_WEB_DIR}" ABSOLUTE)
     if(NOT EXISTS ${PICODECK_WEB_DIR}/web.cmake)
