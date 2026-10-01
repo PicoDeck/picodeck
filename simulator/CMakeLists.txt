@@ -185,6 +185,7 @@ target_compile_options(image_decoders_sim PRIVATE -O2)
 add_library(sim_hal STATIC
     hal/hal_display.c
     hal/hal_input.c
+    ${PICODECK_ROOT}/src/drivers/pad_source.c
     hal/hal_sdcard.c
     hal/hal_psram.c
     hal/hal_timing.c

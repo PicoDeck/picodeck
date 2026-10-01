@@ -102,9 +102,10 @@ void kbd_set_backlight(uint8_t brightness);
 
 void kbd_apply_clock(void);
 
-// Returns true (once) when F10 (the system menu key) was pressed since last call.
-// The press is consumed and will not appear in kbd_get_buttons() — the OS
-// intercepts BTN_MENU before apps can see it.
+// Returns true (once) when F10 (the system menu key) was pressed since last call,
+// or a pad source's Home button (pad_source.h). The press is consumed and
+// will not appear in kbd_get_buttons() — the OS intercepts BTN_MENU before
+// apps can see it.
 bool kbd_consume_menu_press(void);
 
 // Returns true (once) when the Brk key (0xD0) was pressed since last call.
@@ -240,10 +241,21 @@ typedef struct {
     {KEY_F4, 0}, {KEY_F5, 0}, {KEY_DEL, 0}, {KEY_BKSPC, 0},                    \
     {KEY_F2, 0}, {KEY_F3, 0}, {KEY_F1, 0}, {KEY_TAB, 0}}}
 
-// PAD_* held / pressed this poll / released this poll, as getButtons*.
+// PAD_* held / pressed this poll / released this poll, as getButtons*: the
+// keyboard's aliases ORed with every other pad source (src/drivers/
+// pad_source.h: the `pad` dev command, the simulator's game controller,
+// later a Bluetooth or USB pad), so a button is held while any source holds
+// it and an app cannot tell where a press came from.
 uint32_t kbd_get_pad(void);
 uint32_t kbd_get_pad_pressed(void);
 uint32_t kbd_get_pad_released(void);
+
+// The OS's own menus (launcher, system menu): the BTN_* navigation that the
+// pad sources' presses of this poll stand for (D-pad = arrows, A = Enter,
+// B = Esc; pad_nav_buttons). Not the keyboard aliases: their keys already
+// report as BTN_*. So a pad-only player can open the menu with Home, pick
+// Exit and launch the next game.
+uint32_t kbd_get_pad_nav_pressed(void);
 
 // Install the effective map (copied). Gamepad state is dropped without edges;
 // a key still held is picked up again quietly by its next HOLD report.

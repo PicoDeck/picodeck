@@ -3,7 +3,9 @@
 
 #include "../../src/drivers/keyboard.h"
 #include "../../src/drivers/kbd_event_queue.h"
+#include "../../src/drivers/pad_source.h"
 #include "../hal/hal_input.h"
+#include "../hal/hal_timing.h"
 #include "../hal/web_platform.h"  // web_yield_if_due (web build)
 #include "../../src/os/os.h"
 #include <SDL2/SDL.h>
@@ -125,6 +127,11 @@ void kbd_poll(void) {
         kbd_pad_event(&s_pad, &s_padmap, ev);
     }
 
+    // The other gamepad sources (the `pad` dev command, the host's game
+    // controllers), as keyboard.c does; a source's Home raises the menu.
+    if (pad_sources_poll(false, hal_get_time_ms()))
+        hal_input_raise_menu(false);
+
     // Get character input
     s_last_char = hal_input_get_char();
     if (s_last_char) {
@@ -159,6 +166,10 @@ void kbd_poll_background(void) {
             hal_input_handle_event(&event);
         }
     }
+    // A source's Home acts at once (as the device's background poll sets the
+    // menu flag); its buttons wait for the app's next kbd_poll().
+    if (pad_sources_poll(true, hal_get_time_ms()))
+        hal_input_raise_menu(false);
 }
 
 char kbd_get_char(void) {
@@ -185,16 +196,21 @@ uint32_t kbd_get_buttons_released(void) {
     return s_buttons_released;
 }
 
+// The keyboard's aliases ORed with every other source (pad_source.h).
 uint32_t kbd_get_pad(void) {
-    return s_pad.curr;
+    return pad_sources_combine_held(s_pad.curr);
 }
 
 uint32_t kbd_get_pad_pressed(void) {
-    return (uint32_t)(s_pad.curr & ~s_pad.prev);
+    return pad_sources_combine_pressed(s_pad.curr, s_pad.prev);
 }
 
 uint32_t kbd_get_pad_released(void) {
-    return (uint32_t)(s_pad.prev & ~s_pad.curr);
+    return pad_sources_combine_released(s_pad.curr, s_pad.prev);
+}
+
+uint32_t kbd_get_pad_nav_pressed(void) {
+    return pad_nav_buttons(pad_sources_pressed());
 }
 
 void kbd_set_pad_map(const kbd_padmap_t *map) {
@@ -276,11 +292,13 @@ void kbd_clear_state(void) {
     memset(&s_pad, 0, sizeof(s_pad));
     s_pad.down = kbd_pad_slots_from_buttons(&s_padmap, hal_input_injected_down());
     s_pad.curr = s_pad.prev = kbd_pad_buttons_of(s_pad.down);
+    pad_sources_clear();
 }
 
 void kbd_discard_pending(void) {
     hal_input_discard_pending();
     kbd_clear_state();
+    pad_sources_discard();
 }
 
 void kbd_recover_i2c_bus(void) {

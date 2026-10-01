@@ -22,7 +22,7 @@
 - `app.exited` carries `{name, id, found, result: returned|error|exit_sentinel|load_failed, error, runtime_ms, launch_id}`; `launch_app` returns `{queued, busy, launch_id}` and `get_last_outcome` returns the last `app.exited` params (backfill when a notification was dropped). `get_running_app` always returns `{running, name|null}`.
 - `display_stats.present_count`; `inject_*` return `input_seq` and `get_input_state` reports `consumed_seq`.
 - `set_battery {percent, charging}` sets what `kbd_get_battery_percent` / `kbd_is_charging` report (default 100, false). `set_wifi_state {"status": "connecting"|"failed"}` pins the status `wifi_get_status` reports (network access unchanged) until the next `set_wifi_state`; `disconnected`/`not_available` make WiFi unavailable, `connected`/`online` restore the real state.
-- The `dev_command` RPC (`{"cmd": "unzip ..."}`) runs `ping`/`exit`/`unzip`/`rm` through the firmware handlers (`src/dev_ops.c`).
+- The `dev_command` RPC (`{"cmd": "unzip ..."}`) runs `ping`/`exit`/`unzip`/`rm`/`pad` through the firmware handlers (`src/dev_ops.c`). `pad` drives the test gamepad source (`PicodeckSimulator.pad`, `Target.pad`); the E2E tests use it instead of a controller.
 - The TCP listener binds 127.0.0.1 only; `--unix-socket PATH|none` overrides or disables the `./picodeck_control` UNIX socket (the E2E harness passes `none`). Python client: `tests/e2e/picodeck_simulator.py`.
 
 ## `--test-mode`

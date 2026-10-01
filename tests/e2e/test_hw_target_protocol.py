@@ -80,6 +80,7 @@ class FakeDevice:
         self.uptime_base = 37200
         self.commands: list[str] = []
         self.keys: list[str] = []
+        self.pads: list[str] = []
         self.fb = bytes(320 * 320 * 2)
         self.present = True
         self.boots = 1
@@ -238,6 +239,24 @@ class FakeDevice:
                 or cmd.startswith("keyup "):
             self.keys.append(cmd)
             self.emit(f"[DEV] Key injected: {cmd.split(' ', 1)[1]}")
+        elif cmd == "pad" or cmd.startswith("pad "):
+            # src/dev_ops.c dev_op_pad's replies.
+            self.pads.append(cmd)
+            args = cmd[4:].split()
+            names = {"up", "down", "left", "right", "a", "b", "x", "y", "l",
+                     "r", "start", "select", "home"}
+            if not args or (len(args) > 1 and not args[1].isdigit()):
+                self.emit("[DEV] Usage: pad <none|off|buttons> [hold_ms] "
+                          "(buttons: up down left right a b x y l r start "
+                          "select home, joined by '+')")
+            elif args[0] in ("none", "off"):
+                self.emit(f"[DEV] Pad: {args[0]}")
+            elif any(n not in names for n in args[0].split("+")):
+                bad = next(n for n in args[0].split("+") if n not in names)
+                self.emit(f"[DEV] Error: unknown pad button: {bad}")
+            else:
+                hold = f" for {args[1]} ms" if len(args) > 1 else ""
+                self.emit(f"[DEV] Pad: {args[0]}{hold}")
         elif cmd == "screenshot":
             self.emit_raw(b"SCRN" + struct.pack("<HHH", 320, 320, 565) + b"\0\0")
             self.emit_raw(self.fb)
@@ -583,6 +602,40 @@ def test_keypress_sequence_and_chords(hw, dev):
     hw.keypress_sequence(["a", "enter", "ctrl+x"], delay_ms=0)
     assert dev.keys == ["keypress a", "keypress enter", "keydown ctrl",
                         "keypress x", "keyup ctrl"]
+
+
+def test_pad_commands_and_replies(hw, dev):
+    """HwTarget.pad sends the `pad` dev command and returns its reply; an
+    error reply raises."""
+    assert hw.pad("up+a") == "Pad: up+a"
+    assert hw.pad("x", hold_ms=120) == "Pad: x for 120 ms"
+    assert hw.pad("off") == "Pad: off"
+    with pytest.raises(HwTargetError, match="unknown pad button: zz"):
+        hw.pad("zz")
+    assert dev.pads == ["pad up+a", "pad x 120", "pad off", "pad zz"]
+
+
+def test_mcp_pad_spec_expansion():
+    """The MCP `pad` tool's specs: one state as given, a list pressed in
+    turn with a hold (100 ms by default), none/off never timed."""
+    assert pm._pad_commands("A+Right") == ["pad a+right"]
+    assert pm._pad_commands("up", 250) == ["pad up 250"]
+    assert pm._pad_commands("home, up, a") == [
+        "pad home 100", "pad up 100", "pad a 100"]
+    assert pm._pad_commands("b none off", 50) == [
+        "pad b 50", "pad none", "pad off"]
+    for bad in ("", "  ", "a+zz", "menu"):
+        with pytest.raises(ValueError):
+            pm._pad_commands(bad)
+    assert pm._pad_reply(["[DEV] Command: pad a", "[DEV] Pad: a"]) == "Pad: a"
+    assert pm._pad_reply(["[DEV] Command: pad q",
+                          "[DEV] Error: unknown pad button: q"]).startswith(
+        "Error:")
+    assert pm._pad_reply([]) == "no reply"
+    # Both replies end the exchange at once (no idle wait).
+    assert pm._is_cmd_end("[DEV] Pad: up+a")
+    assert pm._is_cmd_end("[DEV] Usage: pad <none|off|buttons> [hold_ms]")
+    assert not pm._is_cmd_end("[DEV] Command: pad a")
 
 
 # ── push_app and the launcher's app.json cache ──────────────────────────────
