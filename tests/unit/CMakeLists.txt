@@ -198,6 +198,11 @@ picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_refill PRIVATE libmad_host)
 target_compile_options(test_mp3_refill PRIVATE -Wno-unused-parameter)
+# ...and what its decoder writes (a mono frame's samples, in order).
+picodeck_unit_test(test_mp3_decode SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES})
+target_link_libraries(test_mp3_decode PRIVATE libmad_host)
+target_compile_options(test_mp3_decode PRIVATE -Wno-unused-parameter)
 # The MOD player (mod_player.c + pocketmod): Core 0 load/free vs Core 1
 # update on two threads.
 picodeck_unit_test(test_mod_player SOURCES ${SRC}/drivers/mod_player.c ${SD_FAKE}

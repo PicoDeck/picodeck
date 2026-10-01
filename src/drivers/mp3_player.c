@@ -524,10 +524,16 @@ static void decode_fill_ring(void) {
             // Stereo: samplesX is already interleaved [sample][2] int16_t
             ring_write((const uint8_t *)pcm->samplesX, nsamples * 2 * sizeof(int16_t));
         } else {
-            // Mono: write only left channel (samplesX[n][0])
-            for (unsigned int i = 0; i < nsamples; i++) {
-                ring_write((const uint8_t *)&pcm->samplesX[i][0], sizeof(int16_t));
-            }
+            // Mono: the left channel (samplesX[n][0]) packed in place to the
+            // front of samplesX (sample n moves from byte 4n to 2n, so the
+            // forward copy never overwrites one it has yet to read), then
+            // one ring write. Writing each 2-byte sample on its own was 576
+            // PIO PSRAM transfers per frame, each with its own lock, XIP
+            // cache clean and DMA setup.
+            int16_t *packed = &pcm->samplesX[0][0];
+            for (unsigned int i = 1; i < nsamples; i++)
+                packed[i] = pcm->samplesX[i][0];
+            ring_write((const uint8_t *)packed, nsamples * sizeof(int16_t));
         }
 
         // Top up the staging buffer between frames: a 3-frame decode burst can
