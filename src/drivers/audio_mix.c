@@ -43,8 +43,9 @@ static volatile bool s_stream_ended;
 static volatile uint32_t s_stream_underruns;
 
 // When the stream ran dry (audio_stream_get_stats, `audiostat`). The
-// render writes them (a few stores per starved chunk, one compare per
-// chunk for the low-water mark); Core 0 resets them, all under s_src_cs.
+// render writes them (a starved chunk through stream_note_starved, in
+// flash; any other a store and the low-water compare); Core 0 resets
+// them, all under s_src_cs.
 // Positions are the ring's read counter: content frames played since the
 // stream started (audio_ring_clear zeroes it), converted to ms on Core 0.
 // One struct, so the RAM-resident render reaches every field from one
@@ -107,35 +108,31 @@ void audio_mix_init(void) {
   }
 }
 
-// After a live chunk (s_src_cs held): count its `empty` frames and note
-// when the gap began and near what; track the ring's low-water mark. The
-// start window is the stream's first second of content, the loop window
-// the second after the last loop point (the read counter has passed it).
-static __force_inline void stream_note_chunk(uint32_t empty) {
-  if (empty) {
-    uint32_t rd = s_ring.read, rate = s_stream_rate;
-    s_stream_underruns += empty;
-    if (rd < rate)
-      s_diag.start_u += empty;
-    else if (s_diag.loop_marked && rd - s_diag.loop_mark < rate)
-      s_diag.loop_u += empty;
-    if (!s_diag.in_gap) {
-      s_diag.in_gap = true;
-      s_diag.gaps++;
-      if (s_diag.first_pos == DIAG_NONE) {
-        s_diag.first_pos = rd;
-        s_diag.first_rate = rate;
-      }
-      s_diag.last_pos = rd;
-      s_diag.last_rate = rate;
+// A live chunk the ring ran dry for (s_src_cs held): count its `empty`
+// frames and note when the gap began and near what. The start window is
+// the stream's first second of content, the loop window the second after
+// the last loop point (the read counter has passed it).
+// In flash, not inlined: only a starved chunk calls it, the slow path (an
+// audible gap already), so the RAM-resident render keeps only the call
+// (SRAM is nearly full). The render reads QMI PSRAM (sample data) anyway,
+// and nothing writes the flash while the output runs (OTA writes it at
+// boot, before Core 1 starts).
+static __attribute__((noinline)) void stream_note_starved(uint32_t empty) {
+  uint32_t rd = s_ring.read, rate = s_stream_rate;
+  s_stream_underruns += empty;
+  if (rd < rate)
+    s_diag.start_u += empty;
+  else if (s_diag.loop_marked && rd - s_diag.loop_mark < rate)
+    s_diag.loop_u += empty;
+  if (!s_diag.in_gap) {
+    s_diag.in_gap = true;
+    s_diag.gaps++;
+    if (s_diag.first_pos == DIAG_NONE) {
+      s_diag.first_pos = rd;
+      s_diag.first_rate = rate;
     }
-  } else {
-    s_diag.in_gap = false;
-  }
-  uint32_t used = s_ring.write - s_ring.read;
-  if (used < s_diag.low) {
-    s_diag.low = used;
-    s_diag.low_rate = s_stream_rate;
+    s_diag.last_pos = rd;
+    s_diag.last_rate = rate;
   }
 }
 
@@ -167,8 +164,19 @@ void __time_critical_func(audio_mix_render)(int16_t *lr, int frames) {
           s_mix_l[i] += sl;
           s_mix_r[i] += sr;
         }
-        if (!s_stream_ended)
-          stream_note_chunk(empty);
+        // audiostat: a starved chunk calls out (above); any other costs a
+        // store and the ring's low-water compare.
+        if (!s_stream_ended) {
+          if (empty)
+            stream_note_starved(empty);
+          else
+            s_diag.in_gap = false;
+          uint32_t used = s_ring.write - s_ring.read;
+          if (used < s_diag.low) {
+            s_diag.low = used;
+            s_diag.low_rate = s_stream_rate;
+          }
+        }
       }
     }
     if (s_tone_on) {
