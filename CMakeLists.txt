@@ -18,6 +18,11 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
+# SDK 2.2.0's default alarm pool leaks a slot when its first two alarms are
+# cancelled together: build pico_time from a fixed copy (issue #58).
+include(${CMAKE_SOURCE_DIR}/cmake/picodeck_pico_time.cmake)
+picodeck_patch_pico_time()
+
 # ── Version from git tags ────────────────────────────────────────────────────
 execute_process(
     COMMAND git describe --tags --always
