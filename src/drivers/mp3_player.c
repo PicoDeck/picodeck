@@ -2,6 +2,7 @@
 #include "audio.h"
 #include "pcm_stage.h"
 #include "mp3_sched.h"
+#include "mp3_id3.h"
 #include "../os/core0_idle.h"
 #include "sdcard.h"
 #include "pio_psram.h"
@@ -70,6 +71,7 @@ static struct {
 static sdfile_t    s_file = NULL;
 static uint32_t    s_file_pos = 0;  // next byte of s_file to decode (Core 1
                                     // reads at it: no blocking fseek there)
+static uint32_t    s_data_start = 0;  // the first byte past the ID3v2 tags
 // The compressed input, in QMI PSRAM (umm, from init): libmad reads it a
 // byte at a time once per frame (~0.4 KB a frame at 128 kbps), so the
 // cache serves it with a few dozen line fills; SRAM goes to the decoder's
@@ -517,7 +519,7 @@ static void fade_out_and_wait(void) {
 static bool end_of_stream(bool *rewound) {
     if (s_player.loop && !*rewound) {
         *rewound = true;
-        s_file_pos = 0;
+        s_file_pos = s_data_start;  // past the ID3v2 tags (rewind_locked)
         s_bytes_in_buffer = 0;
         s_buffer_pos = 0;
         s_input_end = false;
@@ -753,49 +755,46 @@ static void decode_fill_ring(void) {
     }
 }
 
-// ── Helper to skip ID3v2 tags ───────────────────────────────────────────────
-static int skip_id3v2tag(struct mad_stream *stream) {
-    const unsigned char *ptr = stream->buffer;
-    size_t len = stream->bufend - stream->buffer;
-
-    if (len < 10) return 0;
-
-    // ID3v2 header: "ID3" (3 bytes), version (2 bytes), flags (1 byte), size (4 bytes)
-    if (ptr[0] == 'I' && ptr[1] == 'D' && ptr[2] == '3') {
-        // Size is 4 syncsafe bytes (msb is always 0)
-        unsigned long size = 
-            ((unsigned long)(ptr[6] & 0x7f) << 21) |
-            ((unsigned long)(ptr[7] & 0x7f) << 14) |
-            ((unsigned long)(ptr[8] & 0x7f) << 7) |
-            ((unsigned long)(ptr[9] & 0x7f));
-
-        size += 10; // header size
-
-        // If footer flag is set (bit 4 of flags byte 5), there's a 10-byte footer
-        if (ptr[5] & 0x10) size += 10;
-
-        if (size > len) size = len; // sanity check
-
-        mad_stream_skip(stream, size);
-        return (int)size;
-    }
-
-    return 0;
+// Reads the file from `pos` into the decode buffer: a blocking read, on
+// Core 0 with s_mp3_mutex held. Returns the bytes read.
+static int read_from_locked(uint32_t pos) {
+    if (!sdcard_fseek(s_file, pos))
+        return -1;
+    return sdcard_fread(s_file, s_decode_buffer,
+                        MP3_DECODE_BUFFER_SIZE - MAD_BUFFER_GUARD);
 }
 
-// Reads the start of the file into the decode buffer and resets the
-// decoder and the PCM ring: where every play starts. A blocking read, on
-// Core 0 with s_mp3_mutex held (Core 1's update is skipping meanwhile).
+// Reads the start of the file's audio, past any ID3v2 tags (mp3_id3.h), into
+// the decode buffer and resets the decoder and the PCM ring: where every
+// play starts, and where a loop goes back to (s_data_start). A blocking
+// read, on Core 0 with s_mp3_mutex held (Core 1's update is skipping
+// meanwhile).
 static bool rewind_locked(void) {
-    if (!s_file || !sdcard_fseek(s_file, 0))
+    if (!s_file)
         return false;
-    int rd = sdcard_fread(s_file, s_decode_buffer,
-                          MP3_DECODE_BUFFER_SIZE - MAD_BUFFER_GUARD);
+    int rd = read_from_locked(0);
     if (rd <= 0)
         return false;
-    s_bytes_in_buffer = rd;
-    s_buffer_pos = 0;
-    s_file_pos = (uint32_t)rd;
+    uint32_t base = 0;   // the file offset of the buffer's first byte
+    uint32_t at = 0;     // the first byte past the tags, from the buffer's start
+    for (int tags = 0; tags < 4; tags++) {   // (a file rarely has two)
+        uint32_t tag = mp3_id3v2_size(s_decode_buffer + at, (uint32_t)rd - at);
+        if (tag == 0)
+            break;
+        at += tag;
+        if (at + MP3_ID3V2_HEADER > (uint32_t)rd) {
+            // The tag runs on past the buffer: read from its end.
+            base += at;
+            at = 0;
+            rd = read_from_locked(base);
+            if (rd <= 0)
+                return false;
+        }
+    }
+    s_data_start = base + at;
+    s_bytes_in_buffer = rd - (int)at;
+    s_buffer_pos = (int)at;
+    s_file_pos = base + (uint32_t)rd;
     memset(s_decode_buffer + rd, 0, MAD_BUFFER_GUARD);
     mad_stream_init(s_mad_stream);
     mad_frame_init(s_mad_frame);
@@ -979,11 +978,10 @@ bool mp3_player_load(mp3_player_t *player, const char *path) {
         return false;
     }
 
-    // Probe the first frame header (past an ID3v2 tag) for the format, then
-    // put the decoder back at the start of the buffer.
-    int have = s_bytes_in_buffer;
-    mad_stream_buffer(s_mad_stream, s_decode_buffer, have + MAD_BUFFER_GUARD);
-    skip_id3v2tag(s_mad_stream);
+    // Probe the first frame header (rewind_locked skipped the ID3v2 tags)
+    // for the format, then put the decoder back where the audio starts.
+    int have = s_bytes_in_buffer, pos = s_buffer_pos;
+    mad_stream_buffer(s_mad_stream, s_decode_buffer + pos, have + MAD_BUFFER_GUARD);
     bool ok = mad_header_decode(&s_mad_frame->header, s_mad_stream) == 0;
     if (ok) {
         player->sample_rate = s_mad_frame->header.samplerate;
@@ -995,7 +993,7 @@ bool mp3_player_load(mp3_player_t *player, const char *path) {
     mad_frame_init(s_mad_frame);
     s_in_frame = false;
     mad_synth_init(s_mad_synth);
-    s_buffer_pos = 0;
+    s_buffer_pos = pos;
     s_bytes_in_buffer = have;
     if (!ok) {
         printf("mp3_player: not an MP3 file (%s)\n", path);

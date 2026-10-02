@@ -591,7 +591,7 @@ mp3:play()
 ---
 
 #### `player:load(path)`
-Opens an MP3 file for streaming.
+Opens an MP3 file for streaming. ID3v2 tags at the start of the file (title, artist, cover art; any size) are skipped: playback starts, and every loop restarts, at the first frame of audio.
 
 - **Returns:** `true` on success, or `nil, errstr` if the file cannot be opened or is not an MP3
 
