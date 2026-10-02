@@ -1553,7 +1553,8 @@ function picocalc.perf.getFPS() end
 ---@return integer
 function picocalc.perf.getFrameTime() end
 
----Draw a colour-coded FPS counter at (x, y).
+---Draw a colour-coded FPS counter at (x, y). Draws nothing while the OS
+---counter (Settings -> Show FPS) is on: that one replaces it.
 ---@param x? integer Default: right-aligned 8px from the right edge
 ---@param y? integer Default: 24, just below the standard header
 function picocalc.perf.drawFPS(x, y) end

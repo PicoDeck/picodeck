@@ -126,6 +126,7 @@ extern void perf_end_frame(void);
 extern int  perf_get_fps(void);
 extern uint32_t perf_get_frame_time(void);
 extern void perf_set_target_fps(uint32_t fps);
+extern void perf_draw_fps(int x, int y);
 
 // WiFi functions (from sim_wifi.c)
 extern void wifi_connect(const char *ssid, const char *pass);
@@ -1863,12 +1864,7 @@ static void tramp_perf_get_frame_time(uc_engine *uc) {
 static void tramp_perf_draw_fps(uc_engine *uc) {
     int x = (int)read_reg(uc, UC_ARM_REG_R0);
     int y = (int)read_reg(uc, UC_ARM_REG_R1);
-    // perf_draw_fps is a wrapper in main.c, not available in simulator
-    // Draw FPS manually
-    int fps = perf_get_fps();
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%d fps", fps);
-    display_draw_text(x, y, buf, 0xFFFF, 0x0000);
+    perf_draw_fps(x, y);  // the firmware's: nothing while Show FPS is on
 }
 
 static void tramp_perf_set_target_fps(uc_engine *uc) {

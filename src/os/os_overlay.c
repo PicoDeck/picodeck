@@ -1,6 +1,7 @@
 #include "os_overlay.h"
 #include "config.h"
 #include "fps_counter.h"
+#include "perf.h"
 #include "toast.h"
 #include "ui.h"
 #include "../drivers/display.h"
@@ -67,6 +68,8 @@ const char *os_overlay_fps_label(int mode) {
   return k_fps_labels[mode >= 0 && mode < OS_FPS_MODES ? mode : OS_FPS_OFF];
 }
 
+bool os_overlay_fps_on(void) { return s_fps_mode != OS_FPS_OFF; }
+
 void os_overlay_app_start(void) {
   fps_counter_reset(&s_fps);
   os_overlay_reload();
@@ -107,8 +110,7 @@ static void draw_fps(const ov_rect_t *r, int value) {
   } else {
     if (value > 999) value = 999;
     snprintf(buf, sizeof(buf), "FPS: %d", value);
-    // perf.drawFPS's colour code.
-    color = (value >= 55) ? COLOR_GREEN : (value >= 30) ? COLOR_YELLOW : COLOR_RED;
+    color = perf_fps_color(value);  // perf.drawFPS's colour code
   }
   display_fill_rect(r->x, r->y, r->w, r->h, COLOR_BLACK);
   int tw = display_text_width(buf);
