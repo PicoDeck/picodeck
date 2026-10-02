@@ -1553,23 +1553,9 @@ bool display_set_pixels_block(int x, int y, int w, int h,
   if (x < 0 || y < 0 || x + w > FB_WIDTH || y + h > FB_HEIGHT) return false;
   if (len != (size_t)w * (size_t)h * 2u) return false;
 
-  const uint8_t *src = (const uint8_t *)rgb565_host;
-  bool wrote_any = false;
-  for (int row = 0; row < h; row++) {
-    const uint8_t *s = src + (size_t)row * (size_t)w * 2u;
-    int py = y + row;
-    // Same clip test as display_set_pixel, hoisted out of the inner loop.
-    if (py < s_clip_y0 || py > s_clip_y1) continue;
-    for (int col = 0; col < w; col++) {
-      int px = x + col;
-      if (px < s_clip_x0 || px > s_clip_x1) continue;
-      uint16_t v = (uint16_t)(s[0] | ((uint16_t)s[1] << 8));
-      s_framebuffer[py * FB_WIDTH + px] = (uint16_t)((v >> 8) | (v << 8));
-      wrote_any = true;
-      s += 2;
-    }
-  }
-  return wrote_any;
+  disp_clip_t c = cur_clip();
+  return disp_set_pixels(s_framebuffer, FB_WIDTH, &c, x, y, w, h,
+                         (const uint8_t *)rgb565_host, true);
 }
 
 bool display_get_pixels_block(int x, int y, int w, int h,
@@ -1578,21 +1564,10 @@ bool display_get_pixels_block(int x, int y, int w, int h,
   if (x < 0 || y < 0 || x + w > FB_WIDTH || y + h > FB_HEIGHT) return false;
   if (len != (size_t)w * (size_t)h * 2u) return false;
 
-  uint8_t *dst = (uint8_t *)rgb565_host;
-  for (int row = 0; row < h; row++) {
-    uint8_t *d = dst + (size_t)row * (size_t)w * 2u;
-    const uint16_t *src = &s_framebuffer[(y + row) * FB_WIDTH + x];
-    for (int col = 0; col < w; col++) {
-      uint16_t be = src[col];
-      uint16_t v = (uint16_t)((be >> 8) | (be << 8));
-      d[0] = (uint8_t)(v & 0xFF);
-      d[1] = (uint8_t)(v >> 8);
-      d += 2;
-    }
-  }
+  disp_get_pixels(s_framebuffer, FB_WIDTH, x, y, w, h,
+                  (uint8_t *)rgb565_host, true);
   return true;
 }
-
 
 const uint16_t *display_get_front_buffer(void) {
   return s_framebuffers[1 - s_back_buffer_idx];
