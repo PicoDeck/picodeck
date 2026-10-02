@@ -423,6 +423,7 @@ bool ui_text_input(const char *prompt, const char *default_val,
   // polls, or injections queued before this modal opened, were not typed
   // at this dialog and must not accept/cancel it.
   kbd_clear_state();
+  kbd_consume_menu_press();  // a stale press was not made at this dialog
 
   // Input buffer
   const int MAX_CHARS = 127;
@@ -443,6 +444,8 @@ bool ui_text_input(const char *prompt, const char *default_val,
     // A dev "exit" must be able to unwind this modal: cancel so the Lua hook
     // can process the exit once control returns to the app.
     if (dev_commands_wants_exit()) break;
+    // The menu key cancels, like Esc, and takes the latch.
+    if (kbd_consume_menu_press()) break;
     uint32_t btns = kbd_get_buttons_pressed();
     char c        = kbd_get_char();
 
@@ -491,6 +494,7 @@ bool ui_confirm(const char *message) {
   // Enter must be a fresh press edge after it — so an app cannot pre-load a
   // "yes" (sys.applyUpdate relies on this).
   kbd_discard_pending();
+  kbd_consume_menu_press();  // a stale press was not made at this dialog
   // Measure how many lines the message needs (up to 2)
   const int COLS = (DLG_W - 20) / 6;
   int msg_len = message ? strlen(message) : 0;
@@ -526,6 +530,10 @@ bool ui_confirm(const char *message) {
     dev_commands_process();
     // Let a dev "exit" unwind this modal (cancel; the Lua hook handles exit).
     if (dev_commands_wants_exit()) { display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false; }
+    // The menu key is ignored: No can mean "discard" to the app (an editor's
+    // "Save changes?"), so it never answers a dialog. It is still taken, or
+    // it would open the system menu once the dialog had been answered.
+    kbd_consume_menu_press();
     uint32_t btns = kbd_get_buttons_pressed();
     char c        = kbd_get_char();
     if (!armed) {

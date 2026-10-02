@@ -53,6 +53,7 @@ bool text_input_show(const char *title, const char *prompt,
     // polls, or injections queued before this modal opened, were not typed
     // at this dialog and must not accept/cancel it.
     kbd_clear_state();
+    kbd_consume_menu_press();  // a stale press was not made here
 
     int  scroll      = 0;
     bool running     = true;
@@ -122,6 +123,12 @@ bool text_input_show(const char *title, const char *prompt,
         dev_commands_process();
         // Let a dev "exit" unwind this modal (cancel; the Lua hook handles exit).
         if (dev_commands_wants_exit()) {
+            running = false;
+            continue;
+        }
+
+        // The menu key cancels, like Esc, and takes the latch.
+        if (kbd_consume_menu_press()) {
             running = false;
             continue;
         }

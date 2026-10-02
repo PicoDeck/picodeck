@@ -189,6 +189,7 @@ bool file_browser_show(const char *start_path, const char *root_path,
   // polls, or injections queued before this modal opened, were not typed
   // at this browser and must not navigate or select on its behalf.
   kbd_clear_state();
+  kbd_consume_menu_press();  // a stale press was not made here
 
   int sel = 0;
   int scroll = 0;
@@ -212,6 +213,12 @@ bool file_browser_show(const char *start_path, const char *root_path,
     dev_commands_process();
     // Let a dev "exit" unwind this modal (cancel; the Lua hook handles exit).
     if (dev_commands_wants_exit()) {
+      kbd_clear_state();
+      display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false;
+    }
+    // The menu key cancels the browser, like Esc (and takes the latch, so it
+    // cannot open the system menu once the browser has returned).
+    if (kbd_consume_menu_press()) {
       kbd_clear_state();
       display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false;
     }
