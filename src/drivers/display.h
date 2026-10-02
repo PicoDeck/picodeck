@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "../fonts/font.h"
@@ -220,6 +221,27 @@ const uint16_t *display_get_front_buffer(void);
 // Get writable pointer to the current back buffer for direct pixel writes.
 // Pixels must be in big-endian RGB565 (byte-swapped from host order).
 uint16_t *display_get_back_buffer(void);
+
+// Bulk pixel access to the back buffer, in host-order RGB565 — the value
+// RGB565() produces and the one display_set_pixel() takes, so no byte
+// swapping by the caller (display_get_back_buffer() still hands back the
+// raw, swapped frame).
+//
+// display_set_pixels_block() clips to the clip rect exactly as the
+// single-pixel display_set_pixel() does; a rectangle wholly or partly
+// outside it writes only the visible part and reports false. It needs
+// w*h*2 bytes of host-order RGB565, row-major, top row first.
+// display_get_pixels_block() does not apply the clip rect (matching
+// display_get_pixel()); the rectangle must be inside the screen or it
+// reports false and writes nothing. Outgoing bytes are host-order
+// little-endian, the same encoding image:getPixels() uses.
+//
+// Returns false for a bad rectangle, a short/long buffer, or (writes only)
+// nothing visible.
+bool display_set_pixels_block(int x, int y, int w, int h,
+                              const void *rgb565_host, size_t len);
+bool display_get_pixels_block(int x, int y, int w, int h,
+                              void *rgb565_host, size_t len);
 
 // Wait for any ongoing DMA transfer to complete and return a pointer to the
 // buffer that is currently visible on screen. This ensures screenshots capture
