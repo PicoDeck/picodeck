@@ -184,26 +184,41 @@ target_compile_options(image_decoders PRIVATE -O2)
 set(LIBMAD_DIR ${CMAKE_SOURCE_DIR}/third_party/libmad)
 
 # Hot path — placed in SRAM via .time_critical section rename.
-# synth.c (~4.9KB) is the final PCM synthesis step that runs every frame
-# on Core 1; keeping it in SRAM eliminates XIP cache thrashing with
-# Core 0's Lua VM.  layer3.c (~11.6KB) stays in flash — it's called less
-# frequently and would exhaust the SRAM heap if included.
+# synth.c (~3.3KB) is the final PCM synthesis step that runs every granule
+# on Core 1; keeping it in SRAM keeps it off the XIP cache Core 0's Lua VM
+# uses.  layer3.c (~11KB) stays in flash: no SRAM is left for it (the
+# decoder's hot state comes first, issue #28 in src/drivers/CLAUDE.md).
+# PICODECK_EXP_L3_RAM builds it into SRAM for a measurement (mp3bench); it
+# links only with that state back in PSRAM (-DPICODECK_MP3_SRAM=OFF).
+option(PICODECK_EXP_L3_RAM "Experiment: libmad layer3.c in SRAM" OFF)
+if(PICODECK_EXP_L3_RAM)
+  set(LIBMAD_L3_RAM_SRC ${LIBMAD_DIR}/layer3.c ${LIBMAD_DIR}/bit.c)
+  set(LIBMAD_L3_FLASH_SRC)
+else()
+  set(LIBMAD_L3_RAM_SRC)
+  set(LIBMAD_L3_FLASH_SRC ${LIBMAD_DIR}/layer3.c ${LIBMAD_DIR}/bit.c)
+endif()
 add_library(libmad_ram STATIC
-    ${LIBMAD_DIR}/synth.c
+    ${LIBMAD_DIR}/synth.c ${LIBMAD_L3_RAM_SRC}
 )
 target_include_directories(libmad_ram PUBLIC ${LIBMAD_DIR})
-target_compile_definitions(libmad_ram PRIVATE PROGMEM=)
+target_compile_definitions(libmad_ram PRIVATE PROGMEM= MAD_TEXT_IN_RAM=1)
+# Issue #28: the MP3 decoder's hottest state (mp3_player.c) and the
+# synthesis window D[] in SRAM, off the XIP cache the app's core shares.
+option(PICODECK_MP3_SRAM "MP3 decoder hot state and window in SRAM" ON)
+if(PICODECK_MP3_SRAM)
+  target_compile_definitions(libmad_ram PRIVATE MAD_D_IN_RAM=1)
+endif()
 # Place all code in .time_critical section via -fno-function-sections (single .text)
 # then rename via objcopy post-build.  -O2 for speed-critical decode path.
 target_compile_options(libmad_ram PRIVATE -O2 -fno-function-sections -Wno-unused-parameter -Wno-unused-variable)
 
 # Cold path — stays in Flash
 add_library(libmad STATIC
-    ${LIBMAD_DIR}/bit.c
+    ${LIBMAD_L3_FLASH_SRC}
     ${LIBMAD_DIR}/fixed.c
     ${LIBMAD_DIR}/frame.c
     ${LIBMAD_DIR}/huffman.c
-    ${LIBMAD_DIR}/layer3.c
     ${LIBMAD_DIR}/stream.c
     ${LIBMAD_DIR}/timer.c
     ${LIBMAD_DIR}/version.c
@@ -211,6 +226,9 @@ add_library(libmad STATIC
 target_include_directories(libmad PUBLIC ${LIBMAD_DIR})
 target_compile_definitions(libmad PRIVATE PROGMEM=)
 target_compile_options(libmad PRIVATE -O2 -Wno-unused-parameter -Wno-unused-variable)
+# Each calls into the other (synth.c, and layer3.c/bit.c in the experiment).
+target_link_libraries(libmad PUBLIC libmad_ram)
+target_link_libraries(libmad_ram PUBLIC libmad)
 
 # ── PIO PSRAM (mainboard 8MB PSRAM via PIO1 SPI) ─────────────────────────────
 # Uses the polpo rp2040-psram library (third_party/rp2040-psram/).
@@ -512,6 +530,9 @@ target_compile_definitions(picodeck PRIVATE
     PICO_STDIO_USB_ENABLE_RESET_VIA_BAUD_RATE=0
     PICO_STDIO_USB_ENABLE_RESET_VIA_VENDOR_INTERFACE=0
 )
+if(PICODECK_MP3_SRAM)
+  target_compile_definitions(picodeck PRIVATE PICODECK_MP3_SRAM=1)
+endif()
 
 # ── Print firmware size after build ───────────────────────────────────────────
 

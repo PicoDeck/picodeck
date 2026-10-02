@@ -255,8 +255,8 @@ target_link_libraries(test_mp3_fed PRIVATE libmad_host)
 # The pico/critical_section.h stub leaves a parameter unused.
 target_compile_options(test_mp3_fed PRIVATE -Wno-unused-parameter)
 # The restart tests model a frame's decode time: the test's
-# __wrap_mad_synth_frame renders output after each frame.
-target_link_options(test_mp3_fed PRIVATE -Wl,--wrap=mad_synth_frame)
+# __wrap_mad_synth_granule renders output after each frame.
+target_link_options(test_mp3_fed PRIVATE -Wl,--wrap=mad_synth_granule)
 # ...and its decode loop at the ends of the input buffer (no frame lost
 # where a refill ends), from a file (the SD fake) and fed.
 picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c
@@ -271,6 +271,12 @@ picodeck_unit_test(test_mp3_decode SOURCES ${SRC}/drivers/mp3_player.c
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_decode PRIVATE libmad_host)
 target_compile_options(test_mp3_decode PRIVATE -Wno-unused-parameter)
+# The ID3v2 tags an MP3 file's audio starts after (header-only).
+picodeck_unit_test(test_mp3_id3 INCLUDES ${SRC}/drivers)
+# libmad a granule at a time (mp3_player.c's half frames) against the
+# whole-frame decode: the same PCM.
+picodeck_unit_test(test_mp3_granule)
+target_link_libraries(test_mp3_granule PRIVATE libmad_host)
 # The MOD player (mod_player.c + pocketmod): Core 0 load/free vs Core 1
 # update on two threads.
 picodeck_unit_test(test_mod_player SOURCES ${SRC}/drivers/mod_player.c ${SD_FAKE}

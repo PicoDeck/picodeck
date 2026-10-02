@@ -464,7 +464,8 @@ static void dev_xipstat(const char *arg) {
            "acc=%llu hit=%llu miss=%llu hit_pm=%lu stall0=%llu stall1=%llu "
            "contested0=%llu contested1=%llu prio0=%d idle_windows=%lu "
            "idle_ms=%lu mp3_low_frames=%lu mp3_idle_frames=%lu "
-           "mp3_overran=%lu mp3_frame_us=%lu mp3idle=%d sys_khz=%lu\n",
+           "mp3_overran=%lu mp3_frame_us=%lu mp3idle=%d mp3_dec_us=%lu "
+           "mp3_syn_us=%lu mp3_out_us=%lu sys_khz=%lu\n",
            (unsigned long)x.window_ms, x.running, x.frozen, x.saturated,
            (unsigned long long)x.accesses, (unsigned long long)x.hits,
            (unsigned long long)miss, hit_pm,
@@ -475,6 +476,8 @@ static void dev_xipstat(const char *arg) {
            (unsigned long)(idle_us / 1000u), (unsigned long)m.low_frames,
            (unsigned long)m.idle_frames, (unsigned long)m.overran,
            (unsigned long)m.frame_us, m.decode_ahead,
+           (unsigned long)m.dec_us, (unsigned long)m.syn_us,
+           (unsigned long)m.out_us,
            (unsigned long)(clock_get_hz(clk_sys) / 1000u));
 }
 
@@ -686,6 +689,21 @@ static void dev_command_run(void *arg) {
                (unsigned long)hw.ctrl_scl, hw.lines & 1u,
                (hw.lines >> 1) & 1u, hw.irq_on, hw.alarm_num, hw.armed,
                (long)hw.due_in_us);
+    } else if (strncmp(s_cmd_buf, "mp3bench ", 9) == 0) {
+        // `mp3bench <path> [frames] [flags]`: a frame's decode cost, by
+        // phase (issue #28; mp3_player_bench, which says what flags do).
+        char path[128];
+        const char *a = s_cmd_buf + 9;
+        size_t n = strcspn(a, " ");
+        if (n > 0 && n < sizeof path) {
+            memcpy(path, a, n);
+            path[n] = '\0';
+            char *end;
+            unsigned long frames = strtoul(a + n, &end, 10);
+            unsigned long flags = strtoul(end, NULL, 10);
+            mp3_player_bench(path, frames ? (uint32_t)frames : 200u,
+                             (uint32_t)flags);
+        }
     } else if (strcmp(s_cmd_buf, "xipstat") == 0 ||
                strncmp(s_cmd_buf, "xipstat ", 8) == 0) {
         dev_xipstat(s_cmd_buf[7] ? s_cmd_buf + 8 : "");
@@ -884,6 +902,7 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   alarmpool      - Default alarm pool: free and lost slots (lost re-read 3x)\n");
         printf("[DEV]   kbdstat [reset|fault|log|hw] - Keyboard bus engine counters\n");
         printf("[DEV]   xipstat [reset|off|prio core0|prio none|mp3idle on|mp3idle off] - XIP cache, bus contention and MP3 decode timing\n");
+        printf("[DEV]   mp3bench <path> [frames] [flags] - MP3 decode cost per frame, by phase (at the launcher)\n");
         printf("[DEV]   exit           - Signal current app to exit (error if none)\n");
         printf("[DEV]   usb            - Enable USB storage mode\n");
         printf("[DEV]   reboot         - Reboot device\n");
