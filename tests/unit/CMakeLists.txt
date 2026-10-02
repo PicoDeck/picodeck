@@ -85,7 +85,43 @@ picodeck_unit_test(test_kbd_pad INCLUDES ${SRC}/drivers)
 # Pad sources (the `pad` dev command, the simulator's controller, later a BT
 # or USB pad) ORed into the same gamepad.
 picodeck_unit_test(test_pad_source SOURCES ${SRC}/drivers/pad_source.c INCLUDES ${SRC}/drivers)
+# A Bluetooth pad's HID descriptor and reports -> PAD_* (bt_pad.c's parser).
+picodeck_unit_test(test_hid_pad SOURCES ${SRC}/drivers/hid_pad.c INCLUDES ${SRC}/drivers)
+# The Bluetooth pads' bonding store (link keys + paired pads, on the SD card).
+picodeck_unit_test(test_bt_pad_store SOURCES ${SRC}/drivers/bt_pad_store.c INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_bus SOURCES ${SRC}/drivers/kbd_bus.c INCLUDES ${SRC}/drivers)
+# The default alarm pool fix (cmake/picodeck_pico_time.cmake, #58): the
+# cancellation pass cut out of the patched pico_time the firmware build
+# generates, from the SDK's time.c when PICO_SDK_PATH has one the patch
+# applies to, else from SDK 2.2.0's pass in fixtures/pico_time (the CI unit
+# job has no SDK). The configure fails if the patch does not apply.
+include(${PICODECK_ROOT}/cmake/picodeck_pico_time.cmake)
+set(_pt_src "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pico_time/cancel_pass_2_2_0.c")
+if(DEFINED ENV{PICO_SDK_PATH} AND
+   EXISTS "$ENV{PICO_SDK_PATH}/src/common/pico_time/time.c")
+    file(READ "$ENV{PICO_SDK_PATH}/src/common/pico_time/time.c" _pt_text)
+    picodeck_pico_time_patch_text(_pt_text _pt_applied)
+    if(_pt_applied)
+        set(_pt_src "$ENV{PICO_SDK_PATH}/src/common/pico_time/time.c")
+    endif()
+endif()
+file(READ "${_pt_src}" _pt_orig)
+string(REPLACE "\r\n" "\n" _pt_orig "${_pt_orig}")
+set(_pt_patched "${_pt_orig}")
+picodeck_pico_time_patch_text(_pt_patched _pt_applied)
+if(NOT _pt_applied)
+    message(FATAL_ERROR "cmake/picodeck_pico_time.cmake does not apply to ${_pt_src}")
+endif()
+picodeck_pico_time_cut_pass("${_pt_orig}" _pt_pass_orig)
+picodeck_pico_time_cut_pass("${_pt_patched}" _pt_pass_patched)
+set(_pt_dir "${CMAKE_CURRENT_BINARY_DIR}/pico_time_pass")
+file(MAKE_DIRECTORY "${_pt_dir}")
+_picodeck_pico_time_write("${_pt_dir}/pass_orig.inc" "${_pt_pass_orig}")
+_picodeck_pico_time_write("${_pt_dir}/pass_patched.inc" "${_pt_pass_patched}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_pt_src}"
+             "${PICODECK_ROOT}/cmake/picodeck_pico_time.cmake")
+message(STATUS "test_pico_time_pass: the pass from ${_pt_src}")
+picodeck_unit_test(test_pico_time_pass INCLUDES ${_pt_dir})
 picodeck_unit_test(test_pio_psram_range INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_pio_psram_xip INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_qmi_psram_clkdiv INCLUDES ${SRC}/drivers)
@@ -223,8 +259,8 @@ target_link_libraries(test_mp3_fed PRIVATE libmad_host)
 # The pico/critical_section.h stub leaves a parameter unused.
 target_compile_options(test_mp3_fed PRIVATE -Wno-unused-parameter)
 # The restart tests model a frame's decode time: the test's
-# __wrap_mad_synth_frame renders output after each frame.
-target_link_options(test_mp3_fed PRIVATE -Wl,--wrap=mad_synth_frame)
+# __wrap_mad_synth_granule renders output after each frame.
+target_link_options(test_mp3_fed PRIVATE -Wl,--wrap=mad_synth_granule)
 # ...and its decode loop at the ends of the input buffer (no frame lost
 # where a refill ends), from a file (the SD fake) and fed.
 picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c
@@ -239,6 +275,12 @@ picodeck_unit_test(test_mp3_decode SOURCES ${SRC}/drivers/mp3_player.c
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_decode PRIVATE libmad_host)
 target_compile_options(test_mp3_decode PRIVATE -Wno-unused-parameter)
+# The ID3v2 tags an MP3 file's audio starts after (header-only).
+picodeck_unit_test(test_mp3_id3 INCLUDES ${SRC}/drivers)
+# libmad a granule at a time (mp3_player.c's half frames) against the
+# whole-frame decode: the same PCM.
+picodeck_unit_test(test_mp3_granule)
+target_link_libraries(test_mp3_granule PRIVATE libmad_host)
 # The MOD player (mod_player.c + pocketmod): Core 0 load/free vs Core 1
 # update on two threads.
 picodeck_unit_test(test_mod_player SOURCES ${SRC}/drivers/mod_player.c ${SD_FAKE}

@@ -700,6 +700,9 @@ int main(int argc, char** argv) {
     wifi_init();
     http_init();
     tcp_init();
+    // Bluetooth pads (sim_bt.c, a scripted radio), as src/main.c.
+    extern void bt_pad_init(void);
+    bt_pad_init();
 #ifdef PICODECK_SIM_FIRMWARE_NET
     // Firmware network stack (simulator/net): join the stand-in network now,
     // as sim_wifi.c's mock is "always online", unless config.json's

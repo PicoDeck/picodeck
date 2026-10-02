@@ -244,7 +244,7 @@ typedef struct {
 // PAD_* held / pressed this poll / released this poll, as getButtons*: the
 // keyboard's aliases ORed with every other pad source (src/drivers/
 // pad_source.h: the `pad` dev command, the simulator's game controller,
-// later a Bluetooth or USB pad), so a button is held while any source holds
+// a Bluetooth pad), so a button is held while any source holds
 // it and an app cannot tell where a press came from.
 uint32_t kbd_get_pad(void);
 uint32_t kbd_get_pad_pressed(void);

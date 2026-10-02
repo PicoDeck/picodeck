@@ -11,6 +11,7 @@
 #include "app_stack.h"
 #include "zip_archive.h"
 #include "../drivers/audio.h"
+#include "../drivers/bt_pad.h"
 #include "../drivers/display.h"
 #include "../drivers/image_api.h"
 #include "../drivers/keyboard.h"
@@ -613,6 +614,12 @@ void launcher_apply_clock(uint32_t khz) {
   // divider is wrong for clk_sys.
   kbd_pause_bus();
 
+  // 1c. No CYW43 transfer across the switch (WiFi or Bluetooth: the driver
+  // works from Core 0's interrupt, Core 1 being paused), and its PIO SPI
+  // divider safe at both clocks until step 7a sets it for the new one.
+  wifi_bus_hold(true);
+  wifi_bus_clock(khz > current_khz ? khz : current_khz);
+
   // 2. Up-clocking: Raise voltage BEFORE increasing frequency
   if (khz > current_khz) {
     enum vreg_voltage v = VREG_VOLTAGE_DEFAULT;  // 1.10V, good to ~200 MHz
@@ -651,6 +658,8 @@ void launcher_apply_clock(uint32_t khz) {
     psram_qmi_retime(current_khz);
     pio_psram_set_sysclk(current_khz);
     kbd_resume_bus();  // The clock did not change, so the old divider is still right.
+    wifi_bus_clock(current_khz);
+    wifi_bus_hold(false);
     g_core1_pause = false;
     return;
   }
@@ -677,6 +686,10 @@ void launcher_apply_clock(uint32_t khz) {
   // 7. Update keyboard I2C divider for new clk_sys frequency, and re-start
   // the bus engine paused in step 1b.
   kbd_apply_clock();
+
+  // 7a. The CYW43's bus divider for the new clock; the driver may run again.
+  wifi_bus_clock(khz);
+  wifi_bus_hold(false);
 
   // 7b. Re-set SD SPI baud rate (derived from clk_peri)
   sdcard_apply_clock();
@@ -795,10 +808,12 @@ static bool run_app(int idx) {
 
   // ── Shared pre-launch setup ───────────────────────────────────────────────
 
-  // Disconnect WiFi before clock change if app doesn't need it.
-  // The CYW43 PIO SPI clock divider is set at init time (200 MHz) and is NOT
-  // updated by launcher_apply_clock(), so running WiFi at a different sys clock
-  // causes SPI timing failures ("hdr mismatch" errors) that stall Core 1.
+  // Disconnect WiFi before clock change if app doesn't need it, to save
+  // the power and the radio time. (launcher_apply_clock retunes the CYW43's
+  // PIO SPI divider for the new clock and holds its bus across the switch,
+  // so a link left up would stay in spec; before that, the divider fixed at
+  // init for 200 MHz ran the bus at 75 MHz at 300 MHz: "hdr mismatch"
+  // errors that stalled Core 1.)
   if (app->system_clock_khz > 0 && !app->has_http && wifi_is_available()) {
     wifi_status_t wst = wifi_get_status();
     if (wst == WIFI_STATUS_CONNECTED || wst == WIFI_STATUS_CONNECTING ||
@@ -1045,6 +1060,7 @@ void launcher_run(void) {
 
     dev_commands_poll();
     dev_commands_process();
+    bt_pad_service(); // a pad's bond changed (paired in a game's menu)
 
 #ifdef PICODECK_SIMULATOR
     extern bool sim_handler_check_launch(void);

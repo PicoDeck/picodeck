@@ -55,9 +55,17 @@ void mp3_player_reset_diag(void);
 typedef struct {
     uint32_t low_frames, idle_frames, overran, frame_us;
     bool decode_ahead;
+    // Summed over the granules decoded (us): the decode (with the frame's
+    // header and side information), mad_synth_granule, the PCM ring write.
+    uint32_t dec_us, syn_us, out_us;
 } mp3_sched_stats_t;
 void mp3_player_get_sched_stats(mp3_sched_stats_t *out);
 void mp3_player_reset_sched_stats(void);
+// `mp3bench <path> [frames] [flags]` (dev command, firmware only): decodes
+// a file's frames on the calling core and prints each phase's time and XIP
+// cache accesses/misses per frame; `flags` moves decoder state into SRAM
+// for the run (mp3_player.c; issue #28).
+void mp3_player_bench(const char *path, uint32_t frames, uint32_t flags);
 // On by default; off decodes as before (only when the ring is low), for an
 // A/B measurement (the `xipstat mp3idle` dev command).
 void mp3_player_set_decode_ahead(bool on);

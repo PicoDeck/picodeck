@@ -201,7 +201,7 @@ picocalc.fs.close(f)
 ---
 
 #### `picocalc.fs.browse([startDir])`
-Opens a file-browser overlay panel. The user can navigate directories and select a file.
+Opens a file-browser overlay panel. The user can navigate directories and select a file; Esc goes up a directory (and cancels at the top), and the system menu key cancels from any directory.
 
 - **Parameters:**
   - `startDir` (string, optional): Starting directory. Defaults to the app's `/data/<appname>/` directory.

@@ -82,10 +82,11 @@ void dev_commands_poll(void) {
 
 // ── Control-channel dev commands (the `dev_command` RPC) ─────────────────────
 // The socket thread queues one command line; Core 0 runs it from
-// dev_commands_process() — the launcher loop, or a running app's Lua hook /
-// sys.sleep pump — through app_stack_run_os() and the shared dev_ops
-// handlers, like a line typed on the firmware's serial console. One command
-// is in flight at a time (the socket thread dispatches serially).
+// dev_commands_process() — the launcher loop, a running Lua app's hook /
+// sys.sleep pump, or a native app's sys->poll() (tramp_sys_poll) — through
+// app_stack_run_os() and the shared dev_ops handlers, like a line typed on
+// the firmware's serial console. One command is in flight at a time (the
+// socket thread dispatches serially).
 
 typedef enum { DC_IDLE, DC_QUEUED, DC_RUNNING, DC_DONE, DC_ABANDONED } dc_state_t;
 
@@ -116,6 +117,8 @@ static void dc_run(void *arg) {
         job->ok = dev_op_rm(job->cmd + 3, job->reply, sizeof(job->reply));
     } else if (strncmp(job->cmd, "pad ", 4) == 0 || strcmp(job->cmd, "pad") == 0) {
         job->ok = dev_op_pad(job->cmd + 3, job->reply, sizeof(job->reply));
+    } else if (strncmp(job->cmd, "bt ", 3) == 0 || strcmp(job->cmd, "bt") == 0) {
+        job->ok = dev_op_bt(job->cmd + 2, job->reply, sizeof(job->reply));
     } else if (strcmp(job->cmd, "audiostat") == 0 ||
                strcmp(job->cmd, "audiostat reset") == 0) {
         job->ok = dev_op_audiostat(strcmp(job->cmd, "audiostat reset") == 0,
@@ -123,7 +126,7 @@ static void dc_run(void *arg) {
     } else {
         snprintf(job->reply, sizeof(job->reply),
                  "Unknown command: %s (simulator supports ping, exit, unzip, "
-                 "rm, pad, audiostat)", job->cmd);
+                 "rm, pad, bt, audiostat)", job->cmd);
         job->ok = false;
     }
     printf("[DEV] %s\n", job->reply);
@@ -180,7 +183,8 @@ bool dev_commands_sim_run(const char *cmd, int timeout_ms, char *reply,
     }
     snprintf(s_dc_cmd, sizeof(s_dc_cmd), "%s", cmd);
     s_dc_state = DC_QUEUED;
-    lua_bridge_request_service();  // a running app's next hook pumps it
+    lua_bridge_request_service();  // a Lua app's next hook pumps it (a native
+                                   // app's next sys->poll() does without it)
     int rc = 0;
     while (s_dc_state != DC_DONE && rc != ETIMEDOUT)
         rc = pthread_cond_timedwait(&s_dc_cond, &s_dc_mutex, &deadline);

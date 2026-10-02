@@ -745,7 +745,10 @@ class PicodeckSimulator:
         first poll that sees it. Returns the reply ("Pad: up+a"); raises on
         an error reply."""
         cmd = f"pad {state}" + (f" {int(hold_ms)}" if hold_ms else "")
-        r = self.call("dev_command", {"cmd": cmd})
+        # The server gives up before this client does, so a non-polling app
+        # gets an error reply and never keeps the socket thread blocked.
+        r = self.call("dev_command",
+                      {"cmd": cmd, "timeout_ms": int(self.timeout * 800)})
         if not r.get("ok"):
             raise RuntimeError(f"{cmd!r}: {r.get('output')}")
         return r.get("output", "")

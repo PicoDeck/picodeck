@@ -270,6 +270,27 @@ def test_native_games_follow_rebinding(simulator):
     _pad_finish(sim)
 
 
+def test_native_app_serves_queued_dev_commands(simulator):
+    """The `dev_command` RPC reaches a running native app: its sys->poll()
+    runs queued commands as the firmware's sys_poll does. `pad a` drives the
+    native gamepad (the gbc/c64 adapters see A; the key path stays idle),
+    `audiostat` replies, and `exit` ends the app."""
+    sim = simulator
+    mark = _pad_start(sim)
+    assert sim.pad("a") == "Pad: a"
+    line = sim.wait_for_log(re.escape("PAD gbc=00001000 legacy=00000000 c64=00001"),
+                            timeout=10, since_seq=mark)
+    assert line
+    mark = _mark(sim, mark)
+    assert sim.pad("none") == "Pad: none"
+    sim.wait_for_log(re.escape("PAD " + PAD_IDLE), timeout=10, since_seq=mark)
+    r = sim.call("dev_command", {"cmd": "audiostat"})
+    assert r["ok"] is True, r
+    r = sim.call("dev_command", {"cmd": "exit"})
+    assert r["ok"] is True and "Exit requested" in r["output"], r
+    assert sim.wait_for_exit(timeout=10)["result"] == "returned"
+
+
 # ── Pad sources (issue #26) ─────────────────────────────────────────────────
 # A physical pad (later Bluetooth or USB) reports its whole PAD_* state as a
 # source of its own (src/drivers/pad_source.h), ORed with the keyboard's

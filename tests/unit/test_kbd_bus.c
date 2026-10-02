@@ -235,6 +235,37 @@ static void test_recovery_backs_off_after_repeated_failures(void) {
   CHECK_EQ_U32(b.stats.errors, KBD_BUS_FAST_RECOVERIES + 1);
 }
 
+// A controller that stays silent (#58: every transaction failing for
+// minutes) is retried once a second past KBD_BUS_SLOW_RECOVERIES failures in
+// a row, not ten times: each try holds Core 0 for a ~12 ms bus clear. It is
+// never given up on, and one answer restores the fast policy.
+static void test_recovery_slows_down_but_never_stops(void) {
+  start(T0);
+  uint32_t t = T0;
+  for (unsigned i = 1; i <= KBD_BUS_SLOW_RECOVERIES; i++) {
+    kbd_bus_job_failed(&b, KBD_JOB_FIFO, 0);
+    if (i > KBD_BUS_FAST_RECOVERIES) {
+      CHECK(!kbd_bus_recover_due(&b, t + KBD_BUS_BACKOFF_US - 1));
+      t += KBD_BUS_BACKOFF_US;
+    }
+    CHECK(kbd_bus_recover_due(&b, t));
+    kbd_bus_recovered(&b, t);
+  }
+  for (unsigned i = 0; i < 1000; i++) {  // ~17 minutes of failures
+    kbd_bus_job_failed(&b, KBD_JOB_FIFO, 0);
+    CHECK(!kbd_bus_recover_due(&b, t + KBD_BUS_BACKOFF_US));
+    CHECK(!kbd_bus_recover_due(&b, t + KBD_BUS_SLOW_BACKOFF_US - 1));
+    t += KBD_BUS_SLOW_BACKOFF_US;
+    CHECK(kbd_bus_recover_due(&b, t));
+    kbd_bus_recovered(&b, t);
+  }
+  CHECK_EQ_U32(b.fail_streak, KBD_BUS_SLOW_RECOVERIES + 1000);
+  kbd_bus_fifo_result(&b, KBD_BUS_FIFO_IDLE, 0, t + 5700);  // it answers
+  CHECK_EQ_U32(b.fail_streak, 0);
+  kbd_bus_job_failed(&b, KBD_JOB_FIFO, 0);  // a later failure: at once again
+  CHECK(kbd_bus_recover_due(&b, t + 5700));
+}
+
 // Review Focus 1: time_us_32() wraps every ~71.6 min; scheduling must not
 // stall across the wrap or on a stamp that is an hour old.
 static void test_times_wrap(void) {
@@ -421,6 +452,7 @@ int main(void) {
   test_discard_waits_for_an_empty_read_begun_after_it();
   test_discard_clears_queued_items();
   test_recovery_backs_off_after_repeated_failures();
+  test_recovery_slows_down_but_never_stops();
   test_times_wrap();
   test_gap_counts_only_waits_after_an_empty_read();
   test_idle_interval_can_change();

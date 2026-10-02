@@ -92,6 +92,16 @@ static int b64_decode_char(char c) {
 static void b64_recv_char(int c);
 static void b64_recv_abort(const char *why);
 
+// The default alarm pool's free and lost slots (the `alarmpool` command).
+// cmake/picodeck_pico_time.cmake compiles the real one into its patched
+// pico_time; an SDK it leaves unpatched (2.3.1 on) gets this one, false.
+__attribute__((weak)) bool picodeck_alarm_pool_census(int *free_slots,
+                                                      int *lost_slots) {
+    (void)free_slots;
+    (void)lost_slots;
+    return false;
+}
+
 // Map a dev-command key name to a BTN_* mask (0 = not a named button).
 static uint32_t dev_key_name_to_mask(const char *key) {
     static const struct { const char *name; uint32_t mask; } map[] = {
@@ -454,7 +464,8 @@ static void dev_xipstat(const char *arg) {
            "acc=%llu hit=%llu miss=%llu hit_pm=%lu stall0=%llu stall1=%llu "
            "contested0=%llu contested1=%llu prio0=%d idle_windows=%lu "
            "idle_ms=%lu mp3_low_frames=%lu mp3_idle_frames=%lu "
-           "mp3_overran=%lu mp3_frame_us=%lu mp3idle=%d sys_khz=%lu\n",
+           "mp3_overran=%lu mp3_frame_us=%lu mp3idle=%d mp3_dec_us=%lu "
+           "mp3_syn_us=%lu mp3_out_us=%lu sys_khz=%lu\n",
            (unsigned long)x.window_ms, x.running, x.frozen, x.saturated,
            (unsigned long long)x.accesses, (unsigned long long)x.hits,
            (unsigned long long)miss, hit_pm,
@@ -465,6 +476,8 @@ static void dev_xipstat(const char *arg) {
            (unsigned long)(idle_us / 1000u), (unsigned long)m.low_frames,
            (unsigned long)m.idle_frames, (unsigned long)m.overran,
            (unsigned long)m.frame_us, m.decode_ahead,
+           (unsigned long)m.dec_us, (unsigned long)m.syn_us,
+           (unsigned long)m.out_us,
            (unsigned long)(clock_get_hz(clk_sys) / 1000u));
 }
 
@@ -477,6 +490,24 @@ static void dev_command_run(void *arg) {
 
     if (strcmp(s_cmd_buf, "ping") == 0) {
         printf("[DEV] pong\n");
+    } else if (strcmp(s_cmd_buf, "alarmpool") == 0) {
+        // Issue #58: a slot that is in none of the default pool's lists
+        // (lost) only comes from a leak; tests/e2e/test_kbd_hw.py checks it.
+        // A slot Core 1 is adding at that instant reads as lost for a
+        // moment, so a nonzero count is read again (up to three reads).
+        int free_slots = 0, lost_slots = 0;
+        bool ok = false;
+        for (int i = 0; i < 3; i++) {
+            if (i)
+                busy_wait_us(500);
+            ok = picodeck_alarm_pool_census(&free_slots, &lost_slots);
+            if (!ok || lost_slots == 0)
+                break;
+        }
+        if (ok)
+            printf("[DEV] AlarmPool: free=%d lost=%d\n", free_slots, lost_slots);
+        else
+            printf("[DEV] AlarmPool: unavailable (pico_time not patched)\n");
     } else if (strcmp(s_cmd_buf, "stack") == 0) {
         // Peak use of Core 0's 4 KB main stack since boot, and of the app
         // runtime's PSP stack since launch (when an app is running).
@@ -586,6 +617,10 @@ static void dev_command_run(void *arg) {
         // zeroes them first, "fault" makes the next transaction go
         // unanswered so the recovery path runs (tests/e2e/test_kbd_hw.py).
         // sys_khz is the clock right now: the clock-change test reads it.
+        // A KbdFail line follows for the first and the latest failure of
+        // the latest failure streak, if there was one ("reset" clears them,
+        // except during a streak, and `kbdstat log`'s trace). ago_ms wraps
+        // after 71.6 min.
         if (strcmp(s_cmd_buf, "kbdstat reset") == 0)
             kbd_i2c_reset_stats();
         else if (strcmp(s_cmd_buf, "kbdstat fault") == 0)
@@ -595,14 +630,80 @@ static void dev_command_run(void *arg) {
         printf("[DEV] Kbd: state=%s window_ms=%lu reads=%lu items=%lu "
                "dropped=%lu bat_reads=%lu bl_writes=%lu errors=%lu "
                "recoveries=%lu max_gap_us=%lu max_read_us=%lu isr_us=%lu "
-               "interval_us=%lu battery=%d sys_khz=%lu\n",
+               "interval_us=%lu battery=%d sys_khz=%lu aborts=%lu "
+               "timeouts=%lu short_reads=%lu lost_alarms=%lu cuts=%lu\n",
                k.state, (unsigned long)k.window_ms, (unsigned long)k.reads,
                (unsigned long)k.items, (unsigned long)k.dropped,
                (unsigned long)k.bat_reads, (unsigned long)k.bl_writes,
                (unsigned long)k.errors, (unsigned long)k.recoveries,
                (unsigned long)k.max_gap_us, (unsigned long)k.max_read_us,
                (unsigned long)k.isr_us, (unsigned long)k.interval_us,
-               k.battery, (unsigned long)(clock_get_hz(clk_sys) / 1000u));
+               k.battery, (unsigned long)(clock_get_hz(clk_sys) / 1000u),
+               (unsigned long)k.aborts, (unsigned long)k.timeouts,
+               (unsigned long)k.short_reads, (unsigned long)k.lost_alarms,
+               (unsigned long)k.cuts);
+        static const char *const k_why[] = {"abort", "timeout", "short",
+                                            "lost", "?", "?", "?", "?"};
+        kbd_i2c_fail_t ff[2];
+        kbd_i2c_get_failures(&ff[0], &ff[1]);
+        uint32_t now = time_us_32();
+        for (int i = 0; i < 2; i++) {
+            const kbd_i2c_fail_t *f = &ff[i];
+            if (!f->at_us)
+                continue;
+            printf("[DEV] KbdFail: which=%s ago_ms=%lu why=%s state=%s "
+                   "job=%u abrt_src=0x%lx raw_intr=0x%lx status=0x%lx "
+                   "txflr=%u rxflr=%u sda=%u scl=%u sys_mhz=%u\n",
+                   i ? "last" : "first",
+                   (unsigned long)((now - f->at_us) / 1000u), k_why[f->why],
+                   kbd_i2c_state_name(f->state), f->job,
+                   (unsigned long)f->abrt_src, (unsigned long)f->raw_intr,
+                   (unsigned long)f->status, f->txflr, f->rxflr,
+                   f->lines & 1u, (f->lines >> 1) & 1u, f->sys_mhz);
+        }
+    } else if (strcmp(s_cmd_buf, "kbdstat log") == 0) {
+        // The bus engine's recent events, oldest first (kbd_i2c_event_t).
+        kbd_i2c_event_t ev[KBD_I2C_TRACE_LEN];
+        int n = kbd_i2c_get_trace(ev, KBD_I2C_TRACE_LEN);
+        uint32_t now = time_us_32();
+        for (int i = 0; i < n; i++)
+            printf("[DEV] KbdLog: ago_ms=%lu ev=%c state=%s arg=%u\n",
+                   (unsigned long)((now - ev[i].t_us) / 1000u), ev[i].ev,
+                   kbd_i2c_state_name(ev[i].state), ev[i].arg);
+        printf("[DEV] KbdLog: %d events\n", n);
+    } else if (strcmp(s_cmd_buf, "kbdstat hw") == 0) {
+        // The I2C block, the keyboard pins and the engine's alarm, with
+        // clk_sys measured by the frequency counter (kbd_i2c_hw_t).
+        kbd_i2c_hw_t hw;
+        kbd_i2c_get_hw(&hw);
+        printf("[DEV] KbdHw: fc_sys_khz=%lu hcnt=%lu lcnt=%lu tar=0x%lx "
+               "en_status=0x%lx status=0x%lx raw_intr=0x%lx intr_mask=0x%lx "
+               "pad_sda=0x%lx pad_scl=0x%lx ctrl_sda=0x%lx ctrl_scl=0x%lx "
+               "sda=%u scl=%u irq=%d alarm=%d armed=%d due_in_us=%ld\n",
+               (unsigned long)frequency_count_khz(CLOCKS_FC0_SRC_VALUE_CLK_SYS),
+               (unsigned long)hw.hcnt, (unsigned long)hw.lcnt,
+               (unsigned long)hw.tar, (unsigned long)hw.enable_status,
+               (unsigned long)hw.status, (unsigned long)hw.raw_intr,
+               (unsigned long)hw.intr_mask, (unsigned long)hw.pad_sda,
+               (unsigned long)hw.pad_scl, (unsigned long)hw.ctrl_sda,
+               (unsigned long)hw.ctrl_scl, hw.lines & 1u,
+               (hw.lines >> 1) & 1u, hw.irq_on, hw.alarm_num, hw.armed,
+               (long)hw.due_in_us);
+    } else if (strncmp(s_cmd_buf, "mp3bench ", 9) == 0) {
+        // `mp3bench <path> [frames] [flags]`: a frame's decode cost, by
+        // phase (issue #28; mp3_player_bench, which says what flags do).
+        char path[128];
+        const char *a = s_cmd_buf + 9;
+        size_t n = strcspn(a, " ");
+        if (n > 0 && n < sizeof path) {
+            memcpy(path, a, n);
+            path[n] = '\0';
+            char *end;
+            unsigned long frames = strtoul(a + n, &end, 10);
+            unsigned long flags = strtoul(end, NULL, 10);
+            mp3_player_bench(path, frames ? (uint32_t)frames : 200u,
+                             (uint32_t)flags);
+        }
     } else if (strcmp(s_cmd_buf, "xipstat") == 0 ||
                strncmp(s_cmd_buf, "xipstat ", 8) == 0) {
         dev_xipstat(s_cmd_buf[7] ? s_cmd_buf + 8 : "");
@@ -638,6 +739,13 @@ static void dev_command_run(void *arg) {
                strcmp(s_cmd_buf, "pad") == 0) {
         char reply[DEV_OP_REPLY_MAX];
         dev_op_pad(s_cmd_buf + 3, reply, sizeof(reply));
+        printf("[DEV] %s\n", reply);
+    } else if (strncmp(s_cmd_buf, "bt ", 3) == 0 ||
+               strcmp(s_cmd_buf, "bt") == 0) {
+        // Bluetooth gamepads (drivers/bt_pad.h): dev_ops.c, shared with
+        // the simulator's dev_command RPC.
+        char reply[DEV_OP_REPLY_MAX];
+        dev_op_bt(s_cmd_buf + 2, reply, sizeof(reply));
         printf("[DEV] %s\n", reply);
     } else if (strncmp(s_cmd_buf, "put ", 4) == 0) {
         const char *args = s_cmd_buf + 4;
@@ -798,8 +906,10 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   ping           - Check device is responding\n");
         printf("[DEV]   ver            - Show firmware build date/time\n");
         printf("[DEV]   stack          - Main, app and OS-command stack peak use\n");
-        printf("[DEV]   kbdstat [reset|fault] - Keyboard bus engine counters\n");
+        printf("[DEV]   alarmpool      - Default alarm pool: free and lost slots (lost re-read 3x)\n");
+        printf("[DEV]   kbdstat [reset|fault|log|hw] - Keyboard bus engine counters\n");
         printf("[DEV]   xipstat [reset|off|prio core0|prio none|mp3idle on|mp3idle off] - XIP cache, bus contention and MP3 decode timing\n");
+        printf("[DEV]   mp3bench <path> [frames] [flags] - MP3 decode cost per frame, by phase (at the launcher)\n");
         printf("[DEV]   exit           - Signal current app to exit (error if none)\n");
         printf("[DEV]   usb            - Enable USB storage mode\n");
         printf("[DEV]   reboot         - Reboot device\n");

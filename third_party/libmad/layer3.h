@@ -25,6 +25,10 @@
 # include "stream.h"
 # include "frame.h"
 
-int mad_layer_III(struct mad_stream *, struct mad_frame *);
+int mad_layer_III_begin(struct mad_stream *, struct mad_frame *);
+int mad_layer_III_granule(struct mad_stream *, struct mad_frame *,
+                          unsigned int);
+int mad_layer_III_end(struct mad_stream *, struct mad_frame *);
+unsigned int mad_layer_III_granules(struct mad_frame const *);
 
 # endif

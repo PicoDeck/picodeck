@@ -213,7 +213,8 @@ typedef struct {
     // Modal file-browser overlay (system-menu styling). Blocks until the
     // user picks a file or cancels. start_path: directory shown first.
     // root_path: topmost directory reachable via Esc (NULL = start_path);
-    // Esc at root cancels. On success returns true with the full file
+    // Esc at root cancels, and the system menu key cancels from any
+    // directory. On success returns true with the full file
     // path in out_path. Requires api->version >= 3.
     bool     (*browse)(const char *start_path, const char *root_path,
                        char *out_path, int out_len);
@@ -349,13 +350,16 @@ typedef struct {
 // --- UI Widgets -------------------------------------------------------------
 
 typedef struct {
-    // Modal text input with title bar. Returns true on Enter, false on Esc.
+    // Modal text input with title bar. Returns true on Enter, false on Esc
+    // (or the system menu key, which cancels it).
     bool (*textInput)(const char *title, const char *prompt,
                       const char *initial, char *out, int out_len);
-    // Simpler text input (no title bar). Returns true on Enter, false on Esc.
+    // Simpler text input (no title bar). Returns true on Enter, false on Esc
+    // (or the system menu key, which cancels it).
     bool (*textInputSimple)(const char *prompt, const char *default_val,
                             char *out_buf, int out_len);
     // Yes/no confirmation dialog. Returns true on Enter/Y, false on Esc/N.
+    // The system menu key is ignored: the dialog stays up.
     bool (*confirm)(const char *message);
 } picocalc_ui_t;
 

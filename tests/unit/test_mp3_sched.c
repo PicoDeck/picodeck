@@ -7,11 +7,12 @@
 // (mp3_player.c's decode_fill_ring loop, same order of checks), the 8 KB
 // stage refilled from the ring, the mixer draining the stage at the
 // content's rate, and Core 0 paced at 30 fps (an idle window at the end of
-// each frame) or unpaced (never idle). A frame decodes at one speed while
-// Core 0 is idle and at half that while it works (they contend). The model
-// counts underruns (output frames that found the stage empty), the frames
-// decoded for each reason, and the decode time that overlapped Core 0's
-// work.
+// each frame) or unpaced (never idle). The decoder's unit is a granule (576
+// samples a channel: half an MPEG-1 frame, a whole MPEG-2 one); a unit
+// decodes at one speed while Core 0 is idle and at half that while it
+// works (they contend). The model counts underruns (output frames that
+// found the stage empty), the units decoded for each reason, and the decode
+// time that overlapped Core 0's work.
 #include "check.h"
 #include "mp3_sched.h"
 
@@ -60,13 +61,12 @@ static void test_the_estimate_follows_finished_frames(void) {
 
 #define RING_SIZE   32768u   // mp3_player.c PCM_RING_SIZE
 #define STAGE_SIZE  8192u    // STAGING_BUF_SIZE
-#define FRAME_ROOM  4608u    // the loop needs a stereo frame's room
 #define DT          50u      // model step, µs
 
 typedef struct {
   // content
-  uint32_t rate, channels, samples;  // samples per channel per frame
-  // Core 1: one frame's decode with Core 0 idle / working
+  uint32_t rate, channels, samples;  // samples per channel per unit
+  // Core 1: one unit's decode with Core 0 idle / working
   uint32_t d_idle, d_busy;
   // Core 0: paced at `period` with `work` per frame, or never idle
   bool paced;
@@ -105,8 +105,8 @@ static result_t run_model(const scenario_t *sc) {
   mp3_sched_t s;
   mp3_sched_init(&s);
   const uint32_t fb = 2u * sc->channels;          // bytes per PCM frame
-  const uint32_t frame_bytes = sc->samples * fb;  // one MP3 frame's PCM
-  uint32_t ring = 3 * frame_bytes;                // play()'s pre-fill
+  const uint32_t frame_bytes = sc->samples * fb;  // one unit's PCM
+  uint32_t ring = MP3_SCHED_BURST * frame_bytes;  // play()'s pre-fill
   uint32_t stage = 0;
   uint64_t mix_acc = 0;                           // content frames, x1e6
   // Core 1
@@ -165,7 +165,7 @@ static result_t run_model(const scenario_t *sc) {
     }
     // The next frame of this update, if any.
     why = MP3_SCHED_NONE;
-    if (RING_SIZE - 1 - ring >= FRAME_ROOM)
+    if (RING_SIZE - 1 - ring >= frame_bytes)
       why = mp3_sched_next(&s, low, decoded, window_left(sc, t));
     if (why != MP3_SCHED_NONE) {
       busy = true;
@@ -180,50 +180,82 @@ static result_t run_model(const scenario_t *sc) {
   return r;
 }
 
+// 44.1 kHz stereo: two granules a frame, 76.6 a second, each 2.5 ms with
+// Core 0 idle (5 ms a frame).
 static const scenario_t STEREO_PACED = {
-    .rate = 44100, .channels = 2, .samples = 1152,
-    .d_idle = 5000, .d_busy = 10000,
+    .rate = 44100, .channels = 2, .samples = 576,
+    .d_idle = 2500, .d_busy = 5000,
     .paced = true, .period = 33333, .work = 22000,
     .seconds = 120};
+#define STEREO_UNITS (120u * 76u)   // the music's units over the run
 
 // Nova Rail's case: a 30 fps game with ~11 ms of idle per frame. Nearly
-// every frame decodes in the idle windows, none underruns, and the
+// every granule decodes in the idle windows, none underruns, and the
 // estimate is the uncontended decode time.
 static void test_paced_stereo_decodes_while_core0_idles(void) {
   result_t r = run_model(&STEREO_PACED);
-  uint32_t frames = r.idle_frames + r.low_frames;
-  printf("  paced 44.1 stereo: %u idle + %u low frames, %llu of %llu us contended, "
+  uint32_t units = r.idle_frames + r.low_frames;
+  printf("  paced 44.1 stereo: %u idle + %u low granules, %llu of %llu us contended, "
          "estimate %u us, %llu underruns\n", r.idle_frames, r.low_frames,
          (unsigned long long)r.contended_us, (unsigned long long)r.decode_us,
          r.frame_us, (unsigned long long)r.underruns);
   CHECK_EQ_INT(r.underruns, 0);
-  CHECK(frames >= 120 * 38);                     // kept up with the music
-  CHECK(r.idle_frames * 100u >= frames * 95u);
+  CHECK(units >= STEREO_UNITS);                  // kept up with the music
+  CHECK(r.idle_frames * 100u >= units * 95u);
   CHECK(r.contended_us * 100u <= r.decode_us * 5u);
-  CHECK(r.frame_us >= 4800 && r.frame_us <= 5300);
+  CHECK(r.frame_us >= 2400 && r.frame_us <= 2650);
 }
 
-// An app that never paces keeps today's rule: frames only when the ring is
-// low, every one of them while Core 0 works, and nothing starves.
+// Why the unit is a granule: with ~8 ms windows (25 ms of work a frame),
+// a whole stereo frame of 10 ms (as libmad took with its state in QMI
+// PSRAM) started in a window runs on past its end, and over half of the
+// decoding lands on Core 0's work. Halved and made faster (granules of
+// 3 ms, two to a window), under a third of it does.
+static void test_short_windows_take_granules_not_frames(void) {
+  scenario_t whole = STEREO_PACED;
+  whole.work = 25000;
+  whole.samples = 1152; whole.d_idle = 10000; whole.d_busy = 20000;
+  result_t w = run_model(&whole);
+  scenario_t gran = STEREO_PACED;
+  gran.work = 25000;
+  gran.d_idle = 3000; gran.d_busy = 6000;
+  result_t g = run_model(&gran);
+  printf("  8 ms windows: whole 10 ms frames %llu of %llu us contended, "
+         "3 ms granules %llu of %llu (%u idle, %u low)\n",
+         (unsigned long long)w.contended_us, (unsigned long long)w.decode_us,
+         (unsigned long long)g.contended_us, (unsigned long long)g.decode_us,
+         g.idle_frames, g.low_frames);
+  CHECK_EQ_INT(w.underruns, 0);
+  CHECK_EQ_INT(g.underruns, 0);
+  CHECK(w.contended_us * 2u >= w.decode_us);
+  CHECK(g.idle_frames + g.low_frames >= STEREO_UNITS);
+  CHECK(g.idle_frames * 100u >= (g.idle_frames + g.low_frames) * 60u);
+  CHECK(g.contended_us * 3u <= g.decode_us);
+  CHECK(g.contended_us * 3u <= w.contended_us);
+}
+
+// An app that never paces keeps today's rule: granules only when the ring
+// is low, every one of them while Core 0 works, and nothing starves.
 static void test_unpaced_stereo_decodes_as_before(void) {
   scenario_t sc = STEREO_PACED;
   sc.paced = false;
   result_t r = run_model(&sc);
   CHECK_EQ_INT(r.underruns, 0);
   CHECK_EQ_INT(r.idle_frames, 0);
-  CHECK(r.low_frames >= 120 * 38);
+  CHECK(r.low_frames >= STEREO_UNITS);
   CHECK_EQ_INT(r.contended_us, r.decode_us);
 }
 
+// 22.05 kHz mono: one granule a frame, 38.3 a second.
 static void test_paced_mono_22k_decodes_while_core0_idles(void) {
   scenario_t sc = STEREO_PACED;
   sc.rate = 22050; sc.channels = 1; sc.samples = 576;
   sc.d_idle = 1300; sc.d_busy = 2600;
   result_t r = run_model(&sc);
-  uint32_t frames = r.idle_frames + r.low_frames;
+  uint32_t units = r.idle_frames + r.low_frames;
   CHECK_EQ_INT(r.underruns, 0);
-  CHECK(frames >= 120 * 38);
-  CHECK(r.idle_frames * 100u >= frames * 95u);
+  CHECK(units >= 120 * 38);
+  CHECK(r.idle_frames * 100u >= units * 95u);
 }
 
 // Windows shorter than the estimate start nothing: the ring runs low and
@@ -234,20 +266,20 @@ static void test_short_windows_fall_back_to_the_low_ring_rule(void) {
   result_t r = run_model(&sc);
   CHECK_EQ_INT(r.underruns, 0);
   CHECK_EQ_INT(r.idle_frames, 0);
-  CHECK(r.low_frames >= 120 * 38);
+  CHECK(r.low_frames >= STEREO_UNITS);
 }
 
-// A decoder too slow to keep up in the windows alone (one 9 ms frame per
-// 11 ms window, 1.28 needed per 33 ms): the low-ring rule makes up the
+// A decoder too slow to keep up in the windows alone (one 9 ms granule
+// per 11 ms window, 2.55 needed per 33 ms): the low-ring rule makes up the
 // rest, and nothing starves.
 static void test_slow_decoder_mixes_both_reasons(void) {
   scenario_t sc = STEREO_PACED;
-  sc.d_idle = 9000; sc.d_busy = 18000;
+  sc.d_idle = 9000; sc.d_busy = 12000;
   result_t r = run_model(&sc);
   CHECK_EQ_INT(r.underruns, 0);
   CHECK(r.idle_frames > 0);
   CHECK(r.low_frames > 0);
-  CHECK(r.idle_frames + r.low_frames >= 120 * 38);
+  CHECK(r.idle_frames + r.low_frames >= STEREO_UNITS);
 }
 
 // Three seconds of late frames (no pacing wait, so no windows) in the
@@ -258,7 +290,7 @@ static void test_late_frames_never_starve(void) {
   result_t r = run_model(&sc);
   CHECK_EQ_INT(r.underruns, 0);
   CHECK(r.low_frames > 0);
-  CHECK(r.idle_frames + r.low_frames >= 120 * 38);
+  CHECK(r.idle_frames + r.low_frames >= STEREO_UNITS);
 }
 
 int main(void) {
@@ -267,6 +299,7 @@ int main(void) {
   test_a_full_ring_decodes_ahead_only_in_a_long_enough_window();
   test_the_estimate_follows_finished_frames();
   test_paced_stereo_decodes_while_core0_idles();
+  test_short_windows_take_granules_not_frames();
   test_unpaced_stereo_decodes_as_before();
   test_paced_mono_22k_decodes_while_core0_idles();
   test_short_windows_fall_back_to_the_low_ring_rule();

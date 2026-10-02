@@ -130,6 +130,7 @@ bool tz_picker_show(void) {
     // polls, or injections queued before this modal opened, were not typed
     // at this picker and must not filter or select on its behalf.
     kbd_clear_state();
+    kbd_consume_menu_press();  // a stale press was not made here
 
     while (running) {
         if (need_redraw) {
@@ -196,6 +197,9 @@ bool tz_picker_show(void) {
         dev_commands_process();
         // Let a dev "exit" unwind this modal (cancel; the Lua hook handles exit).
         if (dev_commands_wants_exit())
+            return false;
+        // The menu key cancels, like Esc, and takes the latch.
+        if (kbd_consume_menu_press())
             return false;
 
         char     ch      = kbd_get_char();

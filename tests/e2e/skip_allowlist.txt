@@ -4,3 +4,19 @@
 
 # Needs an external C-Dogs checkout (PICODECK_CDOGS_DIR, PicoDeck/cdogs).
 test_cdogs_memory.py::*
+
+# Needs a C compiler, pkg-config and the SDL2 headers to build its LD_PRELOAD shim
+# (missing tools only: a shim that fails to compile fails the test).
+test_menu_key_hold.py::*
+
+# Needs a cdogs trace build (PICODECK_CDOGS_TRACE_ELF, -DPICODECK_KEY_TRACE) and a
+# C-Dogs checkout (PICODECK_CDOGS_DIR).
+test_cdogs_gamepad.py::*
+
+# Needs a built Rally checkout with the gamepad work (PICODECK_RALLY_DIR, PicoDeck/rally).
+test_rally_gamepad.py::*
+
+# Need the PicoDeck/doom build (PICODECK_DOOM_DIR) and the local-only
+# apps/tic-80 build (PICODECK_TIC80_DIR).
+test_doom_gamepad.py::*
+test_tic80_gamepad.py::*

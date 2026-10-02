@@ -276,6 +276,8 @@ extern pc_image_t *image_load(const char *path);
 extern pc_image_t *image_new_blank(int width, int height);
 
 // Dev commands
+extern void dev_commands_poll(void);
+extern bool dev_commands_process(void);
 extern bool dev_commands_wants_exit(void);
 extern void dev_commands_clear_exit(void);
 
@@ -1695,14 +1697,18 @@ static void tramp_sys_poll(uc_engine *uc) {
     // Poll keyboard + check for exit
     kbd_poll();
 
-    // Socket commands (screenshot, exit, etc.) are handled by the dedicated
-    // socket thread — no need to poll here.
-
     if (kbd_consume_menu_press()) {
         if (system_menu_show_for_native()) {
             s_emu_exit = true;
         }
     }
+
+    // Run a queued control-channel command (`dev_command` RPC) on this
+    // thread, as the firmware's sys_poll() runs the serial console's. The
+    // simulator's dev handlers have no reboot flags, so an `exit` is all that
+    // can come out of one.
+    dev_commands_poll();
+    dev_commands_process();
 
     if (dev_commands_wants_exit()) {
         s_emu_exit = true;
@@ -1716,9 +1722,11 @@ static void tramp_sys_poll(uc_engine *uc) {
 }
 
 static void tramp_sys_should_exit(uc_engine *uc) {
-    // Return the flag without clearing it — on real hardware, shouldExit()
-    // stays true once set so the app sees it on every subsequent check.
+    // Return true once and clear the flag, as firmware sys_shouldExit()
+    // does (src/main.c): the app is expected to leave its loop on the first
+    // true.
     write_reg(uc, UC_ARM_REG_R0, s_emu_exit ? 1 : 0);
+    s_emu_exit = false;
 }
 
 static void tramp_sys_set_audio_callback(uc_engine *uc) {
@@ -3086,12 +3094,10 @@ void unicorn_tramp_init(uc_engine *uc) {
     memset(s_dispatch, 0, sizeof(s_dispatch));
 
     // Reset the emulated shouldExit() latch for the new app run. s_emu_exit
-    // is intentionally sticky within a single run (tramp_sys_should_exit()
-    // never clears it, matching hardware's "stays true once set" contract),
-    // but it is a process-lifetime static — without this reset, exiting any
-    // app once (exit_app, Sym-menu exit) leaves it permanently true and every
-    // native app launched afterward in the same simulator session observes
-    // shouldExit()==true on its very first poll and self-exits within seconds.
+    // is a process-lifetime static that tramp_sys_should_exit() clears on
+    // read; an app that exits without reading it (a poll-only app, a kill)
+    // would otherwise leave it set and the next native app would see
+    // shouldExit()==true on its first check.
     s_emu_exit = false;
 
     // Reset native-app system-menu item slots on every app launch so a

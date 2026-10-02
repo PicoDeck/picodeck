@@ -21,7 +21,7 @@
 // first and does not play it. The restart tests model the device's time:
 // the output renders 128 frames whenever Core 0 waits in a fade (sleep_us)
 // and after every frame the decoder synthesises (a wrapped
-// mad_synth_frame), and the longest run of silent output frames around
+// mad_synth_granule), and the longest run of silent output frames around
 // the restart is the gap.
 //
 // fixtures/mp3/chord.mp3: 1 s of a chord, 44.1 kHz stereo at 96 kbps, 40
@@ -81,12 +81,19 @@ static void render(void) {
   s_cap_frames += RENDER_FRAMES;
 }
 
-// Linked with --wrap=mad_synth_frame: mp3_player.c's decoder lands here.
+// Linked with --wrap=mad_synth_granule: mp3_player.c's decoder lands here,
+// a granule at a time (two a frame here); a frame's renders come after its
+// last.
 struct mad_synth;
 struct mad_frame;
-void __real_mad_synth_frame(struct mad_synth *synth, struct mad_frame const *frame);
-void __wrap_mad_synth_frame(struct mad_synth *synth, struct mad_frame const *frame) {
-  __real_mad_synth_frame(synth, frame);
+unsigned int mad_frame_granules(struct mad_frame const *frame);
+void __real_mad_synth_granule(struct mad_synth *synth, struct mad_frame const *frame,
+                              unsigned int gr);
+void __wrap_mad_synth_granule(struct mad_synth *synth, struct mad_frame const *frame,
+                              unsigned int gr) {
+  __real_mad_synth_granule(synth, frame, gr);
+  if (gr + 1 < mad_frame_granules(frame))
+    return;
   for (int i = 0; s_output_on && i < s_renders_per_decode; i++)
     render();
 }
