@@ -277,7 +277,8 @@ def alarmpool(target):
 # the bus untouched by it (no failure of any kind, reads all along) and no
 # pool slot lost (`alarmpool`). The app asks for "http", so the launcher
 # joins WiFi and every stop() rejoins it; without WiFi configured the loop
-# still switches the clock, and says so. It stages into the COST fixture's
+# still switches the clock, and says so (configured WiFi that does not join
+# fails the test). It stages into the COST fixture's
 # app, as test_reads_stop_while_nobody_polls does: a well-used test device
 # sits at the launcher's 64-app cap (MAX_APPS), where a new app is never
 # listed. Its manifest differs, so staging it (and the COST app after it)
@@ -299,6 +300,11 @@ def test_bus_survives_video_clock_and_radio_cycles(target):
                              files={"clip.avi": clip.read_bytes()})
     target.delete_file(f"/data/{app_id}/wifi.json")
     try:
+        wifi_ssid = json.loads(target.read_file("/system/config.json")).get(
+            "wifi_ssid", "")
+    except Exception:
+        wifi_ssid = ""
+    try:
         target.ensure_launcher()
         pool_before = alarmpool(target)
         kbdstat(target, "reset")
@@ -317,7 +323,10 @@ def test_bus_survives_video_clock_and_radio_cycles(target):
         if w["wifi_up"]:
             assert w["rejoined"] == VIDEO_CYCLES, w  # the radio really cycled
         else:
-            print("WiFi never came up: the loop switched the clock only")
+            # Configured WiFi that does not join in 20 s would let the loop
+            # pass without ever cycling the radio.
+            assert not wifi_ssid, f"WiFi '{wifi_ssid}' did not join in 20 s: {w}"
+            print("No WiFi configured: the loop switched the clock only")
         assert s["errors"] == 0 and s["recoveries"] == 0, s
         assert s["lost_alarms"] == 0 and s["cuts"] == 0, s
         assert s["state"] in ("wait", "busy"), s
