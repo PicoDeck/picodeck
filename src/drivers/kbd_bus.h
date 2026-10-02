@@ -21,7 +21,9 @@
 #define KBD_BUS_BATTERY_US 5000000u  // battery read period
 #define KBD_BUS_BATTERY_RETRY_US 2000000u  // after a failed battery read
 #define KBD_BUS_FAST_RECOVERIES 10u  // failures in a row recovered at once,
-#define KBD_BUS_BACKOFF_US 100000u   // then at most one recovery per 100 ms
+#define KBD_BUS_BACKOFF_US 100000u   // then at most one recovery per 100 ms,
+#define KBD_BUS_SLOW_RECOVERIES 50u  // and past this many (a controller that
+#define KBD_BUS_SLOW_BACKOFF_US 1000000u  // stays silent) one per second
 // No kbd_poll() for this long: stop the FIFO and battery reads (backlight
 // writes still go) until the next poll. The STM32 keeps the items, as with a
 // full ring, and a reset nobody prepared for (the watchdog after Core 0
@@ -97,7 +99,10 @@ void kbd_bus_job_failed(kbd_bus_t *b, kbd_job_t job, uint8_t value);
 
 // Bus recovery policy: at once for the first KBD_BUS_FAST_RECOVERIES
 // failures in a row (fail_streak 1 to KBD_BUS_FAST_RECOVERIES), then at most
-// every KBD_BUS_BACKOFF_US.
+// every KBD_BUS_BACKOFF_US, and past KBD_BUS_SLOW_RECOVERIES at most every
+// KBD_BUS_SLOW_BACKOFF_US: each recovery holds Core 0 for ~12 ms, so a
+// controller that stays silent costs ~1% of it, not ~12%, and is still
+// picked up within a second of answering again.
 bool kbd_bus_recover_due(const kbd_bus_t *b, uint32_t now_us);
 void kbd_bus_recovered(kbd_bus_t *b, uint32_t now_us);
 

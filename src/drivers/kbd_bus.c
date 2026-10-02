@@ -125,8 +125,12 @@ void kbd_bus_job_failed(kbd_bus_t *b, kbd_job_t job, uint8_t value) {
 }
 
 bool kbd_bus_recover_due(const kbd_bus_t *b, uint32_t now_us) {
-  return b->fail_streak <= KBD_BUS_FAST_RECOVERIES ||
-         elapsed(now_us, b->recover_at_us) >= KBD_BUS_BACKOFF_US;
+  if (b->fail_streak <= KBD_BUS_FAST_RECOVERIES)
+    return true;
+  uint32_t gap = b->fail_streak <= KBD_BUS_SLOW_RECOVERIES
+                     ? KBD_BUS_BACKOFF_US
+                     : KBD_BUS_SLOW_BACKOFF_US;
+  return elapsed(now_us, b->recover_at_us) >= gap;
 }
 
 void kbd_bus_recovered(kbd_bus_t *b, uint32_t now_us) {
