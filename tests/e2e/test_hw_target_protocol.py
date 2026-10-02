@@ -17,6 +17,7 @@ The last group runs an inner pytest session (pytester) to check the
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -151,6 +152,18 @@ class FakeDevice:
         for a in self.apps.values():
             if a.dirname.lower() == arg.lower():
                 return a, f"[DEV] Launching app by dir: {arg} ({a.name})"
+        # The hidden roots, read fresh (never cached): .test before .dev.
+        for root in ("/apps/.test", "/apps/.dev"):
+            for path, data in self.files.items():
+                m = re.fullmatch(re.escape(root) + r"/([^/]+)/app\.json", path)
+                if not m:
+                    continue
+                man = json.loads(data)
+                if arg in (m.group(1), man.get("id")):
+                    app = FakeApp(m.group(1), man["name"], man["id"],
+                                  man.get("requirements", ()))
+                    return app, (f"[DEV] Launching app from {root}: "
+                                 f"{arg} ({man['name']})")
         return None, f"[DEV] Error: app '{arg}' not found"
 
     def _later(self, delay: float, lines):
@@ -190,13 +203,23 @@ class FakeDevice:
             self.emit(line)
             if app:
                 self.running, self.polls = app, 0
-        elif cmd == "list":
+        elif cmd in ("list", "list all"):
             scanned = time.monotonic() - self.boot_ms >= self.scan_s
             apps = list(self.apps.values()) if scanned else []
             self.emit("[DEV] Available apps:")
             for a in apps:
                 self.emit(f"  {a.name}  ({a.id})")
             self.emit(f"[DEV] Total: {len(apps)} apps")
+            if cmd == "list all":
+                self.emit("[DEV] Hidden apps:")
+                for root in ("/apps/.test", "/apps/.dev"):
+                    for path, data in self.files.items():
+                        m = re.fullmatch(re.escape(root) + r"/([^/]+)/app\.json", path)
+                        if m:
+                            man = json.loads(data)
+                            self.emit(f"  {man['name']}  ({man['id']})  "
+                                      f"[{root[6:]}]")
+                self.emit("[DEV] End of hidden apps")
         elif cmd.startswith("getb64 "):
             path = cmd[7:]
             if path not in self.files:
@@ -651,8 +674,57 @@ def _app_dir(tmp_path, name, requirements=()):
     return d
 
 
+def test_push_defaults_to_the_hidden_test_root_with_no_reboot(hw, dev, tmp_path):
+    r = hw.push_app(_app_dir(tmp_path, "hid"))
+    assert not r["rebooted"], r
+    assert dev.boots == 1
+    assert dev.files["/apps/.test/hid/main.lua"] == b"return\n"
+    assert "/apps/hid/main.lua" not in dev.files
+    assert any(c == "unzip /data/tmp/push_app.zip /apps/.test/hid"
+               for c in dev.commands), dev.commands
+    assert "hid" not in dev.apps            # the launcher never cached it
+    # ...and launch reads it fresh, by directory name and by id.
+    assert hw.launch_app("hid")["launched"]
+    hw.exit_app()
+    assert hw.launch_app("com.test.hid")["launched"]
+
+
+def test_mcp_push_app_hidden_dev_and_validation(hw, dev, tmp_path):
+    d = _app_dir(tmp_path, "mine")
+    msg = asyncio.run(pm.push_app(str(d), "", device=hw.port, hidden="dev"))
+    assert msg.startswith("Pushed") and "/apps/.dev/mine" in msg, msg
+    assert dev.files["/apps/.dev/mine/main.lua"] == b"return\n"
+    for bad in ("tests", ".test", "/apps"):
+        msg = asyncio.run(pm.push_app(str(d), "", device=hw.port, hidden=bad))
+        assert msg.startswith("Error:"), (bad, msg)
+    msg = asyncio.run(pm.push_app(str(d), ".x", device=hw.port, hidden="dev"))
+    assert msg.startswith("Error:"), msg
+    assert not any(k.startswith("/apps/tests") for k in dev.files)
+
+
+def test_stage_lua_app_is_hidden_unless_asked(hw, dev):
+    hw.stage_lua_app("hid_lua", "return\n")
+    assert "/apps/.test/hid_lua/main.lua" in dev.files and dev.boots == 1
+    assert hw._app_id("hid_lua") == "com.test.hid_lua"
+    hw.stage_lua_app("listed_lua", "return\n", hidden=False)
+    assert "/apps/listed_lua/main.lua" in dev.files and dev.boots == 2
+
+
+def test_clean_hidden_test_removes_only_the_test_root(hw, dev):
+    dev.files["/apps/.test/a/main.lua"] = b"x"
+    dev.files["/apps/.dev/keep/main.lua"] = b"x"
+    dev.files["/apps/listed/main.lua"] = b"x"
+    hw.clean_hidden_test()
+    assert "/apps/.test/a/main.lua" not in dev.files
+    assert "/apps/.dev/keep/main.lua" in dev.files
+    assert "/apps/listed/main.lua" in dev.files
+    assert "rm /apps/.test" in dev.commands
+    assert not any(c.startswith("rm /apps/.dev") for c in dev.commands)
+    hw.clean_hidden_test()        # nothing there: not an error
+
+
 def test_push_new_app_reboots_so_the_launcher_sees_it(hw, dev, tmp_path):
-    r = hw.push_app(_app_dir(tmp_path, "newapp"))
+    r = hw.push_app(_app_dir(tmp_path, "newapp"), hidden=False)
     assert r["rebooted"], r
     assert dev.boots == 2
     assert "newapp" in dev.apps
@@ -662,7 +734,7 @@ def test_push_new_app_reboots_so_the_launcher_sees_it(hw, dev, tmp_path):
 def test_push_unchanged_manifest_does_not_reboot(hw, dev, tmp_path):
     d = _app_dir(tmp_path, "same", ["http"])
     dev.install(FakeApp("same", "same", "com.test.same", ["http"]))
-    r = hw.push_app(d)
+    r = hw.push_app(d, hidden=False)
     assert not r["rebooted"], r
     assert dev.boots == 1
 
@@ -670,7 +742,7 @@ def test_push_unchanged_manifest_does_not_reboot(hw, dev, tmp_path):
 def test_push_changed_requirements_reboots(hw, dev, tmp_path):
     d = _app_dir(tmp_path, "req", ["http"])
     dev.install(FakeApp("req", "req", "com.test.req", []))
-    r = hw.push_app(d)
+    r = hw.push_app(d, hidden=False)
     assert r["rebooted"], r
     assert dev.apps["req"].requirements == ["http"]
 
@@ -682,7 +754,7 @@ def test_push_waits_out_a_quiet_extraction(hw, dev, tmp_path):
     d = _app_dir(tmp_path, "big")
     dev.install(FakeApp("big", "big", "com.test.big"))
     dev.unzip_s = 1.6
-    r = hw.push_app(d)
+    r = hw.push_app(d, hidden=False)
     assert not r["rebooted"], r
     assert dev.files["/apps/big/main.lua"] == b"return\n"
 
@@ -694,7 +766,7 @@ def test_push_waits_for_unzipped_when_the_echo_holds_a_marker(hw, dev, tmp_path)
     dev.install(FakeApp("pong", "pong", "com.test.pong"))
     dev.unzip_s = 1.6
     t0 = time.monotonic()
-    r = hw.push_app(d)
+    r = hw.push_app(d, hidden=False)
     waited = time.monotonic() - t0
     assert not r["rebooted"], r
     assert waited >= dev.unzip_s, f"push returned after {waited:.2f}s"
@@ -711,7 +783,7 @@ def test_push_waits_for_the_launcher_to_list_a_new_app(hw, dev, tmp_path):
     # just pushed, which the launcher listed a few seconds later: push_app
     # polls for it.
     dev.scan_s = 0.6
-    r = hw.push_app(_app_dir(tmp_path, "late"))
+    r = hw.push_app(_app_dir(tmp_path, "late"), hidden=False)
     assert r["rebooted"], r
     assert "late" in dev.apps
 
@@ -721,7 +793,7 @@ def test_push_gives_up_on_an_app_the_launcher_never_lists(hw, dev, tmp_path):
     hw.rescan_timeout = 0.5
     t0 = time.monotonic()
     with pytest.raises(HwTargetError, match="still not listed"):
-        hw.push_app(_app_dir(tmp_path, "never"))
+        hw.push_app(_app_dir(tmp_path, "never"), hidden=False)
     assert time.monotonic() - t0 < 5
 
 

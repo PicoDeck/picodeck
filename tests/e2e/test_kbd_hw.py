@@ -278,15 +278,11 @@ def alarmpool(target):
 # pool slot lost (`alarmpool`). The app asks for "http", so the launcher
 # joins WiFi and every stop() rejoins it; without WiFi configured the loop
 # still switches the clock, and says so (configured WiFi that does not join
-# fails the test). It stages into the COST fixture's
-# app, as test_reads_stop_while_nobody_polls does: a well-used test device
-# sits at the launcher's 64-app cap (MAX_APPS), where a new app is never
-# listed. Its manifest differs, so staging it (and the COST app after it)
-# reboots the device.
+# fails the test).
 def test_bus_survives_video_clock_and_radio_cycles(target):
     if not FFMPEG:
         pytest.skip("ffmpeg makes the clip")
-    app, app_id = "kbd_cost", "com.test.kbd_cost"
+    app, app_id = "kbd_video", "com.test.kbd_video"
     with tempfile.TemporaryDirectory() as tmp:
         clip = Path(tmp) / "clip.avi"
         subprocess.run([FFMPEG, "-v", "error", "-y",
@@ -337,7 +333,6 @@ def test_bus_survives_video_clock_and_radio_cycles(target):
             assert pool_before["lost"] == 0 and pool_after["lost"] == 0, \
                 (pool_before, pool_after)
     finally:
-        target.delete_file(f"/apps/{app}")
         target.delete_file(f"/data/{app_id}")
 
 
@@ -358,19 +353,16 @@ T.done()
 # the STM32 (a watchdog reset after Core 0 stalls then finds the bus idle),
 # and the next poll resumes it. The app never polls; the dev commands below
 # are answered by the Lua hook's service pass, which does not poll either.
-# It reuses the COST fixture's app: the launcher lists at most 64 apps
-# (MAX_APPS) and a well-used test device sits at that cap; the manifest is
-# the same, so restaging main.lua needs no reboot.
 def test_reads_stop_while_nobody_polls(target):
-    target.stage_lua_app("kbd_cost", UNPOLLED, id="com.test.kbd_cost")
+    target.stage_lua_app("kbd_unpolled", UNPOLLED, id="com.test.kbd_unpolled")
     target.ensure_launcher()
-    target.delete_file("/data/com.test.kbd_cost/test_results.json")
-    target.launch_app("kbd_cost")
+    target.delete_file("/data/com.test.kbd_unpolled/test_results.json")
+    target.launch_app("kbd_unpolled")
     time.sleep(2.0)  # the launcher's last poll was just before the launch
     first = kbdstat(target)
     time.sleep(2.0)
     second = kbdstat(target)
-    doc = target.wait_for_results("com.test.kbd_cost", timeout=30)
+    doc = target.wait_for_results("com.test.kbd_unpolled", timeout=30)
     target.ensure_launcher()
     kbdstat(target, "reset")
     time.sleep(2.0)

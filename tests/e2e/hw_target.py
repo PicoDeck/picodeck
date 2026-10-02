@@ -26,11 +26,18 @@ device's known traps (see the task-27 report and CLAUDE.md "Debug"):
   - Serial capture drops [APP] lines, so results come from
     /data/<APP_ID>/test_results.json (picotest) and outcomes from `status`
     polls plus /system/error.log growth. The log is advisory only.
-  - The launcher caches app.json at boot: push_app reboots when the pushed
-    manifest (id, name, requirements, min_psram_kb, system_clock_khz)
-    differs from the one on the card, or when `list` does not show the app,
-    then polls `list` for up to rescan_timeout (20 s): a `list` straight
-    after the reboot can miss an app the launcher shows a few seconds later.
+  - Test apps are staged hidden, in /apps/.test/<name>: the launcher scan
+    skips dot names (so a card at its 64-app cap still runs them), and the
+    dev `launch` reads their app.json fresh, so push_app needs no reboot.
+    The session wipes /apps/.test at its start and end; /apps/.dev is the
+    user's and is never touched.
+  - A *listed* app (push_app(hidden=False), for a test that needs the
+    launcher to show it) is cached by the launcher at boot: push_app reboots
+    when the pushed manifest (id, name, requirements, min_psram_kb,
+    system_clock_khz) differs from the one on the card, or when `list` does
+    not show the app, then polls `list` for up to rescan_timeout (20 s): a
+    `list` straight after the reboot can miss an app the launcher shows a
+    few seconds later.
   - Dev commands while an app runs (src/os/lua_bridge.c lua_bridge_service,
     src/main.c sys_poll, src/os/launcher.c): `reboot` and `reboot-flash`
     are HONOURED mid-app (Lua hook / sys.sleep pass, native sys->poll; a
@@ -175,7 +182,8 @@ def parse_launch_reply(lines) -> tuple:
 
 
 def parse_list(lines) -> list:
-    """[(name, id)] from the `list` reply."""
+    """[(name, id)] from the `list` reply (the listed apps; `list all`'s
+    hidden ones carry a trailing "[root]" and are not matched)."""
     out = []
     for line in lines:
         m = re.match(r"^  (.*)  \(([^()]*)\)\s*$", line)
@@ -299,12 +307,16 @@ class Target:
             time.sleep(self.poll_interval)
 
     def stage_lua_app(self, name: str, code: str, requirements=(),
-                      id: Optional[str] = None, files: Optional[dict] = None):
-        """Write app.json + main.lua (+ files) and push them as /apps/<name>."""
+                      id: Optional[str] = None, files: Optional[dict] = None,
+                      hidden: bool = True):
+        """Write app.json + main.lua (+ files) and push them as
+        /apps/.test/<name> (hidden=False: /apps/<name>, listed by the
+        launcher, for a test that needs it on screen)."""
         from helpers import stage_lua_app
         with tempfile.TemporaryDirectory() as tmp:
-            app_dir = stage_lua_app(Path(tmp), name, code, requirements, id, files)
-            return self.push_app(app_dir, name)
+            app_dir = stage_lua_app(Path(tmp), name, code, requirements, id,
+                                    files, hidden=False)
+            return self.push_app(app_dir, name, hidden=hidden)
 
     def read_json(self, path: str) -> dict:
         return json.loads(self.read_file(path))
@@ -419,14 +431,19 @@ class SimTarget(Target):
             return True
         return False
 
-    def push_app(self, local_dir, name: Optional[str] = None) -> dict:
+    def push_app(self, local_dir, name: Optional[str] = None,
+                 hidden: bool = True) -> dict:
+        """Copy a directory to /apps/.test/<name> (hidden=False:
+        /apps/<name>, which the launcher lists after a rescan)."""
+        from helpers import app_rel_dir
         src = Path(local_dir)
         name = name or src.name
-        dest = self.sd / "apps" / name
+        dest = self.sd / app_rel_dir(name, hidden)
         if dest.resolve() != src.resolve():
             shutil.copytree(src, dest, dirs_exist_ok=True,
                             ignore=shutil.ignore_patterns("__pycache__"))
-        self.sim.rescan_apps()
+        if not hidden:
+            self.sim.rescan_apps()
         return {"pushed": str(dest), "rebooted": False}
 
     def ensure_test_kit(self):
@@ -747,20 +764,30 @@ class HwTarget(Target):
     def list_apps(self) -> list:
         return parse_list(self.command("list", timeout=5.0))
 
-    def push_app(self, local_dir, name: Optional[str] = None) -> dict:
-        """Push a directory to /apps/<name> (one zip, extracted on device).
-        Reboots when the launcher's boot-time cache cannot know the app as
-        pushed: a new or changed manifest, or an id `list` does not show."""
+    def push_app(self, local_dir, name: Optional[str] = None,
+                 hidden: bool = True) -> dict:
+        """Push a directory to /apps/.test/<name> (one zip, extracted on
+        device); no reboot, since the dev `launch` reads a hidden app fresh.
+        hidden=False pushes to /apps/<name>, which the launcher lists: it
+        reboots when the launcher's boot-time cache cannot know the app as
+        pushed (a new or changed manifest, or an id `list` does not show)."""
         src = Path(local_dir)
         name = name or src.name
         man_path = src / "app.json"
         manifest = json.loads(man_path.read_text()) if man_path.exists() else None
+        self.ensure_launcher()
+        if hidden:
+            msg = asyncio.run(self.pm.push_app(str(src), name, device=self.port,
+                                               hidden="test"))
+            if not msg.startswith("Pushed"):
+                raise HwTargetError(f"push_app {name}: {msg}")
+            self._manifests[name] = manifest
+            return {"pushed": msg.splitlines()[0], "rebooted": False, "why": None}
         before = self._read_optional(f"/apps/{name}/app.json")
         try:
             old = json.loads(before) if before else None
         except ValueError:
             old = None
-        self.ensure_launcher()
         msg = asyncio.run(self.pm.push_app(str(src), name, device=self.port))
         if not msg.startswith("Pushed"):
             raise HwTargetError(f"push_app {name}: {msg}")
@@ -778,6 +805,15 @@ class HwTarget(Target):
         return {"pushed": msg.splitlines()[0], "rebooted": why is not None,
                 "why": why}
 
+    def clean_hidden_test(self):
+        """Wipe /apps/.test (the harness's hidden apps), at the session's
+        start and end. /apps/.dev is the user's: never touched. A missing
+        directory is the normal case, so the reply is not checked."""
+        try:
+            self.command("rm /apps/.test", timeout=30.0)
+        except HwTargetError:
+            pass
+
     def _wait_listed(self, app_id: str) -> bool:
         """Poll `list` until it shows app_id, for up to rescan_timeout. On
         the device a `list` straight after a reboot has missed an app just
@@ -793,10 +829,17 @@ class HwTarget(Target):
     def _app_id(self, name: str) -> str:
         man = self._manifests.get(name)
         if man is None:
-            try:
-                man = json.loads(self.read_file(f"/apps/{name}/app.json"))
-            except (FileNotFoundError, ValueError) as e:
-                raise HwTargetError(f"no readable /apps/{name}/app.json: {e}")
+            paths = [f"/apps/.test/{name}/app.json", f"/apps/{name}/app.json",
+                     f"/apps/.dev/{name}/app.json"]
+            for path in paths:
+                try:
+                    man = json.loads(self._read_optional(path))
+                    break
+                except ValueError:
+                    pass
+            if man is None:
+                raise HwTargetError(f"no readable app.json for {name}: "
+                                    f"tried {paths}")
             self._manifests[name] = man
         return man["id"]
 
@@ -1031,9 +1074,12 @@ def session_target(config) -> HwTarget:
             tgt.connect()
             tgt.ensure_launcher()
             tgt.ensure_test_kit()
+            tgt.clean_hidden_test()
         except (HwTargetError, TimeoutError) as e:
             tgt.close()
             pytest.exit(f"--target hw:{port}: {e}", returncode=pytest.ExitCode.USAGE_ERROR)
         config._picodeck_hw = tgt
         config.add_cleanup(tgt.close)
+        # Cleanups run last in, first out: the wipe runs before the close.
+        config.add_cleanup(tgt.clean_hidden_test)
     return tgt
