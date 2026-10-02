@@ -197,12 +197,30 @@ def test_clock_change_keeps_the_bus(target):
 VIDEO = """
 local T = picocalc.sys.loadlib("picotest")
 local sys, input, wifi = picocalc.sys, picocalc.input, picocalc.wifi
-local CYCLES = %d
+local CYCLES = @CYCLES@
+-- Joined (CONNECTED or ONLINE): the radio cycles whether or not the
+-- internet check after the join has passed.
+local function joined()
+  local st = wifi.getStatus()
+  return st == wifi.STATUS_CONNECTED or st == wifi.STATUS_ONLINE
+end
+-- Poll the keyboard for up to ms, or until done().
+local function poll(ms, done)
+  local t_end = sys.getTimeMs() + ms
+  while sys.getTimeMs() < t_end and not (done and done()) do
+    input.update()
+    sys.sleep(5)
+  end
+end
 T.case("video_cycles", function()
   local v = picocalc.video.player()
   T.ok(v:load(APP_DIR .. "/clip.avi"), "load clip.avi")
   v:setLoop(true)
-  local online = 0
+  -- The launcher starts joining WiFi for an "http" app.
+  local status0 = wifi.getStatus()
+  poll(20000, joined)
+  local wifi_up = joined()
+  local back = 0
   for i = 1, CYCLES do
     -- play(): WiFi off, the radio paused, 300 MHz; stop(): 200 MHz, the
     -- radio back and WiFi rejoining, with the keyboard polled throughout.
@@ -213,21 +231,16 @@ T.case("video_cycles", function()
       input.update()
     end
     v:stop()
-    t_end = sys.getTimeMs() + 12000
-    while sys.getTimeMs() < t_end and
-          wifi.getStatus() ~= wifi.STATUS_ONLINE do
-      input.update()
-      sys.sleep(5)
+    if wifi_up then
+      poll(15000, joined)
+      if joined() then back = back + 1 end
     end
-    if wifi.getStatus() == wifi.STATUS_ONLINE then online = online + 1 end
-    t_end = sys.getTimeMs() + 300
-    while sys.getTimeMs() < t_end do
-      input.update()
-      sys.sleep(5)
-    end
+    poll(300)
   end
-  local f = picocalc.fs.open(picocalc.fs.appPath("online.txt"), "w")
-  picocalc.fs.write(f, tostring(online))
+  local f = picocalc.fs.open(picocalc.fs.appPath("wifi.json"), "w")
+  picocalc.fs.write(f, string.format(
+    '{"status_at_launch":%d,"wifi_up":%s,"rejoined":%d,"status_at_end":%d}',
+    status0, tostring(wifi_up), back, wifi.getStatus()))
   picocalc.fs.close(f)
   T.ok(true)
 end)
@@ -235,21 +248,44 @@ T.done()
 """
 
 
+def alarmpool(target):
+    """The default alarm pool's free and lost slots (`alarmpool`), or None
+    when the firmware has no census (an SDK it does not patch). A slot
+    another core is adding at that instant reads as lost, so a nonzero
+    count is read again before it counts."""
+    pool = None
+    for _ in range(3):
+        for line in target.command("alarmpool", timeout=3.0):
+            m = re.search(r"AlarmPool: free=(\d+) lost=(-?\d+)", line)
+            if m:
+                pool = {"free": int(m.group(1)), "lost": int(m.group(2))}
+        if pool is None or pool["lost"] == 0:
+            return pool
+        time.sleep(0.2)
+    return pool
+
+
 # Issue #58: after a few video sessions with WiFi on the keyboard went dead
 # until a reboot (kbdstat: state=error, errors climbing, no reads). Every
 # play()/stop() pauses the radio and switches clk_sys (300 MHz and back),
 # and the radio's reconnect after stop() keeps Core 1 in the CYW43 driver,
 # whose cross-core wake-ups cancel default-pool alarms: on SDK 2.2.0 that
-# leaked the pool's entries (src/drivers/CLAUDE.md, Keyboard) until the bus
+# leaked the pool's slots (src/drivers/CLAUDE.md, Keyboard) until the bus
 # engine, which took a pool alarm at every step, could not arm one. The
-# engine now has its own hardware alarm (and the build patches the pool).
+# engine now has its own hardware alarm and the build patches the pool.
 # This plays the trigger in a loop (KBD_VIDEO_CYCLES, default 12) and wants
-# the bus untouched by it: no failure of any kind, reads all along. Without
-# WiFi configured it still loops the clock switch.
+# the bus untouched by it (no failure of any kind, reads all along) and no
+# pool slot lost (`alarmpool`). The app asks for "http", so the launcher
+# joins WiFi and every stop() rejoins it; without WiFi configured the loop
+# still switches the clock, and says so. It stages into the COST fixture's
+# app, as test_reads_stop_while_nobody_polls does: a well-used test device
+# sits at the launcher's 64-app cap (MAX_APPS), where a new app is never
+# listed. Its manifest differs, so staging it (and the COST app after it)
+# reboots the device.
 def test_bus_survives_video_clock_and_radio_cycles(target):
     if not FFMPEG:
         pytest.skip("ffmpeg makes the clip")
-    app, app_id = "kbd_video", "com.test.kbd_video"
+    app, app_id = "kbd_cost", "com.test.kbd_cost"
     with tempfile.TemporaryDirectory() as tmp:
         clip = Path(tmp) / "clip.avi"
         subprocess.run([FFMPEG, "-v", "error", "-y",
@@ -258,26 +294,39 @@ def test_bus_survives_video_clock_and_radio_cycles(target):
                         "-t", "2", "-c:v", "mjpeg", "-pix_fmt", "yuvj420p",
                         "-q:v", "12", "-c:a", "libmp3lame", "-b:a", "96k",
                         "-ac", "2", str(clip)], check=True)
-        target.stage_lua_app(app, VIDEO % VIDEO_CYCLES, requirements=("audio",),
-                             id=app_id,
+        target.stage_lua_app(app, VIDEO.replace("@CYCLES@", str(VIDEO_CYCLES)),
+                             requirements=("audio", "http"), id=app_id,
                              files={"clip.avi": clip.read_bytes()})
+    target.delete_file(f"/data/{app_id}/wifi.json")
     try:
         target.ensure_launcher()
+        pool_before = alarmpool(target)
         kbdstat(target, "reset")
-        run = target.run_lua_app(app, timeout=VIDEO_CYCLES * 16 + 30,
+        run = target.run_lua_app(app, timeout=VIDEO_CYCLES * 17 + 60,
                                  poll_s=5.0)
         target.ensure_launcher()
         time.sleep(2)
         s = kbdstat(target)
-        online = target.read_file(f"/data/{app_id}/online.txt").decode()
-        print(f"{VIDEO_CYCLES} video cycles, WiFi back online after {online}:",
-              s)
+        pool_after = alarmpool(target)
+        print(f"{VIDEO_CYCLES} video cycles:", s,
+              f"\nalarm pool before {pool_before}, after {pool_after}")
         run.assert_clean_exit()
         run.assert_all_passed(["video_cycles"])
+        w = json.loads(target.read_file(f"/data/{app_id}/wifi.json"))
+        print("WiFi:", w)
+        if w["wifi_up"]:
+            assert w["rejoined"] == VIDEO_CYCLES, w  # the radio really cycled
+        else:
+            print("WiFi never came up: the loop switched the clock only")
         assert s["errors"] == 0 and s["recoveries"] == 0, s
-        assert s.get("lost_alarms", 0) == 0 and s.get("cuts", 0) == 0, s
+        assert s["lost_alarms"] == 0 and s["cuts"] == 0, s
         assert s["state"] in ("wait", "busy"), s
         assert s["reads"] >= 30 * s["window_ms"] // 1000, s
+        if pool_before is None or pool_after is None:
+            print("no alarm pool census: pico_time not patched (SDK 2.3.1 on)")
+        else:
+            assert pool_before["lost"] == 0 and pool_after["lost"] == 0, \
+                (pool_before, pool_after)
     finally:
         target.delete_file(f"/apps/{app}")
         target.delete_file(f"/data/{app_id}")
