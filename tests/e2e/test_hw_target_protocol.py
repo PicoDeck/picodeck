@@ -142,7 +142,43 @@ class FakeDevice:
             self.files[f"/data/{app.id}/test_results.json"] = \
                 json.dumps(app.results).encode()
 
+    def _hidden_apps(self, only=None):
+        """[(root, dirname, manifest)] of the hidden apps the firmware would
+        take: a main.lua next to a readable app.json."""
+        out = []
+        for root in ("/apps/.test", "/apps/.dev"):
+            if only and root != only:
+                continue
+            for path, data in self.files.items():
+                m = re.fullmatch(re.escape(root) + r"/([^/]+)/app\.json", path,
+                                 re.I)
+                if not m or f"{root}/{m.group(1)}/main.lua" not in self.files:
+                    continue
+                try:
+                    man = json.loads(data)
+                except ValueError:
+                    man = {}
+                out.append((root, m.group(1), man))
+        return out
+
+    def _find_hidden(self, arg, only=None):
+        """The firmware's order: the directory name in each root (.test, then
+        .dev), then an id, case-insensitively."""
+        apps = self._hidden_apps(only)
+        for key in (lambda r, d, m: d, lambda r, d, m: m.get("id", "")):
+            for root, d, man in apps:
+                if key(root, d, man).lower() == arg.lower():
+                    app = FakeApp(d, man.get("name", d),
+                                  man.get("id", f"local.{d}"),
+                                  man.get("requirements", ()))
+                    return app, (f"[DEV] Launching app from {root}: "
+                                 f"{arg} ({app.name})")
+        return None, f"[DEV] Error: app '{arg}' not found"
+
     def _find(self, arg):
+        if arg.startswith((".test/", ".dev/")):
+            root, name = arg.split("/", 1)
+            return self._find_hidden(name, "/apps/" + root)
         for a in self.apps.values():
             if a.id == arg:
                 return a, f"[DEV] Launching app by ID: {arg} ({a.name})"
@@ -152,19 +188,7 @@ class FakeDevice:
         for a in self.apps.values():
             if a.dirname.lower() == arg.lower():
                 return a, f"[DEV] Launching app by dir: {arg} ({a.name})"
-        # The hidden roots, read fresh (never cached): .test before .dev.
-        for root in ("/apps/.test", "/apps/.dev"):
-            for path, data in self.files.items():
-                m = re.fullmatch(re.escape(root) + r"/([^/]+)/app\.json", path)
-                if not m:
-                    continue
-                man = json.loads(data)
-                if arg in (m.group(1), man.get("id")):
-                    app = FakeApp(m.group(1), man["name"], man["id"],
-                                  man.get("requirements", ()))
-                    return app, (f"[DEV] Launching app from {root}: "
-                                 f"{arg} ({man['name']})")
-        return None, f"[DEV] Error: app '{arg}' not found"
+        return self._find_hidden(arg)
 
     def _later(self, delay: float, lines):
         def fire():
@@ -212,15 +236,12 @@ class FakeDevice:
             if cmd == "list":
                 self.emit(f"[DEV] Total: {len(apps)} apps")
             else:
+                hidden = self._hidden_apps()
                 self.emit("[DEV] Hidden apps:")
-                for root in ("/apps/.test", "/apps/.dev"):
-                    for path, data in self.files.items():
-                        m = re.fullmatch(re.escape(root) + r"/([^/]+)/app\.json", path)
-                        if m:
-                            man = json.loads(data)
-                            self.emit(f"  {man['name']}  ({man['id']})  "
-                                      f"[{root[6:]}]")
-                self.emit(f"[DEV] Total: {len(apps)} apps, N hidden")
+                for root, d, man in hidden:
+                    self.emit(f"  {man.get('name', d)}  "
+                              f"({man.get('id', 'local.' + d)})  [{root[6:]}]")
+                self.emit(f"[DEV] Total: {len(apps)} apps, {len(hidden)} hidden")
         elif cmd.startswith("getb64 "):
             path = cmd[7:]
             if path not in self.files:
@@ -236,6 +257,11 @@ class FakeDevice:
             self.putb64 = (path, int(size), b"")
             self.emit(f"[DEV] Ready B64 {size} bytes for {path} "
                       "(chunk<=384 raw, newline-terminated, await ACK)")
+        elif cmd.startswith("ls "):
+            path = cmd[3:].rstrip("/")
+            kids = {p[len(path) + 1:].split("/")[0] for p in self.files
+                    if p.startswith(path + "/")}
+            self.emit(f"[DEV] {len(kids)} items in {path}")
         elif cmd.startswith("mkdir "):
             self.emit(f"[DEV] Created: {cmd[6:]}")
         elif cmd.startswith("rm "):
@@ -698,9 +724,60 @@ def test_mcp_push_app_hidden_dev_and_validation(hw, dev, tmp_path):
     for bad in ("tests", ".test", "/apps"):
         msg = asyncio.run(pm.push_app(str(d), "", device=hw.port, hidden=bad))
         assert msg.startswith("Error:"), (bad, msg)
-    msg = asyncio.run(pm.push_app(str(d), ".x", device=hw.port, hidden="dev"))
-    assert msg.startswith("Error:"), msg
+    for bad_name in (".x", "x.", "a..b", "x" * 64, "a\\b"):
+        msg = asyncio.run(pm.push_app(str(d), bad_name, device=hw.port, hidden="dev"))
+        assert msg.startswith("Error:"), (bad_name, msg)
+    ok = asyncio.run(pm.push_app(str(d), "x" * 63, device=hw.port, hidden="dev"))
+    assert ok.startswith("Pushed"), ok
     assert not any(k.startswith("/apps/tests") for k in dev.files)
+
+
+def test_hidden_launch_uses_the_test_root_form_and_beats_a_listed_twin(hw, dev, tmp_path):
+    # The user's card lists /apps/twin; the harness stages its own twin
+    # (same id) hidden. A plain `launch twin` would run the listed one.
+    dev.install(FakeApp("twin", "Listed Twin", "com.test.twin"))
+    hw.push_app(_app_dir(tmp_path, "twin"))
+    dev.commands.clear()
+    out = hw.launch_app("twin")
+    assert out["launched"] and "from /apps/.test:" in out["line"], out
+    assert "launch .test/twin" in dev.commands, dev.commands
+    assert dev.running.name == "twin"          # the hidden copy's manifest
+    hw.exit_app()
+    # A listed push of the same name drops the hidden bookkeeping.
+    again = tmp_path / "again"
+    again.mkdir()
+    hw.push_app(_app_dir(again, "twin"), hidden=False)
+    assert "twin" not in hw._hidden
+
+
+def test_hidden_launch_fails_loudly_when_something_else_ran(hw, dev, tmp_path, monkeypatch):
+    hw.push_app(_app_dir(tmp_path, "shadowed"))
+    real = dev._find
+    # A firmware without the .test/ form answers from the listed app.
+    dev.install(FakeApp("shadowed", "Listed", "com.test.shadowed"))
+    monkeypatch.setattr(dev, "_find", lambda arg: real(arg.split("/", 1)[-1]))
+    with pytest.raises(HwTargetError, match="started something else"):
+        hw.launch_app("shadowed")
+
+
+def test_firmware_hidden_lookup_order_case_and_junk(hw, dev):
+    dev.files["/apps/.dev/Probe/app.json"] = json.dumps(
+        {"id": "com.dev.probe", "name": "Dev Probe"}).encode()
+    dev.files["/apps/.dev/Probe/main.lua"] = b"x"
+    dev.files["/apps/.test/probe/app.json"] = json.dumps(
+        {"id": "com.test.probe", "name": "Test Probe"}).encode()
+    dev.files["/apps/.test/probe/main.lua"] = b"x"
+    dev.files["/apps/.test/nomain/app.json"] = b"{}"
+    dev.files["/apps/.test/corrupt/app.json"] = b"{not json"
+    dev.files["/apps/.test/corrupt/main.lua"] = b"x"
+    app, line = dev._find("PROBE")
+    assert app.id == "com.test.probe" and "/apps/.test:" in line
+    app, line = dev._find(".dev/probe")
+    assert app.id == "com.dev.probe", line
+    assert dev._find("nomain")[0] is None
+    assert dev._find("COM.DEV.PROBE")[0].name == "Dev Probe"
+    lines = hw.command("list all")
+    assert any("Total: 0 apps, 3 hidden" in ln for ln in lines), lines
 
 
 def test_stage_lua_app_is_hidden_unless_asked(hw, dev):

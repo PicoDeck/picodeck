@@ -176,7 +176,8 @@ def parse_launch_reply(lines) -> tuple:
     for line in lines:
         if "[DEV] Launching app" in line:
             return "launched", line.strip()
-        if "[DEV] Error: app '" in line or "[DEV] Error: no app name" in line:
+        if ("[DEV] Error: app '" in line or "[DEV] Error: no app name" in line
+                or "[DEV] Error: app name too long" in line):
             return "not_found", line.strip()
     return None, ""
 
@@ -331,6 +332,7 @@ class SimTarget(Target):
     def __init__(self, sim):
         self.sim = sim
         self.sd = Path(sim.sd_card_path).resolve()
+        self._hidden: set = set()   # dir names staged under /apps/.test
 
     def _host(self, path: str) -> Path:
         if not path.startswith("/"):
@@ -373,7 +375,10 @@ class SimTarget(Target):
         app: its outcome for this launch says found=false. {"launched":
         True} once the app runs, or has already finished having been found."""
         self._ensure_launcher()
-        r = self.sim.launch_app(name)
+        # An app this target staged hidden launches through ".test/<name>",
+        # which only looks in /apps/.test: a listed app of the same name (a
+        # fixture on the card) cannot shadow it.
+        r = self.sim.launch_app(f".test/{name}" if name in self._hidden else name)
         want = r.get("launch_id", 0)
         deadline = time.monotonic() + timeout
         while True:
@@ -442,7 +447,10 @@ class SimTarget(Target):
         if dest.resolve() != src.resolve():
             shutil.copytree(src, dest, dirs_exist_ok=True,
                             ignore=shutil.ignore_patterns("__pycache__"))
-        if not hidden:
+        if hidden:
+            self._hidden.add(name)
+        else:
+            self._hidden.discard(name)
             self.sim.rescan_apps()
         return {"pushed": str(dest), "rebooted": False}
 
@@ -511,6 +519,7 @@ class HwTarget(Target):
         self._mon = None
         self._launch: Optional[dict] = None
         self._manifests: dict = {}
+        self._hidden: set = set()   # dir names this session pushed to /apps/.test
         self._last_uptime: Optional[int] = None
 
     # -- connection --
@@ -607,8 +616,17 @@ class HwTarget(Target):
         self.ensure_launcher()
         errlog0 = self._read_optional("/system/error.log")
         st0 = self.status()
-        lines = self.command(f"launch {name}", timeout=10.0)
+        # An app staged hidden launches through ".test/<name>", which looks
+        # only in /apps/.test: a listed app of the same name or id (the
+        # launcher lists those first) must not run in its place.
+        hidden = name in self._hidden
+        lines = self.command(f"launch {'.test/' if hidden else ''}{name}",
+                             timeout=10.0)
         kind, line = parse_launch_reply(lines)
+        if hidden and kind == "launched" and "from /apps/.test:" not in line:
+            raise HwTargetError(
+                f"launch {name}: staged in /apps/.test, but the device "
+                f"started something else: {line!r}")
         if kind is None:
             # The reply was not captured: the app is running if status says so.
             deadline = time.monotonic() + 5.0
@@ -782,7 +800,9 @@ class HwTarget(Target):
             if not msg.startswith("Pushed"):
                 raise HwTargetError(f"push_app {name}: {msg}")
             self._manifests[name] = manifest
+            self._hidden.add(name)
             return {"pushed": msg.splitlines()[0], "rebooted": False, "why": None}
+        self._hidden.discard(name)
         before = self._read_optional(f"/apps/{name}/app.json")
         try:
             old = json.loads(before) if before else None
@@ -807,12 +827,26 @@ class HwTarget(Target):
 
     def clean_hidden_test(self):
         """Wipe /apps/.test (the harness's hidden apps), at the session's
-        start and end. /apps/.dev is the user's: never touched. A missing
-        directory is the normal case, so the reply is not checked."""
+        start and end. /apps/.dev is the user's: never touched. Needs the
+        launcher (a dev command mid-app is served inside the app), so a
+        running app is exited first. A missing directory is the normal
+        case; a failed `rm` is reported, not swallowed."""
+        self._hidden.clear()
         try:
-            self.command("rm /apps/.test", timeout=30.0)
-        except HwTargetError:
-            pass
+            self.ensure_launcher()
+            # (`ls /apps` hides dot entries; the count of the directory itself
+            # is 0 when it is missing or empty.)
+            counts = [int(m.group(1)) for ln in
+                      self.command("ls /apps/.test", timeout=10.0)
+                      if (m := re.search(r"\[DEV\] (\d+) items in", ln))]
+            if not counts or counts[0] == 0:
+                return
+            reply = self.command("rm /apps/.test", timeout=60.0)
+            if not any("Deleted: /apps/.test" in ln for ln in reply):
+                print(f"hw_target: could not wipe /apps/.test: {reply}",
+                      file=sys.stderr)
+        except HwTargetError as e:
+            print(f"hw_target: could not wipe /apps/.test: {e}", file=sys.stderr)
 
     def _wait_listed(self, app_id: str) -> bool:
         """Poll `list` until it shows app_id, for up to rescan_timeout. On

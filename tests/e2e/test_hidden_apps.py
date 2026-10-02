@@ -173,7 +173,7 @@ def test_listed_app_wins_over_hidden_one(hid):
 # ── Refusals ────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("bad", ["../x", "a/b", ".x", ".test", "..", ".dev/hid_dev",
+@pytest.mark.parametrize("bad", ["../x", "a/b", ".x", ".test", "..", "a/.dev/hid_dev",
                                  "x" * 64])
 def test_bad_hidden_names_are_not_found(hid, bad):
     sim, _, sd = hid
@@ -265,7 +265,8 @@ def test_mv_refuses_system_source_and_target(hid):
     for cmd in ("mv /system/lib /data/lib2", "mv /data/mvc /system/mvc",
                 "mv /SYSTEM/lib /data/lib3", "mv /system /data/sys"):
         out = target.command(cmd)
-        assert "/system is off limits" in out[0], (cmd, out)
+        assert out[0].startswith("[DEV] Error: mv"), (cmd, out)
+        assert "off limits" in out[0] or "top-level" in out[0], (cmd, out)
     assert (sd / "system" / "lib").is_dir()
     assert (sd / "data" / "mvc").is_dir()
 
@@ -284,3 +285,101 @@ def test_mv_refuses_bad_arguments(hid):
         out = target.command(cmd)
         assert frag in out[0], (cmd, out)
     assert (sd / "data" / "mvd").is_dir()
+
+
+# ── The .test/<name> form ───────────────────────────────────────────────────
+
+
+def test_root_form_launches_only_from_that_root(hid):
+    sim, _, sd = hid
+    # A listed twin (same dir name and id) of the hidden app: plain `launch`
+    # prefers it, `.test/<name>` cannot be shadowed by it.
+    twin = sd / "apps" / "hid_test"
+    twin.mkdir()
+    (twin / "app.json").write_text(json.dumps(
+        {"id": "com.test.hid_test", "name": "Listed Twin"}))
+    (twin / "main.lua").write_text('picocalc.sys.log("HID:TWIN_RAN " .. APP_DIR)\n')
+    sim.rescan_apps()
+    sim.wait_for_log(r"apps rescanned", timeout=5.0, src="os")
+    assert _launch(sim, "hid_test")["result"] == "returned"
+    assert "HID:TWIN_RAN /apps/hid_test" in _texts(sim)
+    seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
+    out = _launch(sim, ".test/hid_test")
+    assert out["found"] is True and out["result"] == "returned", out
+    assert "HID:DIR /apps/.test/hid_test" in _texts(sim, seq)
+    # By id, and the other root.
+    assert _launch(sim, ".test/com.test.hid_test")["found"] is True
+    assert _launch(sim, ".dev/hid_dev")["found"] is True
+    # Only that root: a .test app is not in .dev, and the reverse.
+    assert _launch(sim, ".dev/hid_test")["found"] is False
+    assert _launch(sim, ".test/hid_dev")["found"] is False
+    assert _launch(sim, ".test/../hello")["found"] is False
+    assert _launch(sim, ".test/")["found"] is False
+    assert _launch(sim, ".other/hid_test")["found"] is False
+
+
+def test_lookup_is_quiet_and_picks_by_id_across_roots(hid):
+    sim, _, sd = hid
+    (sd / "apps" / ".test" / "hid_nomain").mkdir()   # not an app: no warning
+    seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
+    out = _launch(sim, "com.dev.hid_dev")
+    assert out["found"] is True, out
+    out = sim.get_output()["stdout"]
+    assert "failed to read" not in out and "both main.lua" not in out, out[-600:]
+
+
+# ── mv: the spellings FatFS reads as the same directory ─────────────────────
+
+
+@pytest.mark.parametrize("cmd", [
+    "mv //system /data/sys", "mv /./system /data/sys", "mv /system. /data/sys",
+    "mv /\\system /data/sys", "mv /SYSTEM/lib /data/lib3",
+    "mv /system./lib /data/lib4", "mv /data/mvx /system./data",
+    "mv /data/mvx //system/data", "mv /data/mvx /SYSTEM/x/y",
+    "mv /apps /data/apps2", "mv /data /x", "mv //apps/ /y",
+])
+def test_mv_spellings_cannot_reach_system_or_the_roots(hid, cmd):
+    _, target, sd = hid
+    (sd / "data" / "mvx").mkdir()
+    out = target.command(cmd)
+    assert out[0].startswith("[DEV] Error: mv"), (cmd, out)
+    assert (sd / "system" / "lib").is_dir() and (sd / "apps").is_dir()
+    assert not (sd / "data" / "sys").exists() and not (sd / "system" / "data").exists()
+
+
+@pytest.mark.parametrize("dst", [
+    "/data/mvi/bar", "/data//mvi/bar", "/data/./mvi/bar", "/data/mvi./bar",
+    "/data\\mvi\\bar", "/data/mvi/a/b/c",
+])
+def test_mv_into_itself_is_refused(hid, dst):
+    _, target, sd = hid
+    (sd / "data" / "mvi").mkdir()
+    (sd / "data" / "mvi" / "keep").write_text("k")
+    out = target.command(f"mv /data/mvi {dst}")
+    assert out[0].startswith("[DEV] Error: mv"), (dst, out)
+    assert (sd / "data" / "mvi" / "keep").read_text() == "k"
+    assert not (sd / "data" / "mvi" / "bar").exists()
+
+
+def test_mv_a_case_only_rename_says_why(hid):
+    _, target, sd = hid
+    (sd / "data" / "mvcase").mkdir()
+    out = target.command("mv /data/mvcase /data/mvcase")
+    assert "destination exists" in out[0], out
+
+
+def test_mv_refuses_the_running_apps_directory(hid):
+    sim, target, sd = hid
+    app = sd / "apps" / ".test" / "hid_run"
+    app.mkdir()
+    (app / "app.json").write_text(json.dumps({"id": "com.test.hid_run"}))
+    (app / "main.lua").write_text("picocalc.sys.sleep(60000)\n")
+    sim.launch_app(".test/hid_run")
+    sim.wait_for_log(r"start hid_run", timeout=5.0, src="os")
+    out = target.command("mv /apps/.test/hid_run /apps/.dev/hid_run")
+    assert "running app" in out[0], out
+    assert (app / "main.lua").exists()
+    sim.exit_app()
+    sim.wait_for_exit(timeout=10)
+    out = target.command("mv /apps/.test/hid_run /apps/.dev/hid_run")
+    assert out[0].startswith("[DEV] Moved:"), out

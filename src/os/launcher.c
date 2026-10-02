@@ -56,7 +56,13 @@
 // App table lives in PSRAM; the only SRAM cost is s_cat_indices (uint8_t,
 // so the cap can go to 255 before the index type needs widening).
 #define MAX_APPS 64
+#define HIDDEN_SLOT MAX_APPS
+// The longest `launch` argument ".test/" + a 63-character name fits.
+#define LAUNCH_ARG_MAX 69
 
+// MAX_APPS listed entries, then one more: the entry of a hidden app being
+// launched or listed (HIDDEN_SLOT), never freed so that the simulator's RPC
+// thread, which reads the running app's name, never sees it go.
 static app_entry_t *s_apps = NULL;
 static int s_app_count = 0;
 
@@ -66,9 +72,10 @@ static int s_app_count = 0;
 // when the directory holds neither main.lua nor main.elf. The one place an
 // app_entry_t is built, for the scan and for the dev `launch` of a hidden
 // app. The icon is the scan's business (with_icon); a hidden app never
-// loads one.
+// loads one. `quiet` is for a lookup that tries many directories: no warning
+// for the ones that are not apps.
 static bool app_entry_load(const char *base, const char *dir, app_entry_t *app,
-                           bool with_icon) {
+                           bool with_icon, bool quiet) {
   // Detect available runtimes
   char path[160];
   snprintf(path, sizeof(path), "%s/%s/main.lua", base, dir);
@@ -80,7 +87,7 @@ static bool app_entry_load(const char *base, const char *dir, app_entry_t *app,
     return false;
 
   // Native wins when both exist (rare, but log it)
-  if (has_lua && has_elf)
+  if (has_lua && has_elf && !quiet)
     printf("[LAUNCHER] '%s': both main.lua and main.elf found — using native\n",
            dir);
 
@@ -95,7 +102,8 @@ static bool app_entry_load(const char *base, const char *dir, app_entry_t *app,
     app_manifest_parse(json, json_len > 0 ? (size_t)json_len : 0, dir, app);
     umm_free(json);
   } else {
-    printf("[LAUNCHER] WARNING: failed to read '%s', using dir name\n", path);
+    if (!quiet)
+      printf("[LAUNCHER] WARNING: failed to read '%s', using dir name\n", path);
     app_manifest_defaults(dir, app);
   }
 
@@ -124,7 +132,7 @@ static void on_app_dir(const sdcard_entry_t *entry, void *user) {
     return;
   }
 
-  if (app_entry_load("/apps", entry->name, &s_apps[s_app_count], true))
+  if (app_entry_load("/apps", entry->name, &s_apps[s_app_count], true, false))
     s_app_count++;
 }
 
@@ -781,8 +789,12 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   const char *type_str = app->type == APP_TYPE_NATIVE ? "native" : "lua";
   char heap[96];
   crashlog_describe_heap(heap, sizeof(heap));
-  printf("[LAUNCHER] Starting app %d '%s' (type=%s), PSRAM %s\n",
-         idx, app->name, type_str, heap);
+  if (idx >= 0)
+    printf("[LAUNCHER] Starting app %d '%s' (type=%s), PSRAM %s\n",
+           idx, app->name, type_str, heap);
+  else
+    printf("[LAUNCHER] Starting hidden app %s '%s' (type=%s), PSRAM %s\n",
+           app->path, app->name, type_str, heap);
 
   // An id is used as a path component (/data/<id>/...): refuse one that could
   // escape it ("../evil", "a/b") instead of sandboxing the app into someone
@@ -1035,12 +1047,12 @@ static void update_desc_scroll(bool *dirty) {
 
 void launcher_run(void) {
   if (!s_apps) {
-    s_apps = umm_malloc(sizeof(app_entry_t) * MAX_APPS);
+    s_apps = umm_malloc(sizeof(app_entry_t) * (MAX_APPS + 1));
     if (!s_apps) {
       printf("[LAUNCHER] FATAL: failed to alloc s_apps in PSRAM\n");
       return;
     }
-    memset(s_apps, 0, sizeof(app_entry_t) * MAX_APPS);
+    memset(s_apps, 0, sizeof(app_entry_t) * (MAX_APPS + 1));
   }
   scan_apps();
   build_category_indices();
@@ -1086,11 +1098,17 @@ void launcher_run(void) {
       // Take the request before running it: the name points into the dev
       // command buffer, and a `launch` that arrives while this one runs (or
       // during a refusal's hold) must stay pending, not be cleared after.
-      char name[64];
-      snprintf(name, sizeof(name), "%s", dev_commands_get_pending_launch());
+      char name[LAUNCH_ARG_MAX + 1];
+      const char *arg = dev_commands_get_pending_launch();
+      bool too_long = strlen(arg) > LAUNCH_ARG_MAX;
+      snprintf(name, sizeof(name), "%s", arg);
       dev_commands_clear_pending_launch();
       dev_commands_clear_exit();
-      if (launcher_launch_by_name(name)) {
+      if (too_long) {
+        // Cut short it could name a different app: say so instead.
+        printf("[DEV] Error: app name too long (%d characters at most): "
+               "'%s...' not launched\n", LAUNCH_ARG_MAX, name);
+      } else if (launcher_launch_by_name(name)) {
         kbd_clear_state();
         scan_apps();
         build_category_indices();
@@ -1190,8 +1208,12 @@ void launcher_run(void) {
 // /apps/.test (the E2E harness's, wiped freely) and /apps/.dev (the user's
 // own) are dot-names, so the scan skips them and the launcher UI never
 // shows them. Only the dev `launch` reaches them, so a card at MAX_APPS can
-// still run a freshly staged test app. Looked up when needed: no table, no
-// static SRAM (the entry is umm_malloc'd for the run).
+// still run a freshly staged test app. Looked up when needed: no table, and
+// the entry is s_apps[HIDDEN_SLOT], not static SRAM.
+//
+//   launch <name>          listed apps first, then .test, then .dev
+//   launch .test/<name>    only that root (no listed app can shadow it): the
+//   launch .dev/<name>     harness's form for the apps it staged
 
 static const char *const k_hidden_roots[] = {"/apps/.test", "/apps/.dev"};
 #define HIDDEN_ROOTS 2
@@ -1208,50 +1230,63 @@ static void hidden_by_id_cb(const sdcard_entry_t *e, void *user) {
   hidden_find_t *f = (hidden_find_t *)user;
   if (f->found || !e->is_dir || !app_hidden_name_valid(e->name))
     return;
-  if (app_entry_load(f->root, e->name, f->entry, false) &&
+  if (app_entry_load(f->root, e->name, f->entry, false, true) &&
       strcasecmp(f->entry->id, f->query) == 0)
     f->found = true;
 }
 
-// Finds the app `name` names under the hidden roots (the directory name
-// first, then an app.json id; .test before .dev) and fills *out.
-static bool hidden_find(const char *name, app_entry_t *out) {
+// Finds the app `name` names under the hidden roots (the directory name in
+// each root first, then an app.json id; .test before .dev) and fills *out.
+// `only` (a k_hidden_roots index) limits it to one root, -1 for both.
+static bool hidden_find(const char *name, int only, app_entry_t *out) {
   if (!app_hidden_name_valid(name))
     return false;
-  hidden_find_t f = {NULL, name, out, false, 0};
   for (int i = 0; i < HIDDEN_ROOTS; i++)
-    if (app_entry_load(k_hidden_roots[i], name, out, false))
+    if ((only < 0 || only == i) &&
+        app_entry_load(k_hidden_roots[i], name, out, false, true))
       return true;
+  hidden_find_t f = {NULL, name, out, false, 0};
   for (int i = 0; i < HIDDEN_ROOTS && !f.found; i++) {
+    if (only >= 0 && only != i)
+      continue;
     f.root = k_hidden_roots[i];
     sdcard_list_dir(f.root, hidden_by_id_cb, &f);
   }
   return f.found;
 }
 
-// Runs a hidden app through the normal path.
+// Runs a hidden app through the normal path. Returns true when the launch
+// was dealt with (the app ran, or the reply says why not); false for "not
+// found" so the caller prints that.
 static bool launch_hidden(const char *name) {
-  app_entry_t *app = umm_malloc(sizeof(app_entry_t));
-  if (!app)
-    return false;
-  memset(app, 0, sizeof(*app));
-  bool found = hidden_find(name, app);
-  if (found) {
-    printf("[DEV] Launching app from %.*s: %s (%s)\n",
-           (int)(strrchr(app->path, '/') - app->path), app->path, name,
-           app->name);
-    stdio_flush();
-    run_app_entry(app, -1);
+  int only = -1;
+  for (int i = 0; i < HIDDEN_ROOTS; i++) {
+    const char *r = k_hidden_roots[i] + sizeof("/apps/") - 1;  // ".test"
+    size_t rl = strlen(r);
+    if (strncmp(name, r, rl) == 0 && name[rl] == '/') {
+      only = i;
+      name += rl + 1;
+    }
   }
-  umm_free(app);
-  return found;
+  if (!s_apps)
+    return false;
+  app_entry_t *app = &s_apps[HIDDEN_SLOT];
+  memset(app, 0, sizeof(*app));
+  if (!hidden_find(name, only, app))
+    return false;
+  printf("[DEV] Launching app from %.*s: %s (%s)\n",
+         (int)(strrchr(app->path, '/') - app->path), app->path, name,
+         app->name);
+  stdio_flush();
+  run_app_entry(app, -1);
+  return true;
 }
 
 static void list_hidden_cb(const sdcard_entry_t *e, void *user) {
   hidden_find_t *f = (hidden_find_t *)user;
   if (!e->is_dir || !app_hidden_name_valid(e->name))
     return;
-  if (!app_entry_load(f->root, e->name, f->entry, false))
+  if (!app_entry_load(f->root, e->name, f->entry, false, true))
     return;
   printf("  %s  (%s)  [%s]\n", f->entry->name, f->entry->id,
          f->root + sizeof("/apps/") - 1);
@@ -1267,26 +1302,20 @@ void launcher_list_apps(bool all) {
     printf("  %s  (%s)\n", s_apps[i].name, s_apps[i].id);
     sim_log_os("  %s  (%s)", s_apps[i].name, s_apps[i].id);
   }
-  if (!all) {
+  if (!all || !s_apps) {
     printf("[DEV] Total: %d apps\n", s_app_count);
     sim_log_os("[DEV] Total: %d apps", s_app_count);
     return;
   }
   // The hidden section comes before Total: host tools end the reply there.
-  app_entry_t *scratch = umm_malloc(sizeof(app_entry_t));
-  if (!scratch) {
-    printf("[DEV] Error: no memory to list hidden apps\n");
-    return;
-  }
   printf("[DEV] Hidden apps:\n");
   sim_log_os("[DEV] Hidden apps:");
   int hidden = 0;
   for (int i = 0; i < HIDDEN_ROOTS; i++) {
-    hidden_find_t f = {k_hidden_roots[i], NULL, scratch, false, 0};
+    hidden_find_t f = {k_hidden_roots[i], NULL, &s_apps[HIDDEN_SLOT], false, 0};
     sdcard_list_dir(f.root, list_hidden_cb, &f);
     hidden += f.listed;
   }
-  umm_free(scratch);
   printf("[DEV] Total: %d apps, %d hidden\n", s_app_count, hidden);
   sim_log_os("[DEV] Total: %d apps, %d hidden", s_app_count, hidden);
 }
@@ -1312,6 +1341,15 @@ bool launcher_launch_by_id(const char *id) {
 bool launcher_launch_by_name(const char *name) {
   if (!name || !name[0]) {
     printf("[DEV] Error: no app name provided\n");
+    return false;
+  }
+
+  // ".test/<name>" and ".dev/<name>": the hidden roots only (no listed app
+  // is named with a leading dot).
+  if (name[0] == '.') {
+    if (launch_hidden(name))
+      return true;
+    printf("[DEV] Error: app '%s' not found\n", name);
     return false;
   }
 

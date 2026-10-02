@@ -791,6 +791,31 @@ bool sdcard_delete_recursive(const char* path) {
     if (!hal_sdcard_resolve(path, full, sizeof(full))) return false;
     return nftw(full, nftw_remove_cb, 64, FTW_DEPTH | FTW_PHYS) == 0;
 }
+// Same directory, or below it: by device and inode of each ancestor, as the
+// firmware compares FatFS directory clusters (src/drivers/fat_within.c).
+bool sdcard_path_within(const char* root, const char* path) {
+    char full[1024];
+    struct stat rs;
+    if (!hal_sdcard_resolve(root, full, sizeof(full)) || stat(full, &rs) != 0 ||
+        !S_ISDIR(rs.st_mode))
+        return false;
+    char prefix[256];
+    size_t n = strlen(path);
+    if (n >= sizeof(prefix)) return false;
+    memcpy(prefix, path, n + 1);
+    for (size_t i = 1; i <= n; i++) {
+        if (prefix[i] != '/' && prefix[i] != '\\' && prefix[i] != '\0') continue;
+        char saved = prefix[i];
+        prefix[i] = '\0';
+        struct stat ps;
+        bool ok = hal_sdcard_resolve(prefix, full, sizeof(full)) &&
+                  stat(full, &ps) == 0 && S_ISDIR(ps.st_mode);
+        prefix[i] = saved;
+        if (!ok) return false;
+        if (ps.st_dev == rs.st_dev && ps.st_ino == rs.st_ino) return true;
+    }
+    return false;
+}
 bool sdcard_rename(const char* oldpath, const char* newpath) {
     char full_old[1024], full_new[1024];
     if (!hal_sdcard_resolve(oldpath, full_old, sizeof(full_old)) ||

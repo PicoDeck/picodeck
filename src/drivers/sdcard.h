@@ -86,6 +86,10 @@ bool sdcard_delete(const char *path);
 // Returns true if the directory and all contents were deleted.
 bool sdcard_delete_recursive(const char *path);
 
+// True when `root` is a directory and `path` is it or lies below it, by
+// FatFS identity (any spelling: case, "//", "\", ".", 8.3 aliases).
+bool sdcard_path_within(const char *root, const char *path);
+
 // Rename or move a file/directory. Both paths must be on the same volume.
 bool sdcard_rename(const char *src, const char *dst);
 

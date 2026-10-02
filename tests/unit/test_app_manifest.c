@@ -267,7 +267,6 @@ static void test_id_valid(void) {
   CHECK(!app_manifest_id_valid(longid));
 }
 
-// Every committed app.json parses to a valid id.
 static void test_hidden_name_valid(void) {
   CHECK(app_hidden_name_valid("probe"));
   CHECK(app_hidden_name_valid("hwp_bench-2.v1"));
@@ -293,6 +292,7 @@ static void test_hidden_name_valid(void) {
   CHECK(!app_hidden_name_valid(n64));
 }
 
+// Every committed app.json parses to a valid id.
 static void test_real_manifests(void) {
   static const char *k_apps[] = {"hello", "hello_c", "editor", "snake", "store",
                                  "guinea_pig", "panels_demo", "c64", "dos86"};

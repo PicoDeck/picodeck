@@ -32,8 +32,10 @@ bool dev_op_rm(const char *path, char *reply, size_t n);
 
 // "mv <src> <dst>": move or rename a file or directory on the card (FatFS
 // f_rename: across directories on the one volume). Never overwrites, never
-// touches /system (source or target), never moves a directory into itself;
-// missing parent directories of <dst> are created. args is modified.
+// touches /system (source or target, by FatFS identity, not spelling), never
+// moves the top-level directories or a directory into itself; missing parent
+// directories of <dst> are created (and removed again if the rename fails).
+// Implemented in os/mv_op.c. args is modified.
 // Reply "Moved: <src> -> <dst>" or "Error: mv ...".
 bool dev_op_mv(char *args, char *reply, size_t n);
 

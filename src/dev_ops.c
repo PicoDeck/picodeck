@@ -10,6 +10,7 @@
 #include "drivers/sound.h"
 #include "os/gamepad_map.h"
 #include "os/launcher.h"
+#include "os/mv_op.h"
 #include "os/zip_util.h"
 #include "hardware/clocks.h"
 #include "hardware/watchdog.h"
@@ -85,69 +86,8 @@ bool dev_op_rm(const char *path, char *reply, size_t n) {
     return false;
 }
 
-static bool path_is_system(const char *p) {
-    return strncasecmp(p, "/system", 7) == 0 && (p[7] == '\0' || p[7] == '/');
-}
-
-static bool path_has_dotdot(const char *p) {
-    for (const char *c = p; (c = strstr(c, "..")) != NULL; c += 2)
-        if ((c == p || c[-1] == '/') && (c[2] == '\0' || c[2] == '/'))
-            return true;
-    return false;
-}
-
 bool dev_op_mv(char *args, char *reply, size_t n) {
-    char *src = args;
-    char *dst = strchr(src, ' ');
-    if (!dst || src[0] != '/' || dst[1] != '/') {
-        snprintf(reply, n, "Usage: mv /src /dst");
-        return false;
-    }
-    *dst++ = '\0';
-    size_t sl = strlen(src);
-    size_t dl = strlen(dst);
-    while (sl > 1 && src[sl - 1] == '/')
-        src[--sl] = '\0';
-    while (dl > 1 && dst[dl - 1] == '/')
-        dst[--dl] = '\0';
-    if (sl <= 1 || dl <= 1 || strchr(dst, ' ') || path_has_dotdot(src) ||
-        path_has_dotdot(dst)) {
-        snprintf(reply, n, "Error: mv: bad path (absolute, no spaces or ..)");
-        return false;
-    }
-    if (path_is_system(src) || path_is_system(dst)) {
-        snprintf(reply, n, "Error: mv: /system is off limits");
-        return false;
-    }
-    if (strncasecmp(dst, src, sl) == 0 && (dst[sl] == '/' || dst[sl] == '\0')) {
-        snprintf(reply, n, "Error: mv: cannot move %s into itself", src);
-        return false;
-    }
-    sdcard_stat_t st;
-    if (!sdcard_stat(src, &st)) {
-        snprintf(reply, n, "Error: mv: no such file or directory: %s", src);
-        return false;
-    }
-    if (sdcard_stat(dst, &st)) {
-        snprintf(reply, n, "Error: mv: destination exists: %s", dst);
-        return false;
-    }
-    // Create the missing parents of dst (single-level mkdir, like unzip).
-    for (char *c = dst + 1; (c = strchr(c, '/')) != NULL; c++) {
-        *c = '\0';
-        bool ok = sdcard_mkdir(dst);
-        *c = '/';
-        if (!ok) {
-            snprintf(reply, n, "Error: mv: cannot create the parent of %s", dst);
-            return false;
-        }
-    }
-    if (!sdcard_rename(src, dst)) {
-        snprintf(reply, n, "Error: mv failed: %s -> %s", src, dst);
-        return false;
-    }
-    snprintf(reply, n, "Moved: %s -> %s", src, dst);
-    return true;
+    return mv_op(args, reply, n);
 }
 
 // "up+a" -> PAD_UP | PAD_A; false (with *bad set) on an unknown or empty

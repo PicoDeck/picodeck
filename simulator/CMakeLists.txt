@@ -429,6 +429,8 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/text_wrap.c
     ${CMAKE_CURRENT_SOURCE_DIR}/stubs/dev_commands_stub.c
     ${PICODECK_ROOT}/src/dev_ops.c
+    ${PICODECK_ROOT}/src/os/mv_op.c
+    ${PICODECK_ROOT}/src/os/mv_path.c
     ${PICODECK_ROOT}/src/fonts/font.c
     ${PICODECK_ROOT}/src/fonts/font_registry.c
     ${PICODECK_ROOT}/src/fonts/font_6x8.c

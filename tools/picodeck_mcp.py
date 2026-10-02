@@ -1143,11 +1143,21 @@ async def list_apps(device: str | None = None, include_hidden: bool = False) -> 
 
 
 @mcp.tool()
-async def launch_app(app_name: str, device: str | None = None) -> str:
+async def launch_app(app_name: str, device: str | None = None,
+                     hidden: str | None = None) -> str:
     """Launch an app by name on the simulator. Non-blocking — returns immediately.
+
+    hidden="test" or "dev" launches the app staged by push_app(hidden=...)
+    from only /apps/.test or /apps/.dev (`launch .test/<name>`), so a listed
+    app of the same name cannot run in its place. Without it, listed apps
+    come first, then the hidden roots.
 
     Use wait_for_exit() to wait for the app to finish.
     """
+    if hidden not in (None, "test", "dev"):
+        return f"Error: hidden must be 'test', 'dev' or None, not {hidden!r}"
+    if hidden:
+        app_name = f".{hidden}/{app_name}"
     port = resolve_port(device)
     if port:
         try:
@@ -2137,6 +2147,15 @@ def _push_app_wanted(rel_posix: str, name: str) -> bool:
     return True
 
 
+def _hidden_name_ok(name: str) -> bool:
+    """app_hidden_name_valid (src/os/app_manifest.c): what the firmware looks
+    up under /apps/.test and /apps/.dev."""
+    return (0 < len(name) <= 63 and not name.startswith(".")
+            and not name.endswith(".") and ".." not in name
+            and not any(c in "/\\" or ord(c) < 0x20 or ord(c) == 0x7f
+                        for c in name))
+
+
 @mcp.tool()
 async def push_app(local_dir: str, app_name: str = "",
                    device: str | None = None,
@@ -2167,8 +2186,10 @@ async def push_app(local_dir: str, app_name: str = "",
         return f"Error: invalid app name: {name}"
     if hidden not in (None, "test", "dev"):
         return f"Error: hidden must be 'test', 'dev' or None, not {hidden!r}"
-    if hidden and name.startswith("."):
-        return f"Error: a hidden app's name cannot start with '.': {name}"
+    if hidden and not _hidden_name_ok(name):
+        return (f"Error: not a valid hidden app name: {name!r} (1-63 characters, "
+                "no / or \\ or control characters, no '..', no leading or "
+                "trailing '.')")
     rel_dir = f"apps/.{hidden}/{name}" if hidden else f"apps/{name}"
     if not any((src / probe).exists()
                for probe in ("app.json", "main.lua", "main.elf")):
