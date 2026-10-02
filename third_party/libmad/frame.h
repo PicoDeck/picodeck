@@ -64,16 +64,31 @@ struct mad_header {
     mad_timer_t duration;			/* audio playing time of frame */
 };
 
+/* PicoDeck: the frame's big arrays, which the caller binds
+   (mad_frame_bind) so that each can live where it is cheapest to reach:
+   SRAM or QMI PSRAM through the XIP cache the app's core shares (issue
+   #28). struct mad_frame_mem holds all of them. sbsample holds one
+   granule: each is synthesised before the next is decoded. */
+struct mad_frame_mem {
+    mad_fixed_t sbsample[2][18][32];	/* synthesis subband filter samples */
+    mad_fixed_t overlap[2][32][18];	/* Layer III block overlap data */
+    mad_fixed_t xr_raw[576 * 2];
+    mad_fixed_t tmp[576];
+};
+
 struct mad_frame {
     struct mad_header header;		/* MPEG audio header */
 
     int options;				/* decoding options (from stream) */
 
-    mad_fixed_t sbsample[2][36][32];	/* synthesis subband filter samples */
-    mad_fixed_t overlap[2][32][18];	/* Layer III block overlap data */
+    mad_fixed_t (*sbsample)[18][32];	/* [2] (mad_frame_bind) */
+    mad_fixed_t (*overlap)[32][18];	/* [2] */
+    mad_fixed_t *xr_raw;		/* [576 * 2] */
+    mad_fixed_t *tmp;			/* [576] */
 
-    mad_fixed_t xr_raw[576 * 2];
-    mad_fixed_t tmp[576];
+    /* PicoDeck: a Layer III frame between mad_frame_decode_begin() and
+       mad_frame_decode_end() (layer3.c's struct l3_ctx) */
+    unsigned char l3[320] __attribute__((aligned(4)));
 };
 
 # define MAD_NCHANNELS(header)		((header)->mode ? 2 : 1)
@@ -111,10 +126,24 @@ void mad_header_init(struct mad_header *);
 
 int mad_header_decode(struct mad_header *, struct mad_stream *);
 
+/* PicoDeck: point the frame's arrays at mem's; before mad_frame_init()
+   (which clears them), and again for any array moved elsewhere. */
+void mad_frame_bind(struct mad_frame *, struct mad_frame_mem *);
 void mad_frame_init(struct mad_frame *);
 void mad_frame_finish(struct mad_frame *);
 
-int mad_frame_decode(struct mad_frame *, struct mad_stream *);
+/* PicoDeck: a frame is decoded a granule at a time (mad_frame_decode is
+   gone: the frame's sbsample holds one granule). After
+   mad_frame_decode_begin() returns 0, decode granules 0 ..
+   mad_frame_granules() - 1 in order, synthesising each
+   (mad_synth_granule) before decoding the next (stop at the first that
+   fails), then mad_frame_decode_end() (its result is the frame's). Between
+   the calls the stream's buffer must stay where it is. */
+int mad_frame_decode_begin(struct mad_frame *, struct mad_stream *);
+int mad_frame_decode_granule(struct mad_frame *, struct mad_stream *,
+                             unsigned int);
+int mad_frame_decode_end(struct mad_frame *, struct mad_stream *);
+unsigned int mad_frame_granules(struct mad_frame const *);
 
 void mad_frame_mute(struct mad_frame *);
 

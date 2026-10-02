@@ -64,12 +64,6 @@ unsigned long const bitrate_table[5][15] PROGMEM = {
 static
 unsigned int const samplerate_table[3] PROGMEM = { 44100, 48000, 32000 };
 
-static
-int (*const decoder_table[3])(struct mad_stream *, struct mad_frame *) = {
-    NULL, //mad_layer_I,
-    NULL, //mad_layer_II,
-    mad_layer_III
-};
 
 /*
     NAME:	header->init()
@@ -97,6 +91,13 @@ void mad_header_init(struct mad_header *header) {
     NAME:	frame->init()
     DESCRIPTION:	initialize frame struct
 */
+void mad_frame_bind(struct mad_frame *frame, struct mad_frame_mem *mem) {
+    frame->sbsample = mem->sbsample;
+    frame->overlap  = mem->overlap;
+    frame->xr_raw   = mem->xr_raw;
+    frame->tmp      = mem->tmp;
+}
+
 void mad_frame_init(struct mad_frame *frame) {
     mad_header_init(&frame->header);
 
@@ -441,48 +442,31 @@ fail:
 }
 
 /*
-    NAME:	frame->decode()
-    DESCRIPTION:	decode a single frame from a bitstream
+    NAME:	frame->decode_begin()
+    DESCRIPTION:	PicoDeck: begin decoding a Layer III frame a granule at a
+		time (the header and side information); see frame.h
 */
-int mad_frame_decode(struct mad_frame *frame, struct mad_stream *stream) {
+int mad_frame_decode_begin(struct mad_frame *frame, struct mad_stream *stream) {
     frame->options = stream->options;
-
-    /* header() */
-    /* error_check() */
 
     if (!(frame->header.flags & MAD_FLAG_INCOMPLETE) &&
             mad_header_decode(&frame->header, stream) == -1) {
         goto fail;
     }
 
-    /* audio_data() */
-
     frame->header.flags &= ~MAD_FLAG_INCOMPLETE;
 
     // EFP3 - On non-MP3 frames, abort instead of crash..we removed MP-II/MP-I decoders
-    if (!decoder_table[frame->header.layer - 1]) {
+    if (frame->header.layer != MAD_LAYER_III) {
         goto fail;
     }
 
-    if (decoder_table[frame->header.layer - 1](stream, frame) == -1) {
+    if (mad_layer_III_begin(stream, frame) == -1) {
         if (!MAD_RECOVERABLE(stream->error)) {
             stream->next_frame = stream->this_frame;
         }
 
         goto fail;
-    }
-
-    /* ancillary_data() */
-
-    if (frame->header.layer != MAD_LAYER_III) {
-        struct mad_bitptr next_frame;
-
-        mad_bit_init(&next_frame, stream->next_frame);
-
-        stream->anc_ptr    = stream->ptr;
-        stream->anc_bitlen = mad_bit_length(&stream->ptr, &next_frame);
-
-        mad_bit_finish(&next_frame);
     }
 
     return 0;
@@ -493,13 +477,48 @@ fail:
 }
 
 /*
+    NAME:	frame->decode_granule()
+    DESCRIPTION:	PicoDeck: decode granule gr of the frame begun
+*/
+int mad_frame_decode_granule(struct mad_frame *frame, struct mad_stream *stream,
+                             unsigned int gr) {
+    return mad_layer_III_granule(stream, frame, gr);
+}
+
+/*
+    NAME:	frame->decode_end()
+    DESCRIPTION:	PicoDeck: end the frame begun; its result
+*/
+int mad_frame_decode_end(struct mad_frame *frame, struct mad_stream *stream) {
+    if (mad_layer_III_end(stream, frame) == -1) {
+        if (!MAD_RECOVERABLE(stream->error)) {
+            stream->next_frame = stream->this_frame;
+        }
+
+        stream->anc_bitlen = 0;
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
+    NAME:	frame->granules()
+    DESCRIPTION:	PicoDeck: granules in the frame begun (2 for MPEG-1, 1 for
+		MPEG-2 and 2.5)
+*/
+unsigned int mad_frame_granules(struct mad_frame const *frame) {
+    return mad_layer_III_granules(frame);
+}
+
+/*
     NAME:	frame->mute()
     DESCRIPTION:	zero all subband values so the frame becomes silent
 */
 void mad_frame_mute(struct mad_frame *frame) {
     unsigned int s, sb;
 
-    for (s = 0; s < 36; ++s) {
+    for (s = 0; s < 18; ++s) {
         for (sb = 0; sb < 32; ++sb) {
             frame->sbsample[0][s][sb] =
                 frame->sbsample[1][s][sb] = 0;

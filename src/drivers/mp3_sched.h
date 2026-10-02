@@ -20,8 +20,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define MP3_SCHED_BURST    3u     // frames per update, either reason
-#define MP3_SCHED_SEED_US  3000u  // first estimate of an idle frame's decode
+#define MP3_SCHED_BURST    6u     // granules per update, either reason
+#define MP3_SCHED_SEED_US  3000u  // first estimate of an idle granule's decode
 
 typedef enum {
     MP3_SCHED_NONE,   // decode nothing more in this update

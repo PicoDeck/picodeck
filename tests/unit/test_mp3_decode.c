@@ -85,28 +85,34 @@ static mp3_sched_stats_t sched(void) {
   return s;
 }
 
-// libmad straight over the whole file: channel 0 of every frame.
+// libmad straight over the whole file: channel 0 of every granule.
 static uint32_t reference_decode(blob_t b, int16_t *out, uint32_t cap) {
   uint8_t *buf = calloc(1, b.len + MAD_BUFFER_GUARD);
   memcpy(buf, b.data, b.len);
   struct mad_stream *st = malloc(sizeof *st);
   struct mad_frame *fr = malloc(sizeof *fr);
+  struct mad_frame_mem *fm = malloc(sizeof *fm);
   struct mad_synth *sy = malloc(sizeof *sy);
   mad_stream_init(st);
+  mad_frame_bind(fr, fm);
   mad_frame_init(fr);
   mad_synth_init(sy);
   mad_stream_buffer(st, buf, b.len + MAD_BUFFER_GUARD);
   uint32_t n = 0;
   for (;;) {
-    if (mad_frame_decode(fr, st) != 0) {
+    if (mad_frame_decode_begin(fr, st) != 0) {
       if (MAD_RECOVERABLE(st->error)) continue;
       break;
     }
-    mad_synth_frame(sy, fr);
-    for (unsigned i = 0; i < sy->pcm.length && n < cap; i++)
-      out[n++] = sy->pcm.samplesX[i][0];
+    for (unsigned gr = 0; gr < mad_frame_granules(fr); gr++) {
+      if (mad_frame_decode_granule(fr, st, gr) != 0) break;
+      mad_synth_granule(sy, fr, gr);
+      for (unsigned i = 0; i < sy->pcm.length && n < cap; i++)
+        out[n++] = sy->pcm.samplesX[i][0];
+    }
+    mad_frame_decode_end(fr, st);
   }
-  free(st); free(fr); free(sy); free(buf);
+  free(st); free(fr); free(fm); free(sy); free(buf);
   return n;
 }
 
@@ -184,7 +190,8 @@ static void test_decoding_ahead_needs_core0_idle(void) {
   printf("  frames decoded ahead: %u with Core 0 working, %u idle\n", working, idle);
   CHECK(idle > working);
   CHECK(sched().idle_frames > 0);
-  CHECK_EQ_U32(sched().idle_frames, idle - working);
+  // (The decoder's unit is a granule: two in each of these frames.)
+  CHECK_EQ_U32(sched().idle_frames, 2 * (idle - working));
   mp3_player_stop(p);
 
   // A window shorter than a frame's estimate starts nothing.
