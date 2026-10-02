@@ -168,7 +168,7 @@ Verify an RSA signature (PKCS#1 v1.5) against a SHA-256 hash.
 - **Parameters:**
   - `pubkeyBlob` (string): RSA public key in SSH wire format (string "ssh-rsa" + mpint e + mpint n)
   - `sigBlob` (string): Raw PKCS#1 v1.5 signature bytes, exactly the modulus length (any other length returns `false`)
-  - `hash` (string): 32-byte SHA-256 hash to verify against (any other length raises an error)
+  - `hash` (string): the 32-byte SHA-256 digest of the signed data (for an SSH host key, SHA-256 of the exchange hash H, not H itself); any other length raises an error
 - **Returns:** (boolean) `true` if the signature is valid
 
 ```lua
@@ -184,7 +184,7 @@ Verify an ECDSA P-256 signature against a SHA-256 hash.
 - **Parameters:**
   - `pubkeyBlob` (string): ECDSA public key in SSH wire format (string "ecdsa-sha2-nistp256" + string "nistp256" + string Q)
   - `sigBlob` (string): The inner signature blob, mpint r + mpint s, without the outer algorithm-name wrapper of an SSH signature
-  - `hash` (string): 32-byte SHA-256 hash to verify against (any other length raises an error)
+  - `hash` (string): the 32-byte SHA-256 digest of the signed data (for an SSH host key, SHA-256 of the exchange hash H, not H itself); any other length raises an error
 - **Returns:** (boolean) `true` if the signature is valid
 
 ```lua

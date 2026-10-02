@@ -29,6 +29,9 @@
 #define MBEDTLS_RSA_C
 #define MBEDTLS_PKCS1_V15
 #define MBEDTLS_PKCS1_V21
+// AES, CTR, ECDH and Curve25519 are for tests/unit/test_crypto_verify.c (it
+// builds all of crypto.c); the simulator, which has no crypto, links them too:
+// about 5 KB of Curve25519 code, unused.
 #define MBEDTLS_AES_C
 #define MBEDTLS_CIPHER_MODE_CTR
 #define MBEDTLS_ECDH_C

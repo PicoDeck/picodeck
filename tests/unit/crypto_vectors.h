@@ -3,8 +3,9 @@
 #include <stdint.h>
 
 // Vectors from a real OpenSSH keypair (RSA-1024, ECDSA P-256), all over the
-// 32-byte SHA-256 of EC_HASH's message: SSH-format public keys, the inner
-// signature blobs (ECDSA mpint(r)+mpint(s); RSA raw PKCS#1 v1.5), and the hash.
+// 32-byte VEC_HASH, the SHA-256 digest both signatures were made over: the
+// SSH-format public keys, the inner signature blobs (ECDSA mpint(r)+mpint(s);
+// RSA raw PKCS#1 v1.5), and the hash.
 static const uint8_t __attribute__((unused)) EC_SSH_PUB[] = {
     0x00, 0x00, 0x00, 0x13, 0x65, 0x63, 0x64, 0x73, 0x61, 0x2d, 0x73, 0x68, 0x61, 0x32, 0x2d, 0x6e,
     0x69, 0x73, 0x74, 0x70, 0x32, 0x35, 0x36, 0x00, 0x00, 0x00, 0x08, 0x6e, 0x69, 0x73, 0x74, 0x70,

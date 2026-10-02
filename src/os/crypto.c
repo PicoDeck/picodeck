@@ -1,6 +1,6 @@
 #include "crypto.h"
 #include "ssh_blob.h"
-#include "lua_psram_alloc.h"
+#include "umm_malloc.h"
 
 #include "mbedtls/sha256.h"
 #include "mbedtls/sha1.h"

@@ -3,7 +3,7 @@
 // blobs (huge lengths, one past the end, truncation, zero-length mpints) are
 // rejected without reading outside the buffer.  Each blob is copied to an
 // exact-size heap block so ASan sees any over-read.  The verify step itself
-// needs mbedTLS (crypto.c) and is covered by tests/e2e and the device vectors.
+// needs mbedTLS (crypto.c) and is covered by test_crypto_verify.c.
 #include <stdlib.h>
 
 #include "check.h"
@@ -108,15 +108,39 @@ static void test_bad_lengths(void) {
     CHECK(!with_len(rsa_key, RSA_SSH_PUB, sizeof RSA_SSH_PUB, 18, 130));
 }
 
-// The wrap case the old `sp + r_len > send` check missed: r_len so large the
-// pointer wraps past the start, with a plausible 4-byte s length where the
-// wrapped pointer lands (inside the buffer), so a second read would follow.
+// The wrap case the old `sp + r_len > send` check missed: on the 32-bit
+// target r_len = 0xFFFFFFF0 puts the pointer 12 bytes before the buffer, and
+// only 0xFFFFFFFC lands back at blob+0, where a second length read follows.
+// The parser works on uint32_t offsets, so these fail the same way on a
+// 64-bit host.
 static void test_wrap_sig(void) {
     uint8_t blob[16] = {0};
     put32(blob, 0xFFFFFFF0u);
     CHECK(!ec_sig(blob, sizeof blob));
     put32(blob, 0xFFFFFFFCu);
     CHECK(!ec_sig(blob, sizeof blob));
+}
+
+// The regressed shape `off + 4 + n > len` wraps in uint32_t for n >= 2^32 - 4
+// - off: a wrapped sum is small, so it would accept.  Hit it at every field
+// position (offsets 0, 4 + r, ...) of a signature and of the keys.
+static void test_wrap_offset(void) {
+    static const uint32_t sig_off[] = { 0, 36 };
+    static const uint32_t ec_off[] = { 0, 23, 35 };
+    static const uint32_t rsa_off[] = { 0, 11, 18 };
+    for (unsigned i = 0; i < 3; i++) {
+        // 2^32 - 4 - off, +1, +2: the sum off + 4 + n wraps to 0, 1, 2.
+        for (unsigned j = 0; j < 2; j++) {
+            uint32_t w = 0u - 4u - sig_off[j];
+            CHECK(!with_len(ec_sig, EC_SSH_SIG, sizeof EC_SSH_SIG, sig_off[j], w + i));
+        }
+        for (unsigned j = 0; j < 3; j++) {
+            CHECK(!with_len(ec_key, EC_SSH_PUB, sizeof EC_SSH_PUB, ec_off[j],
+                            0u - 4u - ec_off[j] + i));
+            CHECK(!with_len(rsa_key, RSA_SSH_PUB, sizeof RSA_SSH_PUB, rsa_off[j],
+                            0u - 4u - rsa_off[j] + i));
+        }
+    }
 }
 
 // Zero-length mpints parse (the verifier then rejects the zero value).
@@ -144,6 +168,7 @@ int main(void) {
     test_truncation();
     test_bad_lengths();
     test_wrap_sig();
+    test_wrap_offset();
     test_zero_length();
     return check_report("test_ssh_blob");
 }

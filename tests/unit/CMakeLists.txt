@@ -323,8 +323,6 @@ picodeck_unit_test(test_crypto_verify
                 SOURCES ${SRC}/os/crypto.c ${SRC}/os/ssh_blob.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_crypto_verify PRIVATE picodeck_host_mbedtls)
-target_include_directories(test_crypto_verify PRIVATE ${LUA_SRC})
-target_compile_options(test_crypto_verify PRIVATE -include umm_malloc.h)
 
 picodeck_unit_test(test_small_alloc SOURCES ${SRC}/os/small_alloc.c)
 
