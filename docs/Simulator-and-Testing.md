@@ -54,7 +54,8 @@ title: "Simulator and Testing"
   `Pad: up+a`. The MCP `pad` tool sends it (`pad("home, up, a")` presses each
   in turn).
 - `bt` reports Bluetooth (`available`, `enabled`, `power`, `scanning`,
-  `link`, `peer`, `paired`, `found`, then `note="..."`); `bt on|off`, `bt
+  `link`, `peer`, `ready`, `profile`, `reports`, `paired`, `found`,
+  `radio_in_use`, `bus_errors`, then `note="..."`); `bt on|off`, `bt
   scan`, `bt scan stop`, `bt found`, `bt paired`, `bt connect <addr>`, `bt
   disconnect` and `bt forget <addr>` do what the Bluetooth page does.
 - While an app runs: `reboot` and `reboot-flash` act at once (no teardown);

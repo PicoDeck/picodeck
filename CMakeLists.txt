@@ -469,6 +469,9 @@ if(PICO_BOARD STREQUAL "pimoroni_pico_plus2_w_rp2350" OR
         MG_ENABLE_DRIVER_PICO_W=1
         MG_ENABLE_TCPIP_DRIVER_INIT=0
         CYW43_LWIP=0
+        # wifi_bus_clock() retunes the CYW43's PIO SPI divider per clk_sys;
+        # dynamic, so a re-init of the bus picks up the current divider too.
+        CYW43_PIO_CLOCK_DIV_DYNAMIC=1
     )
     message(STATUS "WiFi enabled for board: ${PICO_BOARD} (Mongoose TCPIP)")
 
@@ -489,16 +492,13 @@ if(PICO_BOARD STREQUAL "pimoroni_pico_plus2_w_rp2350" OR
         target_sources(picodeck PRIVATE src/drivers/bt_pad.c)
         target_include_directories(picodeck PRIVATE src/drivers/btstack)
         target_compile_definitions(picodeck PRIVATE PICODECK_BT=1)
-        # HAVE_MALLOC: hci_stack_t and BTstack's pooled objects come from
-        # umm_malloc (QMI PSRAM), not the ~3 KB SRAM heap (btstack_config.h).
-        # The CYW43's BT shared-bus driver too: its firmware download takes
-        # ~940 B of buffers, a third of the SRAM heap.
+        # BTstack's pools are static (btstack_config.h, no HAVE_MALLOC) and
+        # all of its static state goes to QMI PSRAM (bt_psram.ld). The
+        # CYW43's BT shared-bus driver mallocs ~940 B for its firmware
+        # download, a third of the SRAM heap: umm instead.
         set_source_files_properties(
-            ${PICO_BTSTACK_PATH}/src/hci.c
-            ${PICO_BTSTACK_PATH}/src/btstack_memory.c
             ${PICO_SDK_PATH}/src/rp2_common/pico_cyw43_driver/cybt_shared_bus/cybt_shared_bus.c
             PROPERTIES COMPILE_DEFINITIONS "malloc=bt_pad_malloc;free=bt_pad_free")
-        # ...and their static state goes to QMI PSRAM too (bt_psram.ld).
         set(_bt_ld ${CMAKE_SOURCE_DIR}/src/drivers/btstack/bt_psram.ld)
         target_link_options(picodeck PRIVATE "LINKER:-T,${_bt_ld}")
         set_property(TARGET picodeck APPEND PROPERTY LINK_DEPENDS ${_bt_ld})

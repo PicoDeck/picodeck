@@ -5,13 +5,13 @@
 // Classic HID host on the CYW43, nothing else. ENABLE_CLASSIC comes from the
 // SDK's pico_btstack_classic target.
 //
-// Memory: HAVE_MALLOC, and CMakeLists.txt builds hci.c and btstack_memory.c
-// with malloc/free renamed to bt_pad_malloc/bt_pad_free (umm_malloc, QMI
-// PSRAM): hci_stack_t (with its packet buffer) and every pooled object
-// (connections, L2CAP channels, the HID host connection) live in PSRAM, not
-// in the ~3 KB of SRAM the firmware has left. What stays static in SRAM is
-// the SDK transport's incoming packet buffer (HCI_INCOMING_PACKET_BUFFER_SIZE,
-// from HCI_ACL_PAYLOAD_SIZE below) and the modules' small state.
+// Memory: no HAVE_MALLOC. Every pool BTstack uses is static (MAX_NR_* below)
+// and hci_stack_t is hci.c's static one, so nothing is allocated at run time,
+// least of all from BTstack's callbacks in Core 0's interrupt: and all of
+// that .bss (with the SDK transport's incoming packet buffer and the modules'
+// small state) is linked into QMI PSRAM by bt_psram.ld, not into the ~3 KB
+// of SRAM the firmware has left. The CYW43 shared-bus driver's firmware
+// download buffers come from umm (CMakeLists.txt renames its malloc).
 
 // ── Features ────────────────────────────────────────────────────────────────
 #define ENABLE_LOG_ERROR
@@ -37,8 +37,14 @@
 #define HCI_HOST_SCO_PACKET_LEN 120
 #define HCI_HOST_SCO_PACKET_NUM 3
 
-// ── Memory ──────────────────────────────────────────────────────────────────
-#define HAVE_MALLOC
+// ── Memory (static pools) ───────────────────────────────────────────────────
+// One pad at a time: its ACL, HID control + interrupt and the SDP query's
+// channel, plus room for a second connection being refused or closing.
+// Undefined pools are 0 (btstack_memory.c).
+#define MAX_NR_HCI_CONNECTIONS 2
+#define MAX_NR_L2CAP_CHANNELS 4
+#define MAX_NR_L2CAP_SERVICES 3
+#define MAX_NR_HID_HOST_CONNECTIONS 2
 
 // Link keys in the TLV store bt_pad.c keeps on the SD card: the 4 paired
 // pads (BT_PAD_PAIRED_MAX) and spare room, so a key bt_pad.c has not

@@ -14,6 +14,7 @@
 #include "mongoose.h"
 #ifndef PICODECK_SIM_FIRMWARE_NET
 #include "pico/cyw43_arch.h"
+#include "pico/cyw43_driver.h" // cyw43_set_pio_clkdiv_int_frac8
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
 #endif
@@ -764,19 +765,33 @@ static int cyw43_bus_sm(PIO *pio_out) {
   return -1;
 }
 
+// Times the bus state machine was not found (wifi_bus_errors()).
+static uint32_t s_bus_errors;
+
 static uint32_t bus_clock(void *arg) {
   uint32_t khz = *(const uint32_t *)arg;
+  uint32_t div = (khz + 99999u) / 100000u;
+  if (div < 2)
+    div = 2;
+  // For the next cyw43_spi_init (a re-init after a chip power-cycle), and
+  // for the running state machine (the SDK applies it only at init).
+  cyw43_set_pio_clkdiv_int_frac8(div, 0);
   PIO pio;
   int sm = cyw43_bus_sm(&pio);
   if (sm < 0)
     return 1;
-  uint32_t div = (khz + 99999u) / 100000u;
-  if (div < 2)
-    div = 2;
   pio_sm_set_clkdiv_int_frac8(pio, (uint)sm, div, 0);
   return 0;
 }
 #endif
+
+uint32_t wifi_bus_errors(void) {
+#ifndef PICODECK_SIM_FIRMWARE_NET
+  return s_bus_errors;
+#else
+  return 0;
+#endif
+}
 
 void wifi_bus_hold(bool hold) {
 #ifndef PICODECK_SIM_FIRMWARE_NET
@@ -797,8 +812,12 @@ void wifi_bus_clock(uint32_t khz) {
   if (!s_available)
     return;
   if (async_context_execute_sync(cyw43_arch_async_context(), bus_clock,
-                                 &khz) != 0)
-    printf("WiFi: CYW43 bus state machine not found\n");
+                                 &khz) != 0) {
+    // Its divider is then the one before: out of spec above 200 MHz.
+    s_bus_errors++;
+    printf("WiFi: CYW43 bus state machine not found (%lu kHz)\n",
+           (unsigned long)khz);
+  }
 #else
   (void)khz;
 #endif

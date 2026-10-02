@@ -3,6 +3,7 @@
 #include "dev_commands.h"
 #include "drivers/audio.h"
 #include "drivers/bt_pad.h"
+#include "drivers/wifi.h"
 #include "drivers/mp3_player.h"
 #include "drivers/pad_source.h"
 #include "drivers/sdcard.h"
@@ -324,12 +325,12 @@ bool dev_op_bt(char *args, char *reply, size_t n) {
     snprintf(reply, n,
              "BT: available=%d enabled=%d power=%s scanning=%d link=%s "
              "peer=%s ready=%d profile=%s reports=%lu paired=%u found=%u "
-             "radio_in_use=%d note=\"%s\"",
+             "radio_in_use=%d bus_errors=%lu note=\"%s\"",
              st.available, st.enabled, bt_power_name(st.power), st.scanning,
              bt_link_name(st.link), st.link ? a : "-", st.pad_ready,
              st.profile ? st.profile : "-", (unsigned long)st.reports,
              (unsigned)st.n_paired, (unsigned)st.n_found, st.radio_in_use,
-             st.note);
+             (unsigned long)wifi_bus_errors(), st.note);
     return true;
   }
   if (strcmp(args, "on") == 0 || strcmp(args, "off") == 0) {

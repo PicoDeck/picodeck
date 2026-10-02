@@ -73,8 +73,9 @@ static async_context_t *s_ctx; // the CYW43 driver's (btstack_cyw43_init)
 static bt_t *s_bt;
 static bool s_enabled;
 
-// ── Allocator for BTstack (HAVE_MALLOC; CMakeLists.txt renames hci.c's and
-// btstack_memory.c's malloc/free to these) ───────────────────────────────────
+// ── Allocator for the CYW43's BT firmware download (cybt_shared_bus.c's
+// malloc/free are renamed to these by CMakeLists.txt; BTstack itself uses
+// static pools) ───────────────────────────────────────────────────────────
 
 void *bt_pad_malloc(size_t n) { return umm_malloc(n); }
 void bt_pad_free(void *p) { umm_free(p); }

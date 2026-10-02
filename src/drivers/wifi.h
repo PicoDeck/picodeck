@@ -103,6 +103,10 @@ void wifi_resume_radio(void);
 // driver's pending work runs then). No-ops without the CYW43.
 void wifi_bus_hold(bool hold);
 void wifi_bus_clock(uint32_t khz);
+// How often wifi_bus_clock() could not find the bus's state machine (its
+// divider then stays the old one: out of spec above 200 MHz). The `bt`
+// dev command reports it; the hardware tests require 0.
+uint32_t wifi_bus_errors(void);
 
 // How long a caller should wait for wifi_hw_disconnected() after
 // wifi_disconnect(): Core 1 drains the request on its next tick, but may be
