@@ -62,7 +62,7 @@ def _tap(sim, key, wait=0.5):
 
 
 def _type(sim, text):
-    # Slower than 0.35 s a char and the console drops some.
+    # Typing faster than 0.35 s a char drops some.
     for c in text:
         _tap(sim, c, 0.35)
 
@@ -124,12 +124,13 @@ def test_backspace_still_edits_the_console(simulator):
     CELL = 12
     sim = simulator
     _start(sim, load=False)
-    _type(sim, "xyz")
-    typed = _shot(sim)
+    _type(sim, "xy")
+    _tap(sim, "z", 0.1)      # shot soon after the key, inside the cursor's
+    typed = _shot(sim)       # solid (just-moved) window
     _tap(sim, "backspace")
     erased = _shot(sim)
     assert _diff_box(typed, erased)[0] > CELL        # the z is gone
-    _type(sim, "z")
+    _tap(sim, "z", 0.1)
     again = _shot(sim)
     assert _diff_box(typed, again)[0] <= CELL        # back to xyz, cursor aside
 

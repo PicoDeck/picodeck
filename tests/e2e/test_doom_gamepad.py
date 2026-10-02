@@ -7,9 +7,10 @@ E1M1 and read the effect off the screen: ammo for fire and weapon changes, a
 share of changed view pixels for turning, strafing and Doom's menu.
 
 Injected character keys tap for one poll, too short for Doom's 35 Hz tic, so
-the rebinding test swaps button keys (F3, F4) rather than letters. The `pad`
-and `keydown` dev commands are not served while a native app runs in the
-simulator, so every input here is a button-key click.
+the rebinding test swaps button keys (F3, F4) rather than letters. Only the
+`pad` and `keydown` dev commands are not served while a native app runs in the
+simulator; button keys reach it as clicks, or as inject_button press/release
+for a held key.
 """
 
 import json
@@ -100,6 +101,14 @@ def _launch(sim, rebind=None):
     _settle(sim)
 
 
+def _assert_in_a_level(sim):
+    """A level under nobody's control holds still; the title's demo, which
+    cycles in behind a menu, never does."""
+    v = _view(sim)
+    time.sleep(1.5)
+    assert not _moved(v, _view(sim)), "no level is running (a demo, or a menu)"
+
+
 def _start_game(sim, rebind=None):
     _launch(sim, rebind)
     for _ in range(5):  # title, main menu, episode, skill: Enter
@@ -107,6 +116,7 @@ def _start_game(sim, rebind=None):
         _settle(sim)
     time.sleep(2)
     _settle(sim)
+    _assert_in_a_level(sim)
 
 
 def test_default_bindings(simulator):
@@ -139,24 +149,66 @@ def test_start_and_esc_toggle_the_menu(simulator, key):
     assert not _moved(v, _view(sim)), f"a second {key} did not close it"
 
 
+def _to_the_skill_menu(sim, taps=3):
+    """F4 (A) alone: title -> main menu, New Game, episode. The next press
+    picks the skill and loads the level."""
+    for _ in range(taps):
+        _tap(sim, "f4")
+
+
 def test_a_confirms_in_the_menu(simulator):
-    """A (F4) alone takes the title screen through New Game, the episode and
-    the skill menus, and starts the level."""
+    """A alone takes the title screen through New Game, the episode and the
+    skill menus, into a level the player controls. On a build where A is fire
+    only, each F4 reopens the main menu and the title cycles into its demo,
+    which never holds still and does not answer the D-pad."""
     sim = simulator
     _launch(sim)
-    for _ in range(4):        # title, main menu, New Game, episode
-        _tap(sim, "f4")
-    v = _view(sim)            # the skill menu
-    _tap(sim, "f4")           # Hurt Me Plenty: the level loads
-    deadline = time.time() + 60
-    while not _moved(v, _view(sim)) and time.time() < deadline:
-        time.sleep(1)
-    assert _moved(v, _view(sim)), "A did not start the game from the menu"
+    _to_the_skill_menu(sim, 4)           # the fourth picks the skill
     time.sleep(2)
     _settle(sim)
+    _assert_in_a_level(sim)
+    v = _view(sim)
+    _tap(sim, "right")                   # and the player turns
+    assert _moved(v, _view(sim))
     a0 = _ammo(sim)
-    _tap(sim, "f4")           # a press that began in the game fires
+    _tap(sim, "f4")                      # a press that began in the game fires
     assert _ammo(sim) != a0
+
+
+def test_a_held_from_the_menu_into_the_level_does_not_fire(simulator):
+    """The A press that picks the skill is still down when the level starts:
+    it is the menu's, and must not fire until it is released and pressed
+    again."""
+    sim = simulator
+    _launch(sim)
+    _to_the_skill_menu(sim)
+    sim.call("inject_button", {"button": "f4", "action": "press"})
+    try:
+        time.sleep(3)
+        _settle(sim)
+        a0 = _ammo(sim)
+        time.sleep(3)
+        assert _ammo(sim) == a0, "the held menu press fired"
+    finally:
+        sim.call("inject_button", {"button": "f4", "action": "release"})
+    time.sleep(1)
+    assert _ammo(sim) == a0
+    _tap(sim, "f4")
+    assert _ammo(sim) != a0
+
+
+def test_a_answers_yes_at_the_quit_prompt(simulator):
+    """Start opens the menu, Up wraps to Quit Game, A raises the prompt and A
+    answers yes: the 'y' path end to end, and the app returns."""
+    sim = simulator
+    _start_game(sim)
+    _tap(sim, "f1")
+    _settle(sim)
+    _tap(sim, "up")
+    _tap(sim, "f4")
+    _settle(sim)
+    _tap(sim, "f4")
+    sim.wait_for_exit(timeout=60)
 
 
 def test_follows_a_rebinding(simulator):
