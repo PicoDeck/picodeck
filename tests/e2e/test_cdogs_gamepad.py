@@ -4,7 +4,10 @@ The shim logs every SDL key edge as `KEYEDGE down|up <scancode>` when it is
 built with -DPICODECK_KEY_TRACE, and these tests assert on those lines. They
 need that trace build of main.elf:
 
-    PICODECK_CDOGS_TRACE_ELF=/path/to/main.elf   (the trace build)
+    PICODECK_CDOGS_TRACE_ELF=/path/to/main.elf   (the trace build; in the cdogs repo:
+                                                  `touch picodeck_sdl_impl.c;
+                                                  make EXTRA_CFLAGS=-DPICODECK_KEY_TRACE`,
+                                                  then copy main.elf away and rebuild)
     PICODECK_CDOGS_DIR=/path/to/cdogs            (default ~/Projects/PicoDeck/cdogs;
                                                   app.json and data/ come from it)
 
@@ -92,20 +95,28 @@ def _tap(sim, key, want=None):
     return e
 
 
-def _launch_to_menu(sim):
-    """Launch C-Dogs once per simulator and wait for its main menu."""
-    if getattr(sim, "launched", False):
-        return
+def _fresh_menu(sim):
+    """(Re)start C-Dogs and wait for its main-menu marker in the log, so a test
+    never runs against an app a failed drive left stuck or not pumping."""
+    if sim.call("get_running_app").get("running"):
+        sim.exit_app()
+        try:
+            sim.wait_for_exit(timeout=30)
+        except Exception:
+            pass
+    seq = sim.get_log_buffer(tail=1)["next_seq"]
     sim.launch_app("cdogs")
     deadline = time.time() + 120
     while time.time() < deadline:
-        txt = M._combined_output(sim)
-        if M.MENU_READY_MARKER in txt:
+        r = sim.get_log_buffer(since_seq=seq)
+        if any(M.MENU_READY_MARKER in l["text"] for l in r["lines"]):
             break
+        if r.get("more"):
+            seq = r["next_seq"]
         time.sleep(0.2)
-    assert M.MENU_READY_MARKER in M._combined_output(sim)
+    else:
+        pytest.fail("C-Dogs never reached its main menu")
     time.sleep(2)
-    sim.launched = True
 
 
 def _check_pad_keys(sim):
@@ -142,11 +153,17 @@ def _check_pad_keys(sim):
         assert e.count(("down", S)) == 1, e
 
 
-@pytest.mark.flaky(reason="C-Dogs mission drive: menu navigation in the sim "
-                          "misses a step about 1 run in 4")
+# Quarantined: the mission drive misses a menu step about 1 run in 4 with a
+# healthy simulator. The cause is the screen-signature heuristic in
+# test_cdogs_memory._advance_through_screens (it infers a dropped key from a
+# display_stats change within 3 s), not PicoDeck. Fix: drive the steps on
+# input_seq consumption (wait_input_consumed) plus an in-app marker per screen
+# instead of screen signatures.
+@pytest.mark.flaky(reason="C-Dogs mission drive: screen-signature step "
+                          "detection misses ~1 in 4 runs")
 @pytest.mark.timeout(600)
 def test_pad_presses_cdogs_keys_in_a_live_mission(sim):
-    _launch_to_menu(sim)
+    _fresh_menu(sim)
     seen, stats = {"GFXSTAT": set()}, {"GFXSTAT": []}
 
     def poll():
@@ -173,8 +190,8 @@ def test_pad_presses_cdogs_keys_in_a_live_mission(sim):
 @pytest.mark.timeout(300)
 def test_pad_presses_cdogs_keys_after_the_mission(sim):
     """The shim's event pump emits the pad's key edges on every screen, so this
-    check does not depend on the mission drive above succeeding: if that one
-    fails (flaky), the app is still at some menu and the edges are asserted
-    there. Runs second because pressing keys at the menu moves its cursor."""
-    _launch_to_menu(sim)
+    check does not depend on the mission drive above: it restarts C-Dogs and
+    waits for the main-menu marker first, so a failed (flaky) drive cannot
+    leave it running against an app that is not pumping events."""
+    _fresh_menu(sim)
     _check_pad_keys(sim)

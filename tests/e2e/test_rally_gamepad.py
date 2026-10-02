@@ -6,7 +6,7 @@ handbrake), asserting on the log lines Rally writes: `RALLY: state N`
 (0 intro, 1 countdown, 2 racing, 3 finish) and `RALLY: input thr= brk= hb=`.
 The sim does not show Rally's viewport reliably, so nothing here reads pixels.
 
-    PICODECK_RALLY_DIR=/path/to/rally   (default ~/Projects/PicoDeck/rally-gamepad;
+    PICODECK_RALLY_DIR=/path/to/rally   (default ~/Projects/PicoDeck/rally;
                                          main.elf must be built there: `make`)
 """
 import io
@@ -23,7 +23,7 @@ import pytest
 from helpers import build_sd_card, new_simulator, stop_and_check
 
 RALLY = Path(os.environ.get("PICODECK_RALLY_DIR",
-                            Path.home() / "Projects" / "PicoDeck" / "rally-gamepad"))
+                            Path.home() / "Projects" / "PicoDeck" / "rally"))
 
 
 def _bundle_dir(tmp_path):
