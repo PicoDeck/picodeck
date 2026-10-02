@@ -687,7 +687,7 @@ class HardwareMonitor:
 # Response lines that terminate a dev command exchange.
 _CMD_END_MARKERS = ["pong", "Total:", "Error:", "Launching", "Rebooting",
                     "Unknown", "Status:", "Created:", "Unzipped", "Deleted:",
-                    "Pad:", "Usage: pad"]
+                    "Pad:", "Usage: pad", "Moved:", "Usage: mv"]
 
 
 def _is_cmd_end(line: str) -> bool:
@@ -1108,10 +1108,9 @@ async def list_apps(device: str | None = None, include_hidden: bool = False) -> 
                 do_command_hardware, "list all" if include_hidden else "list", port)
             apps = []
             for line in lines:
-                if "[DEV] Available apps:" in line or "[DEV] Total:" in line \
-                        or "[DEV] Hidden apps:" in line:
+                if "[DEV] Available apps:" in line or "[DEV] Hidden apps:" in line:
                     continue
-                if "[DEV] End of hidden apps" in line:
+                if "[DEV] Total:" in line:
                     break
                 if line.strip().startswith("  ") or line.strip().startswith("-"):
                     apps.append(line.strip())

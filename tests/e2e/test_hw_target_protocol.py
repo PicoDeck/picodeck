@@ -209,8 +209,9 @@ class FakeDevice:
             self.emit("[DEV] Available apps:")
             for a in apps:
                 self.emit(f"  {a.name}  ({a.id})")
-            self.emit(f"[DEV] Total: {len(apps)} apps")
-            if cmd == "list all":
+            if cmd == "list":
+                self.emit(f"[DEV] Total: {len(apps)} apps")
+            else:
                 self.emit("[DEV] Hidden apps:")
                 for root in ("/apps/.test", "/apps/.dev"):
                     for path, data in self.files.items():
@@ -219,7 +220,7 @@ class FakeDevice:
                             man = json.loads(data)
                             self.emit(f"  {man['name']}  ({man['id']})  "
                                       f"[{root[6:]}]")
-                self.emit("[DEV] End of hidden apps")
+                self.emit(f"[DEV] Total: {len(apps)} apps, N hidden")
         elif cmd.startswith("getb64 "):
             path = cmd[7:]
             if path not in self.files:

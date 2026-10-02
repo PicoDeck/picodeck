@@ -84,8 +84,10 @@ def test_list_all_shows_hidden_apps_with_their_root(hid):
     assert re.search(r"hid_test\s+\(com\.test\.hid_test\)\s+\[\.test\]", joined), joined
     assert re.search(r"hid_sibling\s+\(com\.test\.hid_sibling\)\s+\[\.test\]", joined), joined
     assert re.search(r"Hidden Dev\s+\(com\.dev\.hid_dev\)\s+\[\.dev\]", joined), joined
-    # The listed apps come first, then the hidden section.
-    assert joined.index("Total:") < joined.index("Hidden apps")
+    # The listed apps come first, then the hidden section, then the total.
+    assert joined.index("Available apps") < joined.index("Hidden apps") \
+        < joined.index("Total:")
+    assert re.search(r"Total: \d+ apps, 3 hidden", joined), joined
 
 
 def test_hidden_apps_do_not_count_in_the_launcher(hid):

@@ -1201,6 +1201,7 @@ typedef struct {
   const char *query;     // the launch argument
   app_entry_t *entry;    // scratch / result
   bool found;
+  int listed;            // list all: hidden apps printed
 } hidden_find_t;
 
 static void hidden_by_id_cb(const sdcard_entry_t *e, void *user) {
@@ -1217,7 +1218,7 @@ static void hidden_by_id_cb(const sdcard_entry_t *e, void *user) {
 static bool hidden_find(const char *name, app_entry_t *out) {
   if (!app_hidden_name_valid(name))
     return false;
-  hidden_find_t f = {NULL, name, out, false};
+  hidden_find_t f = {NULL, name, out, false, 0};
   for (int i = 0; i < HIDDEN_ROOTS; i++)
     if (app_entry_load(k_hidden_roots[i], name, out, false))
       return true;
@@ -1256,7 +1257,7 @@ static void list_hidden_cb(const sdcard_entry_t *e, void *user) {
          f->root + sizeof("/apps/") - 1);
   sim_log_os("  %s  (%s)  [%s]", f->entry->name, f->entry->id,
              f->root + sizeof("/apps/") - 1);
-  f->found = true;  // reused as a count's "any"
+  f->listed++;
 }
 
 void launcher_list_apps(bool all) {
@@ -1266,10 +1267,12 @@ void launcher_list_apps(bool all) {
     printf("  %s  (%s)\n", s_apps[i].name, s_apps[i].id);
     sim_log_os("  %s  (%s)", s_apps[i].name, s_apps[i].id);
   }
-  printf("[DEV] Total: %d apps\n", s_app_count);
-  sim_log_os("[DEV] Total: %d apps", s_app_count);
-  if (!all)
+  if (!all) {
+    printf("[DEV] Total: %d apps\n", s_app_count);
+    sim_log_os("[DEV] Total: %d apps", s_app_count);
     return;
+  }
+  // The hidden section comes before Total: host tools end the reply there.
   app_entry_t *scratch = umm_malloc(sizeof(app_entry_t));
   if (!scratch) {
     printf("[DEV] Error: no memory to list hidden apps\n");
@@ -1277,13 +1280,15 @@ void launcher_list_apps(bool all) {
   }
   printf("[DEV] Hidden apps:\n");
   sim_log_os("[DEV] Hidden apps:");
+  int hidden = 0;
   for (int i = 0; i < HIDDEN_ROOTS; i++) {
-    hidden_find_t f = {k_hidden_roots[i], NULL, scratch, false};
+    hidden_find_t f = {k_hidden_roots[i], NULL, scratch, false, 0};
     sdcard_list_dir(f.root, list_hidden_cb, &f);
+    hidden += f.listed;
   }
   umm_free(scratch);
-  printf("[DEV] End of hidden apps\n");
-  sim_log_os("[DEV] End of hidden apps");
+  printf("[DEV] Total: %d apps, %d hidden\n", s_app_count, hidden);
+  sim_log_os("[DEV] Total: %d apps, %d hidden", s_app_count, hidden);
 }
 
 bool launcher_launch_by_id(const char *id) {
