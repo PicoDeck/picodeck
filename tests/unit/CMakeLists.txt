@@ -86,6 +86,38 @@ picodeck_unit_test(test_kbd_pad INCLUDES ${SRC}/drivers)
 # or USB pad) ORed into the same gamepad.
 picodeck_unit_test(test_pad_source SOURCES ${SRC}/drivers/pad_source.c INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_bus SOURCES ${SRC}/drivers/kbd_bus.c INCLUDES ${SRC}/drivers)
+# The default alarm pool fix (cmake/picodeck_pico_time.cmake, #58): the
+# cancellation pass cut out of the patched pico_time the firmware build
+# generates, from the SDK's time.c when PICO_SDK_PATH has one the patch
+# applies to, else from SDK 2.2.0's pass in fixtures/pico_time (the CI unit
+# job has no SDK). The configure fails if the patch does not apply.
+include(${PICODECK_ROOT}/cmake/picodeck_pico_time.cmake)
+set(_pt_src "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pico_time/cancel_pass_2_2_0.c")
+if(DEFINED ENV{PICO_SDK_PATH} AND
+   EXISTS "$ENV{PICO_SDK_PATH}/src/common/pico_time/time.c")
+    file(READ "$ENV{PICO_SDK_PATH}/src/common/pico_time/time.c" _pt_text)
+    picodeck_pico_time_patch_text(_pt_text _pt_applied)
+    if(_pt_applied)
+        set(_pt_src "$ENV{PICO_SDK_PATH}/src/common/pico_time/time.c")
+    endif()
+endif()
+file(READ "${_pt_src}" _pt_orig)
+string(REPLACE "\r\n" "\n" _pt_orig "${_pt_orig}")
+set(_pt_patched "${_pt_orig}")
+picodeck_pico_time_patch_text(_pt_patched _pt_applied)
+if(NOT _pt_applied)
+    message(FATAL_ERROR "cmake/picodeck_pico_time.cmake does not apply to ${_pt_src}")
+endif()
+picodeck_pico_time_cut_pass("${_pt_orig}" _pt_pass_orig)
+picodeck_pico_time_cut_pass("${_pt_patched}" _pt_pass_patched)
+set(_pt_dir "${CMAKE_CURRENT_BINARY_DIR}/pico_time_pass")
+file(MAKE_DIRECTORY "${_pt_dir}")
+_picodeck_pico_time_write("${_pt_dir}/pass_orig.inc" "${_pt_pass_orig}")
+_picodeck_pico_time_write("${_pt_dir}/pass_patched.inc" "${_pt_pass_patched}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_pt_src}"
+             "${PICODECK_ROOT}/cmake/picodeck_pico_time.cmake")
+message(STATUS "test_pico_time_pass: the pass from ${_pt_src}")
+picodeck_unit_test(test_pico_time_pass INCLUDES ${_pt_dir})
 picodeck_unit_test(test_pio_psram_range INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_pio_psram_xip INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_qmi_psram_clkdiv INCLUDES ${SRC}/drivers)

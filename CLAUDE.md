@@ -55,7 +55,7 @@ Dev commands while an app runs (`src/dev_commands.c`, `lua_bridge.c`, native `sy
 ### Tests
 - **E2E (simulator)**: `SDL_VIDEODRIVER=dummy pytest tests/e2e -n auto` (see `tests/e2e/README.md`; config and markers in the repo-level `pytest.ini`). Runs against `build_sim/picodeck_simulator`; `PICODECK_SIM_BINARY` (or `--simulator-path`) selects another build: `make simulator-asan` (`build_sim_asan/`, enables `asan_only` tests), `make simulator-tsan`, `make simulator-net` / `-net-asan` / `-net-tsan` (`build_sim_net/`…, the firmware network stack; enables `firmware_net` tests). Virtual time and `--real-umm` are described in `simulator/CLAUDE.md`. Lua fixture apps report through `tests/e2e/lib/picotest.lua` (staged as `/system/lib/picotest.lua`).
 - **E2E (hardware)**: `--target hw:/dev/serial/by-id/<PicoDeck device>` runs the `hardware`/`both` tests on a real PicoCalc through `tests/e2e/hw_target.py` (they skip, allow-listed, on the simulator).
-- **Unit**: `make test-unit` (host C tests: `tests/unit/CMakeLists.txt` → `build_unit/`, ctest, ASan+UBSan; covers the pure modules `elf_plan`, `fs_path`, `app_manifest`, `config`/`appconfig` over an in-memory SD fake, `wav`, `qoa`, `audio_ring`, `zip_name`, `text_wrap`, `lua_numfmt` vs glibc, fonts, the keyboard decode, `pad_source`, and `lua_hook_arm` against the real Lua core, which `make test-unit` fetches with `download-lua`), `python3 -m pytest tests/unit`, `make test-lua`.
+- **Unit**: `make test-unit` (host C tests: `tests/unit/CMakeLists.txt` → `build_unit/`, ctest, ASan+UBSan; covers the pure modules `elf_plan`, `fs_path`, `app_manifest`, `config`/`appconfig` over an in-memory SD fake, `wav`, `qoa`, `audio_ring`, `zip_name`, `text_wrap`, `lua_numfmt` vs glibc, fonts, the keyboard decode, `pad_source`, the patched alarm pool's cancellation pass (`test_pico_time_pass`, cut from the SDK's `time.c` under `PICO_SDK_PATH`, else from a 2.2.0 fixture), and `lua_hook_arm` against the real Lua core, which `make test-unit` fetches with `download-lua`), `python3 -m pytest tests/unit`, `make test-lua`.
 - **Fuzz**: `make fuzz` runs the libFuzzer targets in `tests/fuzz/` (clang; `FUZZ_TARGETS=`, `FUZZ_SECONDS=`). CI runs them nightly (`.github/workflows/fuzz.yml`) and the unit job on every push (`unit.yml`). There is no linter.
 
 ## Architecture
@@ -111,6 +111,7 @@ main()
 - Every display primitive clips to the clip rect **once**, before any pixel loop. The simulator has its own display implementation (`simulator/stubs/driver_stubs.c`): a primitive change lands in both.
 - Every HTTPS / `tls://` connection verifies the server certificate and waits for SNTP to set the clock; `setInsecure(true)` (Lua) or `PCTCP_TLS_INSECURE` (native) opts one connection out, for self-signed dev servers only.
 - Volumes are 0-100 everywhere; larger values clamp.
+- The default alarm pool: SDK 2.2.0 (which release builds pin) loses a slot whenever its two earliest alarms are both cancelled before its interrupt handler runs, and a full pool breaks `stdio_usb`, the keyboard bus, the CYW43 driver and every other user (issue #58). The build compiles a fixed copy of pico_time's `time.c` (`cmake/picodeck_pico_time.cmake`: the configure fails on an SDK before 2.3.1 it cannot patch; `tests/unit/test_pico_time_pass.c` runs the patched pass; the `alarmpool` dev command counts lost slots; drop it once the SDK is past 2.3.0). A driver that needs a timeout per step still arms its own hardware alarm rather than cancelling and re-adding pool alarms (`kbd_i2c.c`). TIMER0's alarms: 0 the keyboard engine, 2 Core 1's audio pool, 3 the default pool, so only alarm 1 is left (`hardware_alarm_claim_unused(true)` panics once it is taken); TIMER1's four alarms are unused.
 
 ### System Menu (`src/os/system_menu.c`)
 - Triggered by the Sym key; detected via `kbd_consume_menu_press()` in the Lua count hook.
@@ -118,7 +119,7 @@ main()
 - Apps and OS register items with `system_menu_add_item()` / `picocalc.sys.addMenuItem()`.
 
 ### Memory Map
-- **SRAM heap**: ~2.6 KB (`__end__`=0x2007f580 to `__HeapLimit`=0x20080000; the 400 KB double framebuffer is BSS), so effectively none: scratch buffers go through `umm_malloc`.
+- **SRAM heap**: ~3.4 KB (3520 B: `__end__`=0x2007f240 to `__HeapLimit`=0x20080000; the 400 KB double framebuffer is BSS), so effectively none: scratch buffers go through `umm_malloc`.
 - **QMI PSRAM (8 MB)**: Lua heap via `umm_malloc` at 0x11200000 (cached alias), 6 MB minus the 128 KB Core 1 pool; ELF app data/BSS. Every umm allocation costs at least one 200-byte block (small Lua objects share slabs; see `src/os/CLAUDE.md`).
 - **PIO PSRAM (8 MB)**: the OS owns everything below `0x48000` (MP3 PCM ring); apps get `0x48000`+, range-checked for Lua and native. Accessed via `pio_psram_read`/`pio_psram_write` and `g_api.psram`.
 - **Main stack (MSP)**: 4 KB in SCRATCH (`__StackBottom`=0x20081000, `__StackTop`=0x20082000), `MSPLIM`-guarded. Boot, the launcher (menus, USB MSC) and every IRQ run here; dev commands and screenshot save move to a short-lived 32 KB PSRAM stack. Measured peak ~2.2-2.5 KB; the `stack` dev command prints it and the running app's stack peak.
