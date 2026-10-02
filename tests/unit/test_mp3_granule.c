@@ -1,17 +1,28 @@
 // Host unit test for libmad's granule-at-a-time decoding (issue #28):
 // mad_frame_decode_begin / _granule / _end, each granule synthesised
 // (mad_synth_granule) before the next is decoded, give the PCM libmad gave
-// before the split, sample for sample: whole frames (mad_frame_decode),
-// then mad_synth_frame into a 1152-sample buffer. The fixtures' FNV-1a
-// hashes below were taken from that code (git show ecedf34:third_party/
-// libmad), built as libmad_host is. mp3_player.c decodes a 44.1 kHz stereo
-// frame in two halves so that each fits an idle window of a paced app's
-// Core 0, and the frame's subband samples need room for one granule.
+// before the split, sample for sample, for streams with no damaged frame:
+// whole frames (mad_frame_decode), then mad_synth_frame into a
+// 1152-sample buffer. The fixtures' FNV-1a hashes below were taken from
+// that code (git show ecedf34:third_party/libmad), built as libmad_host
+// is. mp3_player.c decodes a 44.1 kHz stereo frame in two halves so that
+// each fits an idle window of a paced app's Core 0, and the frame's subband
+// samples need room for one granule.
+//
+// Not bit-exact on a damaged stream: when granule 1 of an MPEG-1 frame
+// fails to decode (bad Huffman data), granule 0 has already been
+// synthesised and played, where the old decoder dropped the whole frame:
+// 576 samples a channel more per such frame. Both resynchronise on the
+// next frame.
 //
 // Fixtures: chord128.mp3 (44.1 kHz stereo MPEG-1, two granules a frame),
 // chord.mp3 (the same at 96 kbps, as an AVI holds it) and chord22m.mp3
-// (22.05 kHz mono MPEG-2, one). An MP3 named on the command line is
-// decoded too (real music: short blocks, joint stereo), its hash printed.
+// (22.05 kHz mono MPEG-2, one); and, from gen_libmad_vectors.sh, LSF
+// joint stereo (lsf_j22), MPEG-2.5 (m25_j11), CRC-protected frames
+// (crc_j128) and intensity stereo in MPEG-1 and MPEG-2 (is_j128,
+// is_lsf_j22: lame's joint stereo with the header's intensity bit set). An
+// MP3 named on the command line is decoded too (real music: short blocks,
+// joint stereo), its hash printed.
 #include "check.h"
 #define FPM_DEFAULT  // as mp3_player.c (the host libmad is built FPM_64BIT)
 #include "mad.h"
@@ -140,6 +151,11 @@ int main(int argc, char **argv) {
   check_file(FIX "chord128.mp3", 2, 0x1418bb19u);
   check_file(FIX "chord.mp3", 2, 0xb5f64579u);
   check_file(FIX "chord22m.mp3", 1, 0x2e5f0c70u);
+  check_file(FIX "lsf_j22.mp3", 2, 0x823e7e0fu);
+  check_file(FIX "m25_j11.mp3", 2, 0xad363cb3u);
+  check_file(FIX "crc_j128.mp3", 2, 0x93417036u);
+  check_file(FIX "is_j128.mp3", 2, 0xf8d50c76u);
+  check_file(FIX "is_lsf_j22.mp3", 2, 0x0646f9e9u);
   for (int i = 1; i < argc; i++)
     check_file(argv[i], 0, 0);
   return check_report("test_mp3_granule");
