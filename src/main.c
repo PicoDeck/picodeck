@@ -898,22 +898,12 @@ static const picocalc_psram_t s_psram_impl = {
     .qmiFree          = psram_qmi_free,
 };
 
-static void perf_draw_fps_wrapper(int x, int y) {
-    int fps = perf_get_fps();
-    char buf[16];
-    snprintf(buf, sizeof(buf), "FPS: %d", fps);
-    uint16_t color = (fps >= 55)   ? COLOR_GREEN
-                     : (fps >= 30) ? COLOR_YELLOW
-                                   : COLOR_RED;
-    display_draw_text(x, y, buf, color, COLOR_BLACK);
-}
-
 static const picocalc_perf_t s_perf_impl = {
     .beginFrame = perf_begin_frame,
     .endFrame = perf_end_frame,
     .getFPS = perf_get_fps,
     .getFrameTime = perf_get_frame_time,
-    .drawFPS = perf_draw_fps_wrapper,
+    .drawFPS = perf_draw_fps,
     .setTargetFPS = perf_set_target_fps,
 };
 

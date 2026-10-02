@@ -446,6 +446,8 @@ typedef struct {
     void (*endFrame)(void);
     int  (*getFPS)(void);
     uint32_t (*getFrameTime)(void);
+    // "FPS: n" (getFPS) at (x, y) in the colour code; draws nothing while
+    // the Show FPS setting is on: the OS counter replaces the app's own.
     void (*drawFPS)(int x, int y);
     void (*setTargetFPS)(uint32_t fps);
 } picocalc_perf_t;

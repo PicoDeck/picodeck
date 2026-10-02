@@ -27,6 +27,17 @@ uint32_t perf_get_frame_time(void);
 // Set target FPS for automatic frame pacing (0 = no limit).
 void perf_set_target_fps(uint32_t fps);
 
+// perf.drawFPS, for Lua and native apps alike: "FPS: n" (n = perf_get_fps())
+// at (x, y) in the current font, in perf_fps_color(n) on black. It draws
+// nothing while the OS counter (Show FPS) is on, which replaces the app's
+// own: otherwise an app's counter anywhere but under the OS box (issue #66:
+// the SDK Showcase's, cut off at the right edge) shows as a second one.
+void perf_draw_fps(int x, int y);
+
+// The FPS colour code of drawFPS and the OS counter (RGB565): green >= 55,
+// yellow >= 30, red below.
+uint16_t perf_fps_color(int fps);
+
 // The XIP cache's hit rate in percent since the previous call, -1 when
 // nothing was counted (or in the simulator). See xip_stats.h.
 int perf_xip_cache_hit_rate(void);

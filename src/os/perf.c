@@ -1,6 +1,7 @@
 #include "perf.h"
 #include "os_overlay.h"
 #include "core0_idle.h"
+#include "../drivers/display.h"
 #include "pico/stdlib.h"
 #ifndef PICODECK_SIMULATOR
 #include "xip_stats.h"
@@ -96,6 +97,19 @@ uint32_t perf_get_frame_time(void) {
 void perf_set_target_fps(uint32_t fps) {
     s_perf_target_us = fps > 0 ? 1000000u / fps : 0;
     s_perf_next_end_us = 0;
+}
+
+uint16_t perf_fps_color(int fps) {
+    return (fps >= 55) ? COLOR_GREEN : (fps >= 30) ? COLOR_YELLOW : COLOR_RED;
+}
+
+void perf_draw_fps(int x, int y) {
+    if (os_overlay_fps_on())
+        return;  // the OS counter is the one counter on screen
+    int fps = perf_get_fps();
+    char buf[16];
+    snprintf(buf, sizeof(buf), "FPS: %d", fps);
+    display_draw_text(x, y, buf, perf_fps_color(fps), COLOR_BLACK);
 }
 
 // The XIP cache's hit rate since the previous call (sys.getMemInfo()). The

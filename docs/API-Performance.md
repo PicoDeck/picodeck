@@ -12,6 +12,7 @@ The OS can count frames and draw an FPS counter over any app, Lua or native, wit
 - **`perf.endFrame()` sets the number.** While your app calls `endFrame()` (within the last 2 s), the counter shows `endFrame()` calls per second instead: your loop's logical frame rate, even when you present less often (an emulator running two game frames per present shows 60, not 30). It is counted per 1 s window, not from the 30-frame average `getFPS()` returns, so the two can differ by a frame or two.
 - **What it looks like.** `FPS: n` in the built-in 6×8 font, colour-coded like `drawFPS()`: green ≥55, yellow ≥30, red below; `FPS: --` in grey until the first second is counted; numbers stop at 999. It sits in an opaque black 52×12 box with its text 8 px in from the screen edges; the top corners are just below the standard header (`picocalc.ui.drawHeader`), where `drawFPS()` draws by default.
 - **Where it is drawn.** The OS draws it into your frame just before each present, so after `flush()` it is in your framebuffer and in screenshots. With `flushRows()` and `flushRegion()` it is drawn only into the rows you send, and stays in your buffer there. When the box lies outside those rows the OS puts it on the panel directly (only when its text changes) and leaves your buffer as it was, so a screenshot on the device, which reads the framebuffer, does not show it. When the counter moves or is turned off, the OS pushes your buffer's pixels back over it; if an earlier flush sent its rows (so it went into your buffer) and you have not redrawn them since, the old box stays until you do, as it would with `flush()`.
+- **Your own counter.** While Show FPS is on, `drawFPS()` draws nothing: the OS counter replaces it, so only the OS counter shows, at the corner the player chose, wherever your app would draw its own. With Show FPS off, `drawFPS()` draws normally. A number you draw yourself from `getFPS()` is not affected.
 - **Hardware scroll.** While the scroll offset (`setScrollOffset`) is not 0, nothing is drawn. The next partial flush pushes your buffer's rows back over the box, so it does not slide with your content, unless the box had gone into your buffer (see above): then it is part of your image and scrolls away with it. It comes back once the offset is 0.
 
 `drawFPS()` and `getFPS()` stay for apps that want their own counter.
@@ -69,7 +70,9 @@ local ms = picocalc.perf.getFrameTime()
 ---
 
 #### `picocalc.perf.drawFPS([x, y])`
-Convenience function to draw the FPS counter on screen. Color-coded: green ≥55 FPS, yellow ≥30, red <30.
+Convenience function to draw the FPS counter on screen: `FPS: n` with `n` from `getFPS()`, in the current font on black. Color-coded: green ≥55 FPS, yellow ≥30, red <30. While the OS counter is on (Show FPS, above) it draws nothing, so only the OS counter shows. Native apps have the same call, `api->perf->drawFPS(x, y)`.
+
+The position is used as given, not moved onto the screen: like `drawText`, text past the edge (or outside the clip rect) is cut off. In the built-in 6×8 font `FPS: 60` is 42 px wide and `FPS: 100` 48 px; leave `x` out to right-align it.
 
 - **Parameters:**
   - `x` (number, optional): X coordinate. Defaults to the top-right corner: the text ends 8px from the right edge.

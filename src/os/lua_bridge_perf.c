@@ -30,23 +30,17 @@ static int l_perf_getFrameTime(lua_State *L) {
   return 1;
 }
 
-// Convenience: draw FPS counter at specified position with color coding.
+// Convenience: draw FPS counter at specified position with color coding
+// (perf_draw_fps: nothing while the OS counter, Show FPS, is on).
 // Default: top-right, right-aligned 8px from the edge, just below the
 // standard header (ui_draw_header) so it never covers its status icons.
 static int l_perf_drawFPS(lua_State *L) {
-  int fps = perf_get_fps();
   char buf[16];
-  snprintf(buf, sizeof(buf), "FPS: %d", fps);
+  snprintf(buf, sizeof(buf), "FPS: %d", perf_get_fps());
 
   int x = (int)lb_optint(L, 1, FB_WIDTH - 8 - display_text_width(buf));
   int y = (int)lb_optint(L, 2, UI_HEADER_H + 1 + 3);
-
-  // Color code: green >= 55, yellow >= 30, red < 30
-  uint16_t color = (fps >= 55)   ? COLOR_GREEN
-                   : (fps >= 30) ? COLOR_YELLOW
-                                 : COLOR_RED;
-
-  display_draw_text(x, y, buf, color, COLOR_BLACK);
+  perf_draw_fps(x, y);
   return 0;
 }
 
