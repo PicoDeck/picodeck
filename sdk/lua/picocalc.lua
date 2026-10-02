@@ -687,6 +687,13 @@ function PicoDeckFile:tell() end
 ---@return string? error
 function PicoDeckFile:fsize() end
 
+---Function form of `file:fsize()`: the size of an open file in bytes, without
+---moving the read position.
+---@param file PicoDeckFile
+---@return integer? bytes `nil` if the size could not be read
+---@return string? error
+function picocalc.fs.fsize(file) end
+
 ---Open a file on the SD card.
 ---@param path string Absolute SD card path
 ---@param mode? string `"r"` (default), `"w"`, `"a"`, `"r+"`, etc.
@@ -745,7 +752,8 @@ function picocalc.fs.readFile(path) end
 ---@return integer
 function picocalc.fs.size(path) end
 
----Return `true` if the path exists and is a directory. `false` for a file, for
+---Return `true` if the path exists and is a directory (the volume root `/`
+---counts, for an app with the root-filesystem requirement). `false` for a file, for
 ---a missing path, and for a path the sandbox refuses (the same "not usable"
 ---answer `fs.exists` gives).
 ---@param path string
@@ -3265,7 +3273,7 @@ function PicoDeckFramebuffer:height() end
 ---Read a rectangle of the back buffer as host-order RGB565, row-major, top row
 ---first -- the same encoding `PicoDeckImage:getPixels()` uses. The clip rect
 ---does not apply (matching `display.getPixel()`); the rectangle must lie
----inside the screen or this raises.
+---inside the screen or this raises (before anything is allocated).
 ---@param x integer 0-319
 ---@param y integer 0-319
 ---@param w integer pixels
@@ -3275,9 +3283,10 @@ function PicoDeckFramebuffer:getPixels(x, y, w, h) end
 
 ---Write host-order RGB565 into the back buffer. Clipped to the clip rect
 ---exactly as `display.setPixel()` is, so a partly hidden rectangle writes only
----its visible part. `data` must be exactly `w * h * 2` bytes or this raises.
----Returns `false` when the rectangle is wholly outside the clip rect, meaning
----nothing was drawn.
+---its visible part, each pixel landing where it would unclipped. `data` must be
+---exactly `w * h * 2` bytes, and the rectangle must lie inside the screen, or
+---this raises. Returns `false` when the rectangle is on screen but wholly
+---outside the clip rect, meaning nothing was drawn.
 ---@param data string `w * h * 2` bytes
 ---@param x integer
 ---@param y integer
@@ -3311,20 +3320,23 @@ function PicoDeckZipArchive:exists(name) end
 ---@return integer? bytes
 function PicoDeckZipArchive:size(name) end
 
----Number of entries in the archive: files plus directory entries. `0` once the
----archive is closed.
+---Number of entries in the archive: files plus directory entries. Valid entry
+---indexes are `0 .. numEntries() - 1` (0-based, as in the C API; `list()` is a
+---1-based array, so loop `for i = 0, ar:numEntries() - 1 do`). Raises
+---`archive is closed` on a closed archive.
 ---@return integer count
 function PicoDeckZipArchive:numEntries() end
 
----The index of an entry, as `statIndex()` and `extractEntry()` address it, or
----`nil` if no entry has that exact name.
+---The index of an entry (0-based, as in the C API), as `statIndex()` and
+---`extractEntry()` address it, or `nil` if no entry has that exact name.
 ---@param name string
 ---@return integer? index
 function PicoDeckZipArchive:locate(name) end
 
 ---One entry's metadata by index, keyed the way `list()` reports it. `nil` for a
----bad index or a closed archive.
----@param index integer
+---index outside `0 .. numEntries() - 1` (0-based, as in the C API); raises on a
+---closed archive.
+---@param index integer 0-based; must be an integer
 ---@return { name: string, size: integer, compressed_size: integer, is_dir: boolean }? entry
 function PicoDeckZipArchive:statIndex(index) end
 
@@ -3344,8 +3356,11 @@ function PicoDeckZipArchive:read(name, max_len) end
 ---@return string? error
 function PicoDeckZipArchive:extract(name, dest_path) end
 
----`extract()` addressed by entry index instead of name.
----@param index integer
+---`extract()` addressed by entry index (0-based, `0 .. numEntries() - 1`)
+---instead of name. A bad index returns `false, "no such entry"` before the
+---destination is opened, so an existing file there is untouched. Raises on a
+---closed archive.
+---@param index integer 0-based; must be an integer
 ---@param dest_path string
 ---@return boolean ok
 ---@return string? error
