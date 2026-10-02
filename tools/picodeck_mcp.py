@@ -687,7 +687,7 @@ class HardwareMonitor:
 # Response lines that terminate a dev command exchange.
 _CMD_END_MARKERS = ["pong", "Total:", "Error:", "Launching", "Rebooting",
                     "Unknown", "Status:", "Created:", "Unzipped", "Deleted:",
-                    "Pad:", "Usage: pad"]
+                    "Pad:", "Usage: pad", "Moved:", "Usage: mv"]
 
 
 def _is_cmd_end(line: str) -> bool:
@@ -1095,15 +1095,20 @@ async def screenshot(device: str | None = None, save_path: str = "") -> list:
 
 
 @mcp.tool()
-async def list_apps(device: str | None = None) -> str:
-    """List all apps installed on the PicoDeck device or simulator."""
+async def list_apps(device: str | None = None, include_hidden: bool = False) -> str:
+    """List the apps the launcher shows on the PicoDeck device or simulator.
+
+    include_hidden=True also lists the hidden apps (/apps/.test, /apps/.dev:
+    see push_app's `hidden`), each tagged with its root, e.g. "[.dev]".
+    """
     port = resolve_port(device)
     if port:
         try:
-            lines = await asyncio.to_thread(do_command_hardware, "list", port)
+            lines = await asyncio.to_thread(
+                do_command_hardware, "list all" if include_hidden else "list", port)
             apps = []
             for line in lines:
-                if "[DEV] Available apps:" in line:
+                if "[DEV] Available apps:" in line or "[DEV] Hidden apps:" in line:
                     continue
                 if "[DEV] Total:" in line:
                     break
@@ -1115,27 +1120,44 @@ async def list_apps(device: str | None = None) -> str:
     else:
         try:
             conn = get_connection()
-            result = await asyncio.to_thread(conn.call, "list_dir", {"path": "/apps"})
-            entries = result.get("entries", [])
-            if not entries:
-                return "(no apps found)"
+            roots = ["/apps"] + (["/apps/.test", "/apps/.dev"] if include_hidden else [])
             lines = []
-            for e in entries:
-                if e.get("is_dir"):
-                    lines.append(f"  {e['name']}/")
-                else:
-                    lines.append(f"  {e['name']}  ({e.get('size', 0)} bytes)")
+            for root in roots:
+                try:
+                    result = await asyncio.to_thread(conn.call, "list_dir", {"path": root})
+                except JRpcError:
+                    continue  # a hidden root that was never created
+                for e in result.get("entries", []):
+                    if root == "/apps" and e["name"] in (".test", ".dev"):
+                        continue
+                    tag = "" if root == "/apps" else f"  [{root[6:]}]"
+                    if e.get("is_dir"):
+                        lines.append(f"  {e['name']}/{tag}")
+                    else:
+                        lines.append(f"  {e['name']}  ({e.get('size', 0)} bytes){tag}")
+            if not lines:
+                return "(no apps found)"
             return "\n".join(lines)
         except Exception as e:
             return f"Error: {e}"
 
 
 @mcp.tool()
-async def launch_app(app_name: str, device: str | None = None) -> str:
+async def launch_app(app_name: str, device: str | None = None,
+                     hidden: str | None = None) -> str:
     """Launch an app by name on the simulator. Non-blocking — returns immediately.
+
+    hidden="test" or "dev" launches the app staged by push_app(hidden=...)
+    from only /apps/.test or /apps/.dev (`launch .test/<name>`), so a listed
+    app of the same name cannot run in its place. Without it, listed apps
+    come first, then the hidden roots.
 
     Use wait_for_exit() to wait for the app to finish.
     """
+    if hidden not in (None, "test", "dev"):
+        return f"Error: hidden must be 'test', 'dev' or None, not {hidden!r}"
+    if hidden:
+        app_name = f".{hidden}/{app_name}"
     port = resolve_port(device)
     if port:
         try:
@@ -2125,10 +2147,28 @@ def _push_app_wanted(rel_posix: str, name: str) -> bool:
     return True
 
 
+def _hidden_name_ok(name: str) -> bool:
+    """app_hidden_name_valid (src/os/app_manifest.c): what the firmware looks
+    up under /apps/.test and /apps/.dev."""
+    return (0 < len(name) <= 63 and not name.startswith(".")
+            and not name.endswith(".") and ".." not in name
+            and not any(c in "/\\" or ord(c) < 0x20 or ord(c) == 0x7f
+                        for c in name))
+
+
 @mcp.tool()
 async def push_app(local_dir: str, app_name: str = "",
-                   device: str | None = None) -> str:
+                   device: str | None = None,
+                   hidden: str | None = None) -> str:
     """Push a whole app directory to /apps/<name> in one operation.
+
+    hidden="test" stages into /apps/.test/<name> (the E2E harness's; wiped
+    freely) and hidden="dev" into /apps/.dev/<name> (your own hidden dev
+    apps). Both are dot names the launcher does not list and that do not
+    count against its 64-app cap; launch_app (the dev `launch`) still
+    starts them, by directory name or app id, with no reboot or rescan
+    (`list all` shows them, `mv` moves a directory between roots). Default
+    (None): /apps/<name>, listed by the launcher.
 
     Simulator: copies the tree into the simulated SD card.
     Hardware: zips the directory in memory, uploads one file over serial,
@@ -2144,6 +2184,13 @@ async def push_app(local_dir: str, app_name: str = "",
     name = app_name or src.name
     if "/" in name or name in (".", ".."):
         return f"Error: invalid app name: {name}"
+    if hidden not in (None, "test", "dev"):
+        return f"Error: hidden must be 'test', 'dev' or None, not {hidden!r}"
+    if hidden and not _hidden_name_ok(name):
+        return (f"Error: not a valid hidden app name: {name!r} (1-63 characters, "
+                "no / or \\ or control characters, no '..', no leading or "
+                "trailing '.')")
+    rel_dir = f"apps/.{hidden}/{name}" if hidden else f"apps/{name}"
     if not any((src / probe).exists()
                for probe in ("app.json", "main.lua", "main.elf")):
         return (f"Error: {src} has no app.json/main.lua/main.elf — "
@@ -2158,12 +2205,16 @@ async def push_app(local_dir: str, app_name: str = "",
         # Simulator: straight copy into the SD directory the sim is using.
         sd = (_sim_manager.sd_card_path if _sim_manager else None) \
             or os.environ.get("PICODECK_SIMULATOR_SD", ".")
-        dest = Path(sd) / "apps" / name
+        dest = Path(sd) / rel_dir
         try:
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(src, dest, ignore=_PUSH_APP_EXCLUDE)
             n = sum(1 for p in dest.rglob("*") if p.is_file())
+            if hidden:
+                return (f"Copied {n} files to simulator: {dest}\n"
+                        "Hidden app: not listed by the launcher; launch_app "
+                        f"{name} starts it with no rescan.")
             return (f"Copied {n} files to simulator: {dest}\n"
                     "Note: launch_app rescans /apps when the name is not "
                     "found, so new apps launch without a restart; after "
@@ -2199,13 +2250,13 @@ async def push_app(local_dir: str, app_name: str = "",
         # ~1.8 s), so wait for its "Unzipped"/"Error:" line, not for quiet.
         timeout = max(30.0, 10.0 + count * 0.5 + len(data) / (64 * 1024))
         lines = await asyncio.to_thread(
-            do_command_hardware, f"unzip {tmp_zip} /apps/{name}", port, timeout,
+            do_command_hardware, f"unzip {tmp_zip} /{rel_dir}", port, timeout,
             None)
         result = "\n".join(lines[-3:]) if lines else "(no response)"
         await asyncio.to_thread(do_command_hardware, f"rm {tmp_zip}", port, 10.0)
         if any("Unzipped" in ln for ln in lines):
             return (f"Pushed {count} files ({len(data)} bytes zipped) to "
-                    f"/apps/{name}\n{result}")
+                    f"/{rel_dir}\n{result}")
         return f"Error: extraction did not complete:\n{result}\n({upload})"
     except Exception as e:
         return f"Error: {e}"

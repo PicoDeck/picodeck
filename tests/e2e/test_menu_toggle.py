@@ -239,17 +239,15 @@ def pad_cleanup(target):
 
 @pytest.fixture(scope="module", autouse=True)
 def remove_fixture_app(request):
-    """On a device the fixture app stays on the SD card between this
-    module's tests (staging it again unchanged costs no reboot) and is
-    removed, with its data directory, once they are done: the launcher
-    lists at most 64 apps. The simulator's SD card is per test."""
+    """On a device the fixture app stays in /apps/.test between this
+    module's tests (the session wipes that directory) and its data directory
+    is removed once they are done. The simulator's SD card is per test."""
     yield
     if hw_target.target_spec(request.config)[0] != "hw":
         return
     try:
         target = hw_target.session_target(request.config)
         target.ensure_launcher()
-        target.delete_file(f"/apps/{APP}")
         target.delete_file(f"/data/{APP_ID}")
     except Exception as e:  # report, but never fail the tests over it
         print(f"menu_toggle cleanup: {e}")

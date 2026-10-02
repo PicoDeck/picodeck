@@ -50,6 +50,8 @@ USB serial at 115200 baud. App log calls appear as `[APP] message`. Lua errors d
 
 Stage multi-file apps (hardware or simulator) with the `push_app` MCP tool (`tools/picodeck_mcp.py`): it ships the directory as one ZIP and extracts it on-device with the `unzip <zip> <dest>` dev command (`rm <path>` cleans up), far faster than per-file transfers. Dev commands run on an app stack, so `unzip` is safe at the launcher.
 
+**Hidden apps.** `/apps` holds at most 64 listed apps (`MAX_APPS`), and the launcher caches `app.json` at boot, so a card full of test apps stops listing new ones. Two dot-name roots under `/apps` are skipped by the launcher scan (never listed, never counted) but still started by the dev `launch` (so `launch_app`, the E2E harness): `/apps/.test/<name>` (the harness's; wiped freely: it runs `rm /apps/.test` at the start and end of a hardware session) and `/apps/.dev/<name>` (your own hidden dev apps; the harness never touches it). `push_app(..., hidden="test"|"dev")` stages there; `launch` falls back to them, `.test` first, matching the directory name, then the `app.json` id, after every listed app, with no reboot or rescan (`src/os/CLAUDE.md`). `list all` (MCP `list_apps(include_hidden=True)`) also lists them, tagged `[.test]` / `[.dev]`; `launch .test/<name>` / `launch .dev/<name>` search only that root (what the harness uses; MCP `launch_app(hidden=)`), so a listed app cannot shadow a staged one; `mv <src> <dst>` moves a directory on the card (e.g. `mv /apps/old_probe /apps/.dev/old_probe`; never overwrites; refuses `/system`, the top-level directories, a move into itself and the running app's directory, by FatFS directory identity, and refuses when it cannot verify: `src/os/CLAUDE.md`).
+
 Dev commands while an app runs (`src/dev_commands.c`, `lua_bridge.c`, native `sys_poll`): plain `reboot` and `reboot-flash` are honoured at once and kill the app without teardown (a native app that never calls `sys->poll()` latches them until the launcher); `reboot-ota` is dropped (`reboot-ota ignored`), so `make flash-ota` (`tools/ota_flash.py`) exits the app first; `usb` waits for the launcher. `exit` with no app running replies `Error: exit: no app running` and still closes a modal open at the launcher (system menu, text input).
 
 ### Tests
@@ -96,7 +98,7 @@ main()
 > ⚠️ **Config naming**: in Lua, `picocalc.config` (alias `picocalc.appconfig`) is the **per-app** store (`/data/<APP_ID>/config.json`); `picocalc.sysconfig` is the **system-wide** store (`/system/config.json`).
 
 ### App Lifecycle (`src/os/launcher.c`)
-1. Scans `/apps/` for dirs containing `main.lua` or `main.elf` (native wins if both), reads each `app.json`, shows a scrollable menu with a battery % header.
+1. Scans `/apps/` for dirs containing `main.lua` or `main.elf` (native wins if both; dot-named dirs are skipped, the hidden roots `/apps/.test` and `/apps/.dev` among them), reads each `app.json`, shows a scrollable menu with a battery % header.
 2. Installs the app's identity (`src/os/app_identity.c`: id, dirs, requirements). Every enforcement check reads it, never the `APP_*` Lua globals.
 3. Runs the app through the `AppRunner` vtable (`src/os/app_runner.h`) on its own `PSPLIM`-guarded PSP stack (`app_stack_run()`; IRQs and the launcher stay on the MSP): **Lua** (`lua_runner.c`, 64 KB VM stack) or **native** (`native_loader.c`, ELF32 PIE relocated to PSRAM, validated by the pure `elf_plan.c`).
 4. Tears down whatever the app left open: files, handles, players, connections, fonts, menu items, zip handles (full lists in `src/os/CLAUDE.md`).

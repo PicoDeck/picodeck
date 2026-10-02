@@ -173,6 +173,16 @@ else()
                     "test_lua_hook_arm is not built")
 endif()
 
+# The dev `mv`: path hygiene and the command over the vendored FatFS on a RAM
+# disk (-w: FatFS is third-party code).
+set(FATFS_DIR ${PICODECK_ROOT}/third_party/fatfs)
+picodeck_unit_test(test_mv_op SOURCES ${SRC}/os/mv_op.c ${SRC}/os/mv_path.c
+                ${SRC}/drivers/fat_within.c ${FATFS_DIR}/ff.c
+                ${FATFS_DIR}/ffunicode.c
+                INCLUDES ${FATFS_DIR} ${SRC} ${PICODECK_ROOT}/simulator/stubs)
+set_source_files_properties(${FATFS_DIR}/ff.c ${FATFS_DIR}/ffunicode.c
+                PROPERTIES COMPILE_OPTIONS "-w")
+
 # The simulator's SD-root containment (host filesystem; sim_log_err faked).
 picodeck_unit_test(test_sim_sdcard SOURCES ${PICODECK_ROOT}/simulator/hal/hal_sdcard.c
                 INCLUDES ${PICODECK_ROOT}/simulator/hal ${SRC}

@@ -19,7 +19,7 @@ import statistics
 import time
 from pathlib import Path
 
-from helpers import stage_lua_app, write_wav
+from helpers import app_rel_dir, stage_lua_app, write_wav
 
 # A frame loop that runs a handful of instructions per 60 Hz frame: nearly
 # all its time is in display.clear/flush.
@@ -171,7 +171,7 @@ end
 pc.sys.log("FINISH_AFTER " .. tostring(fired_at and (fired_at - t0)))
 """
     stage_lua_app(simulator.sd_card_path, "hook_sound_cb", code)
-    write_wav(Path(simulator.sd_card_path) / "apps" / "hook_sound_cb" / "tick.wav",
+    write_wav(Path(simulator.sd_card_path) / app_rel_dir("hook_sound_cb") / "tick.wav",
               seconds=0.05)
     seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
     simulator.launch_app("hook_sound_cb")
@@ -200,7 +200,7 @@ fp:stop()
 pc.sys.log("SOUND_CALLS " .. m .. " " .. (n - m))
 """
     stage_lua_app(simulator.sd_card_path, "hook_sound_err", code)
-    write_wav(Path(simulator.sd_card_path) / "apps" / "hook_sound_err" / "tick.wav",
+    write_wav(Path(simulator.sd_card_path) / app_rel_dir("hook_sound_err") / "tick.wav",
               seconds=0.01)
     seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
     simulator.launch_app("hook_sound_err")

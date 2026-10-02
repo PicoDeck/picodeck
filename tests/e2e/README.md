@@ -95,8 +95,8 @@ simulator, or the session's `hw_target.HwTarget`. Both offer `launch_app`,
 `wait_for_exit`, `exit_app`, `keypress(_sequence)`, `pad`, `screenshot`,
 `read_file`/`write_file`/`delete_file`, `push_app`/`stage_lua_app`,
 `run_lua_app`, `wait_for_results`, `status`, log reading and `command` (a
-dev-command line; the simulator runs `ping`, `exit`, `unzip`, `rm`, `pad` and
-`audiostat`). Hardware-only
+dev-command line; the simulator runs `ping`, `exit`, `unzip`, `rm`, `mv`,
+`list [all]`, `pad` and `audiostat`). Hardware-only
 fixture apps live in `hw_apps/` (pushed by the test, never on the
 simulator's default SD card; `test_mp3_pacing.py` stages `mp3_bench` on its
 own card to run the same app in the simulator).
@@ -110,11 +110,27 @@ and builds the device's traps in:
   `/system/error.log` growth (`returned`, `error`, `exit_sentinel`,
   `load_failed`, `device_rebooted` when uptime goes back). Log lines
   (`get_log_lines`, `wait_for_log`) are advisory.
-- **The launcher caches `app.json` at boot.** `push_app` reboots when the
-  pushed manifest (id, name, requirements, `min_psram_kb`,
-  `system_clock_khz`) differs from the card's, or `list` does not show the
-  app, then polls `list` for up to 20 s (`rescan_timeout`): a `list` straight
-  after the reboot can miss an app the launcher shows a few seconds later.
+- **Test apps are hidden.** `stage_lua_app` and `push_app` stage into
+  `/apps/.test/<name>` by default (on both targets): the launcher scan skips
+  it, so the card's 64-app cap does not matter, and `launch` reads the
+  app.json fresh, so there is no reboot, `list` poll or rescan after a push.
+  The session wipes `/apps/.test` (`rm /apps/.test`) when it starts and when
+  it ends. `/apps/.dev` is the user's own hidden dev apps: the harness never
+  touches it (`launch` finds both; `.test` first). The harness launches what it
+  staged hidden as `launch .test/<name>` (both targets; `PicodeckSimulator
+  .launch_app(name)` does it when `/apps/.test/<name>` exists, `hidden=False`
+  sends the name as given), which searches only that root: a listed app of the
+  same name or id (the user's card has some) cannot run in its place, and
+  `HwTarget.launch_app` raises if the reply does not say `from /apps/.test:`.
+  The firmware's `launch` argument is at most 69 characters. A test that needs the
+  launcher to *show* the app (a list or menu screenshot) opts out with
+  `hidden=False`, which stages `/apps/<name>` and counts against the cap.
+- **The launcher caches `app.json` at boot** (listed apps only: `hidden=False`).
+  `push_app` reboots when the pushed manifest (id, name, requirements,
+  `min_psram_kb`, `system_clock_khz`) differs from the card's, or `list` does
+  not show the app, then polls `list` for up to 20 s (`rescan_timeout`): a
+  `list` straight after the reboot can miss an app the launcher shows a few
+  seconds later.
 - **Dev commands while an app runs.** `reboot` and `reboot-flash` are
   honoured mid-app (a Lua app's instruction hook / `sys.sleep`, a native
   app's `sys->poll`; a native app that never polls leaves them latched for
@@ -224,7 +240,9 @@ exit status, sanitizer lines and stderr tail as problems, and every case id
 
 ## App cap
 
-The launcher keeps at most `MAX_APPS` (64, `src/os/launcher.c`) apps, in
+Inline apps staged with `stage_lua_app` go to the hidden `/apps/.test` and
+never count; this section is about *listed* apps (the fixtures, and
+`hidden=False`). The launcher keeps at most `MAX_APPS` (64, `src/os/launcher.c`) apps, in
 directory order, and drops the rest with `[LAUNCHER] WARNING: app cap (64)
 reached, ignoring '<dir>'`. Directory order depends on the host filesystem
 (tmpfs lists new entries first, ext4 and btrfs do not), so a test on an
@@ -236,7 +254,7 @@ The default card holds `apps/hello` plus every `tests/e2e/apps/*` fixture, and
 must leave one slot under the cap free: many tests stage a single app without a
 marker, so `test_sd_card.py` fails a new fixture app that would use that slot,
 before a hundred tests fail on health checks. A test that stages apps at
-runtime (`stage_lua_app`, `stage_native_app`, copying an app in) asks for room:
+runtime as *listed* (`stage_lua_app(hidden=False)`, `stage_native_app`, copying an app into `apps/`) asks for room:
 
 ```python
 @pytest.mark.sd(fixtures=["fs_test"], reserve=3)   # per-test card
@@ -251,7 +269,7 @@ omitted = all of them); `reserve` is how many apps the test stages. Two guards
 fail with an explanation, on every filesystem:
 
 - `build_sd_card` raises when the card, plus `reserve`, would exceed `MAX_APPS`
-  (read from `launcher.c`). Adding a fixture app past the cap trips
+  (read from `launcher.c`; dot-named dirs such as `.test` are not counted). Adding a fixture app past the cap trips
   `test_sd_card.py::test_default_card_holds_every_fixture_and_fits_the_cap`.
 - A simulator whose launcher logged the drop warning is unhealthy: the
   after-test health check (and `stop_and_check`) fails naming the fix, so a test

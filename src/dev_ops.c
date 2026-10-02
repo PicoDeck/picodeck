@@ -10,6 +10,7 @@
 #include "drivers/sound.h"
 #include "os/gamepad_map.h"
 #include "os/launcher.h"
+#include "os/mv_op.h"
 #include "os/zip_util.h"
 #include "hardware/clocks.h"
 #include "hardware/watchdog.h"
@@ -83,6 +84,10 @@ bool dev_op_rm(const char *path, char *reply, size_t n) {
     }
     snprintf(reply, n, "Error: rm failed: %s", path);
     return false;
+}
+
+bool dev_op_mv(char *args, char *reply, size_t n) {
+    return mv_op(args, reply, n);
 }
 
 // "up+a" -> PAD_UP | PAD_A; false (with *bad set) on an unknown or empty

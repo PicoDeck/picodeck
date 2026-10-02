@@ -30,6 +30,15 @@ bool dev_op_unzip(char *args, char *reply, size_t n);
 // "rm <path>": delete a file or a directory tree.
 bool dev_op_rm(const char *path, char *reply, size_t n);
 
+// "mv <src> <dst>": move or rename a file or directory on the card (FatFS
+// f_rename: across directories on the one volume). Never overwrites, never
+// touches /system (source or target, by FatFS identity, not spelling), never
+// moves the top-level directories or a directory into itself; missing parent
+// directories of <dst> are created (and removed again if the rename fails).
+// Implemented in os/mv_op.c. args is modified.
+// Reply "Moved: <src> -> <dst>" or "Error: mv ...".
+bool dev_op_mv(char *args, char *reply, size_t n);
+
 // "pad <state> [hold_ms]": set the test gamepad source (PAD_SOURCE_TEST,
 // drivers/pad_source.h), which apps read through picocalc.gamepad /
 // api->gamepad ORed with the keyboard and any other pad. <state> is `none`

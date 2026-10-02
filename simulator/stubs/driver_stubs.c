@@ -650,8 +650,12 @@ int sdcard_list_dir(const char* path,
     int count = 0;
     struct dirent* entry;
     while ((entry = readdir(dir)) != NULL) {
-        // Skip dotfiles (FAT32 doesn't have them; filters .DS_Store, .git, etc.)
-        if (entry->d_name[0] == '.') {
+        // Skip dotfiles (filters ., .., .DS_Store, .git, etc. that a host
+        // directory has and a FAT volume does not), except the hidden app
+        // roots, which firmware lists like any directory.
+        if (entry->d_name[0] == '.' &&
+            strcmp(entry->d_name, ".test") != 0 &&
+            strcmp(entry->d_name, ".dev") != 0) {
             continue;
         }
         
@@ -786,6 +790,38 @@ bool sdcard_delete_recursive(const char* path) {
     char full[1024];
     if (!hal_sdcard_resolve(path, full, sizeof(full))) return false;
     return nftw(full, nftw_remove_cb, 64, FTW_DEPTH | FTW_PHYS) == 0;
+}
+// Same directory, or below it: by device and inode of each ancestor, as the
+// firmware compares FatFS directory clusters (src/drivers/fat_within.c).
+sdcard_within_t sdcard_path_within(const char* root, const char* path) {
+    char full[1024];
+    struct stat rs;
+    if (!hal_sdcard_resolve(root, full, sizeof(full))) return SDCARD_WITHIN_UNKNOWN;
+    if (stat(full, &rs) != 0)
+        return (errno == ENOENT || errno == ENOTDIR) ? SDCARD_WITHIN_NO
+                                                     : SDCARD_WITHIN_UNKNOWN;
+    if (!S_ISDIR(rs.st_mode)) return SDCARD_WITHIN_NO;
+    char prefix[256];
+    size_t n = strlen(path);
+    if (n >= sizeof(prefix)) return SDCARD_WITHIN_UNKNOWN;
+    memcpy(prefix, path, n + 1);
+    for (size_t i = 1; i <= n; i++) {
+        if (prefix[i] != '/' && prefix[i] != '\\' && prefix[i] != '\0') continue;
+        char saved = prefix[i];
+        prefix[i] = '\0';
+        struct stat ps;
+        bool resolved = hal_sdcard_resolve(prefix, full, sizeof(full));
+        int rc = resolved ? stat(full, &ps) : -1;
+        int err = errno;
+        prefix[i] = saved;
+        if (!resolved) return SDCARD_WITHIN_UNKNOWN;
+        if (rc != 0)
+            return (err == ENOENT || err == ENOTDIR) ? SDCARD_WITHIN_NO
+                                                     : SDCARD_WITHIN_UNKNOWN;
+        if (S_ISDIR(ps.st_mode) && ps.st_dev == rs.st_dev && ps.st_ino == rs.st_ino)
+            return SDCARD_WITHIN_YES;
+    }
+    return SDCARD_WITHIN_NO;
 }
 bool sdcard_rename(const char* oldpath, const char* newpath) {
     char full_old[1024], full_new[1024];

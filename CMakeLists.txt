@@ -262,6 +262,8 @@ add_executable(picodeck
     src/main.c
     src/dev_commands.c
     src/dev_ops.c
+    src/os/mv_op.c
+    src/os/mv_path.c
     src/os/launcher.c
     src/os/lua_runner.c
     src/os/app_stack.c
@@ -363,6 +365,7 @@ add_executable(picodeck
     src/drivers/hid_pad.c
     src/drivers/bt_pad_store.c
     src/drivers/sdcard.c
+    src/drivers/fat_within.c
     src/drivers/wifi.c
     src/drivers/rng.c
     src/drivers/ca_bundle.c

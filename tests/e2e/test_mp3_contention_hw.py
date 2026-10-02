@@ -144,7 +144,7 @@ def test_mp3_contention(target):
         make_music(app, "s44.mp3")
         target.push_app(app, APP)
     with tempfile.TemporaryDirectory() as tmp:
-        app = Path(tmp) / APP       # unzip merges into /apps/mp3_bench
+        app = Path(tmp) / APP       # unzip merges into /apps/.test/mp3_bench
         app.mkdir()
         shutil.copy(HW_APPS_DIR / APP / "app.json", app / "app.json")
         make_music(app, "m22.mp3")

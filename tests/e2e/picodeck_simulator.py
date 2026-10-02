@@ -656,13 +656,24 @@ class PicodeckSimulator:
         entries = result.get("entries", [])
         return [e["name"] for e in entries if e.get("is_dir")]
 
-    def launch_app(self, name: str) -> dict:
+    def launch_app(self, name: str, hidden: Optional[bool] = None) -> dict:
         """Queue an app launch. Returns {"queued": True, "busy": bool}.
+
+        A plain name for which the SD card has a hidden test copy
+        (/apps/.test/<name>, what helpers.stage_lua_app writes) is sent as
+        ".test/<name>", so a listed app of the same name cannot shadow it.
+        hidden=False sends the name as given (the launcher's own order:
+        listed apps first); hidden=True forces the .test/ form.
 
         The launch runs when the launcher loop next runs (after any running
         app exits). An app staged after boot is found by the sim's rescan-on-
         miss. Use wait_for_exit() for the outcome.
         """
+        if hidden is None and "/" not in name and self.sd_card_path:
+            hidden = (Path(self.sd_card_path) / "apps" / ".test" / name
+                      / "app.json").is_file()
+        if hidden and not name.startswith("."):
+            name = f".test/{name}"
         with self._notif_cond:
             self._launch_rx = self._rx_counter
         result = self.call("launch_app", {"name": name})

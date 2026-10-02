@@ -276,8 +276,7 @@ def mix_app(target):
         pytest.skip("ffmpeg makes the music")
     if APP not in _staged:
         # Two pushes, the music with the app and then the blips:
-        # `stage_lua_app` writes the same app.json both times (no extra
-        # reboot) and unzip merges into /apps/audio_mix. (Large pushes
+        # unzip merges into /apps/.test/audio_mix. (Large pushes
         # used to report "extraction did not complete" although the files
         # landed: the serial monitor gave up after 1 s of quiet while
         # unzip inflated a big file. push_app now waits for "Unzipped".)

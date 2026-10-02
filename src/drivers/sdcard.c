@@ -9,6 +9,7 @@
 
 #include "ff.h"
 #include "diskio.h"
+#include "fat_within.h"
 #include "umm_malloc.h"
 
 #include <stdio.h>
@@ -519,6 +520,14 @@ bool sdcard_delete_recursive(const char *path) {
     snprintf(path_copy, sizeof(path_copy), "%s", path);
     sdcard_list_dir(path, delete_recursive_cb, path_copy);
     return sdcard_delete(path);
+}
+
+sdcard_within_t sdcard_path_within(const char *root, const char *path) {
+    if (!s_mounted) return SDCARD_WITHIN_UNKNOWN;
+    recursive_mutex_enter_blocking(&g_sdcard_mutex);
+    fat_within_t within = fat_path_within(root, path);
+    recursive_mutex_exit(&g_sdcard_mutex);
+    return (sdcard_within_t)within;
 }
 
 bool sdcard_rename(const char *src, const char *dst) {
