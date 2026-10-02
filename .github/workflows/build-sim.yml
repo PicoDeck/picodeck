@@ -49,6 +49,12 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Cache the FatFS zip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/picodeck/ff15.zip
+          key: fatfs-ff15-e0d76654
+
       - name: Toolchain, Pico SDK and third-party sources
         run: scripts/ci/fetch-firmware-deps.sh
 

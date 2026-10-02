@@ -34,6 +34,12 @@ jobs:
           .venv/bin/pip install -r tests/e2e/requirements.txt
 
       # test_mv_op compiles FatFS's ff.c, which is fetched, not tracked.
+      - name: Cache the FatFS zip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/picodeck/ff15.zip
+          key: fatfs-ff15-e0d76654
+
       - name: Fetch the FatFS sources
         run: scripts/ci/fetch-fatfs.sh
 
