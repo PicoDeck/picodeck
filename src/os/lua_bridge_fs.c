@@ -9,6 +9,7 @@
 #include "fs_path.h"
 
 #include <limits.h>
+#include <string.h>
 
 // ── Filesystem sandbox ──────────────────────────────────────────────────────
 // Apps may touch only (unless "root-filesystem" is granted):
@@ -204,9 +205,25 @@ static int l_fs_file_tostring(lua_State *L) {
   return 1;
 }
 
+// ── file:fsize() / fs.fsize(f) → bytes | nil, err ────────────────────────────
+// The size of an open handle, without moving the read position: :tell() after
+// seek(0, "end") gets the same number but leaves the handle at EOF.
+static int l_fs_fsize(lua_State *L) {
+  lua_fs_file_t *h = check_file(L, 1);
+  int n = sdcard_fsize_handle(h->f);
+  if (n < 0) {
+    lua_pushnil(L);
+    lua_pushstring(L, "fsize failed");
+    return 2;
+  }
+  lua_pushinteger(L, (lua_Integer)n);
+  return 1;
+}
+
 static const luaL_Reg l_fs_file_methods[] = {
     {"read", l_fs_read},   {"write", l_fs_write}, {"close", l_fs_close},
-    {"seek", l_fs_seek},   {"tell", l_fs_tell},   {NULL, NULL}};
+    {"seek", l_fs_seek},   {"tell", l_fs_tell},   {"fsize", l_fs_fsize},
+    {NULL, NULL}};
 
 static const luaL_Reg l_fs_file_meta[] = {
     {"__gc", l_fs_file_gc},
@@ -218,13 +235,28 @@ static void fs_file_register_mt(lua_State *L) {
   lb_register_type(L, FS_FILE_MT, l_fs_file_methods, l_fs_file_meta);
 }
 
+// The SD volume root ("/", "//", "/.", "/./"...: slashes and whole "."
+// segments only). FatFS f_stat refuses it (the root has no
+// directory entry) while the simulator's host stat() succeeds, so exists /
+// stat / isDir answer for it here, identically on both: an existing, empty-
+// sized directory. Only a root-filesystem app gets past fs_sandbox_check.
+static bool path_is_root(const char *path) {
+  if (path[0] != '/') return false;
+  for (const char *c = path; *c;) {
+    if (*c == '/') { c++; continue; }
+    if (c[0] == '.' && (c[1] == '/' || c[1] == '\0')) { c++; continue; }
+    return false;
+  }
+  return true;
+}
+
 static int l_fs_exists(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
   if (!fs_sandbox_check(L, path, false)) {
     lua_pushboolean(L, false);
     return 1;
   }
-  lua_pushboolean(L, sdcard_fexists(path));
+  lua_pushboolean(L, path_is_root(path) || sdcard_fexists(path));
   return 1;
 }
 
@@ -488,7 +520,10 @@ static int l_fs_stat(lua_State *L) {
     return 2;
   }
   sdcard_stat_t st;
-  if (!sdcard_stat(path, &st)) {
+  if (path_is_root(path)) {
+    memset(&st, 0, sizeof st);  // no size, no timestamp (FAT keeps none)
+    st.is_dir = true;
+  } else if (!sdcard_stat(path, &st)) {
     lua_pushnil(L);
     lua_pushstring(L, "not found");
     return 2;
@@ -572,12 +607,29 @@ static int l_fs_setSlowMode(lua_State *L) {
   return 0;
 }
 
+// ── fs.isDir(path) → bool ─────────────────────────────────────────────────────
+// True if the path exists and is a directory. False for a missing path, a
+// file, and a path the sandbox refuses — same "not usable" answer as exists().
+static int l_fs_is_dir(lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  if (!fs_sandbox_check(L, path, false)) {
+    lua_pushboolean(L, false);
+    return 1;
+  }
+  sdcard_stat_t st;
+  lua_pushboolean(L, path_is_root(path) ||
+                         (sdcard_stat(path, &st) && st.is_dir));
+  return 1;
+}
+
 static const luaL_Reg l_fs_lib[] = {
     {"open",     l_fs_open},     {"read",     l_fs_read},
     {"write",    l_fs_write},    {"close",    l_fs_close},
     {"seek",     l_fs_seek},     {"tell",     l_fs_tell},
+    {"fsize",    l_fs_fsize},
     {"exists",   l_fs_exists},   {"readFile", l_fs_readFile},
-    {"size",     l_fs_size},     {"listDir",  l_fs_listDir},
+    {"size",     l_fs_size},     {"isDir",    l_fs_is_dir},
+    {"listDir",  l_fs_listDir},
     {"mkdir",    l_fs_mkdir},    {"appPath",  l_fs_appPath},
     {"browse",   l_fs_browse},
     {"delete",   l_fs_delete},   {"deleteRecursive", l_fs_delete_recursive},

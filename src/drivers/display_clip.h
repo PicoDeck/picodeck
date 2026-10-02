@@ -544,4 +544,40 @@ DISP_HOT static inline void disp_blit_scaled(uint16_t *fb, int stride,
                         dst_w, dst_h, key, swap);
 }
 
+// Bulk host-order RGB565 block copy (Lua fb:setPixels / getPixels). `src` is
+// w*h*2 bytes of little-endian host-order RGB565, row-major, top row first.
+// The destination is clipped ONCE; each visible row is then copied from the
+// source offset (skip_y + r) * w + skip_x, so the pixels land where they
+// would unclipped. Returns false when nothing is visible.
+static inline bool disp_set_pixels(uint16_t *fb, int stride,
+                                   const disp_clip_t *c, int x, int y, int w,
+                                   int h, const uint8_t *src, bool swap) {
+  disp_span_t s;
+  if (!disp_clip_rect(c, x, y, w, h, &s)) return false;
+  for (int r = 0; r < s.h; r++) {
+    const uint8_t *sp =
+        src + (((size_t)(s.skip_y + r) * (size_t)w) + (size_t)s.skip_x) * 2u;
+    uint16_t *row = fb + (size_t)(s.y + r) * stride + s.x;
+    for (int i = 0; i < s.w; i++, sp += 2)
+      row[i] = disp_px((uint16_t)(sp[0] | ((uint16_t)sp[1] << 8)), swap);
+  }
+  return true;
+}
+
+// The reverse: a w x h rect already known to lie inside the buffer, read out
+// as host-order little-endian RGB565. Reads ignore the clip rect (as
+// display_get_pixel does).
+static inline void disp_get_pixels(const uint16_t *fb, int stride, int x,
+                                   int y, int w, int h, uint8_t *dst,
+                                   bool swap) {
+  for (int r = 0; r < h; r++) {
+    const uint16_t *row = fb + (size_t)(y + r) * stride + x;
+    for (int i = 0; i < w; i++, dst += 2) {
+      uint16_t v = disp_px(row[i], swap);  // swap is its own inverse
+      dst[0] = (uint8_t)(v & 0xFF);
+      dst[1] = (uint8_t)(v >> 8);
+    }
+  }
+}
+
 #endif  // DISPLAY_CLIP_H

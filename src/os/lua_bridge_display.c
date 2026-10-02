@@ -4,6 +4,111 @@
 
 // ── picocalc.display.* ───────────────────────────────────────────────────────
 
+// ── picocalc.display.getBackBuffer() → framebuffer handle ────────────────────
+// The Lua counterpart of the C display->getBackBuffer() pointer. Lua gets no
+// raw pointer (nothing in the sandbox can dereference one), so the handle
+// carries the capability instead: bulk read/write of the back buffer in
+// host-order RGB565, with no intermediate image. Single pixels stay on
+// display.setPixel()/getPixel(), which these deliberately do not mirror.
+//
+// The handle refers to "the back buffer" by role, not by address, so it stays
+// correct across a flush() (which swaps the buffers under it) — the same
+// contract display_set_pixel()/getPixel() have. Fetch it again after the
+// system menu closes if you are holding one across that.
+#define FB_MT "picocalc.display.framebuffer"
+
+static int l_fb_width(lua_State *L) {
+  luaL_checkudata(L, 1, FB_MT);
+  lua_pushinteger(L, FB_WIDTH);
+  return 1;
+}
+
+static int l_fb_height(lua_State *L) {
+  luaL_checkudata(L, 1, FB_MT);
+  lua_pushinteger(L, FB_HEIGHT);
+  return 1;
+}
+
+// Reads the rectangle arguments at idx..idx+3 and raises unless it is a
+// non-empty rectangle wholly inside the screen. w and h are bounded by the
+// screen BEFORE they are multiplied, so the byte count cannot overflow and a
+// huge request fails here, not in an allocation. Returns the byte count.
+static size_t fb_check_rect(lua_State *L, int idx, int *x, int *y, int *w,
+                            int *h) {
+  *x = (int)lb_checkint(L, idx);
+  *y = (int)lb_checkint(L, idx + 1);
+  *w = (int)lb_checkint(L, idx + 2);
+  *h = (int)lb_checkint(L, idx + 3);
+  if (*w <= 0 || *h <= 0)
+    return (size_t)luaL_error(L, "rectangle (%d, %d, %d, %d) has no area",
+                              *x, *y, *w, *h);
+  if (*w > FB_WIDTH || *h > FB_HEIGHT || *x < 0 || *y < 0 ||
+      *x > FB_WIDTH - *w || *y > FB_HEIGHT - *h)
+    return (size_t)luaL_error(L, "rectangle (%d, %d, %d, %d) outside the screen",
+                              *x, *y, *w, *h);
+  return (size_t)*w * (size_t)*h * 2u;
+}
+
+// fb:getPixels(x, y, w, h) → string (host-order RGB565, row-major)
+static int l_fb_get_pixels(lua_State *L) {
+  luaL_checkudata(L, 1, FB_MT);
+  int x, y, w, h;
+  size_t n = fb_check_rect(L, 2, &x, &y, &w, &h);
+  luaL_Buffer b;
+  void *buf = luaL_buffinitsize(L, &b, n);
+  if (!display_get_pixels_block(x, y, w, h, buf, n))
+    return luaL_error(L, "rectangle (%d, %d, %d, %d) outside the screen",
+                      x, y, w, h);
+  luaL_pushresultsize(&b, n);
+  return 1;
+}
+
+// fb:setPixels(data, x, y, w, h) → true when anything was drawn, false when
+// the rectangle is on screen but wholly outside the clip rect. A rectangle
+// that is not inside the screen raises, as getPixels does.
+static int l_fb_set_pixels(lua_State *L) {
+  luaL_checkudata(L, 1, FB_MT);
+  size_t len = 0;
+  const char *data = luaL_checklstring(L, 2, &len);
+  int x, y, w, h;
+  size_t n = fb_check_rect(L, 3, &x, &y, &w, &h);
+  if (len != n)
+    return luaL_error(L, "pixel data is %I bytes, expected %d (%dx%d pixels)",
+                      (lua_Integer)len, (int)n, w, h);
+  lua_pushboolean(L, display_set_pixels_block(x, y, w, h, data, len));
+  return 1;
+}
+
+static const luaL_Reg l_fb_methods[] = {
+    {"width",     l_fb_width},
+    {"height",    l_fb_height},
+    {"getPixels", l_fb_get_pixels},
+    {"setPixels", l_fb_set_pixels},
+    {NULL, NULL}};
+
+// The handle is stateless, so one shared instance is built at registration
+// and every getBackBuffer() hands back that same object.
+#define FB_SINGLETON "picocalc.display.framebuffer.singleton"
+
+static int l_display_get_back_buffer(lua_State *L) {
+  lua_getfield(L, LUA_REGISTRYINDEX, FB_SINGLETON);
+  return 1;
+}
+
+// Called from lua_bridge_display_init(), once per VM.
+static void display_register_fb(lua_State *L) {
+  lb_register_type(L, FB_MT, l_fb_methods, NULL);
+  lua_getfield(L, LUA_REGISTRYINDEX, FB_SINGLETON);
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    lua_newuserdatauv(L, 1, 0);   // no state, no __gc
+    luaL_setmetatable(L, FB_MT);
+    lua_pushvalue(L, -1);
+    lua_setfield(L, LUA_REGISTRYINDEX, FB_SINGLETON);
+  }
+  lua_pop(L, 1);
+}
+
 static int l_display_clear(lua_State *L) {
   uint16_t color = (lua_gettop(L) >= 1) ? l_checkcolor(L, 1) : COLOR_BLACK;
   display_clear(color);
@@ -414,6 +519,7 @@ static const luaL_Reg l_display_lib[] = {
     {"clear", l_display_clear},
     {"setPixel", l_display_setPixel},
     {"getPixel", l_display_getPixel},
+    {"getBackBuffer", l_display_get_back_buffer},
     {"fillRect", l_display_fillRect},
     {"drawRect", l_display_drawRect},
     {"drawLine", l_display_drawLine},
@@ -456,6 +562,7 @@ void lua_bridge_display_init(lua_State *L) {
   // silently truncate the next app's drawing.
   display_clear_clip_rect();
 
+  display_register_fb(L);
   register_subtable(L, "display", l_display_lib);
   // Push colour constants into picocalc.display
   lua_getfield(L, -1, "display");

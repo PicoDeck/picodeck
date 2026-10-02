@@ -62,6 +62,56 @@ print(picocalc.display.getPixel(11, 11) == 0x1234)  -- true
 
 ---
 
+#### `picocalc.display.getBackBuffer()`
+A handle on the frame being drawn (the back buffer), for **bulk** pixel access.
+
+The C API hands out a raw `uint16_t *` here (`display->getBackBuffer()`). Lua cannot dereference a pointer — nothing in the sandbox can — so this returns the capability rather than the address: read and write the back buffer in whole rectangles as host-order RGB565, with no intermediate image. For a single pixel use `display.setPixel()` / `display.getPixel()`; this deliberately does not mirror them.
+
+- **Returns:** (`PicoDeckFramebuffer`) The framebuffer handle
+
+The handle is **stateless and refers to the back buffer by role, not by address**, so it stays correct across a `flush()` (which swaps the buffers underneath it), exactly as `setPixel`/`getPixel` do. It is the same object on every call. Fetch it again after the system menu closes if you are holding one across that.
+
+Per-pixel `display.getPixel` is usually simpler, and often fast enough: the per-call cost is Lua call overhead, so prefer `setPixels` once you are writing more than a handful of pixels in a row.
+
+##### `fb:width()` / `fb:height()`
+Framebuffer size in pixels (320 x 320). **Returns:** (number)
+
+##### `fb:getPixels(x, y, w, h)`
+Read a rectangle as a string of host-order RGB565, row-major, top row first — the same encoding `PicoDeckImage:getPixels()` returns.
+
+- **Parameters:** `x`, `y` (number) top-left; `w`, `h` (number) size in pixels
+- **Returns:** (string) `w * h * 2` bytes
+- **Errors:** if the rectangle is not wholly inside the screen, or `w`/`h` is not positive. The rectangle is checked before anything is allocated, so a huge request raises `outside the screen` rather than running out of memory
+
+The clip rect does not apply to reads (matching `display.getPixel()`).
+
+##### `fb:setPixels(data, x, y, w, h)`
+Write host-order RGB565 into the back buffer.
+
+- **Parameters:**
+  - `data` (string): exactly `w * h * 2` bytes
+  - `x`, `y` (number): top-left
+  - `w`, `h` (number): size in pixels
+- **Returns:** (boolean) `true` when anything was drawn; `false` when the rectangle is on screen but lies wholly outside the clip rect, so nothing was drawn
+- **Errors:** if `data` is not exactly `w * h * 2` bytes, the rectangle is not inside the screen, or `w`/`h` is not positive
+
+Clipped to the clip rect exactly as `display.setPixel()` is, so a partly hidden rectangle writes only its visible part, each pixel at the position it would have unclipped. Note the asymmetry, which matches the single-pixel calls: writes respect the clip rect, reads do not.
+
+```lua
+-- Push a computed frame straight into the back buffer, no image in between.
+local fb = picocalc.display.getBackBuffer()
+local W, H = 64, 64
+local red = string.pack("<I2", picocalc.display.rgb(255, 0, 0))  -- RGB565, little-endian
+local row = string.rep(red, W)              -- one row of red
+local frame = string.rep(row, H)                -- 64 rows
+fb:setPixels(frame, 128, 128, W, H)
+picocalc.display.flush()
+```
+
+Because the bytes are host-order RGB565, build them from the same `rgb(r, g, b)` helper the rest of the API takes, encoded with `string.pack("<I2", color)`, not from the swapped buffer `display->getBackBuffer()` exposes to C.
+
+---
+
 #### `picocalc.display.fillRect(x, y, width, height, color)`
 Draws a filled rectangle.
 

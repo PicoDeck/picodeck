@@ -1543,6 +1543,32 @@ const uint16_t *display_get_framebuffer(void) { return s_framebuffer; }
 
 uint16_t *display_get_back_buffer(void) { return s_framebuffer; }
 
+// ── Bulk back-buffer pixel blocks (see display.h) ────────────────────────────
+// The framebuffer holds byte-swapped RGB565; both directions convert here so
+// callers deal in host-order values.
+
+bool display_set_pixels_block(int x, int y, int w, int h,
+                              const void *rgb565_host, size_t len) {
+  if (w <= 0 || h <= 0) return false;
+  if (x < 0 || y < 0 || x + w > FB_WIDTH || y + h > FB_HEIGHT) return false;
+  if (len != (size_t)w * (size_t)h * 2u) return false;
+
+  disp_clip_t c = cur_clip();
+  return disp_set_pixels(s_framebuffer, FB_WIDTH, &c, x, y, w, h,
+                         (const uint8_t *)rgb565_host, true);
+}
+
+bool display_get_pixels_block(int x, int y, int w, int h,
+                              void *rgb565_host, size_t len) {
+  if (w <= 0 || h <= 0) return false;
+  if (x < 0 || y < 0 || x + w > FB_WIDTH || y + h > FB_HEIGHT) return false;
+  if (len != (size_t)w * (size_t)h * 2u) return false;
+
+  disp_get_pixels(s_framebuffer, FB_WIDTH, x, y, w, h,
+                  (uint8_t *)rgb565_host, true);
+  return true;
+}
+
 const uint16_t *display_get_front_buffer(void) {
   return s_framebuffers[1 - s_back_buffer_idx];
 }

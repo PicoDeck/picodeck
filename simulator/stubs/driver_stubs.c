@@ -285,6 +285,32 @@ uint16_t display_get_pixel(int x, int y) {
     return display_get_back_buffer()[y * 320 + x];
 }
 
+// Mirrors display_set_pixels_block / display_get_pixels_block in
+// src/drivers/display.c (both call the shared disp_set/get_pixels). This framebuffer is already
+// host order, so no byte swap happens here — the firmware swaps, and the Lua
+// contract ("host-order RGB565 either way") is the same.
+bool display_set_pixels_block(int x, int y, int w, int h,
+                              const void *rgb565_host, size_t len) {
+    if (w <= 0 || h <= 0) return false;
+    if (x < 0 || y < 0 || x + w > 320 || y + h > 320) return false;
+    if (len != (size_t)w * (size_t)h * 2u) return false;
+
+    disp_clip_t c = cur_clip();
+    return disp_set_pixels(display_get_back_buffer(), 320, &c, x, y, w, h,
+                           (const uint8_t *)rgb565_host, false);
+}
+
+bool display_get_pixels_block(int x, int y, int w, int h,
+                              void *rgb565_host, size_t len) {
+    if (w <= 0 || h <= 0) return false;
+    if (x < 0 || y < 0 || x + w > 320 || y + h > 320) return false;
+    if (len != (size_t)w * (size_t)h * 2u) return false;
+
+    disp_get_pixels(display_get_back_buffer(), 320, x, y, w, h,
+                    (uint8_t *)rgb565_host, false);
+    return true;
+}
+
 void display_draw_line(int x0, int y0, int x1, int y1, uint16_t color) {
     // Bresenham clipped to the visible steps (shared with the firmware).
     disp_clip_t c = cur_clip();

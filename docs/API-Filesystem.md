@@ -116,6 +116,24 @@ end
 
 ---
 
+#### `picocalc.fs.isDir(path)`
+Whether a path exists and is a directory.
+
+- **Parameters:**
+  - `path` (string): Absolute path
+- **Returns:** (boolean) `true` only when the path exists **and** is a directory (the volume root `/` is one, for an app with the `root-filesystem` requirement; `fs.exists("/")` and `fs.stat("/")` agree, the latter with `size` 0 and no timestamp). `false` for a file, for a missing path, and for a path the sandbox refuses — the same "not usable" answer `fs.exists` gives.
+- **Errors:** none
+
+```lua
+if picocalc.fs.isDir("/apps/mygame/assets") then
+    for _, entry in ipairs(picocalc.fs.listDir("/apps/mygame/assets")) do
+        print(entry.name, entry.size)
+    end
+end
+```
+
+---
+
 #### `picocalc.fs.listDir(path)`
 Lists the contents of a directory.
 
@@ -180,6 +198,23 @@ Returns the current byte position within an open file.
 
 ```lua
 local pos = picocalc.fs.tell(f)
+```
+
+---
+
+#### `file:fsize()`
+The total size of an **open** file in bytes, without moving the read position.
+
+- **Returns:** (number or nil, string) Size in bytes, or `nil` plus an error message if it could not be read. Callable as `f:fsize()` or `picocalc.fs.fsize(f)`.
+- **Errors:** raises if the handle is closed
+
+`seek(f, 0, "end")` followed by `tell(f)` gives the same number but leaves the
+handle at end of file, so it changes where the next `read` starts. This does not:
+
+```lua
+local f = picocalc.fs.open(picocalc.fs.appPath("level.dat"), "rb")
+local total = f:fsize()      -- or picocalc.fs.fsize(f); position unchanged
+local chunk = f:read(16)     -- still the first 16 bytes
 ```
 
 ---
@@ -355,8 +390,8 @@ The native `g_api.fs` table (`picocalc_fs_t`) and this Lua table overlap but are
 
 | Native C (`api->fs->...`) | Lua | Note |
 |---|---|---|
-| `fsize(file)` | `picocalc.fs.seek(f, 0, "end")` then `picocalc.fs.tell(f)`, or `picocalc.fs.size(path)` / `picocalc.fs.stat(path).size` | There is no `fs.fsize`. The seek moves the position, so save `tell()` first (or seek back) if you are mid-file |
-| `isDir(path)` | `picocalc.fs.stat(path).is_dir` | `stat` returns `nil, err` for a path that does not exist, so `local st = picocalc.fs.stat(p); local isdir = st and st.is_dir` |
+| `fsize(file)` | `picocalc.fs.fsize(f)` / `f:fsize()`, or `picocalc.fs.size(path)` for a path | Same. `seek(f, 0, "end")` + `tell(f)` also works but moves the position |
+| `isDir(path)` | `picocalc.fs.isDir(path)` | Same. `stat(p).is_dir` also works but needs `st and st.is_dir`, since `stat` returns `nil` for a missing path |
 | `seek(file, offset)` (absolute, `bool`) | `picocalc.fs.seek(f, offset)` | Same default; Lua adds `whence` (`"set"`, `"cur"`, `"end"`); C has absolute seeks only |
 | `tell(file)` | `picocalc.fs.tell(f)` | Same |
 | `read(file, buf, len)` (fills a buffer, returns a count) | `picocalc.fs.read(f, len)` (returns a string, `nil` at end of file) | |

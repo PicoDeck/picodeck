@@ -597,6 +597,69 @@ static void test_span16(void) {
   CHECK(row[1] == 2 && row[2] == 3);
 }
 
+// disp_set_pixels: distinct source pixels must land where they would unclipped
+// (the visible part only), on every clip side; reads ignore the clip.
+static void check_set_pixels(const char *what, disp_clip_t c, int x, int y,
+                             int w, int h, bool swap, bool want_ret) {
+  uint8_t src[24 * 20 * 2];
+  for (int i = 0; i < w * h; i++) {
+    uint16_t v = (uint16_t)(0x1000 + i);
+    src[2 * i] = (uint8_t)(v & 0xFF);
+    src[2 * i + 1] = (uint8_t)(v >> 8);
+  }
+  reset(0);
+  bool got = disp_set_pixels(screen(s_got), CW, &c, x, y, w, h, src, swap);
+  for (int r = 0; r < h; r++)
+    for (int col = 0; col < w; col++) {
+      int px = x + col, py = y + r;
+      if (px < c.x0 || px > c.x1 || py < c.y0 || py > c.y1) continue;
+      screen(s_want)[py * CW + px] = disp_px((uint16_t)(0x1000 + r * w + col), swap);
+    }
+  CHECK(got == want_ret);
+  CHECK(same(what));
+}
+
+static void test_set_pixels(void) {
+  for (int sw = 0; sw < 2; sw++) {
+    bool swap = sw;
+    disp_clip_t full = {0, 0, SW - 1, SH - 1};
+    check_set_pixels("unclipped", full, 3, 2, 8, 5, swap, true);
+    disp_clip_t l = {4, 0, SW - 1, SH - 1};
+    check_set_pixels("left clip", l, 0, 0, 8, 3, swap, true);
+    disp_clip_t r = {0, 0, 10, SH - 1};
+    check_set_pixels("right clip", r, 6, 0, 8, 3, swap, true);
+    disp_clip_t t = {0, 2, SW - 1, SH - 1};
+    check_set_pixels("top clip", t, 0, 0, 5, 6, swap, true);
+    disp_clip_t b = {0, 0, SW - 1, 3};
+    check_set_pixels("bottom clip", b, 0, 1, 5, 6, swap, true);
+    disp_clip_t both = {5, 2, 9, 4};
+    check_set_pixels("both sides", both, 2, 0, 12, 8, swap, true);
+    check_set_pixels("fully clipped", both, 20, 20, 4, 4, swap, false);
+    check_set_pixels("fully clipped, left of", both, 0, 2, 5, 3, swap, false);
+    disp_clip_t empty = {0, 0, -1, -1};
+    check_set_pixels("empty clip", empty, 0, 0, 4, 4, swap, false);
+  }
+}
+
+static void test_get_pixels(void) {
+  for (int sw = 0; sw < 2; sw++) {
+    bool swap = sw;
+    reset(0);
+    for (int y = 0; y < SH; y++)
+      for (int x = 0; x < SW; x++)
+        screen(s_got)[y * CW + x] = disp_px((uint16_t)(y * 100 + x), swap);
+    uint8_t out[6 * 4 * 2];
+    disp_get_pixels(screen(s_got), CW, 7, 5, 6, 4, out, swap);
+    bool ok = true;
+    for (int r = 0; r < 4; r++)
+      for (int c = 0; c < 6; c++) {
+        uint16_t v = (uint16_t)(out[2 * (r * 6 + c)] | (out[2 * (r * 6 + c) + 1] << 8));
+        if (v != (uint16_t)((5 + r) * 100 + 7 + c)) ok = false;
+      }
+    CHECK(ok);
+  }
+}
+
 int main(void) {
   test_clip_rect();
   test_lines_match_reference();
@@ -614,5 +677,7 @@ int main(void) {
   test_tri_f_shared_edges_fill_once();
   test_tri_f_degenerate_and_huge();
   test_span16();
+  test_set_pixels();
+  test_get_pixels();
   return check_report("test_display_clip");
 }
