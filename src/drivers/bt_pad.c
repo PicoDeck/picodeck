@@ -258,6 +258,10 @@ static void hid_event(uint8_t *packet) {
     uint8_t evicted[6];
     if (bt_store_add_pad(&s_bt->store, &r, evicted))
       gap_drop_link_key_for_bd_addr(evicted); // the oldest pad's bond goes
+    // A pad whose name the search never got: ask now, over the link (its
+    // button layout depends on it; the reply updates profile and record).
+    if (!r.name[0])
+      gap_remote_name_request(s_bt->peer.addr, 0, 0);
     note("Connected: %s", r.name[0] ? r.name : "pad");
     break;
   }
@@ -345,14 +349,25 @@ static void packet_handler(uint8_t type, uint16_t channel, uint8_t *packet,
   case HCI_EVENT_REMOTE_NAME_REQUEST_COMPLETE:
     hci_event_remote_name_request_complete_get_bd_addr(packet, addr);
     if (hci_event_remote_name_request_complete_get_status(packet) == 0) {
+      const char *name =
+          hci_event_remote_name_request_complete_get_remote_name(packet);
       for (int i = 0; i < s_bt->n_found; i++)
         if (memcmp(s_bt->found[i].d.addr, addr, 6) == 0) {
-          strncpy(s_bt->found[i].d.name,
-                  hci_event_remote_name_request_complete_get_remote_name(
-                      packet),
-                  BT_PAD_NAME_MAX - 1);
+          strncpy(s_bt->found[i].d.name, name, BT_PAD_NAME_MAX - 1);
           printf("[BT] name: %s\n", s_bt->found[i].d.name);
         }
+      if (s_bt->link == BT_PAD_LINK_CONNECTED && !s_bt->peer.name[0] &&
+          memcmp(s_bt->peer.addr, addr, 6) == 0) {
+        strncpy(s_bt->peer.name, name, BT_PAD_NAME_MAX - 1);
+        s_bt->profile = hid_pad_profile_for_name(s_bt->peer.name);
+        bt_pad_record_t r;
+        memset(&r, 0, sizeof(r));
+        memcpy(r.addr, s_bt->peer.addr, 6);
+        memcpy(r.name, s_bt->peer.name, sizeof(r.name));
+        uint8_t evicted[6];
+        bt_store_add_pad(&s_bt->store, &r, evicted); // already there: renamed
+        note("Connected: %s", r.name);
+      }
     }
     if (s_bt->naming) {
       s_bt->naming = false;
