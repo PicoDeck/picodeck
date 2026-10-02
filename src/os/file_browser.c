@@ -189,6 +189,7 @@ bool file_browser_show(const char *start_path, const char *root_path,
   // polls, or injections queued before this modal opened, were not typed
   // at this browser and must not navigate or select on its behalf.
   kbd_clear_state();
+  kbd_consume_menu_press();  // a stale press was not made here
 
   int sel = 0;
   int scroll = 0;

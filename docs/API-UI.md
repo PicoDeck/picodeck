@@ -70,7 +70,7 @@ end
 ### Dialogs
 
 #### `picocalc.ui.confirm(message)`
-Show a yes/no confirmation dialog. Blocks until user responds.
+Show a yes/no confirmation dialog. Blocks until user responds. The system menu key is ignored while it is up (the dialog stays), so it never answers No for you.
 
 - **Parameters:**
   - `message` (string): Question text
@@ -85,7 +85,7 @@ end
 ---
 
 #### `picocalc.ui.textInput([prompt], [default])`
-Show a modal text input dialog. Blocks until user submits or cancels.
+Show a modal text input dialog. Blocks until user submits or cancels (Esc, or the system menu key).
 
 - **Parameters:**
   - `prompt` (string, optional): Prompt text

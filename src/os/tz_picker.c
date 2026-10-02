@@ -130,6 +130,7 @@ bool tz_picker_show(void) {
     // polls, or injections queued before this modal opened, were not typed
     // at this picker and must not filter or select on its behalf.
     kbd_clear_state();
+    kbd_consume_menu_press();  // a stale press was not made here
 
     while (running) {
         if (need_redraw) {
