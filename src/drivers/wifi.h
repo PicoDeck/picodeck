@@ -88,6 +88,19 @@ void wifi_pause_radio(void);
 // wifi_connect() calls it too. Core 0.
 void wifi_resume_radio(void);
 
+// Clock changes (launcher_apply_clock, Core 0, with Core 1 paused). The
+// CYW43's PIO SPI clock is clk_sys / (2 x div); the SDK sets div once, at
+// init (2: 50 MHz at 200 MHz, the chip's limit), so at 300 MHz the bus ran
+// at 75 MHz. wifi_bus_hold(true) takes the driver's async-context lock, so
+// no CYW43 transfer (WiFi or Bluetooth, from Core 0's driver interrupt)
+// runs across the switch; wifi_bus_clock(khz) sets div = ceil(khz / 100 MHz)
+// (at least 2), the bus at or under 50 MHz at that clk_sys: once for the
+// faster of the two clocks before the switch (in spec at both), once for
+// the new clock after it. wifi_bus_hold(false) releases the lock (the
+// driver's pending work runs then). No-ops without the CYW43.
+void wifi_bus_hold(bool hold);
+void wifi_bus_clock(uint32_t khz);
+
 // How long a caller should wait for wifi_hw_disconnected() after
 // wifi_disconnect(): Core 1 drains the request on its next tick, but may be
 // inside a long mg_mgr_poll (a TLS handshake) first.  Bounded; the callers
