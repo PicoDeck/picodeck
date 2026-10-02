@@ -165,7 +165,7 @@ static void enc_reserve(json_enc_t *e, size_t extra) {
   // request, so the box still owns it and __gc will still free it.
   char *np = (char *)enc_realloc(e->L, bx->p, bx->cap, cap);
   if (!np)
-    luaL_error(e->L, "json.encode: out of memory (%u bytes)", (unsigned)cap);
+    luaL_error(e->L, "json.encode: out of memory (%I bytes)", (lua_Integer)cap);
   bx->p = np;
   bx->cap = cap;
 }
