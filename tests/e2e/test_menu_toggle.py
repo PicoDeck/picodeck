@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+import hw_target
 from test_controls import TO_A, TO_CONTROLS, _keys
 
 pytestmark = [pytest.mark.timeout(300),
@@ -93,11 +94,29 @@ def _region(target):
     return img.crop(REGION)
 
 
-def _changed(a, b) -> int:
+def _diff_mask(a, b):
     from PIL import ImageChops
-    diff = ImageChops.difference(a, b).convert("L").point(
+    return ImageChops.difference(a, b).convert("L").point(
         lambda v: 255 if v > 24 else 0)
-    return sum(1 for v in diff.tobytes() if v)
+
+
+def _changed(a, b) -> int:
+    return sum(1 for v in _diff_mask(a, b).tobytes() if v)
+
+
+def _where(a, b) -> str:
+    """Where two region frames differ, for a failure message. A menu page
+    is a panel the region's full width and 32 + 13 * rows tall, so its
+    pixel count is a multiple of 200; anything else (part of a row, a run
+    from some pixel to the bottom) is not a page the test left open."""
+    mask = _diff_mask(a, b)
+    box = mask.getbbox()
+    if not box:
+        return "no difference"
+    w = REGION[2] - REGION[0]
+    first = next(i for i, v in enumerate(mask.tobytes()) if v)
+    return (f"differing box x {box[0]}-{box[2] - 1}, y {box[1]}-{box[3] - 1}"
+            f" of the region; first at ({first % w}, {first // w})")
 
 
 class Screen:
@@ -107,9 +126,11 @@ class Screen:
         self.target = target
         time.sleep(0.3)
         self.base = _region(target)
+        self.last = self.base
 
     def changed(self) -> int:
-        return _changed(self.base, _region(self.target))
+        self.last = _region(self.target)
+        return _changed(self.base, self.last)
 
     def wait(self, want_open: bool, what: str, timeout: float = 10.0):
         deadline = time.monotonic() + timeout
@@ -119,14 +140,15 @@ class Screen:
                 return
             if time.monotonic() >= deadline:
                 pytest.fail(f"{what} ({n} pixels differ from the frame "
-                            "before the menu)")
+                            f"before the menu: {_where(self.base, self.last)})")
             time.sleep(0.05)
 
     def stays_closed(self, what: str, seconds: float = SETTLE):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             n = self.changed()
-            assert n <= CLOSED_PIXELS, f"{what} ({n} pixels differ)"
+            assert n <= CLOSED_PIXELS, \
+                f"{what} ({n} pixels differ: {_where(self.base, self.last)})"
             time.sleep(0.05)
 
 
@@ -215,6 +237,24 @@ def pad_cleanup(target):
         pass
 
 
+@pytest.fixture(scope="module", autouse=True)
+def remove_fixture_app(request):
+    """On a device the fixture app stays on the SD card between this
+    module's tests (staging it again unchanged costs no reboot) and is
+    removed, with its data directory, once they are done: the launcher
+    lists at most 64 apps. The simulator's SD card is per test."""
+    yield
+    if hw_target.target_spec(request.config)[0] != "hw":
+        return
+    try:
+        target = hw_target.session_target(request.config)
+        target.ensure_launcher()
+        target.delete_file(f"/apps/{APP}")
+        target.delete_file(f"/data/{APP_ID}")
+    except Exception as e:  # report, but never fail the tests over it
+        print(f"menu_toggle cleanup: {e}")
+
+
 def _start_lua(target) -> Screen:
     target.stage_lua_app(APP, FIXTURE, id=APP_ID)
     assert target.launch_app(APP)["launched"]
@@ -300,6 +340,12 @@ def test_menu_key_cancels_a_modal_the_menu_opened(target, how, pad_cleanup):
     # (dev mode, Bluetooth).
     assert _changed(selected, after) <= CLOSED_PIXELS, \
         "the picker did not return to the Settings page"
+    # And it stays there, so the next press finds the menu idle on Settings
+    # (on a device each frame is a 1-3 s transfer, so this also spaces the
+    # presses well apart).
+    steady = _region(target)
+    assert _changed(after, steady) <= CLOSED_PIXELS, \
+        f"the Settings page changed after the picker: {_where(after, steady)}"
     _press(target, how)  # now it closes the menu
     screen.wait(False, "the menu key did not close the menu after the picker")
     screen.stays_closed("the menu re-opened after the picker")
