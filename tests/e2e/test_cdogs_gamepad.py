@@ -95,15 +95,13 @@ def _tap(sim, key, want=None):
     return e
 
 
-def _fresh_menu(sim):
-    """(Re)start C-Dogs and wait for its main-menu marker in the log, so a test
-    never runs against an app a failed drive left stuck or not pumping."""
+def _menu(sim):
+    """Launch C-Dogs once and wait for its main-menu marker in the log. A
+    restart is not an option: the 5.86 MB image needs one contiguous block, which
+    the heap no longer has after a first run. So callers that follow another test
+    call _check_pumping instead."""
     if sim.call("get_running_app").get("running"):
-        sim.exit_app()
-        try:
-            sim.wait_for_exit(timeout=30)
-        except Exception:
-            pass
+        return
     seq = sim.get_log_buffer(tail=1)["next_seq"]
     sim.launch_app("cdogs")
     deadline = time.time() + 120
@@ -117,6 +115,15 @@ def _fresh_menu(sim):
     else:
         pytest.fail("C-Dogs never reached its main menu")
     time.sleep(2)
+
+
+def _check_pumping(sim):
+    """Fail clearly (not mysteriously) if the app a previous test left behind is
+    gone or no longer pumping events: the fire key must produce a key edge."""
+    assert sim.call("get_running_app").get("running"), \
+        "C-Dogs is not running (an earlier test's drive ended it)"
+    assert any(("down", X) == e for e in _tap(sim, sim.fire, lambda e: ("down", X) in e)), \
+        "C-Dogs is running but not pumping events (an earlier drive left it stuck)"
 
 
 def _check_pad_keys(sim):
@@ -163,7 +170,7 @@ def _check_pad_keys(sim):
                           "detection misses ~1 in 4 runs")
 @pytest.mark.timeout(600)
 def test_pad_presses_cdogs_keys_in_a_live_mission(sim):
-    _fresh_menu(sim)
+    _menu(sim)
     seen, stats = {"GFXSTAT": set()}, {"GFXSTAT": []}
 
     def poll():
@@ -190,8 +197,9 @@ def test_pad_presses_cdogs_keys_in_a_live_mission(sim):
 @pytest.mark.timeout(300)
 def test_pad_presses_cdogs_keys_after_the_mission(sim):
     """The shim's event pump emits the pad's key edges on every screen, so this
-    check does not depend on the mission drive above: it restarts C-Dogs and
-    waits for the main-menu marker first, so a failed (flaky) drive cannot
-    leave it running against an app that is not pumping events."""
-    _fresh_menu(sim)
+    check does not depend on the mission drive above: it
+    first confirms the app is still pumping events, so a failed (flaky) drive
+    fails this test with a clear message instead of a mystery."""
+    _menu(sim)
+    _check_pumping(sim)
     _check_pad_keys(sim)
