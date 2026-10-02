@@ -24,7 +24,8 @@
 # checkout matches too). An SDK older than 2.3.1 without the expected text
 # fails the configure, so a leaking pool never ships; 2.3.1 and later build
 # unpatched. Drop this file once the SDK is past 2.3.0. Call it after
-# pico_sdk_init().
+# pico_sdk_init(). tests/unit/test_pico_time_pass.c runs the patched pass,
+# cut out of the same generated text (picodeck_pico_time_cut_pass).
 
 set(_PICODECK_PICO_TIME_FROM
 "                        pool->ordered_head = index;
