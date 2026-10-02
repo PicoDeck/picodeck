@@ -735,10 +735,9 @@ static uint32_t connect_locked(void *arg) {
   bool found = false;
   for (int i = 0; i < s_bt->n_found; i++)
     found |= memcmp(s_bt->found[i].d.addr, d->addr, 6) == 0;
-  if (found && !bt_store_find_pad(&s_bt->store, d->addr, NULL)) {
-    s_bt->pairing = true;
-    gap_set_bondable_mode(1);
-  }
+  // Set both ways: no pairing state from an earlier connect survives.
+  s_bt->pairing = found && !bt_store_find_pad(&s_bt->store, d->addr, NULL);
+  gap_set_bondable_mode(s_bt->pairing ? 1 : 0);
   if (s_bt->scanning) {
     s_bt->scanning = false;
     if (s_bt->inquiring)
@@ -764,6 +763,7 @@ static uint32_t disconnect_locked(void *arg) {
   if (s_bt->link == BT_PAD_LINK_CONNECTING && s_bt->pending) {
     s_bt->pending = false; // never started
     s_bt->link = BT_PAD_LINK_NONE;
+    end_pairing(); // a pairing queued behind a search, cancelled
     update_connectable();
   } else if (s_bt->link != BT_PAD_LINK_NONE && s_bt->cid) {
     // Before its L2CAP channels exist hid_host_disconnect does nothing:

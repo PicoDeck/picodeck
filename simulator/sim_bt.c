@@ -24,6 +24,7 @@
 #define START_MS 300   // firmware load + HCI init
 #define SEARCH_MS 1500 // inquiry + names
 #define CONNECT_MS 500 // page, pairing, SDP, HID channels
+#define STOP_MS 200    // a search stopped for a connect: the inquiry's end
 
 static struct {
   bool init, enabled, store_loaded;
@@ -36,6 +37,8 @@ static struct {
   bt_pad_device_t found[BT_PAD_FOUND_MAX];
   bt_pad_link_t link;
   bool pairing; // as bt_pad.c: pairing a found, unpaired device (peer)
+  bool pending; // as bt_pad.c: a connect waiting for the search to stop
+  uint32_t pending_at;
   bt_pad_device_t peer;
   uint32_t link_at;
   bool link_ok;
@@ -88,14 +91,16 @@ static void tick(void) {
   }
   if (s.power != BT_PAD_ON)
     return;
-  if (s.scanning && t - s.scan_at >= SEARCH_MS) {
+  if (s.scanning && t - s.scan_at >= SEARCH_MS) { // the names are in
     s.scanning = false;
-    s.n_found = 0;
-    for (int i = 0; i < s.n_range && s.n_found < BT_PAD_FOUND_MAX; i++)
-      s.found[s.n_found++] = s.range[i];
     note("Search done: %s", s.n_found ? "pick a pad" : "nothing found");
   }
-  if (s.link == BT_PAD_LINK_CONNECTING && t - s.link_at >= CONNECT_MS) {
+  if (s.pending && t - s.pending_at >= STOP_MS) { // the connect goes now
+    s.pending = false;
+    s.link_at = t;
+  }
+  if (s.link == BT_PAD_LINK_CONNECTING && !s.pending &&
+      t - s.link_at >= CONNECT_MS) {
     bool pairing = s.pairing;
     s.pairing = false; // over, whatever happens (bt_pad.c's end_pairing)
     // An unpaired device must pair first: only the one being paired may.
@@ -209,7 +214,11 @@ bool bt_pad_scan(bool on) {
   if (on && !s.scanning && s.link == BT_PAD_LINK_NONE) {
     s.scanning = true;
     s.scan_at = now_ms();
+    // Devices in pairing mode answer the inquiry at once (the firmware lists
+    // them as they come); the search then runs on for their names.
     s.n_found = 0;
+    for (int i = 0; i < s.n_range && s.n_found < BT_PAD_FOUND_MAX; i++)
+      s.found[s.n_found++] = s.range[i];
     note("Searching%s", "...");
   } else if (!on && s.scanning) {
     s.scanning = false;
@@ -222,6 +231,10 @@ bool bt_pad_connect(const uint8_t addr[6], const char *name) {
   tick();
   if (s.power != BT_PAD_ON || s.link != BT_PAD_LINK_NONE)
     return false;
+  // As bt_pad.c: a connect asked for during a search stops it and waits
+  // for the inquiry in flight to end.
+  s.pending = s.scanning;
+  s.pending_at = now_ms();
   s.scanning = false;
   memset(&s.peer, 0, sizeof(s.peer));
   memcpy(s.peer.addr, addr, 6);
@@ -242,6 +255,14 @@ bool bt_pad_connect(const uint8_t addr[6], const char *name) {
 
 void bt_pad_disconnect(void) {
   tick();
+  if (s.link == BT_PAD_LINK_CONNECTING && s.pending) { // never started
+    s.pending = false;
+    s.pairing = false;
+    s.link = BT_PAD_LINK_NONE;
+    note("Cancelled%s", "");
+    return;
+  }
+  s.pairing = false;
   drop_link("%s disconnected");
 }
 

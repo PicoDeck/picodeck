@@ -249,6 +249,35 @@ def test_spoofed_address_cannot_re_pair(simulator):
     wait_status(sim, "link", "connected")
 
 
+def test_cancelled_pairing_leaves_no_pairing_open(simulator):
+    """A pairing queued behind a search and cancelled before it started
+    leaves nothing open: reconnecting a paired pad afterwards runs with no
+    pairing allowed, so a keyless device using that pad's address is still
+    refused (bt_pad.c's disconnect_locked ends the pairing; connect_locked
+    sets it both ways)."""
+    sim = simulator
+    _pair(sim)
+    _keys(sim, ["esc", "esc", "esc"])
+    bt(sim, "disconnect")
+    wait_status(sim, "link", "none")
+    other = "22:33:44:55:66:77"
+    bt(sim, f"sim add {other} 002508 Pro Controller")
+    bt(sim, "scan")
+    wait_status(sim, "found", "3")  # the pad, the phone, the new one
+    bt(sim, f"connect {other}")  # found and unpaired: a pairing, queued
+    st = status(sim)
+    assert st["link"] == "connecting" and st["scanning"] == "0", st
+    bt(sim, "disconnect")  # cancelled before it started
+    st = status(sim)
+    assert st["link"] == "none", st
+    bt(sim, f"connect {PAD}")  # the paired pad: no pairing
+    assert bt(sim, f"sim spoof {PAD}") == "BT sim: refused"
+    assert status(sim)["note"] == f"Refused pairing from {PAD}"
+    wait_status(sim, "link", "connected")
+    assert status(sim)["peer"] == PAD
+    assert _paired_names(sim) == [PAD_NAME]  # nothing else bonded
+
+
 def test_status_errors(simulator):
     sim = simulator
     assert bt(sim, "connect nonsense", ok=False).startswith("Usage:")
