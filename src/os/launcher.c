@@ -11,6 +11,7 @@
 #include "app_stack.h"
 #include "zip_archive.h"
 #include "../drivers/audio.h"
+#include "../drivers/bt_pad.h"
 #include "../drivers/display.h"
 #include "../drivers/image_api.h"
 #include "../drivers/keyboard.h"
@@ -1057,6 +1058,7 @@ void launcher_run(void) {
 
     dev_commands_poll();
     dev_commands_process();
+    bt_pad_service(); // a pad's bond changed (paired in a game's menu)
 
 #ifdef PICODECK_SIMULATOR
     extern bool sim_handler_check_launch(void);

@@ -9,6 +9,7 @@
 #include "rng.h"
 #include "display.h"
 #include "http.h"
+#include "bt_pad.h"
 
 #include "mongoose.h"
 #ifndef PICODECK_SIM_FIRMWARE_NET
@@ -714,8 +715,9 @@ void wifi_pause_radio(void) {
   // paused driver reads as powered off (cyw43_poll NULL), and the next
   // call into it from Core 1 would power-cycle the chip and reload its
   // firmware.
+  // Nor while Bluetooth is on: it polls the chip through the same driver.
   wifi_status_t st = wifi_get_status();
-  if (!s_available || !wifi_hw_disconnected() ||
+  if (!s_available || !wifi_hw_disconnected() || bt_pad_radio_in_use() ||
       st == WIFI_STATUS_CONNECTED || st == WIFI_STATUS_CONNECTING ||
       st == WIFI_STATUS_ONLINE)
     return;

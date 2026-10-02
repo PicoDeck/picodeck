@@ -81,7 +81,10 @@ bool wifi_hw_disconnected(void);
 // system_clock_khz) that handshake fails 64 times 1 ms apart
 // ("cyw43_kso_set(0): failed"): Core 0 stalls for ~68 ms. A connect still
 // in flight when the radio went idle can wake the bus again later, hence
-// the pause, not only the sleep. Core 0.
+// the pause, not only the sleep. Also a no-op while Bluetooth is on
+// (bt_pad_radio_in_use): BT runs through the same driver, a paused driver
+// reads as powered off, and BT's next transfer would power-cycle the chip;
+// wifi_bus_clock() keeps the bus in spec at the new clock instead. Core 0.
 void wifi_pause_radio(void);
 // Undoes wifi_pause_radio() (a no-op when not paused): call it once sysclk
 // is back to the one the CYW43's PIO SPI was set up for (200 MHz).

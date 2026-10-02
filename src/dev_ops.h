@@ -48,3 +48,11 @@ bool dev_op_pad(char *args, char *reply, size_t n);
 // starts a new window first. Host tools parse key=value pairs: add
 // fields, never rename or drop one.
 bool dev_op_audiostat(bool reset, char *reply, size_t n);
+
+// "bt [status|on|off|scan|scan stop|found|paired|connect <addr>|disconnect|
+// forget <addr>]": Bluetooth gamepads (drivers/bt_pad.h). Bare or `status`:
+// one "BT: key=value ..." line (available, enabled, power, scanning, link,
+// peer, ready, profile, reports, paired, found, radio_in_use, then
+// note="..." last). `on`/`off` change the setting as the menu does; `found`
+// and `paired` list "; <addr> [<cod hex>] <name>" entries. args is modified.
+bool dev_op_bt(char *args, char *reply, size_t n);

@@ -10,8 +10,14 @@ title: "Simulator and Testing"
 - `get_log_buffer {since_seq, tail}` → `{lines:[{seq,t_ms,src,text}], next_seq,
   dropped, more}`; `subscribe {"logs":true}` pushes `log` notifications.
 - `inject_*` return `input_seq`; `get_input_state` reports `consumed_seq`.
-- `dev_command {"cmd": "..."}` runs `ping`/`exit`/`unzip`/`rm`/`pad` through
-  the firmware's handlers.
+- `dev_command {"cmd": "..."}` runs `ping`/`exit`/`unzip`/`rm`/`pad`/`bt`
+  through the firmware's handlers.
+- Bluetooth controllers are a scripted radio in the simulator: `bt sim add
+  <addr> <class hex> <name>` puts a device in pairing mode in range (`bt sim
+  clear` empties it), `bt sim press <buttons|none>` sends the connected pad's
+  state, `bt sim drop` drops its link and `bt sim wake <addr>` makes a paired
+  pad reconnect. The Bluetooth page, the setting and the pairing file are
+  the firmware's.
 - `step_time {ms}` and `set_time_multiplier` drive the virtual clock.
 - Flags: `--test-mode` (error screens return at once; constant `math.random`
   seed and string hash seed; clock pinned to 2026-01-01), `--virtual-time`,
@@ -46,6 +52,10 @@ title: "Simulator and Testing"
   `up down left right a b x y l r start select home`, joined by `+`. Replies
   `Pad: up+a`. The MCP `pad` tool sends it (`pad("home, up, a")` presses each
   in turn).
+- `bt` reports Bluetooth (`available`, `enabled`, `power`, `scanning`,
+  `link`, `peer`, `paired`, `found`, then `note="..."`); `bt on|off`, `bt
+  scan`, `bt scan stop`, `bt found`, `bt paired`, `bt connect <addr>`, `bt
+  disconnect` and `bt forget <addr>` do what the Bluetooth page does.
 - While an app runs: `reboot` and `reboot-flash` act at once (no teardown);
   `reboot-ota` (apply a staged, signed update) is dropped; `usb` waits for the
   launcher. Exit to the launcher before flashing.
