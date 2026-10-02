@@ -10,7 +10,7 @@ title: "Simulator and Testing"
 - `get_log_buffer {since_seq, tail}` → `{lines:[{seq,t_ms,src,text}], next_seq,
   dropped, more}`; `subscribe {"logs":true}` pushes `log` notifications.
 - `inject_*` return `input_seq`; `get_input_state` reports `consumed_seq`.
-- `dev_command {"cmd": "..."}` runs `ping`/`exit`/`unzip`/`rm`/`pad`/`bt`
+- `dev_command {"cmd": "..."}` runs `ping`/`exit`/`unzip`/`rm`/`mv`/`list [all]`/`pad`/`bt`
   through the firmware's handlers.
 - Bluetooth controllers are a scripted radio in the simulator: `bt sim add
   <addr> <class hex> <name>` puts a device in pairing mode in range (`bt sim
@@ -45,6 +45,16 @@ title: "Simulator and Testing"
 - `stack` prints `msp_peak`, `core1_peak`, the running app's stack peak and
   `os_cmd_peak` (the last launcher command's peak on its 32 KB PSRAM stack).
 - `exit` with no app running replies `Error: exit: no app running`.
+- `list` prints the apps the launcher shows; `list all` adds the hidden ones,
+  tagged `[.test]` or `[.dev]`. Apps under `/apps/.test` and `/apps/.dev` are
+  not shown by the launcher and do not count towards its 64-app limit, but
+  `launch <dir name or id>` still starts them (a listed app of the same name
+  wins; `.test` before `.dev`). The MCP `push_app(..., hidden="test"|"dev")`
+  stages there.
+- `mv <src> <dst>` moves or renames a file or directory on the card, across
+  directories (`mv /apps/old_probe /apps/.dev/old_probe`). It creates missing
+  parent directories of the target, refuses to overwrite and refuses anything
+  under `/system`.
 - `pad <buttons|none|off> [hold_ms]` drives a test gamepad, as a connected
   controller would: `pad up+a` holds Up and A until the next `pad` command,
   `pad a 100` holds A for 100 ms, `pad none` releases everything, `pad off`
