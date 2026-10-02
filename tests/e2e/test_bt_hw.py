@@ -219,6 +219,7 @@ def test_wifi_throughput_with_bluetooth(target, bt_state):
         time.sleep(1)
     http = HttpTestServer("0.0.0.0").start()
     try:
+        # Before any Bluetooth change: pushing a new app reboots the device.
         target.stage_lua_app(TPUT_APP, TPUT_LUA, requirements=["http"],
                              id=TPUT_ID)
         results = {}
@@ -249,16 +250,17 @@ def test_clock_change_keeps_bluetooth(target, bt_state):
     """An app at 300 MHz with Bluetooth on: the radio is not paused (BT
     needs the driver), the CYW43's bus is retuned for the clock, and nothing
     logs the sleep-handshake failure (the ~68 ms Core 0 stall)."""
-    bt(target, "on")
-    wait_power(target, "on")
     # The manifest with system_clock_khz replaces the helper's (staged
-    # together: the launcher reads app.json when the app is pushed).
+    # together). Staged first: pushing a new app reboots the device (the
+    # launcher's app list is read at boot), and Bluetooth comes up after.
     manifest = {"id": CLOCK_ID, "name": CLOCK_APP, "version": "1.0",
                 "description": "E2E: 300 MHz with Bluetooth on",
                 "author": "PicoDeck E2E", "requirements": [],
                 "system_clock_khz": 300000}
     target.stage_lua_app(CLOCK_APP, CLOCK_LUA, id=CLOCK_ID,
                          files={"app.json": json.dumps(manifest)})
+    bt(target, "on")
+    wait_power(target, "on")
     try:
         mark = target.log_cursor()
         target.launch_app(CLOCK_APP)
