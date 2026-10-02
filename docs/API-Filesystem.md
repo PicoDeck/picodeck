@@ -212,8 +212,8 @@ The total size of an **open** file in bytes, without moving the read position.
 handle at end of file, so it changes where the next `read` starts. This does not:
 
 ```lua
-local f = picocalc.fs.open("/data/level.dat", "rb")
-local total = f:fsize()      -- position unchanged
+local f = picocalc.fs.open(picocalc.fs.appPath("level.dat"), "rb")
+local total = f:fsize()      -- or picocalc.fs.fsize(f); position unchanged
 local chunk = f:read(16)     -- still the first 16 bytes
 ```
 

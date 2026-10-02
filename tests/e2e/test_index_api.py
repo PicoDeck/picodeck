@@ -109,7 +109,7 @@ check("zip.extractEntry.negative.keeps_dest", fs.readFile(keep), "keep me")
 
 z:close()
 -- Every archive method raises on a closed handle (the Lua contract; C's
--- numEntries returns a 0 sentinel instead, which Lua has no use for).
+-- numEntries returns -1 for a bad or closed handle, which Lua has no use for).
 check_raises("zip.method_after_close", function() z:numEntries() end)
 check_raises("zip.statIndex_after_close", function() z:statIndex(0) end)
 
@@ -185,8 +185,12 @@ check_true("fb.getPixels.full_screen", #fb:getPixels(0, 0, 320, 1) == 640)
 
 check_raises("fb.getPixels.off_screen", function() fb:getPixels(318, 0, 8, 1) end)
 check_raises("fb.getPixels.zero_w", function() fb:getPixels(0, 0, 0, 4) end)
-check_raises("fb.setPixels.short", function() fb:setPixels("\1\2", 0, 0, 8, 4) end)
-check_raises("fb.setPixels.long", function() fb:setPixels(string.rep("\0", 200), 0, 0, 8, 4) end)
+do
+  local ok, e = pcall(function() fb:setPixels("\1\2", 0, 0, 8, 4) end)
+  check_true("fb.setPixels.short", not ok and tostring(e):find("is 2 bytes, expected 64", 1, true) ~= nil)
+  ok, e = pcall(function() fb:setPixels(string.rep("\0", 200), 0, 0, 8, 4) end)
+  check_true("fb.setPixels.long", not ok and tostring(e):find("is 200 bytes, expected 64", 1, true) ~= nil)
+end
 check_raises("fb.no_single_pixel_api", function() fb:getPixel(1, 1) end)
 -- Metatables are locked SDK-wide: getmetatable() hands back the __metatable
 -- value (a boolean) instead of the table, so the methods table is unreachable.
@@ -216,6 +220,10 @@ check("root.exists", pc.fs.exists("/"), true)
 local st = pc.fs.stat("/")
 check("root.stat.is_dir", st and st.is_dir, true)
 check("root.stat.size", st and st.size, 0)
+check("root.isDir.dot", pc.fs.isDir("/."), true)
+check("root.isDir.dotslash", pc.fs.isDir("/./"), true)
+check("root.isDir.dotdot", pc.fs.isDir("/.."), false)
+check("root.exists.dotslash", pc.fs.exists("/./"), true)
 check("root.isDir.apps", pc.fs.isDir("/apps"), true)
 check("root.isDir.missing", pc.fs.isDir("/no-such-dir"), false)
 pc.sys.log("IA DONE")
@@ -258,7 +266,7 @@ def test_volume_root_is_a_directory(simulator, test_sd_card):
                    requirements=("root-filesystem",), files={})
     failures = [line for passed, line in results.values() if not passed]
     assert failures == [], "\n".join(failures)
-    assert len(results) == 6
+    assert len(results) == 10
 
 
 @pytest.mark.sd(fixtures=[], reserve=1)

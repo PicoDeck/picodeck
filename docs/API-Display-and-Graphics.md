@@ -101,13 +101,14 @@ Clipped to the clip rect exactly as `display.setPixel()` is, so a partly hidden 
 -- Push a computed frame straight into the back buffer, no image in between.
 local fb = picocalc.display.getBackBuffer()
 local W, H = 64, 64
-local row = string.rep("\xF8\x00", W)        -- one row of red, RGB565 LE
+local red = string.pack("<I2", picocalc.display.rgb(255, 0, 0))  -- RGB565, little-endian
+local row = string.rep(red, W)              -- one row of red
 local frame = string.rep(row, H)                -- 64 rows
 fb:setPixels(frame, 128, 128, W, H)
 picocalc.display.flush()
 ```
 
-Because the bytes are host-order RGB565, build them from the same `rgb(r, g, b)` helper the rest of the API takes, not from the swapped buffer `display_get_backBuffer()` exposes to C.
+Because the bytes are host-order RGB565, build them from the same `rgb(r, g, b)` helper the rest of the API takes, encoded with `string.pack("<I2", color)`, not from the swapped buffer `display->getBackBuffer()` exposes to C.
 
 ---
 

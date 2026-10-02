@@ -3333,7 +3333,7 @@ function PicoDeckZipArchive:numEntries() end
 ---@return integer? index
 function PicoDeckZipArchive:locate(name) end
 
----One entry's metadata by index, keyed the way `list()` reports it. `nil` for a
+---One entry's metadata by index, keyed the way `list()` reports it. `nil` for an
 ---index outside `0 .. numEntries() - 1` (0-based, as in the C API); raises on a
 ---closed archive.
 ---@param index integer 0-based; must be an integer
