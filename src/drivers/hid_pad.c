@@ -17,32 +17,12 @@
 #define GD_SYSTEM_MAIN_MENU 0x85
 #define CONSUMER_AC_HOME 0x223
 
-#define MAX_USAGES 32  // local Usage items before one main item
-#define MAX_REPORTS 16 // report IDs whose input bit offsets are tracked
-#define MAX_PUSH 4
+#define MAX_USAGES HID_PAD_PARSE_USAGES
+#define MAX_REPORTS HID_PAD_PARSE_REPORTS
+#define MAX_PUSH HID_PAD_PARSE_PUSH
 
-typedef struct {
-  uint16_t page;
-  int32_t lmin, lmax;
-  uint32_t lmax_u; // Logical Maximum read unsigned (see field_limits)
-  uint32_t size, count;
-  uint8_t report_id;
-} globals_t;
-
-typedef struct {
-  globals_t g, stack[MAX_PUSH];
-  int depth;
-  uint32_t usages[MAX_USAGES]; // page << 16 | id, bound when declared
-  int n_usages;
-  uint32_t umin, umax;
-  bool has_min, has_max;
-  struct {
-    uint8_t id;
-    uint16_t bits;
-  } offs[MAX_REPORTS];
-  int n_offs;
-  hid_pad_layout_t *out;
-} parser_t;
+typedef hid_pad_parse_globals_t globals_t;
+typedef hid_pad_parser_t parser_t;
 
 static uint32_t item_u(const uint8_t *d, int n) {
   uint32_t v = 0;
@@ -201,11 +181,17 @@ static void main_input(parser_t *p, uint32_t flags) {
 }
 
 bool hid_pad_parse(const uint8_t *desc, size_t len, hid_pad_layout_t *out) {
-  static const uint8_t k_bytes[4] = {0, 1, 2, 4};
   parser_t p;
-  memset(&p, 0, sizeof(p));
+  return hid_pad_parse_with(&p, desc, len, out);
+}
+
+bool hid_pad_parse_with(hid_pad_parser_t *scratch, const uint8_t *desc,
+                        size_t len, hid_pad_layout_t *out) {
+  static const uint8_t k_bytes[4] = {0, 1, 2, 4};
+  parser_t *p = scratch;
+  memset(p, 0, sizeof(*p));
   memset(out, 0, sizeof(*out));
-  p.out = out;
+  p->out = out;
 
   size_t i = 0;
   while (desc && i < len) {
@@ -225,56 +211,56 @@ bool hid_pad_parse(const uint8_t *desc, size_t len, hid_pad_layout_t *out) {
     switch (b & 0xFC) {
     // Main
     case 0x80: // Input
-      main_input(&p, u);
-      clear_locals(&p);
+      main_input(p, u);
+      clear_locals(p);
       break;
     case 0x90: // Output
     case 0xB0: // Feature
     case 0xA0: // Collection
     case 0xC0: // End Collection
-      clear_locals(&p);
+      clear_locals(p);
       break;
     // Global
     case 0x04:
-      p.g.page = (uint16_t)u;
+      p->g.page = (uint16_t)u;
       break;
     case 0x14:
-      p.g.lmin = item_s(d, n);
+      p->g.lmin = item_s(d, n);
       break;
     case 0x24:
-      p.g.lmax = item_s(d, n);
-      p.g.lmax_u = u;
+      p->g.lmax = item_s(d, n);
+      p->g.lmax_u = u;
       break;
     case 0x74:
-      p.g.size = u;
+      p->g.size = u;
       break;
     case 0x84:
-      p.g.report_id = (uint8_t)u;
+      p->g.report_id = (uint8_t)u;
       out->report_ids = true;
       break;
     case 0x94:
-      p.g.count = u;
+      p->g.count = u;
       break;
     case 0xA4: // Push
-      if (p.depth < MAX_PUSH)
-        p.stack[p.depth++] = p.g;
+      if (p->depth < MAX_PUSH)
+        p->stack[p->depth++] = p->g;
       break;
     case 0xB4: // Pop
-      if (p.depth > 0)
-        p.g = p.stack[--p.depth];
+      if (p->depth > 0)
+        p->g = p->stack[--p->depth];
       break;
     // Local
     case 0x08:
-      if (p.n_usages < MAX_USAGES)
-        p.usages[p.n_usages++] = full_usage(&p, u, n);
+      if (p->n_usages < MAX_USAGES)
+        p->usages[p->n_usages++] = full_usage(p, u, n);
       break;
     case 0x18:
-      p.umin = full_usage(&p, u, n);
-      p.has_min = true;
+      p->umin = full_usage(p, u, n);
+      p->has_min = true;
       break;
     case 0x28:
-      p.umax = full_usage(&p, u, n);
-      p.has_max = true;
+      p->umax = full_usage(p, u, n);
+      p->has_max = true;
       break;
     default: // physical range, units, strings, delimiters: not needed
       break;

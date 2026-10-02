@@ -59,6 +59,39 @@ typedef struct {
 // buttons, hat or stick in any input report): not a pad this can read.
 bool hid_pad_parse(const uint8_t *desc, size_t len, hid_pad_layout_t *out);
 
+// The parser's working state (~330 B): hid_pad_parse keeps it on the stack;
+// hid_pad_parse_with takes it from the caller (bt_pad.c parses inside a
+// BTstack callback, on the 4 KB main stack, so its copy is in PSRAM).
+#define HID_PAD_PARSE_USAGES 32  // local Usage items before one main item
+#define HID_PAD_PARSE_REPORTS 16 // report IDs whose bit offsets are tracked
+#define HID_PAD_PARSE_PUSH 4
+
+typedef struct {
+  uint16_t page;
+  int32_t lmin, lmax;
+  uint32_t lmax_u; // Logical Maximum read unsigned
+  uint32_t size, count;
+  uint8_t report_id;
+} hid_pad_parse_globals_t;
+
+typedef struct {
+  hid_pad_parse_globals_t g, stack[HID_PAD_PARSE_PUSH];
+  int depth;
+  uint32_t usages[HID_PAD_PARSE_USAGES]; // page << 16 | id, bound when declared
+  int n_usages;
+  uint32_t umin, umax;
+  bool has_min, has_max;
+  struct {
+    uint8_t id;
+    uint16_t bits;
+  } offs[HID_PAD_PARSE_REPORTS];
+  int n_offs;
+  hid_pad_layout_t *out;
+} hid_pad_parser_t;
+
+bool hid_pad_parse_with(hid_pad_parser_t *scratch, const uint8_t *desc,
+                        size_t len, hid_pad_layout_t *out);
+
 typedef enum {
   HID_PAD_PROFILE_GENERIC = 0, // Android / Xbox numbering (1 A, 2 B, 4 X, 5 Y)
   HID_PAD_PROFILE_SONY,        // DualShock 4, DualSense

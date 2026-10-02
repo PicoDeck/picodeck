@@ -5,6 +5,7 @@
 #include "hid_pad.h"
 #include "pad_source.h"
 #include "sdcard.h"
+#include "wifi.h"
 #include "../os/app_stack.h"
 #include "../os/config.h"
 #include "../os/sd_atomic.h"
@@ -23,6 +24,10 @@
 #define BT_FILE "/system/bluetooth.dat"
 #define BT_DESC_STORAGE 1024 // HID descriptors (DualShock 4: 364 B)
 #define BT_INQUIRY_UNITS 8   // x 1.28 s
+// A search that has not ended by then is ended: BTstack reports no failure
+// of an inquiry or name request the controller refuses (Command Status).
+#define BT_SEARCH_MAX_MS 60000
+#define BT_SAVE_RETRY_MS 5000
 
 typedef struct {
   bt_pad_device_t d;
@@ -39,19 +44,25 @@ typedef struct {
   bool store_loaded;
   bool initialised; // BTstack set up (once per boot)
   bt_pad_power_t power;
+  bool stopping;    // power off asked; ON until HCI_STATE_OFF comes
   bool inquiring;   // the inquiry itself
   bool naming;      // a remote name request is out
   bool scanning;    // inquiry, then names
+  uint32_t scan_at; // when it started (BT_SEARCH_MAX_MS)
   uint8_t n_found;
   found_t found[BT_PAD_FOUND_MAX];
   bt_pad_link_t link;
   bool pending;     // a connect waiting for the scan to stop
+  bool cancel;      // disconnect/forget asked while connecting
+  bool forgotten;   // ...and the pad forgotten: no record when it opens
   uint16_t cid;
   bt_pad_device_t peer;
   bool have_layout;
   hid_pad_profile_t profile;
   hid_pad_layout_t layout;
+  hid_pad_parser_t parser; // hid_pad_parse_with's scratch: not on the MSP
   uint32_t reports;
+  uint32_t save_retry_at; // a failed save waits until then
   char note[48];
   uint8_t desc[BT_DESC_STORAGE];
 } bt_t;
@@ -111,16 +122,30 @@ static void note(const char *fmt, const char *arg) {
   printf("[BT] %s\n", s_bt->note);
 }
 
-static int pad_count(void) {
-  bt_pad_record_t r[BT_PAD_PAIRED_MAX];
-  return bt_store_pads(&s_bt->store, r, BT_PAD_PAIRED_MAX);
-}
-
 // Page scan (a bonded pad can reconnect) only while there is one to wait
 // for: no radio time spent on it otherwise.
 static void update_connectable(void) {
   if (s_bt->power == BT_PAD_ON)
-    gap_connectable_control(pad_count() > 0 && s_bt->link == BT_PAD_LINK_NONE);
+    gap_connectable_control(bt_store_pad_count(&s_bt->store) > 0 &&
+                            s_bt->link == BT_PAD_LINK_NONE);
+}
+
+// Only paired pads may connect to us (their reconnection): BTstack would
+// otherwise let any device that pages bond with Just Works before
+// hid_host can refuse it, and its key would take a paired pad's place.
+static int connection_filter(bd_addr_t addr, hci_link_type_t link_type) {
+  (void)link_type;
+  return s_bt && bt_store_find_pad(&s_bt->store, addr, NULL);
+}
+
+static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
+
+static void end_search(const char *why) {
+  s_bt->inquiring = s_bt->naming = false;
+  if (s_bt->scanning) {
+    s_bt->scanning = false;
+    note("Search done: %s", why);
+  }
 }
 
 static bool is_pad_cod(uint32_t cod) {
@@ -241,6 +266,11 @@ static void hid_event(uint8_t *packet) {
     if (st != ERROR_CODE_SUCCESS) {
       s_bt->link = BT_PAD_LINK_NONE;
       s_bt->cid = 0;
+      s_bt->cancel = s_bt->forgotten = false;
+      // A pairing that bonded but did not open HID leaves a key with no
+      // record: drop it, so it never takes a paired pad's slot.
+      if (!bt_store_find_pad(&s_bt->store, s_bt->peer.addr, NULL))
+        gap_drop_link_key_for_bd_addr(s_bt->peer.addr);
       char code[8];
       snprintf(code, sizeof(code), "0x%02x", st);
       note("Could not connect (%s)", code);
@@ -248,6 +278,14 @@ static void hid_event(uint8_t *packet) {
       break;
     }
     s_bt->cid = hid_subevent_connection_opened_get_hid_cid(packet);
+    if (s_bt->cancel) { // disconnected (or forgotten) while it connected
+      bool forgotten = s_bt->forgotten;
+      s_bt->cancel = s_bt->forgotten = false;
+      hid_host_disconnect(s_bt->cid);
+      if (forgotten)
+        gap_drop_link_key_for_bd_addr(s_bt->peer.addr);
+      break; // CONNECTION_CLOSED follows
+    }
     s_bt->link = BT_PAD_LINK_CONNECTED;
     s_bt->have_layout = false;
     s_bt->profile = hid_pad_profile_for_name(s_bt->peer.name);
@@ -263,14 +301,16 @@ static void hid_event(uint8_t *packet) {
     if (!r.name[0])
       gap_remote_name_request(s_bt->peer.addr, 0, 0);
     note("Connected: %s", r.name[0] ? r.name : "pad");
+    update_connectable(); // no page scan while a pad is connected
     break;
   }
   case HID_SUBEVENT_DESCRIPTOR_AVAILABLE:
     if (hid_subevent_descriptor_available_get_status(packet) ==
             ERROR_CODE_SUCCESS &&
-        hid_pad_parse(hid_descriptor_storage_get_descriptor_data(s_bt->cid),
-                      hid_descriptor_storage_get_descriptor_len(s_bt->cid),
-                      &s_bt->layout)) {
+        hid_pad_parse_with(
+            &s_bt->parser, hid_descriptor_storage_get_descriptor_data(s_bt->cid),
+            hid_descriptor_storage_get_descriptor_len(s_bt->cid),
+            &s_bt->layout)) {
       s_bt->have_layout = true;
       pad_source_publish(PAD_SOURCE_BT, 0); // connected: the header's icon
       printf("[BT] %s: %u fields, %s layout\n", s_bt->peer.name,
@@ -296,6 +336,7 @@ static void hid_event(uint8_t *packet) {
     pad_source_disconnect(PAD_SOURCE_BT); // nothing stays held
     s_bt->link = BT_PAD_LINK_NONE;
     s_bt->cid = 0;
+    s_bt->cancel = s_bt->forgotten = false;
     s_bt->have_layout = false;
     note("%s disconnected", s_bt->peer.name[0] ? s_bt->peer.name : "Pad");
     update_connectable();
@@ -327,6 +368,7 @@ static void packet_handler(uint8_t type, uint16_t channel, uint8_t *packet,
     }
     case HCI_STATE_OFF:
       s_bt->power = BT_PAD_OFF;
+      s_bt->stopping = false;
       s_bt->inquiring = s_bt->naming = s_bt->scanning = s_bt->pending = false;
       if (s_bt->link != BT_PAD_LINK_NONE)
         pad_source_disconnect(PAD_SOURCE_BT);
@@ -344,7 +386,22 @@ static void packet_handler(uint8_t type, uint16_t channel, uint8_t *packet,
     break;
   case GAP_EVENT_INQUIRY_COMPLETE:
     s_bt->inquiring = false;
-    next_name();
+    if (!s_bt->naming) // a name request still out goes on when it ends
+      next_name();
+    break;
+  case HCI_EVENT_COMMAND_STATUS:
+    // A refused inquiry or name request: BTstack reports no completion.
+    if (hci_event_command_status_get_status(packet) != 0) {
+      uint16_t op = hci_event_command_status_get_command_opcode(packet);
+      if (op == HCI_OPCODE_HCI_INQUIRY && s_bt->inquiring) {
+        s_bt->inquiring = false;
+        if (!s_bt->naming)
+          next_name();
+      } else if (op == HCI_OPCODE_HCI_REMOTE_NAME_REQUEST && s_bt->naming) {
+        s_bt->naming = false;
+        next_name();
+      }
+    }
     break;
   case HCI_EVENT_REMOTE_NAME_REQUEST_COMPLETE:
     hci_event_remote_name_request_complete_get_bd_addr(packet, addr);
@@ -356,8 +413,10 @@ static void packet_handler(uint8_t type, uint16_t channel, uint8_t *packet,
           strncpy(s_bt->found[i].d.name, name, BT_PAD_NAME_MAX - 1);
           printf("[BT] name: %s\n", s_bt->found[i].d.name);
         }
+      // Still paired (not forgotten meanwhile): then it is renamed in place.
       if (s_bt->link == BT_PAD_LINK_CONNECTED && !s_bt->peer.name[0] &&
-          memcmp(s_bt->peer.addr, addr, 6) == 0) {
+          memcmp(s_bt->peer.addr, addr, 6) == 0 &&
+          bt_store_find_pad(&s_bt->store, addr, NULL)) {
         strncpy(s_bt->peer.name, name, BT_PAD_NAME_MAX - 1);
         s_bt->profile = hid_pad_profile_for_name(s_bt->peer.name);
         bt_pad_record_t r;
@@ -406,6 +465,7 @@ static void setup_btstack(void) {
   hid_host_register_packet_handler(packet_handler);
   s_bt->hci_cb.callback = packet_handler;
   hci_add_event_handler(&s_bt->hci_cb);
+  gap_register_classic_connection_filter(connection_filter);
 
   gap_set_local_name("PicoDeck 00:00:00:00:00:00"); // BTstack fills the address
   gap_set_class_of_device(0x000114); // computer: handheld PC/PDA
@@ -424,8 +484,12 @@ static uint32_t power_on_locked(void *arg) {
   (void)arg;
   if (!s_bt->initialised)
     setup_btstack();
-  if (s_bt->power == BT_PAD_ON || s_bt->power == BT_PAD_STARTING)
+  if ((s_bt->power == BT_PAD_ON && !s_bt->stopping) ||
+      s_bt->power == BT_PAD_STARTING)
     return 0;
+  // From halting too (off asked, HCI_STATE_OFF not in yet): BTstack goes
+  // back to initialising and reports WORKING again.
+  s_bt->stopping = false;
   s_bt->power = BT_PAD_STARTING;
   note("Starting%s", "...");
   // Opens the transport: loads the BT firmware over the CYW43's bus (with
@@ -443,6 +507,7 @@ static uint32_t power_off_locked(void *arg) {
     return 0;
   // Halting disconnects the pad and stops every scan before the transport
   // closes (BTSTACK_EVENT_STATE -> HCI_STATE_OFF).
+  s_bt->stopping = true;
   hci_power_control(HCI_POWER_OFF);
   if (s_bt->link != BT_PAD_LINK_NONE)
     pad_source_disconnect(PAD_SOURCE_BT);
@@ -480,6 +545,10 @@ static bool power_on(void) {
     s_bt->store.dirty = false;
     s_bt->store_loaded = true;
   }
+  // A paused radio (an app's clock, a video, with Bluetooth off) reads as
+  // a chip that is off: the BT firmware load would power-cycle it. Resume
+  // it first; launcher_apply_clock has the bus in spec at any clock.
+  wifi_resume_radio();
   locked(power_on_locked, NULL);
   return true;
 }
@@ -521,8 +590,19 @@ typedef struct {
   bt_pad_status_t *out;
 } status_job_t;
 
+// A search past BT_SEARCH_MAX_MS is over, whatever BTstack said (a pending
+// connect then goes).
+static void check_search(void) {
+  if (s_bt->scanning && now_ms() - s_bt->scan_at > BT_SEARCH_MAX_MS) {
+    end_search("timed out");
+    if (s_bt->pending)
+      start_connect();
+  }
+}
+
 static uint32_t status_locked(void *arg) {
   bt_pad_status_t *o = (bt_pad_status_t *)arg;
+  check_search();
   o->power = s_bt->power;
   o->scanning = s_bt->scanning;
   // Pads first, in the order found.
@@ -555,6 +635,7 @@ static uint32_t scan_locked(void *arg) {
   bool on = arg != NULL;
   if (s_bt->power != BT_PAD_ON)
     return 0;
+  check_search();
   if (on) {
     if (s_bt->scanning || s_bt->link != BT_PAD_LINK_NONE)
       return 0;
@@ -564,6 +645,7 @@ static uint32_t scan_locked(void *arg) {
       return 0;
     }
     s_bt->inquiring = s_bt->scanning = true;
+    s_bt->scan_at = now_ms();
     note("Searching%s", "...");
   } else if (s_bt->scanning) {
     s_bt->scanning = false; // next_name asks for no more
@@ -583,6 +665,7 @@ bool bt_pad_scan(bool on) {
 
 static uint32_t connect_locked(void *arg) {
   const bt_pad_device_t *d = (const bt_pad_device_t *)arg;
+  check_search();
   if (s_bt->power != BT_PAD_ON || s_bt->link != BT_PAD_LINK_NONE)
     return 1;
   s_bt->peer = *d;
@@ -609,12 +692,16 @@ bool bt_pad_connect(const uint8_t addr[6], const char *name) {
 
 static uint32_t disconnect_locked(void *arg) {
   (void)arg;
-  if (s_bt->link != BT_PAD_LINK_NONE && s_bt->cid)
-    hid_host_disconnect(s_bt->cid);
-  else if (s_bt->link == BT_PAD_LINK_CONNECTING && s_bt->pending) {
+  if (s_bt->link == BT_PAD_LINK_CONNECTING && s_bt->pending) {
     s_bt->pending = false; // never started
     s_bt->link = BT_PAD_LINK_NONE;
     update_connectable();
+  } else if (s_bt->link != BT_PAD_LINK_NONE && s_bt->cid) {
+    // Before its L2CAP channels exist hid_host_disconnect does nothing:
+    // the connection is then dropped as it opens.
+    if (s_bt->link == BT_PAD_LINK_CONNECTING)
+      s_bt->cancel = true;
+    hid_host_disconnect(s_bt->cid);
   }
   return 0;
 }
@@ -627,8 +714,11 @@ void bt_pad_disconnect(void) {
 static uint32_t forget_locked(void *arg) {
   const uint8_t *addr = (const uint8_t *)arg;
   if (s_bt->link != BT_PAD_LINK_NONE &&
-      memcmp(s_bt->peer.addr, addr, 6) == 0)
+      memcmp(s_bt->peer.addr, addr, 6) == 0) {
     disconnect_locked(NULL);
+    if (s_bt->cancel)
+      s_bt->forgotten = true; // and no record when it opens
+  }
   bool had = bt_store_remove_pad(&s_bt->store, addr);
   if (s_bt->initialised) {
     bd_addr_t a;
@@ -668,8 +758,10 @@ static void save_job(void *arg) {
 }
 
 void bt_pad_service(void) {
-  if (!s_bt || !s_ctx || !s_bt->store.dirty)
+  if (!s_bt || !s_ctx || !s_bt->store.dirty ||
+      (s_bt->save_retry_at && (int32_t)(now_ms() - s_bt->save_retry_at) < 0))
     return;
+  s_bt->save_retry_at = 0;
   save_job_t j = {(uint8_t *)umm_malloc(BT_STORE_FILE_MAX), 0, false};
   if (!j.buf)
     return; // next time
@@ -679,6 +771,7 @@ void bt_pad_service(void) {
   } else {
     printf("[BT] could not save %s\n", BT_FILE);
     s_bt->store.dirty = true;
+    s_bt->save_retry_at = now_ms() + BT_SAVE_RETRY_MS; // not every pass
   }
   umm_free(j.buf);
 }

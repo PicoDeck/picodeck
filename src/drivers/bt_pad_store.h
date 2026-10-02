@@ -67,6 +67,9 @@ typedef struct {
 // The paired pads, newest first; returns how many (at most `max`).
 int bt_store_pads(const bt_store_t *s, bt_pad_record_t *out, int max);
 
+// How many pads are paired.
+int bt_store_pad_count(const bt_store_t *s);
+
 // The record for `addr`, or false.
 bool bt_store_find_pad(const bt_store_t *s, const uint8_t addr[6],
                        bt_pad_record_t *out);

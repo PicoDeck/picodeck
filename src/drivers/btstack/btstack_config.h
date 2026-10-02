@@ -40,8 +40,10 @@
 // ── Memory ──────────────────────────────────────────────────────────────────
 #define HAVE_MALLOC
 
-// Bonded pads (link keys in the TLV store bt_pad.c keeps on the SD card).
-#define NVM_NUM_LINK_KEYS 4
+// Link keys in the TLV store bt_pad.c keeps on the SD card: the 4 paired
+// pads (BT_PAD_PAIRED_MAX) and spare room, so a key bt_pad.c has not
+// dropped yet (a pairing that bonded but failed) never evicts a pad's.
+#define NVM_NUM_LINK_KEYS 6
 
 // ── HAL ─────────────────────────────────────────────────────────────────────
 #define HAVE_EMBEDDED_TIME_MS

@@ -72,6 +72,7 @@ static void test_pads(void) {
   CHECK(!bt_store_add_pad(&s_s, &a, ev));
   CHECK(!bt_store_add_pad(&s_s, &b, ev));
   CHECK_EQ_INT(bt_store_pads(&s_s, out, BT_PAD_PAIRED_MAX), 2);
+  CHECK_EQ_INT(bt_store_pad_count(&s_s), 2);
   CHECK_STR(out[0].name, "Pro Controller"); // newest first
   CHECK_STR(out[1].name, "Wireless Controller");
   // Re-adding refreshes the name and makes it the newest.
@@ -100,6 +101,7 @@ static void test_pads(void) {
   CHECK(bt_store_remove_pad(&s_s, d.addr));
   CHECK(!bt_store_remove_pad(&s_s, d.addr));
   CHECK_EQ_INT(bt_store_pads(&s_s, out, BT_PAD_PAIRED_MAX), 3);
+  CHECK_EQ_INT(bt_store_pad_count(&s_s), 3);
   // A name at the limit is cut, never unterminated.
   bt_pad_record_t lng = rec(6, "");
   memset(lng.name, 'x', sizeof(lng.name));

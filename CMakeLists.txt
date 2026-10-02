@@ -486,9 +486,12 @@ if(PICO_BOARD STREQUAL "pimoroni_pico_plus2_w_rp2350" OR
         target_compile_definitions(picodeck PRIVATE PICODECK_BT=1)
         # HAVE_MALLOC: hci_stack_t and BTstack's pooled objects come from
         # umm_malloc (QMI PSRAM), not the ~3 KB SRAM heap (btstack_config.h).
+        # The CYW43's BT shared-bus driver too: its firmware download takes
+        # ~940 B of buffers, a third of the SRAM heap.
         set_source_files_properties(
             ${PICO_BTSTACK_PATH}/src/hci.c
             ${PICO_BTSTACK_PATH}/src/btstack_memory.c
+            ${PICO_SDK_PATH}/src/rp2_common/pico_cyw43_driver/cybt_shared_bus/cybt_shared_bus.c
             PROPERTIES COMPILE_DEFINITIONS "malloc=bt_pad_malloc;free=bt_pad_free")
         # ...and their static state goes to QMI PSRAM too (bt_psram.ld).
         set(_bt_ld ${CMAKE_SOURCE_DIR}/src/drivers/btstack/bt_psram.ld)

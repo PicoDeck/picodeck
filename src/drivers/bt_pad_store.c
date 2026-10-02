@@ -127,55 +127,65 @@ bool bt_store_parse(bt_store_t *s, const uint8_t *in, size_t len) {
 }
 
 // ── Paired pads ─────────────────────────────────────────────────────────────
+// bt_pad.c calls these from BTstack callbacks, on the 4 KB main stack: they
+// sort small references and read the records in place, with no copies.
 
 typedef struct {
   uint32_t seq;
-  bt_pad_record_t r;
+  const uint8_t *v; // the record's value in the store (PAD_VALUE_LEN bytes)
   int slot;
-} pad_t;
+} pad_ref_t;
 
-// The slots' records; returns how many are valid.
-static int load_pads(const bt_store_t *s, pad_t *p) {
+// The slots' records, newest first; returns how many are valid.
+static int pad_refs(const bt_store_t *s, pad_ref_t *p) {
   int n = 0;
   for (int i = 0; i < BT_PAD_PAIRED_MAX; i++) {
-    uint8_t v[PAD_VALUE_LEN];
-    if (bt_store_get(s, PAD_TAG(i), v, sizeof(v)) != PAD_VALUE_LEN)
+    int e = find(s, PAD_TAG(i));
+    if (e < 0 || s->e[e].len != PAD_VALUE_LEN)
       continue;
-    p[n].seq = get_le32(v);
-    memcpy(p[n].r.addr, v + 4, 6);
-    memcpy(p[n].r.name, v + 10, BT_PAD_NAME_MAX);
-    p[n].r.name[BT_PAD_NAME_MAX - 1] = '\0';
+    p[n].seq = get_le32(s->e[e].data);
+    p[n].v = s->e[e].data;
     p[n].slot = i;
     n++;
   }
-  // Newest first (insertion sort: at most four).
-  for (int i = 1; i < n; i++)
+  for (int i = 1; i < n; i++) // insertion sort: at most four
     for (int j = i; j > 0 && p[j].seq > p[j - 1].seq; j--) {
-      pad_t t = p[j];
+      pad_ref_t t = p[j];
       p[j] = p[j - 1];
       p[j - 1] = t;
     }
   return n;
 }
 
+static void pad_record(const uint8_t *v, bt_pad_record_t *out) {
+  memcpy(out->addr, v + 4, 6);
+  memcpy(out->name, v + 10, BT_PAD_NAME_MAX);
+  out->name[BT_PAD_NAME_MAX - 1] = '\0';
+}
+
+int bt_store_pad_count(const bt_store_t *s) {
+  pad_ref_t p[BT_PAD_PAIRED_MAX];
+  return pad_refs(s, p);
+}
+
 int bt_store_pads(const bt_store_t *s, bt_pad_record_t *out, int max) {
-  pad_t p[BT_PAD_PAIRED_MAX];
-  int n = load_pads(s, p);
+  pad_ref_t p[BT_PAD_PAIRED_MAX];
+  int n = pad_refs(s, p);
   if (n > max)
     n = max;
   for (int i = 0; i < n; i++)
-    out[i] = p[i].r;
+    pad_record(p[i].v, &out[i]);
   return n;
 }
 
 bool bt_store_find_pad(const bt_store_t *s, const uint8_t addr[6],
                        bt_pad_record_t *out) {
-  pad_t p[BT_PAD_PAIRED_MAX];
-  int n = load_pads(s, p);
+  pad_ref_t p[BT_PAD_PAIRED_MAX];
+  int n = pad_refs(s, p);
   for (int i = 0; i < n; i++)
-    if (memcmp(p[i].r.addr, addr, 6) == 0) {
+    if (memcmp(p[i].v + 4, addr, 6) == 0) {
       if (out)
-        *out = p[i].r;
+        pad_record(p[i].v, out);
       return true;
     }
   return false;
@@ -183,13 +193,13 @@ bool bt_store_find_pad(const bt_store_t *s, const uint8_t addr[6],
 
 bool bt_store_add_pad(bt_store_t *s, const bt_pad_record_t *r,
                       uint8_t evicted[6]) {
-  pad_t p[BT_PAD_PAIRED_MAX];
-  int n = load_pads(s, p);
+  pad_ref_t p[BT_PAD_PAIRED_MAX];
+  int n = pad_refs(s, p);
   uint32_t seq = n ? p[0].seq + 1 : 1;
   int slot = -1;
   bool dropped = false;
   for (int i = 0; i < n; i++)
-    if (memcmp(p[i].r.addr, r->addr, 6) == 0)
+    if (memcmp(p[i].v + 4, r->addr, 6) == 0)
       slot = p[i].slot;
   if (slot < 0) {
     bool used[BT_PAD_PAIRED_MAX] = {false};
@@ -201,7 +211,7 @@ bool bt_store_add_pad(bt_store_t *s, const bt_pad_record_t *r,
     if (slot < 0) { // full: the oldest goes
       slot = p[n - 1].slot;
       if (evicted)
-        memcpy(evicted, p[n - 1].r.addr, 6);
+        memcpy(evicted, p[n - 1].v + 4, 6);
       dropped = true;
     }
   }
@@ -215,10 +225,10 @@ bool bt_store_add_pad(bt_store_t *s, const bt_pad_record_t *r,
 }
 
 bool bt_store_remove_pad(bt_store_t *s, const uint8_t addr[6]) {
-  pad_t p[BT_PAD_PAIRED_MAX];
-  int n = load_pads(s, p);
+  pad_ref_t p[BT_PAD_PAIRED_MAX];
+  int n = pad_refs(s, p);
   for (int i = 0; i < n; i++)
-    if (memcmp(p[i].r.addr, addr, 6) == 0) {
+    if (memcmp(p[i].v + 4, addr, 6) == 0) {
       bt_store_del(s, PAD_TAG(p[i].slot));
       return true;
     }
