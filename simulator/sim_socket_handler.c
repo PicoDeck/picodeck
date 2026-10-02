@@ -385,8 +385,8 @@ static char *h_exit_app(const char *params) {
 }
 
 // Run one dev-command line on Core 0 (see dev_commands_stub.c): the
-// launcher loop or a running app's Lua pump executes it, like a line on the
-// firmware's serial console. params: {"cmd": "...", "timeout_ms": N}.
+// launcher loop, a running Lua app's pump or a native app's sys->poll()
+// executes it, like a line on the firmware's serial console. params: {"cmd": "...", "timeout_ms": N}.
 static char *h_dev_command(const char *params) {
     char cmd[300] = {0};
     if (!json_get_str(params, "cmd", cmd, sizeof(cmd)) || !cmd[0])

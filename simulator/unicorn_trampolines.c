@@ -276,6 +276,8 @@ extern pc_image_t *image_load(const char *path);
 extern pc_image_t *image_new_blank(int width, int height);
 
 // Dev commands
+extern void dev_commands_poll(void);
+extern bool dev_commands_process(void);
 extern bool dev_commands_wants_exit(void);
 extern void dev_commands_clear_exit(void);
 
@@ -1695,14 +1697,18 @@ static void tramp_sys_poll(uc_engine *uc) {
     // Poll keyboard + check for exit
     kbd_poll();
 
-    // Socket commands (screenshot, exit, etc.) are handled by the dedicated
-    // socket thread — no need to poll here.
-
     if (kbd_consume_menu_press()) {
         if (system_menu_show_for_native()) {
             s_emu_exit = true;
         }
     }
+
+    // Run a queued control-channel command (`dev_command` RPC) on this
+    // thread, as the firmware's sys_poll() runs the serial console's. The
+    // simulator's dev handlers have no reboot flags, so an `exit` is all that
+    // can come out of one.
+    dev_commands_poll();
+    dev_commands_process();
 
     if (dev_commands_wants_exit()) {
         s_emu_exit = true;
