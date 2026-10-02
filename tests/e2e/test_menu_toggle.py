@@ -279,7 +279,7 @@ def test_menu_key_cancels_a_modal_the_menu_opened(target, how, pad_cleanup):
     downs = _downs_to_time_zone(target)  # asked before the menu opens
     _press(target, how)
     screen.wait(True, "the menu did not open")
-    settings = _into_settings(target)
+    _into_settings(target)
     for _ in range(downs):
         target.keypress("down")
         time.sleep(0.2)
@@ -294,9 +294,11 @@ def test_menu_key_cancels_a_modal_the_menu_opened(target, how, pad_cleanup):
     after = _region(target)
     assert _changed(picker, after) > OPEN_PIXELS, \
         "the menu key did not cancel the picker"
-    # Back on the Settings page: its title bar
-    band = (0, 20, 200, 38)
-    assert _changed(settings.crop(band), after.crop(band)) <= CLOSED_PIXELS, \
+    # Back on the Settings page, as it was before Enter (the Time zone row
+    # selected). A fixed title band was not enough: the panel's height, and
+    # so where its title and first row sit, depends on the rows it has
+    # (dev mode, Bluetooth).
+    assert _changed(selected, after) <= CLOSED_PIXELS, \
         "the picker did not return to the Settings page"
     _press(target, how)  # now it closes the menu
     screen.wait(False, "the menu key did not close the menu after the picker")
