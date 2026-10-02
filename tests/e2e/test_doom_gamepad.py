@@ -186,6 +186,7 @@ def test_a_held_from_the_menu_into_the_level_does_not_fire(simulator):
     try:
         time.sleep(3)
         _settle(sim)
+        _assert_in_a_level(sim)              # the held press picked the skill
         a0 = _ammo(sim)
         time.sleep(3)
         assert _ammo(sim) == a0, "the held menu press fired"
@@ -195,6 +196,28 @@ def test_a_held_from_the_menu_into_the_level_does_not_fire(simulator):
     assert _ammo(sim) == a0
     _tap(sim, "f4")
     assert _ammo(sim) != a0
+
+
+def test_a_held_while_start_closes_the_menu_does_not_fire(simulator):
+    """A pressed on a menu item and still held when Start closes the menu must
+    not fire in the resumed game. The skill-pick case above cannot show this:
+    Doom's level load clears every held key itself, so only a menu that closes
+    without a level load tests that a menu press stays the menu's."""
+    sim = simulator
+    _start_game(sim)
+    _tap(sim, "f1")                          # Start: menu open, game paused
+    _settle(sim)
+    sim.call("inject_button", {"button": "f4", "action": "press"})   # New Game
+    try:
+        time.sleep(1.0)
+        _settle(sim)
+        _tap(sim, "f1")                      # Start: menu closes, game resumes
+        _settle(sim)
+        a0 = _ammo(sim)
+        time.sleep(2.0)
+        assert _ammo(sim) == a0, "the menu's held A fired in the game"
+    finally:
+        sim.call("inject_button", {"button": "f4", "action": "release"})
 
 
 def test_a_answers_yes_at_the_quit_prompt(simulator):
@@ -208,7 +231,8 @@ def test_a_answers_yes_at_the_quit_prompt(simulator):
     _tap(sim, "f4")
     _settle(sim)
     _tap(sim, "f4")
-    sim.wait_for_exit(timeout=60)
+    r = sim.wait_for_exit(timeout=60)
+    assert r["result"] == "returned", r
 
 
 def test_follows_a_rebinding(simulator):
