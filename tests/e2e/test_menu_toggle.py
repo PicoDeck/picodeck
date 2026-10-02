@@ -1,6 +1,6 @@
 """The menu key toggles the system menu (issue #59).
 
-Sym (the keyboard's menu key) and a pad's Home open the menu; pressed again
+The menu key (Shift+F5 / F10 on the keyboard) and a pad's Home open the menu; pressed again
 while it is open they close it, like Esc at the top level, from any page.
 The press is consumed by the menu, so nothing latched survives to open it
 again once it is closed (the bug: a press made while the menu was open did
@@ -12,7 +12,8 @@ again once it has closed. That needs no knowledge of what is under it, so the
 same probe serves a Lua app, a native app and the launcher.
 
 Runs on the simulator and on the device (@pytest.mark.both) except the native
-case, which needs the simulator's staged ELF probe.
+case (the simulator's staged ELF probe) and the Controls case (it reads the
+bindings file from the simulator's SD card).
 """
 
 from __future__ import annotations
@@ -50,17 +51,17 @@ while true do
 end
 """
 
-# The same, then a confirm dialog the test answers with the menu key: the
-# app turns red when the dialog was cancelled (answered No), green on Yes.
+# A confirm dialog the test raises with F3 (so no clock decides when it shows):
+# the app turns red when it was answered No, green on Yes.
 CONFIRM_FIXTURE = r"""
 local pc = picocalc
-local d, sys = pc.display, pc.sys
+local d, sys, input = pc.display, pc.sys, pc.input
 d.clear(d.BLUE)
 d.flush()
-local t0 = sys.getTimeMs()
-while sys.getTimeMs() - t0 < 1500 do   -- the test takes its baseline here
+while true do
     sys.resetIdleTimer()
-    pc.input.update()
+    input.update()
+    if (input.getButtonsPressed() & input.BTN_F3) ~= 0 then break end
     sys.sleep(20)
 end
 local yes = pc.ui.confirm("Sure?")
@@ -68,7 +69,7 @@ d.clear(yes and d.GREEN or d.RED)
 d.flush()
 while true do
     sys.resetIdleTimer()
-    pc.input.update()
+    input.update()
     sys.sleep(20)
 end
 """
@@ -264,10 +265,11 @@ def test_menu_key_cancels_a_modal_the_menu_opened(target, how, pad_cleanup):
     for _ in range(4):  # Brightness, Battery %, Show FPS, Controls, Time zone
         target.keypress("down")
         time.sleep(0.2)
+    selected = _region(target)  # the Time zone row selected, before Enter
     target.keypress("enter")
     time.sleep(0.5)
     picker = _region(target)
-    assert _changed(settings, picker) > OPEN_PIXELS, \
+    assert _changed(selected, picker) > OPEN_PIXELS, \
         "the time-zone picker did not open"
     _press(target, how)
     time.sleep(0.5)
@@ -286,17 +288,25 @@ def test_menu_key_cancels_a_modal_the_menu_opened(target, how, pad_cleanup):
 
 @both
 @pytest.mark.parametrize("how", INPUTS)
-def test_menu_key_answers_a_confirm_without_opening_the_menu(
+def test_menu_key_is_ignored_by_a_confirm_and_opens_no_menu(
         target, how, pad_cleanup):
-    """With an app's ui.confirm up the menu key cancels it (answers No, like
-    Esc) and nothing latched opens the system menu afterwards."""
+    """With an app's ui.confirm up the menu key does nothing: the dialog
+    stays (No can mean "discard" to an app, so only Esc may answer it) and
+    the system menu does not open, then or after the answer."""
     target.stage_lua_app(APP, CONFIRM_FIXTURE, id=APP_ID)
     assert target.launch_app(APP)["launched"]
     _wait_colour(target, BLUE, "the fixture's blue frame never showed")
     screen = Screen(target)
+    target.keypress("f3")
     screen.wait(True, "the confirm dialog did not show", timeout=15.0)
+    time.sleep(0.6)  # past the dialog's grace period
+    dialog = _region(target)
     _press(target, how)
-    _wait_colour(target, RED, "the menu key did not cancel the confirm")
+    time.sleep(1.0)
+    assert _changed(dialog, _region(target)) <= CLOSED_PIXELS, \
+        "the menu key changed the screen over the confirm dialog"
+    target.keypress("esc")  # No
+    _wait_colour(target, RED, "Esc did not answer the confirm")
     Screen(target).stays_closed("the system menu opened after the confirm")
     _finish_lua(target)
 

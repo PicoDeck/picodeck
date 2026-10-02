@@ -8,12 +8,11 @@ the menu on every repeat once the menu key toggled it (issue #59).
 
 The RPC cannot inject a repeat, so an LD_PRELOAD shim over SDL_PollEvent
 (fixtures/sdl_key_hold_shim.c) plays the host's key for this test. It is
-skipped under a sanitizer build, where a preloaded library is unwelcome, and
-when there is no C compiler or SDL2 header.
+skipped when there is no C compiler, pkg-config or SDL2 header (CI has all
+three; a sanitizer build links its runtime statically, so it runs there too).
 """
 
 import io
-import os
 import shutil
 import subprocess
 import time
@@ -29,14 +28,13 @@ pytestmark = [pytest.mark.timeout(120), pytest.mark.sd(fixtures=[], reserve=2)]
 
 @pytest.fixture
 def hold_shim(tmp_path, monkeypatch, request):
-    binary = os.environ.get("PICODECK_SIM_BINARY", "")
-    if "asan" in binary or "tsan" in binary:
-        pytest.skip("LD_PRELOAD shim: not under a sanitizer build")
     cc = shutil.which("cc") or shutil.which("gcc")
+    if not cc or not shutil.which("pkg-config"):
+        pytest.skip("needs a C compiler and pkg-config")
     flags = subprocess.run(["pkg-config", "--cflags", "sdl2"],
                            capture_output=True, text=True)
-    if not cc or flags.returncode != 0:
-        pytest.skip("needs a C compiler and the SDL2 headers")
+    if flags.returncode != 0:
+        pytest.skip("needs the SDL2 headers")
     so = tmp_path / "sdl_key_hold_shim.so"
     r = subprocess.run([cc, "-shared", "-fPIC", "-o", str(so), str(SHIM),
                         *flags.stdout.split(), "-ldl"],
@@ -66,8 +64,9 @@ def test_held_menu_key_opens_the_menu_once(hold_shim, simulator):
     sim = simulator
     time.sleep(1.0)
     base = _region(sim)
+    assert not _open(base, _region(sim))
+    states = [False]  # the closed baseline, sampled before the key goes down
     hold_shim.touch()
-    states = []
     end = time.monotonic() + 3.0   # the key is down for 2 s
     while time.monotonic() < end:
         states.append(_open(base, _region(sim)))
