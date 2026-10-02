@@ -12,7 +12,11 @@ needs a person present in case the controller stops answering."""
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +24,8 @@ pytestmark = [pytest.mark.hardware, pytest.mark.timeout(900)]
 
 SOAK_S = int(os.environ.get("KBD_SOAK_S", "0"))
 MANUAL = os.environ.get("KBD_MANUAL") == "1"
+FFMPEG = shutil.which("ffmpeg")
+VIDEO_CYCLES = int(os.environ.get("KBD_VIDEO_CYCLES", "12"))
 
 
 def kbdstat(target, arg=""):
@@ -186,6 +192,95 @@ def test_clock_change_keeps_the_bus(target):
     assert after["sys_khz"] == 200000, after
     assert after["errors"] == 0 and after["recoveries"] == 0, after
     assert after["reads"] >= during["reads"] + 90, (during, after)
+
+
+VIDEO = """
+local T = picocalc.sys.loadlib("picotest")
+local sys, input, wifi = picocalc.sys, picocalc.input, picocalc.wifi
+local CYCLES = %d
+T.case("video_cycles", function()
+  local v = picocalc.video.player()
+  T.ok(v:load(APP_DIR .. "/clip.avi"), "load clip.avi")
+  v:setLoop(true)
+  local online = 0
+  for i = 1, CYCLES do
+    -- play(): WiFi off, the radio paused, 300 MHz; stop(): 200 MHz, the
+    -- radio back and WiFi rejoining, with the keyboard polled throughout.
+    v:play()
+    local t_end = sys.getTimeMs() + 500
+    while sys.getTimeMs() < t_end do
+      v:update()
+      input.update()
+    end
+    v:stop()
+    t_end = sys.getTimeMs() + 12000
+    while sys.getTimeMs() < t_end and
+          wifi.getStatus() ~= wifi.STATUS_ONLINE do
+      input.update()
+      sys.sleep(5)
+    end
+    if wifi.getStatus() == wifi.STATUS_ONLINE then online = online + 1 end
+    t_end = sys.getTimeMs() + 300
+    while sys.getTimeMs() < t_end do
+      input.update()
+      sys.sleep(5)
+    end
+  end
+  local f = picocalc.fs.open(picocalc.fs.appPath("online.txt"), "w")
+  picocalc.fs.write(f, tostring(online))
+  picocalc.fs.close(f)
+  T.ok(true)
+end)
+T.done()
+"""
+
+
+# Issue #58: after a few video sessions with WiFi on the keyboard went dead
+# until a reboot (kbdstat: state=error, errors climbing, no reads). Every
+# play()/stop() pauses the radio and switches clk_sys (300 MHz and back),
+# and the radio's reconnect after stop() keeps Core 1 in the CYW43 driver,
+# whose cross-core wake-ups cancel default-pool alarms: on SDK 2.2.0 that
+# leaked the pool's entries (src/drivers/CLAUDE.md, Keyboard) until the bus
+# engine, which took a pool alarm at every step, could not arm one. The
+# engine now has its own hardware alarm (and the build patches the pool).
+# This plays the trigger in a loop (KBD_VIDEO_CYCLES, default 12) and wants
+# the bus untouched by it: no failure of any kind, reads all along. Without
+# WiFi configured it still loops the clock switch.
+def test_bus_survives_video_clock_and_radio_cycles(target):
+    if not FFMPEG:
+        pytest.skip("ffmpeg makes the clip")
+    app, app_id = "kbd_video", "com.test.kbd_video"
+    with tempfile.TemporaryDirectory() as tmp:
+        clip = Path(tmp) / "clip.avi"
+        subprocess.run([FFMPEG, "-v", "error", "-y",
+                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+                        "-t", "2", "-c:v", "mjpeg", "-pix_fmt", "yuvj420p",
+                        "-q:v", "12", "-c:a", "libmp3lame", "-b:a", "96k",
+                        "-ac", "2", str(clip)], check=True)
+        target.stage_lua_app(app, VIDEO % VIDEO_CYCLES, requirements=("audio",),
+                             id=app_id,
+                             files={"clip.avi": clip.read_bytes()})
+    try:
+        target.ensure_launcher()
+        kbdstat(target, "reset")
+        run = target.run_lua_app(app, timeout=VIDEO_CYCLES * 16 + 30,
+                                 poll_s=5.0)
+        target.ensure_launcher()
+        time.sleep(2)
+        s = kbdstat(target)
+        online = target.read_file(f"/data/{app_id}/online.txt").decode()
+        print(f"{VIDEO_CYCLES} video cycles, WiFi back online after {online}:",
+              s)
+        run.assert_clean_exit()
+        run.assert_all_passed(["video_cycles"])
+        assert s["errors"] == 0 and s["recoveries"] == 0, s
+        assert s.get("lost_alarms", 0) == 0 and s.get("cuts", 0) == 0, s
+        assert s["state"] in ("wait", "busy"), s
+        assert s["reads"] >= 30 * s["window_ms"] // 1000, s
+    finally:
+        target.delete_file(f"/apps/{app}")
+        target.delete_file(f"/data/{app_id}")
 
 
 UNPOLLED = """
