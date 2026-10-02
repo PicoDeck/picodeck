@@ -49,7 +49,7 @@ def hid(sim_factory, test_sd_card):
 
 
 def _launch(sim, name, timeout=15.0):
-    sim.launch_app(name)
+    sim.launch_app(name, hidden=False)   # the name as given: the launcher's order
     return sim.wait_for_exit(timeout=timeout)
 
 
@@ -383,3 +383,25 @@ def test_mv_refuses_the_running_apps_directory(hid):
     sim.wait_for_exit(timeout=10)
     out = target.command("mv /apps/.test/hid_run /apps/.dev/hid_run")
     assert out[0].startswith("[DEV] Moved:"), out
+
+
+def test_list_all_while_a_hidden_app_runs_leaves_its_entry_alone(hid):
+    """The simulator serves `list all` mid-app (firmware only at the
+    launcher): it must not use the running hidden app's entry as scratch."""
+    sim, target, sd = hid
+    app = sd / "apps" / ".test" / "hid_busy"
+    app.mkdir()
+    (app / "app.json").write_text(json.dumps(
+        {"id": "com.test.hid_busy", "name": "Busy"}))
+    (app / "main.lua").write_text("picocalc.sys.sleep(60000)\n")
+    sim.launch_app("hid_busy")
+    sim.wait_for_log(r"start Busy", timeout=5.0, src="os")
+    seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
+    for _ in range(3):
+        target.command("list all")
+    texts = _texts(sim, seq)
+    assert any("Hidden Dev" in t and "[.dev]" in t for t in texts), texts
+    running = sim.call("get_running_app")
+    assert running.get("running") and running.get("name") == "Busy", running
+    sim.exit_app()
+    assert sim.wait_for_exit(timeout=10)["result"] in ("returned", "exit_sentinel")

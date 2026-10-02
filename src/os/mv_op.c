@@ -9,13 +9,14 @@
 #include "mv_path.h"
 
 #define MV_PATH_MAX 192
+#define MV_MADE_MAX 8
 
 // Missing parents of dst, created one level at a time (FatFS has no mkdir
 // -p). The ones this call made are remembered, so a failed rename can take
 // them away again.
 typedef struct {
     char path[MV_PATH_MAX];
-    size_t made[8];   // offsets of the '/' ending each directory created
+    size_t made[MV_MADE_MAX];   // offsets of the '/' ending each directory created
     int n_made;
 } mv_parents_t;
 
@@ -26,8 +27,11 @@ static bool make_parents(mv_parents_t *mp, const char *dst) {
         *c = '\0';
         sdcard_stat_t st;
         bool existed = sdcard_stat(mp->path, &st);
-        bool ok = existed ? st.is_dir : sdcard_mkdir(mp->path);
-        if (ok && !existed && mp->n_made < 8)
+        // Deeper than the record can hold: refuse rather than leave
+        // directories a failed rename could not take away again.
+        bool ok = existed ? st.is_dir
+                          : (mp->n_made < MV_MADE_MAX && sdcard_mkdir(mp->path));
+        if (ok && !existed)
             mp->made[mp->n_made++] = (size_t)(c - mp->path);
         *c = '/';
         if (!ok)
@@ -43,10 +47,16 @@ static void unmake_parents(mv_parents_t *mp) {
     }
 }
 
-static bool spelled_system(const char *canon) {
-    return strncasecmp(canon, "/system", 7) == 0 &&
-           (canon[7] == '\0' || canon[7] == '/');
+// `p` is `root` or below it, as canonical strings (case-insensitive, whole
+// components). The second guard: it needs no FatFS call, so it holds when
+// the identity test cannot run.
+static bool str_within(const char *root, const char *p) {
+    size_t n = strlen(root);
+    return strncasecmp(p, root, n) == 0 && (p[n] == '\0' || p[n] == '/');
 }
+
+#define VERIFY_MSG "Error: mv: cannot verify the move (too many open files?): " \
+                   "close files and retry"
 
 bool mv_op(char *args, char *reply, size_t n) {
     char *a = args;
@@ -68,21 +78,32 @@ bool mv_op(char *args, char *reply, size_t n) {
                            "/apps, /data, /system)");
         return false;
     }
-    // /system by identity, whatever the spelling ("//system", "/system.",
-    // an 8.3 alias): the directory itself and everything below it, either
-    // side. (A nonexistent target below it is caught by its ancestors.)
-    // (The spelling check is for a host filesystem that tells case apart.)
-    if (spelled_system(src) || spelled_system(dst) ||
-        sdcard_path_within("/system", src) || sdcard_path_within("/system", dst)) {
+    // /system, the directory and everything below it, either side: by
+    // spelling (a host filesystem that tells case apart) and by FatFS
+    // identity (any spelling: "//system", an 8.3 alias; a nonexistent target
+    // below it is caught by its ancestors). An identity test that could not
+    // look (the open-file table is full, FatFS then fails to open a directory
+    // that exists while f_rename still works) is a refusal, not a "no".
+    if (str_within("/system", src) || str_within("/system", dst)) {
         snprintf(reply, n, "Error: mv: /system is off limits");
         return false;
     }
-    sdcard_stat_t st;
+    sdcard_within_t w1 = sdcard_path_within("/system", src);
+    sdcard_within_t w2 = sdcard_path_within("/system", dst);
+    if (w1 == SDCARD_WITHIN_YES || w2 == SDCARD_WITHIN_YES) {
+        snprintf(reply, n, "Error: mv: /system is off limits");
+        return false;
+    }
+    if (w1 == SDCARD_WITHIN_UNKNOWN || w2 == SDCARD_WITHIN_UNKNOWN) {
+        snprintf(reply, n, VERIFY_MSG);
+        return false;
+    }
+    sdcard_stat_t st, dst_st;
     if (!sdcard_stat(src, &st)) {
         snprintf(reply, n, "Error: mv: no such file or directory: %s", src);
         return false;
     }
-    if (sdcard_stat(dst, &st)) {
+    if (sdcard_stat(dst, &dst_st)) {
         // FatFS refuses a rename onto an existing name, case-only included,
         // so a case change needs a detour through a temporary name.
         snprintf(reply, n, "Error: mv: destination exists: %s (a case-only "
@@ -91,17 +112,31 @@ bool mv_op(char *args, char *reply, size_t n) {
     }
     // f_rename does not check for a subtree: a directory moved below
     // itself is cut out of the tree and its clusters are lost.
-    if (st.is_dir && sdcard_path_within(src, dst)) {
-        snprintf(reply, n, "Error: mv: cannot move %s into itself", src);
-        return false;
+    if (st.is_dir) {
+        sdcard_within_t w = sdcard_path_within(src, dst);
+        if (str_within(src, dst) || w == SDCARD_WITHIN_YES) {
+            snprintf(reply, n, "Error: mv: cannot move %s into itself", src);
+            return false;
+        }
+        if (w == SDCARD_WITHIN_UNKNOWN) {
+            snprintf(reply, n, VERIFY_MSG);
+            return false;
+        }
     }
     // Moving a directory the running app lives in (or one above it) pulls
     // the app's files out from under it.
     const app_identity_t *me = app_identity_current();
-    if (me && me->dir[0] && sdcard_path_within(src, me->dir)) {
-        snprintf(reply, n, "Error: mv: %s holds the running app (exit it "
-                           "first)", src);
-        return false;
+    if (me && me->dir[0]) {
+        sdcard_within_t w = sdcard_path_within(src, me->dir);
+        if (str_within(src, me->dir) || w == SDCARD_WITHIN_YES) {
+            snprintf(reply, n, "Error: mv: %s holds the running app (exit it "
+                               "first)", src);
+            return false;
+        }
+        if (w == SDCARD_WITHIN_UNKNOWN) {
+            snprintf(reply, n, VERIFY_MSG);
+            return false;
+        }
     }
     mv_parents_t mp;
     if (!make_parents(&mp, dst)) {

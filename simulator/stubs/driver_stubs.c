@@ -793,28 +793,35 @@ bool sdcard_delete_recursive(const char* path) {
 }
 // Same directory, or below it: by device and inode of each ancestor, as the
 // firmware compares FatFS directory clusters (src/drivers/fat_within.c).
-bool sdcard_path_within(const char* root, const char* path) {
+sdcard_within_t sdcard_path_within(const char* root, const char* path) {
     char full[1024];
     struct stat rs;
-    if (!hal_sdcard_resolve(root, full, sizeof(full)) || stat(full, &rs) != 0 ||
-        !S_ISDIR(rs.st_mode))
-        return false;
+    if (!hal_sdcard_resolve(root, full, sizeof(full))) return SDCARD_WITHIN_UNKNOWN;
+    if (stat(full, &rs) != 0)
+        return (errno == ENOENT || errno == ENOTDIR) ? SDCARD_WITHIN_NO
+                                                     : SDCARD_WITHIN_UNKNOWN;
+    if (!S_ISDIR(rs.st_mode)) return SDCARD_WITHIN_NO;
     char prefix[256];
     size_t n = strlen(path);
-    if (n >= sizeof(prefix)) return false;
+    if (n >= sizeof(prefix)) return SDCARD_WITHIN_UNKNOWN;
     memcpy(prefix, path, n + 1);
     for (size_t i = 1; i <= n; i++) {
         if (prefix[i] != '/' && prefix[i] != '\\' && prefix[i] != '\0') continue;
         char saved = prefix[i];
         prefix[i] = '\0';
         struct stat ps;
-        bool ok = hal_sdcard_resolve(prefix, full, sizeof(full)) &&
-                  stat(full, &ps) == 0 && S_ISDIR(ps.st_mode);
+        bool resolved = hal_sdcard_resolve(prefix, full, sizeof(full));
+        int rc = resolved ? stat(full, &ps) : -1;
+        int err = errno;
         prefix[i] = saved;
-        if (!ok) return false;
-        if (ps.st_dev == rs.st_dev && ps.st_ino == rs.st_ino) return true;
+        if (!resolved) return SDCARD_WITHIN_UNKNOWN;
+        if (rc != 0)
+            return (err == ENOENT || err == ENOTDIR) ? SDCARD_WITHIN_NO
+                                                     : SDCARD_WITHIN_UNKNOWN;
+        if (S_ISDIR(ps.st_mode) && ps.st_dev == rs.st_dev && ps.st_ino == rs.st_ino)
+            return SDCARD_WITHIN_YES;
     }
-    return false;
+    return SDCARD_WITHIN_NO;
 }
 bool sdcard_rename(const char* oldpath, const char* newpath) {
     char full_old[1024], full_new[1024];

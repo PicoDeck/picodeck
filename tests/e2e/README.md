@@ -116,7 +116,13 @@ and builds the device's traps in:
   app.json fresh, so there is no reboot, `list` poll or rescan after a push.
   The session wipes `/apps/.test` (`rm /apps/.test`) when it starts and when
   it ends. `/apps/.dev` is the user's own hidden dev apps: the harness never
-  touches it (`launch` finds both; `.test` first). A test that needs the
+  touches it (`launch` finds both; `.test` first). The harness launches what it
+  staged hidden as `launch .test/<name>` (both targets; `PicodeckSimulator
+  .launch_app(name)` does it when `/apps/.test/<name>` exists, `hidden=False`
+  sends the name as given), which searches only that root: a listed app of the
+  same name or id (the user's card has some) cannot run in its place, and
+  `HwTarget.launch_app` raises if the reply does not say `from /apps/.test:`.
+  The firmware's `launch` argument is at most 69 characters. A test that needs the
   launcher to *show* the app (a list or menu screenshot) opts out with
   `hidden=False`, which stages `/apps/<name>` and counts against the cap.
 - **The launcher caches `app.json` at boot** (listed apps only: `hidden=False`).

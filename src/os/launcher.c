@@ -56,12 +56,16 @@
 // App table lives in PSRAM; the only SRAM cost is s_cat_indices (uint8_t,
 // so the cap can go to 255 before the index type needs widening).
 #define MAX_APPS 64
-#define HIDDEN_SLOT MAX_APPS
+#define HIDDEN_SLOT MAX_APPS        // a hidden app being launched / run
+#define LIST_SLOT (MAX_APPS + 1)    // `list all`'s scratch (the simulator's RPC
+                                    // serves it mid-app: it must not touch the
+                                    // running hidden app's entry)
+#define EXTRA_SLOTS 2
 // The longest `launch` argument ".test/" + a 63-character name fits.
 #define LAUNCH_ARG_MAX 69
 
-// MAX_APPS listed entries, then one more: the entry of a hidden app being
-// launched or listed (HIDDEN_SLOT), never freed so that the simulator's RPC
+// MAX_APPS listed entries, then the extra slots below (a hidden app being
+// launched, `list all`'s scratch), never freed so that the simulator's RPC
 // thread, which reads the running app's name, never sees it go.
 static app_entry_t *s_apps = NULL;
 static int s_app_count = 0;
@@ -1047,12 +1051,12 @@ static void update_desc_scroll(bool *dirty) {
 
 void launcher_run(void) {
   if (!s_apps) {
-    s_apps = umm_malloc(sizeof(app_entry_t) * (MAX_APPS + 1));
+    s_apps = umm_malloc(sizeof(app_entry_t) * (MAX_APPS + EXTRA_SLOTS));
     if (!s_apps) {
       printf("[LAUNCHER] FATAL: failed to alloc s_apps in PSRAM\n");
       return;
     }
-    memset(s_apps, 0, sizeof(app_entry_t) * (MAX_APPS + 1));
+    memset(s_apps, 0, sizeof(app_entry_t) * (MAX_APPS + EXTRA_SLOTS));
   }
   scan_apps();
   build_category_indices();
@@ -1266,6 +1270,7 @@ static bool launch_hidden(const char *name) {
     if (strncmp(name, r, rl) == 0 && name[rl] == '/') {
       only = i;
       name += rl + 1;
+      break;   // ".test/.dev/x" is not ".dev/x"
     }
   }
   if (!s_apps)
@@ -1312,7 +1317,7 @@ void launcher_list_apps(bool all) {
   sim_log_os("[DEV] Hidden apps:");
   int hidden = 0;
   for (int i = 0; i < HIDDEN_ROOTS; i++) {
-    hidden_find_t f = {k_hidden_roots[i], NULL, &s_apps[HIDDEN_SLOT], false, 0};
+    hidden_find_t f = {k_hidden_roots[i], NULL, &s_apps[LIST_SLOT], false, 0};
     sdcard_list_dir(f.root, list_hidden_cb, &f);
     hidden += f.listed;
   }

@@ -86,9 +86,15 @@ bool sdcard_delete(const char *path);
 // Returns true if the directory and all contents were deleted.
 bool sdcard_delete_recursive(const char *path);
 
-// True when `root` is a directory and `path` is it or lies below it, by
-// FatFS identity (any spelling: case, "//", "\", ".", 8.3 aliases).
-bool sdcard_path_within(const char *root, const char *path);
+// Is `path` the directory `root` or below it, by FatFS identity (any
+// spelling: case, "//", "\", ".", 8.3 aliases)? SDCARD_WITHIN_UNKNOWN when
+// FatFS could not look (open-file table full, card absent): treat as "maybe".
+typedef enum {
+    SDCARD_WITHIN_NO = 0,
+    SDCARD_WITHIN_YES = 1,
+    SDCARD_WITHIN_UNKNOWN = 2,
+} sdcard_within_t;
+sdcard_within_t sdcard_path_within(const char *root, const char *path);
 
 // Rename or move a file/directory. Both paths must be on the same volume.
 bool sdcard_rename(const char *src, const char *dst);

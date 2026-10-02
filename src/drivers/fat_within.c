@@ -4,40 +4,50 @@
 
 #include "ff.h"
 
-// Identity of the directory `path` names: its first cluster, and the
-// volume's root as 0. False when it is not an existing directory.
-static bool dir_id(const char *path, DWORD *id) {
+typedef enum { DIR_OK, DIR_ABSENT, DIR_ERROR } dir_res_t;
+
+// Identity of the directory `path` names: its first cluster (0 for a FAT12/16
+// root). ABSENT only for "no such name / path"; any other failure is ERROR.
+static dir_res_t dir_id(const char *path, DWORD *id) {
     DIR d;
-    if (f_opendir(&d, path) != FR_OK)
-        return false;
+    FRESULT r = f_opendir(&d, path);
+    if (r == FR_NO_FILE || r == FR_NO_PATH)
+        return DIR_ABSENT;
+    if (r != FR_OK)
+        return DIR_ERROR;
     *id = (DWORD)d.obj.sclust;
     f_closedir(&d);
-    return true;
+    return DIR_OK;
 }
 
-bool fat_path_within(const char *root, const char *path) {
-    DWORD root_id;
-    if (!dir_id(root, &root_id))
-        return false;
+fat_within_t fat_path_within(const char *root, const char *path) {
+    DWORD root_id = 0;
+    dir_res_t r = dir_id(root, &root_id);
+    if (r == DIR_ERROR)
+        return FAT_WITHIN_UNKNOWN;
+    if (r == DIR_ABSENT)
+        return FAT_WITHIN_NO;
     char prefix[256];
     size_t n = strlen(path);
     if (n >= sizeof(prefix))
-        return false;
+        return FAT_WITHIN_UNKNOWN;
     memcpy(prefix, path, n + 1);
-    // Every ancestor of `path`, itself last. f_opendir resolves "//", "\",
+    // Every ancestor of `path`, itself last. f_opendir resolves "//", "\\",
     // "." and 8.3 aliases the way every other FatFS call does.
     for (size_t i = 1; i <= n; i++) {
         if (prefix[i] != '/' && prefix[i] != '\\' && prefix[i] != '\0')
             continue;
         char saved = prefix[i];
         prefix[i] = '\0';
-        DWORD id;
-        bool ok = dir_id(prefix, &id);
+        DWORD id = 0;
+        r = dir_id(prefix, &id);
         prefix[i] = saved;
-        if (!ok)
-            return false;  // it does not exist, so nothing below it does
+        if (r == DIR_ERROR)
+            return FAT_WITHIN_UNKNOWN;
+        if (r == DIR_ABSENT)
+            return FAT_WITHIN_NO;  // it does not exist, so nothing below it does
         if (id == root_id && root_id != 0)
-            return true;
+            return FAT_WITHIN_YES;
     }
-    return false;
+    return FAT_WITHIN_NO;
 }

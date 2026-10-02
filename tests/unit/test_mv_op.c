@@ -52,8 +52,8 @@ bool sdcard_mkdir(const char *path) {
 }
 bool sdcard_rename(const char *a, const char *b) { return f_rename(a, b) == FR_OK; }
 bool sdcard_delete(const char *path) { return f_unlink(path) == FR_OK; }
-bool sdcard_path_within(const char *root, const char *path) {
-  return fat_path_within(root, path);
+sdcard_within_t sdcard_path_within(const char *root, const char *path) {
+  return (sdcard_within_t)fat_path_within(root, path);
 }
 static app_identity_t s_me;
 static bool s_app_running;
@@ -138,8 +138,10 @@ static void test_system_is_off_limits(BYTE fmt) {
   // The identity test, not the spelling, decides: an 8.3 alias of a long name.
   reset(fmt);
   f_mkdir("/system/longsubdirname");
-  CHECK(fat_path_within("/system", "/system/LONGSU~1/x"));
-  CHECK(!fat_path_within("/apps", "/system/lib"));
+  CHECK_EQ_INT(fat_path_within("/system", "/system/LONGSU~1/x"), FAT_WITHIN_YES);
+  CHECK_EQ_INT(fat_path_within("/apps", "/system/lib"), FAT_WITHIN_NO);
+  CHECK_EQ_INT(fat_path_within("/nope", "/system/lib"), FAT_WITHIN_NO);
+  CHECK_EQ_INT(fat_path_within("/system", "/nope/x"), FAT_WITHIN_NO);
 }
 
 static void test_top_level_roots_stay(BYTE fmt) {
@@ -240,6 +242,51 @@ static void test_parent_creation(BYTE fmt) {
   CHECK(exists("/data/new/dir/foo/main.lua"));
 }
 
+// FatFS opens a directory through the same 16-entry table as files, so with
+// it full f_opendir fails for a directory that exists, while f_rename works.
+// The identity test must say "unknown", and mv must refuse, not move.
+#define OPEN_FILES 16
+static FIL s_open[OPEN_FILES];
+
+static void fill_open_table(void) {
+  for (int i = 0; i < OPEN_FILES; i++) {
+    char p[32];
+    snprintf(p, sizeof p, "/data/open%d", i);
+    CHECK_EQ_INT(f_open(&s_open[i], p, FA_WRITE | FA_CREATE_ALWAYS), FR_OK);
+  }
+}
+static void close_open_table(void) {
+  for (int i = 0; i < OPEN_FILES; i++) f_close(&s_open[i]);
+}
+
+static void test_full_open_table_fails_closed(BYTE fmt) {
+  const char *cases[] = {
+      "/apps/foo /apps/foo/bar", "/apps/foo /apps//foo/bar",
+      "/apps/foo /apps/FOO/bar", "/apps/foo /apps/foo/a/b",
+      "/apps/longappname /apps/LONGAP~1/x", "/apps/foo /apps/.dev/foo",
+      "/system/lib /apps/lib", "/apps/foo /system/foo", "/apps/foo /SYSTEM/x"};
+  for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+    reset(fmt);
+    fill_open_table();
+    CHECK_EQ_INT(fat_path_within("/apps/foo", "/apps/foo/bar"), FAT_WITHIN_UNKNOWN);
+    char reply[200];
+    bool ok = mv(cases[i], reply, sizeof reply);
+    if (ok) printf("  moved with a full table: %s\n", cases[i]);
+    CHECK(!ok);
+    close_open_table();
+    intact();
+    CHECK(!exists("/apps/.dev/foo") && !exists("/system/foo"));
+  }
+  // The refusal says why, and the move works once files are closed.
+  reset(fmt);
+  fill_open_table();
+  char reply[200];
+  CHECK(!mv("/apps/foo /apps/foo/bar", reply, sizeof reply));
+  CHECK(strstr(reply, "cannot verify"));
+  close_open_table();
+  CHECK(mv("/apps/foo /apps/.dev/foo", reply, sizeof reply));
+}
+
 int main(void) {
   s_disk = malloc((size_t)NSECT * 512);
   test_canon();
@@ -251,6 +298,7 @@ int main(void) {
     test_normal_moves(fmts[i]);
     test_refusals_and_edges(fmts[i]);
     test_parent_creation(fmts[i]);
+    test_full_open_table_fails_closed(fmts[i]);
   }
   free(s_disk);
   return check_report("test_mv_op");
