@@ -286,7 +286,7 @@ uint16_t display_get_pixel(int x, int y) {
 }
 
 // Mirrors display_set_pixels_block / display_get_pixels_block in
-// src/drivers/display.c (semantics, not steps). This framebuffer is already
+// src/drivers/display.c (both call the shared disp_set/get_pixels). This framebuffer is already
 // host order, so no byte swap happens here — the firmware swaps, and the Lua
 // contract ("host-order RGB565 either way") is the same.
 bool display_set_pixels_block(int x, int y, int w, int h,

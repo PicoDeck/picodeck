@@ -229,7 +229,8 @@ uint16_t *display_get_back_buffer(void);
 //
 // display_set_pixels_block() clips to the clip rect exactly as the
 // single-pixel display_set_pixel() does; a rectangle wholly or partly
-// outside it writes only the visible part and reports false. It needs
+// outside it writes only the visible part and returns true; it returns false
+// only when nothing was visible. It needs
 // w*h*2 bytes of host-order RGB565, row-major, top row first.
 // display_get_pixels_block() does not apply the clip rect (matching
 // display_get_pixel()); the rectangle must be inside the screen or it

@@ -73,8 +73,8 @@ static int l_fb_set_pixels(lua_State *L) {
   int x, y, w, h;
   size_t n = fb_check_rect(L, 3, &x, &y, &w, &h);
   if (len != n)
-    return luaL_error(L, "pixel data is %u bytes, expected %u (%dx%d pixels)",
-                      (unsigned)len, (unsigned)n, w, h);
+    return luaL_error(L, "pixel data is %I bytes, expected %d (%dx%d pixels)",
+                      (lua_Integer)len, (int)n, w, h);
   lua_pushboolean(L, display_set_pixels_block(x, y, w, h, data, len));
   return 1;
 }
