@@ -14,6 +14,7 @@
 #include "../../src/os/lua_bridge.h"
 #include "../../src/os/app_stack.h"
 #include "../../src/dev_ops.h"
+#include "../../src/os/launcher.h"
 
 // Command state
 static bool s_cmd_exit = false;
@@ -21,6 +22,7 @@ static bool s_cmd_usb = false;
 static bool s_cmd_reboot = false;
 static bool s_cmd_reboot_flash = false;
 static bool s_cmd_list = false;
+static bool s_cmd_list_all = false;
 static const char* s_pending_launch = NULL;
 
 void dev_commands_init(void) {
@@ -33,6 +35,7 @@ void dev_commands_init(void) {
     s_cmd_reboot = false;
     s_cmd_reboot_flash = false;
     s_cmd_list = false;
+    s_cmd_list_all = false;
     
     // Set stdin to non-blocking mode so getchar() doesn't block
     int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
@@ -63,7 +66,9 @@ void dev_commands_poll(void) {
                 // Process command
                 if (strcmp(s_cmd_buf, "exit") == 0) {
                     s_cmd_exit = true;
-                } else if (strcmp(s_cmd_buf, "list") == 0) {
+                } else if (strcmp(s_cmd_buf, "list") == 0 ||
+                           strcmp(s_cmd_buf, "list all") == 0) {
+                    s_cmd_list_all = s_cmd_buf[4] != '\0';
                     s_cmd_list = true;
                 } else if (strcmp(s_cmd_buf, "screenshot") == 0) {
                     dev_commands_send_screenshot();
@@ -115,6 +120,14 @@ static void dc_run(void *arg) {
         job->ok = dev_op_unzip(job->cmd + 6, job->reply, sizeof(job->reply));
     } else if (strncmp(job->cmd, "rm ", 3) == 0) {
         job->ok = dev_op_rm(job->cmd + 3, job->reply, sizeof(job->reply));
+    } else if (strncmp(job->cmd, "mv ", 3) == 0) {
+        job->ok = dev_op_mv(job->cmd + 3, job->reply, sizeof(job->reply));
+    } else if (strcmp(job->cmd, "list") == 0 || strcmp(job->cmd, "list all") == 0) {
+        // The lines go to the log buffer ([DEV] source "os"), the reply
+        // is a summary: the listing can outgrow one reply line.
+        launcher_list_apps(job->cmd[4] != '\0');
+        snprintf(job->reply, sizeof(job->reply), "Listed apps");
+        job->ok = true;
     } else if (strncmp(job->cmd, "pad ", 4) == 0 || strcmp(job->cmd, "pad") == 0) {
         job->ok = dev_op_pad(job->cmd + 3, job->reply, sizeof(job->reply));
     } else if (strncmp(job->cmd, "bt ", 3) == 0 || strcmp(job->cmd, "bt") == 0) {
@@ -126,7 +139,7 @@ static void dc_run(void *arg) {
     } else {
         snprintf(job->reply, sizeof(job->reply),
                  "Unknown command: %s (simulator supports ping, exit, unzip, "
-                 "rm, pad, bt, audiostat)", job->cmd);
+                 "rm, mv, list, pad, bt, audiostat)", job->cmd);
         job->ok = false;
     }
     printf("[DEV] %s\n", job->reply);
@@ -242,8 +255,13 @@ bool dev_commands_wants_list(void) {
     return s_cmd_list;
 }
 
+bool dev_commands_list_all(void) {
+    return s_cmd_list_all;
+}
+
 void dev_commands_clear_list(void) {
     s_cmd_list = false;
+    s_cmd_list_all = false;
 }
 
 // Reboot commands

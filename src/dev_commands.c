@@ -37,6 +37,7 @@ static bool s_cmd_reboot = false;
 static bool s_cmd_reboot_flash = false;
 static bool s_cmd_reboot_ota = false;
 static bool s_cmd_list = false;
+static bool s_cmd_list_all = false;
 static const char* s_pending_launch = NULL;
 
 #define FILE_RECEIVE_CHUNK_SIZE 256
@@ -155,6 +156,7 @@ void dev_commands_init(void) {
     s_cmd_reboot_flash = false;
     s_cmd_reboot_ota = false;
     s_cmd_list = false;
+    s_cmd_list_all = false;
     s_pending_launch = NULL;
     s_file_recv_handle = NULL;
     s_file_recv_expected = 0;
@@ -567,7 +569,9 @@ static void dev_command_run(void *arg) {
     } else if (strncmp(s_cmd_buf, "launch ", 7) == 0) {
         s_pending_launch = s_cmd_buf + 7;
         s_cmd_exit = true;  // Exit current app first
-    } else if (strcmp(s_cmd_buf, "list") == 0) {
+    } else if (strcmp(s_cmd_buf, "list") == 0 ||
+               strcmp(s_cmd_buf, "list all") == 0) {
+        s_cmd_list_all = s_cmd_buf[4] != '\0';
         s_cmd_list = true;
     } else if (strcmp(s_cmd_buf, "screenshot") == 0) {
         dev_commands_send_screenshot();
@@ -901,6 +905,10 @@ static void dev_command_run(void *arg) {
         char reply[DEV_OP_REPLY_MAX];
         dev_op_rm(s_cmd_buf + 3, reply, sizeof(reply));
         printf("[DEV] %s\n", reply);
+    } else if (strncmp(s_cmd_buf, "mv ", 3) == 0) {
+        char reply[DEV_OP_REPLY_MAX];
+        dev_op_mv(s_cmd_buf + 3, reply, sizeof(reply));
+        printf("[DEV] %s\n", reply);
     } else if (strcmp(s_cmd_buf, "help") == 0) {
         printf("[DEV] Available commands:\n");
         printf("[DEV]   ping           - Check device is responding\n");
@@ -915,8 +923,8 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   reboot         - Reboot device\n");
         printf("[DEV]   reboot-flash   - Reboot to BOOTSEL for flashing\n");
         printf("[DEV]   reboot-ota     - Apply staged /system/update.bin (needs .sha256 + .sig)\n");
-        printf("[DEV]   launch <arg>   - Launch app by ID or name\n");
-        printf("[DEV]   list           - List installed apps\n");
+        printf("[DEV]   launch <arg>   - Launch app by ID or name (also hidden apps under /apps/.test, /apps/.dev)\n");
+        printf("[DEV]   list [all]     - List installed apps ('all' adds the hidden ones)\n");
         printf("[DEV]   screenshot     - Capture screen\n");
         printf("[DEV]   keypress <key> - Inject keypress\n");
         printf("[DEV]   keydown <key> / keyup <key> - Hold/release a key (chords)\n");
@@ -931,6 +939,7 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   mkdir <path>   - Create directory (recursive)\n");
         printf("[DEV]   unzip <zip> <dest> - Extract a ZIP archive on-device\n");
         printf("[DEV]   rm <path>      - Delete a file or directory (recursive)\n");
+        printf("[DEV]   mv <src> <dst> - Move/rename within the card (not /system, never overwrites)\n");
         printf("[DEV]   status         - Show app/uptime/wifi/sd/battery\n");
         printf("[DEV]   help           - Show this help\n");
         printf("[DEV] Valid keys: up, down, left, right, enter, esc, menu, f1-f10, backspace, tab, del, shift, a-z, A-Z, 0-9, punctuation\n");
@@ -997,8 +1006,13 @@ bool dev_commands_wants_list(void) {
     return s_cmd_list;
 }
 
+bool dev_commands_list_all(void) {
+    return s_cmd_list_all;
+}
+
 void dev_commands_clear_list(void) {
     s_cmd_list = false;
+    s_cmd_list_all = false;
 }
 
 const char* dev_commands_get_pending_launch(void) {

@@ -268,6 +268,31 @@ static void test_id_valid(void) {
 }
 
 // Every committed app.json parses to a valid id.
+static void test_hidden_name_valid(void) {
+  CHECK(app_hidden_name_valid("probe"));
+  CHECK(app_hidden_name_valid("hwp_bench-2.v1"));
+  CHECK(app_hidden_name_valid("a.b"));
+  CHECK(!app_hidden_name_valid(NULL));
+  CHECK(!app_hidden_name_valid(""));
+  CHECK(!app_hidden_name_valid("../x"));
+  CHECK(!app_hidden_name_valid(".."));
+  CHECK(!app_hidden_name_valid("a..b"));
+  CHECK(!app_hidden_name_valid("a/b"));
+  CHECK(!app_hidden_name_valid("a\\b"));
+  CHECK(!app_hidden_name_valid(".x"));
+  CHECK(!app_hidden_name_valid(".test"));
+  CHECK(!app_hidden_name_valid("a\nb"));
+  CHECK(!app_hidden_name_valid("x."));  // FatFS strips a trailing dot
+
+  char n63[64], n64[65];
+  memset(n63, 'a', 63);
+  n63[63] = '\0';
+  memset(n64, 'a', 64);
+  n64[64] = '\0';
+  CHECK(app_hidden_name_valid(n63));
+  CHECK(!app_hidden_name_valid(n64));
+}
+
 static void test_real_manifests(void) {
   static const char *k_apps[] = {"hello", "hello_c", "editor", "snake", "store",
                                  "guinea_pig", "panels_demo", "c64", "dos86"};
@@ -302,6 +327,7 @@ int main(void) {
   test_system_clock_table();
   test_truncation_and_bounds();
   test_id_valid();
+  test_hidden_name_valid();
   test_real_manifests();
   return check_report("test_app_manifest");
 }

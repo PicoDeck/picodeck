@@ -650,8 +650,12 @@ int sdcard_list_dir(const char* path,
     int count = 0;
     struct dirent* entry;
     while ((entry = readdir(dir)) != NULL) {
-        // Skip dotfiles (FAT32 doesn't have them; filters .DS_Store, .git, etc.)
-        if (entry->d_name[0] == '.') {
+        // Skip dotfiles (filters ., .., .DS_Store, .git, etc. that a host
+        // directory has and a FAT volume does not), except the hidden app
+        // roots, which firmware lists like any directory.
+        if (entry->d_name[0] == '.' &&
+            strcmp(entry->d_name, ".test") != 0 &&
+            strcmp(entry->d_name, ".dev") != 0) {
             continue;
         }
         

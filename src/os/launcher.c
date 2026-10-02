@@ -62,6 +62,56 @@ static int s_app_count = 0;
 
 // app.json is read by app_manifest.c (bounded, escape-aware, host-tested).
 
+// Fills *app from <base>/<dir> (base is "/apps", or a hidden root): false
+// when the directory holds neither main.lua nor main.elf. The one place an
+// app_entry_t is built, for the scan and for the dev `launch` of a hidden
+// app. The icon is the scan's business (with_icon); a hidden app never
+// loads one.
+static bool app_entry_load(const char *base, const char *dir, app_entry_t *app,
+                           bool with_icon) {
+  // Detect available runtimes
+  char path[160];
+  snprintf(path, sizeof(path), "%s/%s/main.lua", base, dir);
+  bool has_lua = sdcard_fexists(path);
+  snprintf(path, sizeof(path), "%s/%s/main.elf", base, dir);
+  bool has_elf = sdcard_fexists(path);
+
+  if (!has_lua && !has_elf)
+    return false;
+
+  // Native wins when both exist (rare, but log it)
+  if (has_lua && has_elf)
+    printf("[LAUNCHER] '%s': both main.lua and main.elf found — using native\n",
+           dir);
+
+  snprintf(app->path, sizeof(app->path), "%s/%s", base, dir);
+  app->type                = has_elf ? APP_TYPE_NATIVE : APP_TYPE_LUA;
+
+  // Try to load app.json for display name / description / id / requirements
+  snprintf(path, sizeof(path), "%s/%s/app.json", base, dir);
+  int json_len = 0;
+  char *json = sdcard_read_file(path, &json_len);
+  if (json) {
+    app_manifest_parse(json, json_len > 0 ? (size_t)json_len : 0, dir, app);
+    umm_free(json);
+  } else {
+    printf("[LAUNCHER] WARNING: failed to read '%s', using dir name\n", path);
+    app_manifest_defaults(dir, app);
+  }
+
+  // Try to load app icon (PNG first, then BMP)
+  app->icon = NULL;
+  if (with_icon) {
+    snprintf(path, sizeof(path), "%s/%s/icon.png", base, dir);
+    app->icon = image_load(path);
+    if (!app->icon) {
+      snprintf(path, sizeof(path), "%s/%s/icon.bmp", base, dir);
+      app->icon = image_load(path);
+    }
+  }
+  return true;
+}
+
 static void on_app_dir(const sdcard_entry_t *entry, void *user) {
   (void)user;
   if (!entry->is_dir)
@@ -74,50 +124,8 @@ static void on_app_dir(const sdcard_entry_t *entry, void *user) {
     return;
   }
 
-  // Detect available runtimes
-  char lua_path[160], elf_path[160];
-  snprintf(lua_path, sizeof(lua_path), "/apps/%s/main.lua", entry->name);
-  snprintf(elf_path, sizeof(elf_path), "/apps/%s/main.elf", entry->name);
-  bool has_lua = sdcard_fexists(lua_path);
-  bool has_elf = sdcard_fexists(elf_path);
-
-  if (!has_lua && !has_elf)
-    return;
-
-  // Native wins when both exist (rare, but log it)
-  if (has_lua && has_elf)
-    printf("[LAUNCHER] '%s': both main.lua and main.elf found — using native\n",
-           entry->name);
-
-  app_entry_t *app = &s_apps[s_app_count];
-  snprintf(app->path, sizeof(app->path), "/apps/%s", entry->name);
-  app->type                = has_elf ? APP_TYPE_NATIVE : APP_TYPE_LUA;
-
-  // Try to load app.json for display name / description / id / requirements
-  char json_path[160];
-  snprintf(json_path, sizeof(json_path), "/apps/%s/app.json", entry->name);
-  int json_len = 0;
-  char *json = sdcard_read_file(json_path, &json_len);
-  if (json) {
-    app_manifest_parse(json, json_len > 0 ? (size_t)json_len : 0, entry->name,
-                       app);
-    umm_free(json);
-  } else {
-    printf("[LAUNCHER] WARNING: failed to read '%s', using dir name\n", json_path);
-    app_manifest_defaults(entry->name, app);
-  }
-
-  // Try to load app icon (PNG first, then BMP)
-  app->icon = NULL;
-  char icon_path[160];
-  snprintf(icon_path, sizeof(icon_path), "/apps/%s/icon.png", entry->name);
-  app->icon = image_load(icon_path);
-  if (!app->icon) {
-    snprintf(icon_path, sizeof(icon_path), "/apps/%s/icon.bmp", entry->name);
-    app->icon = image_load(icon_path);
-  }
-
-  s_app_count++;
+  if (app_entry_load("/apps", entry->name, &s_apps[s_app_count], true))
+    s_app_count++;
 }
 
 static int compare_app_name(const void *a, const void *b) {
@@ -759,11 +767,9 @@ static void launcher_refuse(const app_entry_t *app, const char *title,
   }
 }
 
-static bool run_app(int idx) {
-  if (idx < 0 || idx >= s_app_count)
-    return false;
-
-  app_entry_t *app = &s_apps[idx];
+// Runs *app (a listed entry, or a hidden one launched from the dev console;
+// idx is the s_apps index, -1 for a hidden one, for the log only).
+static bool run_app_entry(app_entry_t *app, int idx) {
   s_running_app_name = app->name;
   s_app_launch_time_ms = to_ms_since_boot(get_absolute_time());
   sim_app_outcome_begin(app->name, app->id);
@@ -908,6 +914,12 @@ static bool run_app(int idx) {
   printf("[LAUNCHER] App '%s' exited (ok=%d), PSRAM %s\n", app->name, ok, heap);
 
   return ok;
+}
+
+static bool run_app(int idx) {
+  if (idx < 0 || idx >= s_app_count)
+    return false;
+  return run_app_entry(&s_apps[idx], idx);
 }
 
 // ── Public interface
@@ -1108,7 +1120,7 @@ void launcher_run(void) {
       dev_commands_clear_exit();
 
     if (dev_commands_wants_list()) {
-      launcher_list_apps();
+      launcher_list_apps(dev_commands_list_all());
       dev_commands_clear_list();
     }
     if (dev_commands_wants_reboot()) {
@@ -1174,12 +1186,104 @@ void launcher_run(void) {
 
 // ── Dev command support ─────────────────────────────────────────────────────
 
-void launcher_list_apps(void) {
+// ── Hidden apps ─────────────────────────────────────────────────────────────
+// /apps/.test (the E2E harness's, wiped freely) and /apps/.dev (the user's
+// own) are dot-names, so the scan skips them and the launcher UI never
+// shows them. Only the dev `launch` reaches them, so a card at MAX_APPS can
+// still run a freshly staged test app. Looked up when needed: no table, no
+// static SRAM (the entry is umm_malloc'd for the run).
+
+static const char *const k_hidden_roots[] = {"/apps/.test", "/apps/.dev"};
+#define HIDDEN_ROOTS 2
+
+typedef struct {
+  const char *root;      // k_hidden_roots[i]
+  const char *query;     // the launch argument
+  app_entry_t *entry;    // scratch / result
+  bool found;
+} hidden_find_t;
+
+static void hidden_by_id_cb(const sdcard_entry_t *e, void *user) {
+  hidden_find_t *f = (hidden_find_t *)user;
+  if (f->found || !e->is_dir || !app_hidden_name_valid(e->name))
+    return;
+  if (app_entry_load(f->root, e->name, f->entry, false) &&
+      strcasecmp(f->entry->id, f->query) == 0)
+    f->found = true;
+}
+
+// Finds the app `name` names under the hidden roots (the directory name
+// first, then an app.json id; .test before .dev) and fills *out.
+static bool hidden_find(const char *name, app_entry_t *out) {
+  if (!app_hidden_name_valid(name))
+    return false;
+  hidden_find_t f = {NULL, name, out, false};
+  for (int i = 0; i < HIDDEN_ROOTS; i++)
+    if (app_entry_load(k_hidden_roots[i], name, out, false))
+      return true;
+  for (int i = 0; i < HIDDEN_ROOTS && !f.found; i++) {
+    f.root = k_hidden_roots[i];
+    sdcard_list_dir(f.root, hidden_by_id_cb, &f);
+  }
+  return f.found;
+}
+
+// Runs a hidden app through the normal path.
+static bool launch_hidden(const char *name) {
+  app_entry_t *app = umm_malloc(sizeof(app_entry_t));
+  if (!app)
+    return false;
+  memset(app, 0, sizeof(*app));
+  bool found = hidden_find(name, app);
+  if (found) {
+    printf("[DEV] Launching app from %.*s: %s (%s)\n",
+           (int)(strrchr(app->path, '/') - app->path), app->path, name,
+           app->name);
+    stdio_flush();
+    run_app_entry(app, -1);
+  }
+  umm_free(app);
+  return found;
+}
+
+static void list_hidden_cb(const sdcard_entry_t *e, void *user) {
+  hidden_find_t *f = (hidden_find_t *)user;
+  if (!e->is_dir || !app_hidden_name_valid(e->name))
+    return;
+  if (!app_entry_load(f->root, e->name, f->entry, false))
+    return;
+  printf("  %s  (%s)  [%s]\n", f->entry->name, f->entry->id,
+         f->root + sizeof("/apps/") - 1);
+  sim_log_os("  %s  (%s)  [%s]", f->entry->name, f->entry->id,
+             f->root + sizeof("/apps/") - 1);
+  f->found = true;  // reused as a count's "any"
+}
+
+void launcher_list_apps(bool all) {
   printf("[DEV] Available apps:\n");
+  sim_log_os("[DEV] Available apps:");
   for (int i = 0; i < s_app_count; i++) {
     printf("  %s  (%s)\n", s_apps[i].name, s_apps[i].id);
+    sim_log_os("  %s  (%s)", s_apps[i].name, s_apps[i].id);
   }
   printf("[DEV] Total: %d apps\n", s_app_count);
+  sim_log_os("[DEV] Total: %d apps", s_app_count);
+  if (!all)
+    return;
+  app_entry_t *scratch = umm_malloc(sizeof(app_entry_t));
+  if (!scratch) {
+    printf("[DEV] Error: no memory to list hidden apps\n");
+    return;
+  }
+  printf("[DEV] Hidden apps:\n");
+  sim_log_os("[DEV] Hidden apps:");
+  for (int i = 0; i < HIDDEN_ROOTS; i++) {
+    hidden_find_t f = {k_hidden_roots[i], NULL, scratch, false};
+    sdcard_list_dir(f.root, list_hidden_cb, &f);
+  }
+  umm_free(scratch);
+  printf("[DEV] End of hidden apps\n");
+  sim_log_os("[DEV] End of hidden apps");
 }
 
 bool launcher_launch_by_id(const char *id) {
@@ -1232,6 +1336,10 @@ bool launcher_launch_by_name(const char *name) {
       return true;
     }
   }
+
+  // Last: the hidden roots (/apps/.test, /apps/.dev), dev console only.
+  if (launch_hidden(name))
+    return true;
 
   printf("[DEV] Error: app '%s' not found\n", name);
   return false;
