@@ -9,7 +9,8 @@ the menu on every repeat once the menu key toggled it (issue #59).
 The RPC cannot inject a repeat, so an LD_PRELOAD shim over SDL_PollEvent
 (fixtures/sdl_key_hold_shim.c) plays the host's key for this test. It is
 skipped when there is no C compiler, pkg-config or SDL2 header (CI has all
-three; a sanitizer build links its runtime statically, so it runs there too).
+three; a sanitizer build links its runtime statically, so it runs there too),
+and fails when they are there but the shim does not compile.
 """
 
 import io
@@ -40,7 +41,9 @@ def hold_shim(tmp_path, monkeypatch, request):
                         *flags.stdout.split(), "-ldl"],
                        capture_output=True, text=True)
     if r.returncode != 0:
-        pytest.skip(f"the shim did not compile: {r.stderr[-300:]}")
+        # A toolchain that is present but cannot build the shim is a bug in
+        # the shim, not a missing tool: fail, so it cannot hide as a skip.
+        pytest.fail(f"the shim did not compile: {r.stderr[-300:]}")
     trigger = tmp_path / "hold_now"
     monkeypatch.setenv("LD_PRELOAD", str(so))
     monkeypatch.setenv("KEYHOLD_TRIGGER", str(trigger))

@@ -1,7 +1,8 @@
 """The menu key toggles the system menu (issue #59).
 
-The menu key (Shift+F5 / F10 on the keyboard) and a pad's Home open the menu; pressed again
-while it is open they close it, like Esc at the top level, from any page.
+The menu key (Shift+F5 / F10 on the keyboard) and a pad's Home open the
+menu; pressed again while it is open they close it, like Esc at the top
+level, from any page.
 The press is consumed by the menu, so nothing latched survives to open it
 again once it is closed (the bug: a press made while the menu was open did
 nothing at the time and re-opened the menu as soon as Esc closed it).
