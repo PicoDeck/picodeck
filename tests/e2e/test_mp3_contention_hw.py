@@ -7,18 +7,19 @@ XIP cache and QMI, not CPU time. This runs the mp3_bench fixture
 or not) for each scenario below and prints, per scenario, the frame work
 (avg/p95 us, late frames) next to the window's XIP counters (`xipstat`: hit
 rate, misses and downstream stall cycles per second, contested accesses),
-when the decoder decoded (low ring vs ahead in Core 0's idle windows) and
-the MP3 underruns (`audiostat`). The "off" rows are the decoder as before
-(`xipstat mp3idle off`), the "on" rows decode ahead while the paced frame
-waits; "idle" rows run no game (Core 1's own traffic); "prio" sets Core 0
-high bus priority (`xipstat prio core0`).
+when the decoder decoded (granules decoded because the ring was low vs
+ahead in Core 0's idle windows), each granule's decode, synthesis and ring
+write time, and the MP3 underruns (`audiostat`). The "off" rows decode only
+when the ring runs low (`xipstat mp3idle off`), the "on" rows also decode
+ahead while the paced frame waits; "idle" rows run no game (Core 1's own
+traffic); "prio" sets Core 0 high bus priority (`xipstat prio core0`).
 
 What it asserts is loose: every run produced frames, decoding ahead was used
-where it can be, and the runs that never underrun on the device (no music;
-22.05 kHz mono, ahead or not) still do not. 44.1 kHz stereo under the game
-underruns with decoding ahead on and off alike, by amounts that swing from
-run to run (1536-6144 frames over 20 s, either one the larger): its
-underruns are printed, not judged. The numbers are the point: run with -s.
+where it can be, no run underran, and a paced game's frame work with music
+decoded ahead stays within 15% of the same game with none, with no late
+frame (with the decoder's hot state in SRAM and a granule at a time it was
+the same: 18.7 ms at 44.1 kHz stereo and with no music, 200 MHz, Nova
+Rail's music). The numbers are the point: run with -s.
 
     pytest tests/e2e/test_mp3_contention_hw.py -s \\
         --target hw:/dev/serial/by-id/<PicoDeck device>
@@ -122,7 +123,17 @@ def row(r) -> str:
             f"contested/s {(x['contested0'] + x['contested1']) / s / 1e3:7.1f}k "
             f"| mp3 low {x['mp3_low_frames']:4d} ahead {x['mp3_idle_frames']:4d} "
             f"overran {x['mp3_overran']:3d} frame_us {x['mp3_frame_us']:5d} "
-            f"idle_ms {x['idle_ms']:5d} underruns {a['mp3_underruns']}")
+            f"idle_ms {x['idle_ms']:5d} underruns {a['mp3_underruns']}"
+            + unit_cost(x))
+
+
+def unit_cost(x) -> str:
+    """Per granule (the decoder's unit): decode, synthesis, ring write (us)."""
+    n = x.get("mp3_low_frames", 0) + x.get("mp3_idle_frames", 0)
+    if not n or "mp3_dec_us" not in x:
+        return ""
+    return (f" | per granule dec {x['mp3_dec_us'] // n} syn "
+            f"{x['mp3_syn_us'] // n} out {x['mp3_out_us'] // n} us")
 
 
 @pytest.mark.skipif(not FFMPEG, reason="needs ffmpeg for the music")
@@ -155,11 +166,10 @@ def test_mp3_contention(target):
         assert on["xip"]["mp3_idle_frames"] > 0, on
         assert off["xip"]["mp3_idle_frames"] == 0, off
     assert results["unpaced_s44"]["xip"]["mp3_idle_frames"] == 0
-    # Underruns: zero where the device has never underrun. 44.1 kHz stereo
-    # under the game underruns either way (see the module docstring).
-    for name in ("game_none", "idle_none", "unpaced_none",
-                 "game_m22_off", "game_m22_on"):
-        assert results[name]["audio"]["mp3_underruns"] == 0, results[name]
-    print("s44 underruns (not judged): " + ", ".join(
-        f"{name} {r['audio']['mp3_underruns']}" for name, r in results.items()
-        if "s44" in name), flush=True)
+    for name, r in results.items():
+        assert r["audio"]["mp3_underruns"] == 0, (name, r)
+    none = results["game_none"]["app"]["work_avg"]
+    for name in ("game_s44_on", "game_m22_on"):
+        app = results[name]["app"]
+        assert app["late"] == 0, (name, app)
+        assert app["work_avg"] <= none * 1.15, (name, app, none)
