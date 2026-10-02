@@ -111,7 +111,7 @@ main()
 - Every display primitive clips to the clip rect **once**, before any pixel loop. The simulator has its own display implementation (`simulator/stubs/driver_stubs.c`): a primitive change lands in both.
 - Every HTTPS / `tls://` connection verifies the server certificate and waits for SNTP to set the clock; `setInsecure(true)` (Lua) or `PCTCP_TLS_INSECURE` (native) opts one connection out, for self-signed dev servers only.
 - Volumes are 0-100 everywhere; larger values clamp.
-- The default alarm pool: SDK 2.2.0 (which release builds pin) loses a slot whenever its two earliest alarms are both cancelled before its interrupt handler runs, and a full pool breaks `stdio_usb`, the keyboard bus, the CYW43 driver and every other user (issue #58). The build compiles a fixed copy of pico_time's `time.c` (`cmake/picodeck_pico_time.cmake`; drop it once the SDK is past 2.3.0).
+- The default alarm pool: SDK 2.2.0 (which release builds pin) loses a slot whenever its two earliest alarms are both cancelled before its interrupt handler runs, and a full pool breaks `stdio_usb`, the keyboard bus, the CYW43 driver and every other user (issue #58). The build compiles a fixed copy of pico_time's `time.c` (`cmake/picodeck_pico_time.cmake`; drop it once the SDK is past 2.3.0). A driver that needs a timeout per step still arms its own hardware alarm rather than cancelling and re-adding pool alarms (`kbd_i2c.c`).
 
 ### System Menu (`src/os/system_menu.c`)
 - Triggered by the Sym key; detected via `kbd_consume_menu_press()` in the Lua count hook.

@@ -2,10 +2,21 @@
 //
 // All STM32 traffic after kbd_init() (FIFO reads, the battery read, backlight
 // writes) runs here as a state machine driven by the I2C1 interrupt (a
-// transaction's STOP, or an abort) and one-shot alarms on the default alarm
-// pool (the STM32's 1 ms reply delay, the idle interval and per-phase
-// timeouts). Nothing waits on the 10 kHz bus: kbd_poll() drains a ring of raw
-// FIFO items. kbd_bus.c decides what runs next and holds that state.
+// transaction's STOP, or an abort) and one-shot timeouts on the engine's own
+// TIMER0 hardware alarm (the STM32's 1 ms reply delay, the idle interval and
+// per-phase timeouts). Nothing waits on the 10 kHz bus: kbd_poll() drains a
+// ring of raw FIFO items. kbd_bus.c decides what runs next and holds that
+// state.
+//
+// Why its own alarm, not the default alarm pool (issue #58): SDK 2.2.0's pool
+// loses a slot whenever its two earliest alarms are both cancelled before its
+// interrupt handler runs (cmake/picodeck_pico_time.cmake now patches that).
+// The engine cancelled and re-added an alarm at almost every step, often with
+// interrupts masked, so beside the CYW43 driver's cross-core wake-ups the
+// pool leaked a few slots per video session with WiFi on. Once it was full,
+// every re-arm failed and the engine sat in KI_ERROR, retrying ~10 times a
+// second, until a reboot. A dedicated alarm cannot run out, and the engine no
+// longer adds to the pool's traffic.
 //
 // Engine steps run with Core 0 interrupts disabled (a few us each) and task
 // calls touch the shared state under the same mask, so the I2C handler, the
@@ -14,11 +25,13 @@
 // and resume at its next call, so a watchdog reset after Core 0 stalls finds
 // the bus idle; kbd_i2c_halt() (the HardFault handler) stops the engine at
 // the next job boundary for good.
-// Exactly one alarm is outstanding while the engine runs, tagged with s_seq
-// so a stale one (cancelled too late) is ignored. The next alarm is always
-// armed last in a step. A failed transaction stops the engine
-// (KI_ERROR); the ~12 ms bit-banged recovery runs in task context from
-// kbd_i2c_service(). Stays on Core 0: sys.pauseBackground stops Core 1.
+// While the engine runs (not KI_OFF or KI_ERROR) exactly one timeout is armed,
+// due at s_due_us; it is always armed last in a step. A callback for one
+// since moved or cancelled is ignored (s_armed, s_due_us). A failed
+// transaction stops the engine (KI_ERROR); the ~12 ms bit-banged recovery
+// runs in task context from kbd_i2c_service(), which also fails a running
+// engine whose timeout is KI_ALARM_LATE_US overdue (lost), so no state can
+// last. Stays on Core 0: sys.pauseBackground stops Core 1.
 //
 // pause/resume/recover, in words:
 //   - kbd_i2c_pause returns with the engine OFF: no alarm, I2C interrupts
@@ -34,10 +47,14 @@
 #include "../hardware.h"
 #include "wifi.h"
 
+#include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
 #include "hardware/irq.h"
+#include "hardware/structs/io_bank0.h"
+#include "hardware/structs/pads_bank0.h"
 #include "hardware/sync.h"
+#include "hardware/timer.h"
 #include "pico/stdlib.h"
 #include "pico/time.h"
 
@@ -46,6 +63,7 @@
 #define KI_REPLY_DELAY_US 1000u    // STM32 prepares a register reply
 #define KI_PHASE_TIMEOUT_US 10000u // one transaction: ~2-3 ms at 10 kHz
 #define KI_PAUSE_WAIT_US 20000u    // how long a pause waits for a job to end
+#define KI_ALARM_LATE_US 100000u   // a timeout this overdue was lost
 #define KI_FAULT_ADDR 0x7E         // kbdstat fault: an address nobody answers
 
 typedef enum {
@@ -68,41 +86,89 @@ static bool s_fault_once;
 static kbd_job_t s_job;
 static uint8_t s_job_value;
 static uint32_t s_job_start_us;
-static uint32_t s_seq;
-static alarm_id_t s_alarm;
+static int s_alarm_num = -1;  // the engine's TIMER0 hardware alarm
+static bool s_armed;          // a timeout is set, due at s_due_us
+static uint32_t s_due_us;
+static uint32_t s_arms;       // timeouts set: a step that re-armed made progress
 static uint32_t s_isr_us, s_max_read_us, s_recoveries;
 static uint64_t s_stats_at_us;  // 64-bit: the soak's window must not wrap
 static uint32_t s_warned_streak;
+// kbdstat: failures by cause, the first failure of the latest streak and the
+// latest one, and the event trace (kbd_i2c_event_t).
+static uint32_t s_why[KBD_I2C_WHY_LOST + 1], s_cuts;
+static kbd_i2c_fail_t s_first_fail, s_last_fail;
+static kbd_i2c_event_t s_trace[KBD_I2C_TRACE_LEN];
+static uint32_t s_trace_n;  // events recorded (index = n % LEN)
 
 static inline i2c_hw_t *ki_hw(void) { return i2c_get_hw(KBD_I2C_PORT); }
 
-static int64_t ki_alarm_cb(alarm_id_t id, void *user);
-static void ki_fail(void);
+static void ki_fail(uint8_t why, uint32_t abrt_src);
 static void ki_stop_locked(void);
 
-// Arm the one outstanding alarm. Always the last action of a step: with
-// fire_if_past, add_alarm_in_us forces the alarm IRQ pending rather than
-// running the callback inline, and that IRQ can be served the instant
-// interrupts are re-enabled (e.g. by our own caller's restore_interrupts) —
-// arming last keeps the step's state consistent for every path.
-static void ki_arm(uint32_t us) {
-  if (s_alarm > 0)
-    cancel_alarm(s_alarm);
-  s_seq++;
-  s_alarm = add_alarm_in_us(us, ki_alarm_cb, (void *)(uintptr_t)s_seq, true);
-  if (s_alarm < 0) {  // pool exhausted: stop; the service pass restarts us
-    s_alarm = 0;
-    ki_fail();
-  }
+static uint8_t ki_lines(void) {
+  return (uint8_t)((gpio_get(KBD_PIN_SDA) ? 1u : 0u) |
+                   (gpio_get(KBD_PIN_SCL) ? 2u : 0u));
 }
 
-static void ki_fail(void) {
-  ki_hw()->intr_mask = 0;
-  (void)ki_hw()->clr_intr;
-  if (s_alarm > 0)
-    cancel_alarm(s_alarm);
-  s_alarm = 0;
-  s_seq++;
+// Interrupts disabled by the caller.
+static void ki_trace(char ev, uint8_t state, uint32_t arg) {
+  kbd_i2c_event_t *e = &s_trace[s_trace_n % KBD_I2C_TRACE_LEN];
+  e->t_us = time_us_32();
+  e->ev = ev;
+  e->state = state;
+  e->arg = arg > 0xFFFFu ? 0xFFFFu : (uint16_t)arg;
+  s_trace_n++;
+}
+
+// Point the hardware alarm at us from now. A target already past is not
+// armed by the SDK, so its interrupt is forced instead: either way the
+// callback runs in the alarm's IRQ, never inline.
+static void ki_set_target(uint32_t us) {
+  if (hardware_alarm_set_target((uint)s_alarm_num, make_timeout_time_us(us)))
+    hardware_alarm_force_irq((uint)s_alarm_num);
+}
+
+// Arm the one outstanding timeout. Always the last action of a step: its IRQ
+// can be served the instant interrupts are re-enabled (e.g. by our own
+// caller's restore_interrupts), so arming last keeps the step's state
+// consistent for every path.
+static void ki_arm(uint32_t us) {
+  s_arms++;
+  s_armed = true;
+  s_due_us = time_us_32() + us;
+  ki_set_target(us);
+}
+
+static void ki_disarm(void) {
+  s_armed = false;
+  hardware_alarm_cancel((uint)s_alarm_num);
+}
+
+// abrt_src: IC_TX_ABRT_SOURCE, read before anything clears it.
+static void ki_fail(uint8_t why, uint32_t abrt_src) {
+  i2c_hw_t *h = ki_hw();
+  kbd_i2c_fail_t f = {
+      .at_us = time_us_32() | 1u,
+      .abrt_src = abrt_src,
+      .raw_intr = h->raw_intr_stat,
+      .status = h->status,
+      .sys_mhz = (uint16_t)(clock_get_hz(clk_sys) / 1000000u),
+      .why = why,
+      .state = (uint8_t)s_state,
+      .job = (uint8_t)s_job,
+      .txflr = (uint8_t)h->txflr,
+      .rxflr = (uint8_t)h->rxflr,
+      .lines = ki_lines(),
+  };
+  s_why[why]++;
+  s_last_fail = f;
+  if (s_bus.fail_streak == 0) {
+    s_first_fail = f;
+    ki_trace('F', f.state, (uint32_t)why | (uint32_t)f.job << 8);
+  }
+  h->intr_mask = 0;
+  (void)h->clr_intr;
+  ki_disarm();
   kbd_bus_job_failed(&s_bus, s_job, s_job_value);
   s_need_recover = true;
   s_state = KI_ERROR;
@@ -155,8 +221,9 @@ static void ki_check(void) {
   i2c_hw_t *h = ki_hw();
   uint32_t raw = h->raw_intr_stat;
   if (raw & I2C_IC_RAW_INTR_STAT_TX_ABRT_BITS) {
+    uint32_t src = h->tx_abrt_source;
     (void)h->clr_tx_abrt;
-    ki_fail();
+    ki_fail(KBD_I2C_WHY_ABORT, src);
     return;
   }
   if (!(raw & I2C_IC_RAW_INTR_STAT_STOP_DET_BITS))
@@ -168,11 +235,13 @@ static void ki_check(void) {
     ki_arm(KI_REPLY_DELAY_US);
   } else if (s_state == KI_READ) {
     if (h->rxflr < 2) {
-      ki_fail();
+      ki_fail(KBD_I2C_WHY_SHORT, 0);
       return;
     }
     uint8_t b0 = (uint8_t)h->data_cmd;
     uint8_t b1 = (uint8_t)h->data_cmd;
+    if (s_bus.fail_streak)  // this success ends a failure streak
+      ki_trace('O', KI_READ, s_bus.fail_streak);
     if (s_job == KBD_JOB_FIFO) {
       uint32_t d = now - s_job_start_us;
       if (d > s_max_read_us)
@@ -183,6 +252,8 @@ static void ki_check(void) {
     }
     ki_next();
   } else if (s_state == KI_BL_WRITE) {
+    if (s_bus.fail_streak)
+      ki_trace('O', KI_BL_WRITE, s_bus.fail_streak);
     kbd_bus_backlight_done(&s_bus);
     ki_next();
   }
@@ -199,12 +270,20 @@ static void ki_irq(void) {
   restore_interrupts(irq);
 }
 
-static int64_t ki_alarm_cb(alarm_id_t id, void *user) {
-  (void)id;
+// The timeout's IRQ (hardware_alarm_set_callback).
+static void ki_alarm_irq(uint alarm_num) {
+  (void)alarm_num;
   uint32_t irq = save_and_disable_interrupts();
   uint32_t t0 = time_us_32();
-  if ((uint32_t)(uintptr_t)user == s_seq) {
-    s_alarm = 0;
+  int32_t early = (int32_t)(s_due_us - t0);
+  if (!s_armed) {
+    // Cancelled since it fired (its IRQ was already pending): nothing waits.
+  } else if (early > 0) {
+    // An earlier target's IRQ, still pending when the engine re-armed (the
+    // SDK checks only the high word of the time): wait out the new one.
+    ki_set_target((uint32_t)early);
+  } else {
+    s_armed = false;
     ki_state_t st = s_state;
     if (st == KI_WAIT) {
       ki_next();
@@ -216,23 +295,19 @@ static int64_t ki_alarm_cb(alarm_id_t id, void *user) {
     } else if (st == KI_REG_WRITE || st == KI_READ || st == KI_BL_WRITE) {
       // Timeout, unless it finished while interrupts were masked (the timer
       // IRQ can be served before the I2C one).
-      uint32_t seq = s_seq;
+      uint32_t arms = s_arms;
       ki_check();
-      if (s_state == st && s_seq == seq)
-        ki_fail();
+      if (s_state == st && s_arms == arms)
+        ki_fail(KBD_I2C_WHY_TIMEOUT, 0);
     }
   }
   s_isr_us += time_us_32() - t0;
   restore_interrupts(irq);
-  return 0;
 }
 
 // Interrupts disabled by the caller.
 static void ki_stop_locked(void) {
-  if (s_alarm > 0)
-    cancel_alarm(s_alarm);
-  s_alarm = 0;
-  s_seq++;
+  ki_disarm();
   ki_hw()->intr_mask = 0;
   irq_set_enabled(KBD_I2C_IRQ, false);
   s_state = KI_OFF;
@@ -247,9 +322,15 @@ void kbd_i2c_pause(void) {
     uint32_t irq = save_and_disable_interrupts();
     ki_state_t st = s_state;
     bool idle = st == KI_OFF || st == KI_WAIT || st == KI_ERROR;
-    if (idle || time_us_32() - t0 >= KI_PAUSE_WAIT_US) {
-      if (!idle)
+    uint32_t waited = time_us_32() - t0;
+    if (idle || waited >= KI_PAUSE_WAIT_US) {
+      if (st != KI_OFF)  // an engine already off is not news
+        ki_trace('P', (uint8_t)st, waited / 10u);
+      if (!idle) {
         s_need_recover = true;  // cut mid-transaction: the STM32 may be mid-reply
+        s_cuts++;
+        ki_trace('C', (uint8_t)st, (uint32_t)s_job);
+      }
       ki_stop_locked();
       restore_interrupts(irq);
       return;
@@ -282,6 +363,7 @@ void kbd_i2c_resume(void) {
       s_state = KI_WAIT;
       ki_arm(KBD_BUS_MIN_WAIT_US);
     }
+    ki_trace('R', (uint8_t)s_state, s_need_recover);
   }
   restore_interrupts(irq);
 }
@@ -292,6 +374,10 @@ void kbd_i2c_start(void) {
   kbd_bus_init(&s_bus, time_us_32());
   s_stats_at_us = time_us_64();
   irq_set_exclusive_handler(KBD_I2C_IRQ, ki_irq);
+  // Core 0 (kbd_init), before Core 1 starts: the lowest free alarm, 0 (the
+  // default pool has 3; Core 1's audio pool claims 2 by number).
+  s_alarm_num = hardware_alarm_claim_unused(true);
+  hardware_alarm_set_callback((uint)s_alarm_num, ki_alarm_irq);
   s_started = true;
   kbd_i2c_resume();
 }
@@ -302,7 +388,10 @@ void kbd_i2c_start(void) {
 //   3. Issuing an explicit STOP if SDA is still stuck low
 //   4. Re-initing the I2C peripheral
 // The engine is paused around it. Safe before kbd_i2c_start() (kbd_init).
-static void ki_bus_clear(void) {
+// Busy-waits rather than sleeps, so nothing here takes a default-pool alarm.
+// Returns the SDA/SCL levels before (bits 0-1) and after (bits 2-3).
+static uint32_t ki_bus_clear(void) {
+  uint32_t before = ki_lines();
   // Release the I2C peripheral so we can drive the pins manually.
   i2c_deinit(KBD_I2C_PORT);
 
@@ -310,20 +399,20 @@ static void ki_bus_clear(void) {
   gpio_init(KBD_PIN_SDA);
   gpio_set_dir(KBD_PIN_SDA, GPIO_IN);
   gpio_pull_up(KBD_PIN_SDA);
-  sleep_us(200);
+  busy_wait_us(200);
 
   // Pre-load SCL HIGH before driving it as an output.
   gpio_init(KBD_PIN_SCL);
   gpio_put(KBD_PIN_SCL, 1);
   gpio_set_dir(KBD_PIN_SCL, GPIO_OUT);
-  sleep_us(50);
+  busy_wait_us(50);
 
   // 9 clock pulses — clocks out any partial byte in the STM32's shift register.
   for (int i = 0; i < 9; i++) {
     gpio_put(KBD_PIN_SCL, 0);
-    sleep_us(50);
+    busy_wait_us(50);
     gpio_put(KBD_PIN_SCL, 1);
-    sleep_us(50);
+    busy_wait_us(50);
   }
 
   // If SDA is still stuck low after clocking, issue an explicit STOP.
@@ -332,13 +421,13 @@ static void ki_bus_clear(void) {
   if (!gpio_get(KBD_PIN_SDA)) {
     gpio_set_dir(KBD_PIN_SDA, GPIO_OUT);
     gpio_put(KBD_PIN_SCL, 0);
-    sleep_us(50); // SCL low first
+    busy_wait_us(50); // SCL low first
     gpio_put(KBD_PIN_SDA, 0);
-    sleep_us(50); // SDA low (SCL is low — no START)
+    busy_wait_us(50); // SDA low (SCL is low — no START)
     gpio_put(KBD_PIN_SCL, 1);
-    sleep_us(50); // SCL high
+    busy_wait_us(50); // SCL high
     gpio_put(KBD_PIN_SDA, 1);
-    sleep_us(50); // SDA high while SCL high → STOP
+    busy_wait_us(50); // SDA high while SCL high → STOP
     gpio_set_dir(KBD_PIN_SDA, GPIO_IN);
     gpio_pull_up(KBD_PIN_SDA);
   }
@@ -352,7 +441,7 @@ static void ki_bus_clear(void) {
 
   // Give the STM32 time to recognise the bus-free condition before we
   // re-assert a START.  Without this pause the STM32 may miss the STOP.
-  sleep_ms(10);
+  busy_wait_ms(10);
 
   // Re-initialize the I2C peripheral and restore GPIO functions.
   i2c_init(KBD_I2C_PORT, KBD_I2C_BAUD);
@@ -360,13 +449,18 @@ static void ki_bus_clear(void) {
   gpio_set_function(KBD_PIN_SCL, GPIO_FUNC_I2C);
   gpio_pull_up(KBD_PIN_SDA);
   gpio_pull_up(KBD_PIN_SCL);
+  return before | (sda_free ? 4u : 0u) | (scl_free ? 8u : 0u);
 }
 
 void kbd_i2c_recover(void) {
   kbd_i2c_pause();
-  ki_bus_clear();
+  uint32_t lines = ki_bus_clear();
   if (s_started) {
     uint32_t irq = save_and_disable_interrupts();
+    // A streak's first few clears, then one in 16 (the back-off repeats
+    // them up to 10 times a second).
+    if (s_bus.fail_streak <= 3 || (s_recoveries & 15u) == 0)
+      ki_trace('X', (uint8_t)s_state, lines | (s_bus.fail_streak & 0xFFFu) << 4);
     s_need_recover = false;
     s_recoveries++;
     kbd_bus_recovered(&s_bus, time_us_32());
@@ -378,6 +472,9 @@ void kbd_i2c_recover(void) {
 void kbd_i2c_apply_clock(void) {
   // i2c_init() derives the divider from clk_sys (i2c_set_baudrate).
   kbd_i2c_pause();
+  uint32_t irq = save_and_disable_interrupts();
+  ki_trace('K', (uint8_t)s_state, clock_get_hz(clk_sys) / 1000000u);
+  restore_interrupts(irq);
   i2c_init(KBD_I2C_PORT, KBD_I2C_BAUD);
   gpio_set_function(KBD_PIN_SDA, GPIO_FUNC_I2C);
   gpio_set_function(KBD_PIN_SCL, GPIO_FUNC_I2C);
@@ -391,16 +488,23 @@ void kbd_i2c_service(void) {
     return;
   uint32_t irq = save_and_disable_interrupts();
   uint32_t now = time_us_32();
+  // A running engine always has its timeout armed; one that is missing or
+  // long overdue was lost, and nothing else would ever move the engine on.
+  ki_state_t st = s_state;
+  if (st != KI_OFF && st != KI_ERROR &&
+      (!s_armed || (int32_t)(now - s_due_us) > (int32_t)KI_ALARM_LATE_US))
+    ki_fail(KBD_I2C_WHY_LOST, 0);
   // After an unpolled stretch the FIFO is read now, not at the next idle
   // alarm (500 ms away in USB storage mode).
   if (kbd_bus_note_poll(&s_bus, now) && s_state == KI_WAIT)
     ki_arm(KBD_BUS_MIN_WAIT_US);
   uint32_t streak = s_bus.fail_streak;
+  uint8_t why = s_last_fail.why;
   bool recover = s_state == KI_ERROR && kbd_bus_recover_due(&s_bus, now);
   restore_interrupts(irq);
   if (streak >= 5 && !s_warned_streak) {
-    printf("[KBD] warning: %lu consecutive I2C failures (wifi=%d)\n",
-           (unsigned long)streak, wifi_get_status());
+    printf("[KBD] warning: %lu consecutive I2C failures (why=%u wifi=%d)\n",
+           (unsigned long)streak, why, wifi_get_status());
     s_warned_streak = streak;
   } else if (streak == 0 && s_warned_streak) {
     printf("[KBD] I2C recovered after %lu+ failures\n",
@@ -447,6 +551,12 @@ int kbd_i2c_battery(void) {
 
 bool kbd_i2c_charging(void) { return s_started && s_bus.charging; }
 
+const char *kbd_i2c_state_name(uint8_t state) {
+  static const char *const k_names[] = {"off",  "wait", "regw", "delay",
+                                        "read", "blw",  "error"};
+  return state < sizeof(k_names) / sizeof(k_names[0]) ? k_names[state] : "?";
+}
+
 void kbd_i2c_get_stats(kbd_i2c_stats_t *out) {
   static const char *const k_names[] = {"off",  "wait", "busy", "busy",
                                         "busy", "busy", "error"};
@@ -459,6 +569,11 @@ void kbd_i2c_get_stats(kbd_i2c_stats_t *out) {
   out->isr_us = s_isr_us;
   out->interval_us = s_bus.idle_us;
   out->battery = s_started ? s_bus.battery : -1;
+  out->aborts = s_why[KBD_I2C_WHY_ABORT];
+  out->timeouts = s_why[KBD_I2C_WHY_TIMEOUT];
+  out->short_reads = s_why[KBD_I2C_WHY_SHORT];
+  out->lost_alarms = s_why[KBD_I2C_WHY_LOST];
+  out->cuts = s_cuts;
   restore_interrupts(irq);
   out->reads = st.fifo_reads;
   out->items = st.items;
@@ -469,9 +584,55 @@ void kbd_i2c_get_stats(kbd_i2c_stats_t *out) {
   out->max_gap_us = st.max_gap_us;
 }
 
+void kbd_i2c_get_failures(kbd_i2c_fail_t *first, kbd_i2c_fail_t *last) {
+  uint32_t irq = save_and_disable_interrupts();
+  if (first)
+    *first = s_first_fail;
+  if (last)
+    *last = s_last_fail;
+  restore_interrupts(irq);
+}
+
+int kbd_i2c_get_trace(kbd_i2c_event_t *out, int max) {
+  uint32_t irq = save_and_disable_interrupts();
+  uint32_t n = s_trace_n;
+  int have = n < KBD_I2C_TRACE_LEN ? (int)n : KBD_I2C_TRACE_LEN;
+  if (have > max)
+    have = max;
+  for (int i = 0; i < have; i++)
+    out[i] = s_trace[(n - (uint32_t)have + (uint32_t)i) % KBD_I2C_TRACE_LEN];
+  restore_interrupts(irq);
+  return have;
+}
+
+void kbd_i2c_get_hw(kbd_i2c_hw_t *out) {
+  i2c_hw_t *h = ki_hw();
+  uint32_t irq = save_and_disable_interrupts();
+  out->hcnt = h->fs_scl_hcnt;
+  out->lcnt = h->fs_scl_lcnt;
+  out->tar = h->tar;
+  out->enable_status = h->enable_status;
+  out->status = h->status;
+  out->raw_intr = h->raw_intr_stat;
+  out->intr_mask = h->intr_mask;
+  out->pad_sda = pads_bank0_hw->io[KBD_PIN_SDA];
+  out->pad_scl = pads_bank0_hw->io[KBD_PIN_SCL];
+  out->ctrl_sda = io_bank0_hw->io[KBD_PIN_SDA].ctrl;
+  out->ctrl_scl = io_bank0_hw->io[KBD_PIN_SCL].ctrl;
+  out->lines = ki_lines();
+  out->irq_on = irq_is_enabled(KBD_I2C_IRQ);
+  out->alarm_num = (int8_t)s_alarm_num;
+  out->armed = s_armed;
+  out->due_in_us = s_armed ? (int32_t)(s_due_us - time_us_32()) : 0;
+  restore_interrupts(irq);
+}
+
 void kbd_i2c_reset_stats(void) {
   uint32_t irq = save_and_disable_interrupts();
   kbd_bus_reset_stats(&s_bus);
+  for (unsigned i = 0; i < sizeof(s_why) / sizeof(s_why[0]); i++)
+    s_why[i] = 0;
+  s_cuts = 0;
   s_isr_us = 0;
   s_max_read_us = 0;
   s_recoveries = 0;
