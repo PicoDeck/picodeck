@@ -31,24 +31,27 @@ typedef struct {
 
 // A failed transaction, captured as it failed (kbdstat): the first failure of
 // the latest failure streak, and the latest failure.
+// 16 bytes: the registers' widths (RP2350) bound the fields.
 typedef struct {
   uint32_t at_us;     // time_us_32() of the failure; 0: none yet
   uint32_t abrt_src;  // IC_TX_ABRT_SOURCE (aborts only)
-  uint32_t raw_intr;  // IC_RAW_INTR_STAT
-  uint32_t status;    // IC_STATUS
+  uint16_t raw_intr;  // IC_RAW_INTR_STAT (13 bits)
   uint16_t sys_mhz;   // clk_sys then
-  uint8_t why;        // KBD_I2C_WHY_*
-  uint8_t state;      // the engine state it failed in (kbd_i2c_state_name)
-  uint8_t job;        // kbd_job_t
-  uint8_t txflr, rxflr;
-  uint8_t lines;      // bit 0 SDA, bit 1 SCL (1 = high)
+  uint8_t status;     // IC_STATUS (7 bits)
+  uint8_t why : 3;    // KBD_I2C_WHY_*
+  uint8_t state : 3;  // the engine state it failed in (kbd_i2c_state_name)
+  uint8_t lines : 2;  // bit 0 SDA, bit 1 SCL (1 = high)
+  uint8_t job : 2;    // kbd_job_t
+  uint8_t txflr : 5;  // IC_TXFLR (0-16)
+  uint8_t rxflr;      // IC_RXFLR (0-16)
 } kbd_i2c_fail_t;
 
 enum {
-  KBD_I2C_WHY_ABORT = 1,
+  KBD_I2C_WHY_ABORT,
   KBD_I2C_WHY_TIMEOUT,
   KBD_I2C_WHY_SHORT,
   KBD_I2C_WHY_LOST,
+  KBD_I2C_WHY_COUNT,
 };
 
 // The engine's recent history (kbdstat log): pauses, resumes and clock
@@ -104,7 +107,7 @@ void kbd_i2c_get_failures(kbd_i2c_fail_t *first, kbd_i2c_fail_t *last);
 int kbd_i2c_get_trace(kbd_i2c_event_t *out, int max);
 void kbd_i2c_get_hw(kbd_i2c_hw_t *out);
 const char *kbd_i2c_state_name(uint8_t state);
-void kbd_i2c_reset_stats(void);
+void kbd_i2c_reset_stats(void);  // the counters, failure records and trace
 void kbd_i2c_inject_fault(void); // the next transaction is NACKed (kbdstat fault)
 
 #endif

@@ -30,8 +30,9 @@
 // since moved or cancelled is ignored (s_armed, s_due_us). A failed
 // transaction stops the engine (KI_ERROR); the ~12 ms bit-banged recovery
 // runs in task context from kbd_i2c_service(), which also fails a running
-// engine whose timeout is KI_ALARM_LATE_US overdue (lost), so no state can
-// last. Stays on Core 0: sys.pauseBackground stops Core 1.
+// engine whose timeout is missing or KI_ALARM_LATE_US overdue (lost), so a
+// stuck state ends at the first poll after that. Stays on Core 0:
+// sys.pauseBackground stops Core 1.
 //
 // pause/resume/recover, in words:
 //   - kbd_i2c_pause returns with the engine OFF: no alarm, I2C interrupts
@@ -95,7 +96,7 @@ static uint64_t s_stats_at_us;  // 64-bit: the soak's window must not wrap
 static uint32_t s_warned_streak;
 // kbdstat: failures by cause, the first failure of the latest streak and the
 // latest one, and the event trace (kbd_i2c_event_t).
-static uint32_t s_why[KBD_I2C_WHY_LOST + 1], s_cuts;
+static uint32_t s_why[KBD_I2C_WHY_COUNT], s_cuts;
 static kbd_i2c_fail_t s_first_fail, s_last_fail;
 static kbd_i2c_event_t s_trace[KBD_I2C_TRACE_LEN];
 static uint32_t s_trace_n;  // events recorded (index = n % LEN)
@@ -150,15 +151,15 @@ static void ki_fail(uint8_t why, uint32_t abrt_src) {
   kbd_i2c_fail_t f = {
       .at_us = time_us_32() | 1u,
       .abrt_src = abrt_src,
-      .raw_intr = h->raw_intr_stat,
-      .status = h->status,
+      .raw_intr = (uint16_t)h->raw_intr_stat,
       .sys_mhz = (uint16_t)(clock_get_hz(clk_sys) / 1000000u),
-      .why = why,
-      .state = (uint8_t)s_state,
-      .job = (uint8_t)s_job,
-      .txflr = (uint8_t)h->txflr,
+      .status = (uint8_t)h->status,
+      .why = why & 7u,
+      .state = (uint8_t)s_state & 7u,
+      .lines = ki_lines() & 3u,
+      .job = (uint8_t)s_job & 3u,
+      .txflr = (uint8_t)h->txflr & 31u,
       .rxflr = (uint8_t)h->rxflr,
-      .lines = ki_lines(),
   };
   s_why[why]++;
   s_last_fail = f;
@@ -633,6 +634,9 @@ void kbd_i2c_reset_stats(void) {
   for (unsigned i = 0; i < sizeof(s_why) / sizeof(s_why[0]); i++)
     s_why[i] = 0;
   s_cuts = 0;
+  s_first_fail = (kbd_i2c_fail_t){0};
+  s_last_fail = (kbd_i2c_fail_t){0};
+  s_trace_n = 0;
   s_isr_us = 0;
   s_max_read_us = 0;
   s_recoveries = 0;

@@ -119,7 +119,7 @@ main()
 - Apps and OS register items with `system_menu_add_item()` / `picocalc.sys.addMenuItem()`.
 
 ### Memory Map
-- **SRAM heap**: ~2.6 KB (`__end__`=0x2007f580 to `__HeapLimit`=0x20080000; the 400 KB double framebuffer is BSS), so effectively none: scratch buffers go through `umm_malloc`.
+- **SRAM heap**: ~2.7 KB (2768 B: `__end__`=0x2007f530 to `__HeapLimit`=0x20080000; the 400 KB double framebuffer is BSS), so effectively none: scratch buffers go through `umm_malloc`.
 - **QMI PSRAM (8 MB)**: Lua heap via `umm_malloc` at 0x11200000 (cached alias), 6 MB minus the 128 KB Core 1 pool; ELF app data/BSS. Every umm allocation costs at least one 200-byte block (small Lua objects share slabs; see `src/os/CLAUDE.md`).
 - **PIO PSRAM (8 MB)**: the OS owns everything below `0x48000` (MP3 PCM ring); apps get `0x48000`+, range-checked for Lua and native. Accessed via `pio_psram_read`/`pio_psram_write` and `g_api.psram`.
 - **Main stack (MSP)**: 4 KB in SCRATCH (`__StackBottom`=0x20081000, `__StackTop`=0x20082000), `MSPLIM`-guarded. Boot, the launcher (menus, USB MSC) and every IRQ run here; dev commands and screenshot save move to a short-lived 32 KB PSRAM stack. Measured peak ~2.2-2.5 KB; the `stack` dev command prints it and the running app's stack peak.

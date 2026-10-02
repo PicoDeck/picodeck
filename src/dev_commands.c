@@ -605,7 +605,8 @@ static void dev_command_run(void *arg) {
         // unanswered so the recovery path runs (tests/e2e/test_kbd_hw.py).
         // sys_khz is the clock right now: the clock-change test reads it.
         // A KbdFail line follows for the first and the latest failure of
-        // the latest failure streak, if there was one.
+        // the latest failure streak, if there was one ("reset" clears them
+        // and `kbdstat log`'s trace too). ago_ms wraps after 71.6 min.
         if (strcmp(s_cmd_buf, "kbdstat reset") == 0)
             kbd_i2c_reset_stats();
         else if (strcmp(s_cmd_buf, "kbdstat fault") == 0)
@@ -627,6 +628,8 @@ static void dev_command_run(void *arg) {
                (unsigned long)k.aborts, (unsigned long)k.timeouts,
                (unsigned long)k.short_reads, (unsigned long)k.lost_alarms,
                (unsigned long)k.cuts);
+        static const char *const k_why[] = {"abort", "timeout", "short",
+                                            "lost", "?", "?", "?", "?"};
         kbd_i2c_fail_t ff[2];
         kbd_i2c_get_failures(&ff[0], &ff[1]);
         uint32_t now = time_us_32();
@@ -634,11 +637,11 @@ static void dev_command_run(void *arg) {
             const kbd_i2c_fail_t *f = &ff[i];
             if (!f->at_us)
                 continue;
-            printf("[DEV] KbdFail: which=%s ago_ms=%lu why=%u state=%s "
+            printf("[DEV] KbdFail: which=%s ago_ms=%lu why=%s state=%s "
                    "job=%u abrt_src=0x%lx raw_intr=0x%lx status=0x%lx "
                    "txflr=%u rxflr=%u sda=%u scl=%u sys_mhz=%u\n",
                    i ? "last" : "first",
-                   (unsigned long)((now - f->at_us) / 1000u), f->why,
+                   (unsigned long)((now - f->at_us) / 1000u), k_why[f->why],
                    kbd_i2c_state_name(f->state), f->job,
                    (unsigned long)f->abrt_src, (unsigned long)f->raw_intr,
                    (unsigned long)f->status, f->txflr, f->rxflr,
