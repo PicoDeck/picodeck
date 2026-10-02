@@ -205,7 +205,7 @@ static int l_fs_file_tostring(lua_State *L) {
   return 1;
 }
 
-// ── file:fsize() / fs.fsize(f) → bytes | nil, err ───────────────────────────────────────────
+// ── file:fsize() / fs.fsize(f) → bytes | nil, err ────────────────────────────
 // The size of an open handle, without moving the read position: :tell() after
 // seek(0, "end") gets the same number but leaves the handle at EOF.
 static int l_fs_fsize(lua_State *L) {
@@ -235,14 +235,18 @@ static void fs_file_register_mt(lua_State *L) {
   lb_register_type(L, FS_FILE_MT, l_fs_file_methods, l_fs_file_meta);
 }
 
-// The SD volume root ("/", "//"...). FatFS f_stat refuses it (the root has no
+// The SD volume root ("/", "//", "/.", "/./"...: slashes and whole "."
+// segments only). FatFS f_stat refuses it (the root has no
 // directory entry) while the simulator's host stat() succeeds, so exists /
 // stat / isDir answer for it here, identically on both: an existing, empty-
 // sized directory. Only a root-filesystem app gets past fs_sandbox_check.
 static bool path_is_root(const char *path) {
-  if (!path[0]) return false;
-  for (const char *c = path; *c; c++)
-    if (*c != '/') return false;
+  if (path[0] != '/') return false;
+  for (const char *c = path; *c;) {
+    if (*c == '/') { c++; continue; }
+    if (c[0] == '.' && (c[1] == '/' || c[1] == '\0')) { c++; continue; }
+    return false;
+  }
   return true;
 }
 
