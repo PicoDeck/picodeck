@@ -1,5 +1,6 @@
 #include "crypto.h"
-#include "lua_psram_alloc.h"
+#include "ssh_blob.h"
+#include "umm_malloc.h"
 
 #include "mbedtls/sha256.h"
 #include "mbedtls/sha1.h"
@@ -245,31 +246,11 @@ bool crypto_rsa_verify(const uint8_t *pubkey, uint32_t pklen,
                        const uint8_t *hash, uint32_t hlen) {
     if (hlen != 32) return false;
 
-    const unsigned char *p = pubkey;
-    const unsigned char *end = pubkey + pklen;
-
-    // Skip key type string ("ssh-rsa")
-    if (p + 4 > end) return false;
-    uint32_t str_len = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-    if (str_len > (uint32_t)(end - p - 4)) return false;
-    p += 4 + str_len;
-
-    // Read e (public exponent)
-    if (p + 4 > end) return false;
-    uint32_t e_len = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-    if (e_len > (uint32_t)(end - p - 4)) return false;
-    p += 4;
-    if (p + e_len > end) return false;
-    const unsigned char *e_data = p;
-    p += e_len;
-
-    // Read n (modulus)
-    if (p + 4 > end) return false;
-    uint32_t n_len = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-    if (n_len > (uint32_t)(end - p - 4)) return false;
-    p += 4;
-    if (p + n_len > end) return false;
-    const unsigned char *n_data = p;
+    // string("ssh-rsa") + mpint(e) + mpint(n)
+    const unsigned char *e_data, *n_data;
+    uint32_t e_len, n_len;
+    if (!ssh_rsa_pubkey_parse(pubkey, pklen, &e_data, &e_len, &n_data, &n_len))
+        return false;
 
     mbedtls_rsa_context rsa;
     mbedtls_rsa_init(&rsa);
@@ -303,28 +284,10 @@ bool crypto_ecdsa_p256_verify(const uint8_t *pubkey, uint32_t pklen,
                                const uint8_t *hash, uint32_t hlen) {
     if (hlen != 32) return false;
 
-    const unsigned char *p = pubkey;
-    const unsigned char *end = pubkey + pklen;
-
-    // Skip key type string
-    if (p + 4 > end) return false;
-    uint32_t str_len = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-    if (str_len > (uint32_t)(end - p - 4)) return false;
-    p += 4 + str_len;
-
-    // Skip curve identifier string
-    if (p + 4 > end) return false;
-    str_len = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-    if (str_len > (uint32_t)(end - p - 4)) return false;
-    p += 4 + str_len;
-
-    // Read Q (uncompressed point)
-    if (p + 4 > end) return false;
-    uint32_t q_len = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-    if (q_len > (uint32_t)(end - p - 4)) return false;
-    p += 4;
-    if (p + q_len > end) return false;
-    const unsigned char *q_data = p;
+    // string(type) + string(curve) + string(Q, uncompressed point)
+    const unsigned char *q_data;
+    uint32_t q_len;
+    if (!ssh_ecdsa_pubkey_parse(pubkey, pklen, &q_data, &q_len)) return false;
 
     mbedtls_ecp_group grp;
     mbedtls_ecp_point Q;
@@ -339,22 +302,11 @@ bool crypto_ecdsa_p256_verify(const uint8_t *pubkey, uint32_t pklen,
     if (ret != 0) goto cleanup_ec;
 
     {
-        // Parse SSH signature: mpint(r) + mpint(s)
-        const unsigned char *sp = sig;
-        const unsigned char *send = sig + slen;
-
-        if (sp + 4 > send) goto cleanup_ec;
-        uint32_t r_len = ((uint32_t)sp[0] << 24) | ((uint32_t)sp[1] << 16) | ((uint32_t)sp[2] << 8) | sp[3];
-        sp += 4;
-        if (sp + r_len > send) goto cleanup_ec;
-        const unsigned char *r_data = sp;
-        sp += r_len;
-
-        if (sp + 4 > send) goto cleanup_ec;
-        uint32_t s_len_val = ((uint32_t)sp[0] << 24) | ((uint32_t)sp[1] << 16) | ((uint32_t)sp[2] << 8) | sp[3];
-        sp += 4;
-        if (sp + s_len_val > send) goto cleanup_ec;
-        const unsigned char *s_data = sp;
+        // SSH signature: mpint(r) + mpint(s)
+        const unsigned char *r_data, *s_data;
+        uint32_t r_len, s_len_val;
+        if (!ssh_ecdsa_sig_parse(sig, slen, &r_data, &r_len, &s_data, &s_len_val))
+            goto cleanup_ec;
 
         mbedtls_mpi r, s;
         mbedtls_mpi_init(&r);

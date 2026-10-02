@@ -3147,17 +3147,19 @@ function picocalc.crypto.ecdh_x25519_new() end
 ---@return PicoDeckEcdh
 function picocalc.crypto.ecdh_p256_new() end
 
----Verify an RSA signature. Returns `true` if valid.
----@param pubkey string DER-encoded RSA public key
----@param sig string Signature bytes
----@param hash string Hash of the signed data
+---Verify an RSA PKCS#1 v1.5 signature over a SHA-256 hash. Returns `true` if valid.
+---Raises if `hash` is not exactly 32 bytes; malformed or mismatched keys and signatures return `false`.
+---@param pubkey string RSA public key in SSH wire format: string("ssh-rsa") + mpint(e) + mpint(n)
+---@param sig string Raw PKCS#1 v1.5 signature bytes, exactly the modulus length (not the SSH signature wrapper)
+---@param hash string 32-byte SHA-256 hash of the signed data
 ---@return boolean valid
 function picocalc.crypto.rsaVerify(pubkey, sig, hash) end
 
----Verify an ECDSA P-256 signature. Returns `true` if valid.
----@param pubkey string P-256 public key bytes (65-byte uncompressed)
----@param sig string Signature bytes
----@param hash string Hash of the signed data
+---Verify an ECDSA P-256 signature over a SHA-256 hash. Returns `true` if valid.
+---Raises if `hash` is not exactly 32 bytes; malformed or mismatched keys and signatures return `false`.
+---@param pubkey string P-256 public key in SSH wire format: string("ecdsa-sha2-nistp256") + string("nistp256") + string(Q), Q the 65-byte uncompressed point
+---@param sig string The inner signature blob mpint(r) + mpint(s), without the outer algorithm-name wrapper
+---@param hash string 32-byte SHA-256 hash of the signed data
 ---@return boolean valid
 function picocalc.crypto.ecdsaP256Verify(pubkey, sig, hash) end
 

@@ -125,6 +125,7 @@ picodeck_unit_test(test_pico_time_pass INCLUDES ${_pt_dir})
 picodeck_unit_test(test_pio_psram_range INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_pio_psram_xip INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_qmi_psram_clkdiv INCLUDES ${SRC}/drivers)
+picodeck_unit_test(test_ssh_blob SOURCES ${SRC}/os/ssh_blob.c)
 picodeck_unit_test(test_zip_name SOURCES ${SRC}/os/zip_name.c)
 picodeck_unit_test(test_text_wrap SOURCES ${SRC}/os/text_wrap.c)
 # The OS FPS counter's counting rules (Show FPS; os_overlay.c draws it).
@@ -316,6 +317,12 @@ target_link_libraries(test_ota_verify PRIVATE picodeck_host_mbedtls)
 picodeck_unit_test(test_ca_bundle SOURCES ${SRC}/drivers/ca_bundle.c
                 INCLUDES ${SRC}/drivers)
 target_link_libraries(test_ca_bundle PRIVATE picodeck_host_mbedtls)
+# The signature verifiers behind picocalc.crypto.rsaVerify / ecdsaP256Verify:
+# crypto.c over the firmware's mbedTLS, with real SSH-format vectors.
+picodeck_unit_test(test_crypto_verify
+                SOURCES ${SRC}/os/crypto.c ${SRC}/os/ssh_blob.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES})
+target_link_libraries(test_crypto_verify PRIVATE picodeck_host_mbedtls)
 
 picodeck_unit_test(test_small_alloc SOURCES ${SRC}/os/small_alloc.c)
 
