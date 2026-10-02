@@ -79,11 +79,19 @@ const char *pio_psram_mode_str(void) {
 #define DBG_BLOCK 4096u
 
 // The buffer is the start of the display's back buffer (SRAM, so the
-// figures stay SRAM <-> PIO PSRAM): a dev command run at the launcher, which
-// redraws it. A static 4 KB buffer held SRAM the MP3 decoder now uses
-// (issue #28), and the SRAM heap can be too fragmented for a 4 KB malloc.
+// figures stay SRAM <-> PIO PSRAM). A static 4 KB buffer held SRAM the MP3
+// decoder now uses (issue #28), and the SRAM heap can be too fragmented for
+// a 4 KB malloc. Dev commands run on Core 0 between the launcher's or the
+// app's own steps, so nothing draws meanwhile; a partial flush still
+// DMA-ing the back buffer (display_flush_rows) is waited out first. The
+// command leaves its pattern in the buffer's first rows: the launcher
+// redraws them, an app that never redraws them shows it there until it
+// does (and the command already overwrites the app's PIO PSRAM).
 // Single buffer: the expected pattern is regenerated per byte on compare.
-#define s_dbg_buf ((uint8_t *)display_get_back_buffer())
+static uint8_t *dbg_buf(void) {
+    display_wait_for_flush();
+    return (uint8_t *)display_get_back_buffer();
+}
 
 static inline uint8_t debug_pattern_byte(uint32_t addr, uint32_t i) {
     return (uint8_t)((addr >> 12) * 197u + i * 13u + 5u);
@@ -102,7 +110,7 @@ void pio_psram_debug_test(bool full) {
                (unsigned long)pio_psram_qpi_spi_khz());
     pio_psram_qpi_print_diag();
 
-    uint8_t *buf = s_dbg_buf;
+    uint8_t *buf = dbg_buf();
 
     // Throughput: 256KB write then read, app region (above mp3/video pools).
     const uint32_t bench_bytes = 256u * 1024u;
@@ -221,23 +229,24 @@ void pio_psram_stress_test(uint32_t iters) {
     // Phase 2: sequential readback of the MP3 ring region, same shape as
     // refill_staging_buf (1KB at a time, wrapping at 32KB), written once.
     uint32_t ring_errors = 0;
+    uint8_t *dbuf = dbg_buf();
     for (uint32_t off = 0; off < 32u * 1024u; off += DBG_BLOCK) {
-        debug_fill_pattern(s_dbg_buf, 0xC000 + off);
-        pio_psram_write(PIO_PSRAM_MP3_RING_BASE + off, s_dbg_buf, DBG_BLOCK);
+        debug_fill_pattern(dbuf, 0xC000 + off);
+        pio_psram_write(PIO_PSRAM_MP3_RING_BASE + off, dbuf, DBG_BLOCK);
     }
     for (uint32_t pass = 0; pass < iters; pass++) {
         for (uint32_t off = 0; off < 32u * 1024u; off += DBG_BLOCK) {
-            memset(s_dbg_buf, 0, DBG_BLOCK);
-            pio_psram_read(PIO_PSRAM_MP3_RING_BASE + off, s_dbg_buf, DBG_BLOCK);
+            memset(dbuf, 0, DBG_BLOCK);
+            pio_psram_read(PIO_PSRAM_MP3_RING_BASE + off, dbuf, DBG_BLOCK);
             for (uint32_t i = 0; i < DBG_BLOCK; i++) {
                 uint8_t exp = debug_pattern_byte(0xC000 + off, i);
-                if (s_dbg_buf[i] != exp) {
+                if (dbuf[i] != exp) {
                     if (ring_errors < 8)
                         printf("[PSRAM]   ring mismatch pass %lu @%06lX "
                                "exp %02X got %02X\n",
                                (unsigned long)pass,
                                (unsigned long)(PIO_PSRAM_MP3_RING_BASE + off + i),
-                               exp, s_dbg_buf[i]);
+                               exp, dbuf[i]);
                     ring_errors++;
                 }
             }

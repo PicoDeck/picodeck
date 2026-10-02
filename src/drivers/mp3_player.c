@@ -1488,6 +1488,7 @@ void mp3_player_bench(const char *path, uint32_t frames, uint32_t flags) {
     // The SRAM: the back buffer, aligned (the framebuffers are only 2-byte
     // aligned; libmad's state needs 8): the stream, the frame's arrays,
     // the synthesis state.
+    display_wait_for_flush();   // a partial flush may still DMA the back buffer
     uint8_t *sram = (uint8_t *)(((uintptr_t)display_get_back_buffer() + 31u) & ~(uintptr_t)31u);
     _Static_assert(sizeof(struct mad_stream) <= 4096, "bench layout");
     _Static_assert(sizeof(struct mad_frame_mem) <= 20480, "bench layout");
