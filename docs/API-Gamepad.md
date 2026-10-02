@@ -11,7 +11,7 @@ A logical gamepad with 12 buttons. Read it instead of raw keys and your game get
 - **One button per key.** Within one map a key drives at most one button.
 - **Same polling as the input masks.** `picocalc.input.update()` updates the gamepad too. A tap shorter than one frame still gives one press edge and, on the next frame, one release edge.
 - **Esc is not a gamepad button.** Keep Esc as back/quit.
-- **A connected controller drives the same buttons.** A game controller and the keyboard work together: a button is held while either holds it, with one press edge and one release edge, and your game cannot tell which one pressed it, so it needs no code for controllers. `getLabel()` still names the keyboard key. A controller's Home button opens the system menu, and the D-pad and A/B move through it and the launcher, so a player with only a controller can leave a game. The header shows a gamepad icon while one is connected. Today this works in the simulator (a controller plugged into the computer); controllers on the device itself are coming ([issue #26](https://github.com/PicoDeck/picodeck/issues/26)).
+- **A connected controller drives the same buttons.** A game controller and the keyboard work together: a button is held while either holds it, with one press edge and one release edge, and your game cannot tell which one pressed it, so it needs no code for controllers. `getLabel()` still names the keyboard key. A controller's Home button opens the system menu, and the D-pad and A/B move through it and the launcher, so a player with only a controller can leave a game. The header shows a gamepad icon while one is connected. On the device that is a [Bluetooth controller](#bluetooth-controllers); in the simulator, a controller plugged into the computer.
 
 ### Default bindings
 
@@ -71,6 +71,46 @@ Each button has a row with a **Primary** and an **Alt** cell. Each cell shows it
 - Leaving the page with Esc saves, and the running game has the new bindings as soon as the menu closes. The key that closes the menu never reaches the game as a press. If the save fails the page says so, and the previous file and bindings are kept.
 - A bindings file that is there but cannot be read (a read error, or too little free memory) keeps the page shut with "Could not read the bindings", so its bindings are never replaced by what the page could not see. A corrupt file, which launches ignore too, opens as the defaults ("Ignored a corrupt bindings file"), and saving replaces it.
 - The global file lists only the buttons that differ from the defaults (with none it is deleted); the override lists the buttons it overrides.
+
+## Bluetooth controllers
+
+A Bluetooth game controller drives the same 12 buttons, so every game that reads `picocalc.gamepad` or `api->gamepad` works with one and needs no code for it. One controller at a time; the keyboard keeps working alongside it.
+
+### Turning it on
+
+Bluetooth is **off** until you turn it on: system menu → Settings → **Bluetooth**, then Enter on **Bluetooth: Off**. While it is off nothing of it runs. The setting is kept (the `bt_enabled` key in [API Sysconfig](API-Sysconfig.md)), so it is back on after a restart.
+
+### Pairing
+
+1. Put the controller in pairing mode:
+   - DualShock 4: hold **Share** and **PS** until the light bar flashes quickly.
+   - DualSense: hold **Create** and **PS** until the lights around the touchpad flash.
+   - Switch Pro Controller: hold the small **sync** button on the top edge.
+   - 8BitDo: switch it to its Android/D-input or Switch mode (usually **Start**+**B** or **Start**+**Y** to power on), then hold its **Pair** button for 3 seconds.
+2. On the Bluetooth page choose **Search for controllers**. The search takes about 10 seconds; controllers are listed first, other devices dimmed below them.
+3. Choose your controller. The page says **Connected** and the header shows the gamepad icon.
+
+The controller is remembered (up to 4; pairing a fifth forgets the oldest). Next time, switch it on (the PS or Home button) while Bluetooth is on and it reconnects by itself, in the launcher or in a game. On the Bluetooth page, Enter on a paired controller connects or disconnects it, and **Del** twice forgets it.
+
+### Buttons
+
+| Gamepad | DualShock 4 / DualSense | Switch Pro / 8BitDo | Xbox-style Android pad |
+|---|---|---|---|
+| A (bottom) | Cross | B | A |
+| B (right) | Circle | A | B |
+| X (left) | Square | Y | X |
+| Y (top) | Triangle | X | Y |
+| L / R | L1 / R1 | L / R | LB / RB |
+| Start / Select | Options / Share (Create) | + / − (Start / Select) | Start / Back |
+| Up/Down/Left/Right | D-pad, left stick | D-pad, left stick | D-pad, left stick |
+| System menu | PS | Home | Home / Guide |
+
+- **By position, not by label.** A is always the bottom face button and B the right one, as on an Xbox pad. On a Nintendo-style pad (Switch Pro, 8BitDo) that means A is the button labelled **B**.
+- The left stick works as the D-pad once pushed past half way. Triggers, the right stick and the stick clicks are not used.
+- **Home (or PS) opens the system menu**, where the D-pad and A/B move: a player with only a controller can always leave a game.
+- A controller that drops (switched off, out of range, flat battery) releases every button it held: nothing stays stuck.
+
+Supported: Bluetooth Classic HID controllers. PicoDeck has a button layout for the DualShock 4, DualSense, Switch Pro Controller (in its simple mode) and 8BitDo pads; any other gamepad is read with the common Android/Xbox numbering, which most Bluetooth "Android" pads use. Not supported: Bluetooth LE-only controllers (the Xbox Wireless Controller with current firmware, Stadia, Steam), a single Joy-Con, and Wii remotes. If a controller pairs but its buttons come out wrong, [tell us](https://github.com/PicoDeck/picodeck/issues/26) which one.
 
 ## picocalc.gamepad
 

@@ -3,6 +3,7 @@
 #include "lua_bridge.h"
 #include "lua_psram_alloc.h"
 #include "../dev_commands.h"
+#include "../drivers/bt_pad.h"
 #include "../drivers/display.h"
 #include "../drivers/keyboard.h"
 #include "../drivers/sdcard.h"
@@ -93,6 +94,7 @@ typedef enum {
   ITEM_BATTERY_PCT,
   ITEM_SHOW_FPS,
   ITEM_CONTROLS,
+  ITEM_BLUETOOTH,
 } item_type_t;
 
 typedef struct {
@@ -169,6 +171,8 @@ static int build_items(flat_item_t *items, menu_page_t page, bool has_exit,
     items[count++] = (flat_item_t){ITEM_BATTERY_PCT, 0};
     items[count++] = (flat_item_t){ITEM_SHOW_FPS, 0};
     items[count++] = (flat_item_t){ITEM_CONTROLS, 0};
+    if (bt_pad_available())
+      items[count++] = (flat_item_t){ITEM_BLUETOOTH, 0};
     items[count++] = (flat_item_t){ITEM_TIMEZONE, 0};
     items[count++] = (flat_item_t){ITEM_WIFI_TOGGLE, 0};
     items[count++] = (flat_item_t){ITEM_WIFI_SETTINGS, 0};
@@ -371,6 +375,10 @@ static void draw_panel(const flat_item_t *items, int count, int sel, int px,
       break;
     case ITEM_CONTROLS:
       snprintf(label, sizeof(label), "Controls");
+      break;
+    case ITEM_BLUETOOTH:
+      snprintf(label, sizeof(label), "Bluetooth: %s",
+               bt_pad_enabled() ? "On" : "Off");
       break;
     case ITEM_DEV_MODE:
       snprintf(label, sizeof(label), "Developer Mode: %s", s_dev_mode ? "On" : "Off");
@@ -680,6 +688,295 @@ static void controls_page(bool in_app) {
   display_set_font(saved_font);
 }
 
+// ── Settings -> Bluetooth
+// ──────────────────────────────────────────────────────────────────
+// Bluetooth gamepads (drivers/bt_pad.h): the setting, a search, the paired
+// pads and the ones found. Enter on a found pad pairs with it, on a paired
+// one connects or disconnects it, Del twice forgets it. The state is polled
+// into a umm_malloc'd copy (bt_pad_status_t is ~650 B: the menu also runs
+// on the 4 KB MSP) and the page redraws when it changes. bt_pad_service()
+// saves the bonds once a pairing changed them (SD work on an OS stack).
+
+#define BT_PANEL_W 250
+#define BT_ROWS_MAX (2 + 2 + BT_PAD_PAIRED_MAX + BT_PAD_FOUND_MAX)
+
+typedef enum { BR_POWER, BR_SEARCH, BR_HEAD, BR_PAIRED, BR_FOUND } bt_row_kind_t;
+
+typedef struct {
+  uint8_t kind, idx;
+} bt_row_t;
+
+typedef struct {
+  bt_pad_status_t st, shown; // now, and as last drawn
+  bt_row_t rows[BT_ROWS_MAX];
+  int n_rows, sel;
+  int forget_armed; // the paired row Del was pressed on once, or -1
+  char msg[48];     // the page's own notice (over the status note)
+} bt_page_t;
+
+static bool bt_is_pad_cod(uint32_t cod) {
+  uint32_t major = (cod >> 8) & 0x1F, minor = (cod >> 2) & 0x0F;
+  return major == 0x05 && (minor == 0x01 || minor == 0x02);
+}
+
+static void bt_build_rows(bt_page_t *p) {
+  const bt_pad_status_t *st = &p->st;
+  int n = 0;
+  p->rows[n++] = (bt_row_t){BR_POWER, 0};
+  if (st->power == BT_PAD_ON)
+    p->rows[n++] = (bt_row_t){BR_SEARCH, 0};
+  if (st->n_paired) {
+    p->rows[n++] = (bt_row_t){BR_HEAD, 0};
+    for (int i = 0; i < st->n_paired; i++)
+      p->rows[n++] = (bt_row_t){BR_PAIRED, (uint8_t)i};
+  }
+  // Found devices not already paired.
+  int found = 0;
+  for (int i = 0; i < st->n_found; i++) {
+    bool paired = false;
+    for (int j = 0; j < st->n_paired; j++)
+      paired |= memcmp(st->paired[j].addr, st->found[i].addr, 6) == 0;
+    if (paired)
+      continue;
+    if (!found++)
+      p->rows[n++] = (bt_row_t){BR_HEAD, 1};
+    p->rows[n++] = (bt_row_t){BR_FOUND, (uint8_t)i};
+  }
+  p->n_rows = n;
+  if (p->sel >= n)
+    p->sel = n - 1;
+  while (p->sel > 0 && p->rows[p->sel].kind == BR_HEAD)
+    p->sel--;
+}
+
+static void bt_move(bt_page_t *p, int d) {
+  int s = p->sel;
+  for (int k = 0; k < p->n_rows; k++) {
+    s = (s + d + p->n_rows) % p->n_rows;
+    if (p->rows[s].kind != BR_HEAD)
+      break;
+  }
+  p->sel = s;
+}
+
+static bool bt_peer_is(const bt_pad_status_t *st, const uint8_t addr[6]) {
+  return st->link != BT_PAD_LINK_NONE && memcmp(st->peer.addr, addr, 6) == 0;
+}
+
+static void bt_row_text(const bt_page_t *p, const bt_row_t *r, char *out,
+                        size_t n, uint16_t *fg) {
+  const bt_pad_status_t *st = &p->st;
+  char a[18];
+  *fg = COLOR_WHITE;
+  switch (r->kind) {
+  case BR_POWER: {
+    static const char *const k[] = {"Off", "Starting...", "On", "Failed"};
+    snprintf(out, n, "Bluetooth: %s",
+             !st->enabled && st->power == BT_PAD_OFF ? "Off"
+                                                     : k[st->power & 3]);
+    break;
+  }
+  case BR_SEARCH:
+    snprintf(out, n, "%s", st->scanning ? "Searching... (Enter: stop)"
+                                        : "Search for controllers");
+    if (st->link != BT_PAD_LINK_NONE)
+      *fg = COLOR_GRAY;
+    break;
+  case BR_HEAD:
+    snprintf(out, n, "%s", r->idx ? "Found" : "Paired");
+    *fg = RGB565(130, 160, 220);
+    break;
+  case BR_PAIRED: {
+    const bt_pad_record_t *pr = &st->paired[r->idx];
+    bt_pad_addr_str(pr->addr, a);
+    const char *tag = "";
+    if (bt_peer_is(st, pr->addr))
+      tag = st->link == BT_PAD_LINK_CONNECTED ? "  connected" : "  ...";
+    snprintf(out, n, "%.24s%s", pr->name[0] ? pr->name : a, tag);
+    if (bt_peer_is(st, pr->addr) && st->link == BT_PAD_LINK_CONNECTED)
+      *fg = COLOR_GREEN;
+    break;
+  }
+  case BR_FOUND: {
+    const bt_pad_device_t *d = &st->found[r->idx];
+    bt_pad_addr_str(d->addr, a);
+    snprintf(out, n, "%.30s%s", d->name[0] ? d->name : a,
+             bt_peer_is(st, d->addr) ? "  ..." : "");
+    if (!bt_is_pad_cod(d->cod))
+      *fg = COLOR_GRAY; // not a gamepad by its class: listed, dimmed
+    break;
+  }
+  }
+}
+
+static void bt_draw(const bt_page_t *p) {
+  int h = 1 + TITLE_H + 1 + p->n_rows * ITEM_H + ITEM_H + 1 + 2 * FOOTER_H + 1;
+  int px = (FB_WIDTH - BT_PANEL_W) / 2;
+  int py = (FB_HEIGHT - h) / 2;
+  display_draw_rect(px, py, BT_PANEL_W, h, C_BORDER);
+  display_fill_rect(px + 1, py + 1, BT_PANEL_W - 2, h - 2, C_PANEL_BG);
+  display_fill_rect(px + 1, py + 1, BT_PANEL_W - 2, TITLE_H, C_TITLE_BG);
+  display_draw_text(px + (BT_PANEL_W - display_text_width("Bluetooth")) / 2,
+                    py + 5, "Bluetooth", COLOR_WHITE, C_TITLE_BG);
+  display_fill_rect(px + 1, py + 1 + TITLE_H, BT_PANEL_W - 2, 1, C_BORDER);
+  int y = py + 2 + TITLE_H;
+  for (int i = 0; i < p->n_rows; i++, y += ITEM_H) {
+    const bt_row_t *r = &p->rows[i];
+    bool sel = i == p->sel;
+    uint16_t bg = sel ? C_SEL_BG : C_PANEL_BG, fg;
+    char label[48];
+    bt_row_text(p, r, label, sizeof(label), &fg);
+    if (sel)
+      display_fill_rect(px + 1, y, BT_PANEL_W - 2, ITEM_H, bg);
+    if (r->kind == BR_HEAD) {
+      display_draw_text(px + 6, y + 2, label, fg, bg);
+      continue;
+    }
+    display_draw_text(px + 4, y + 2, sel ? ">" : " ", COLOR_WHITE, bg);
+    display_draw_text(px + (r->kind == BR_PAIRED || r->kind == BR_FOUND
+                                ? 18 : 10),
+                      y + 2, label, fg, bg);
+  }
+  const char *note = p->msg[0] ? p->msg : p->st.note;
+  char line[44];
+  snprintf(line, sizeof(line), "%.40s", note);
+  display_draw_text(px + 4, y + 2, line, COLOR_YELLOW, C_PANEL_BG);
+  y += ITEM_H;
+  display_fill_rect(px + 1, y, BT_PANEL_W - 2, 1, C_BORDER);
+  display_fill_rect(px + 1, y + 1, BT_PANEL_W - 2, 2 * FOOTER_H, C_TITLE_BG);
+  const bt_row_t *cur = &p->rows[p->sel];
+  const char *hint1 = "Enter:select  Esc:back";
+  const char *hint2 = p->st.enabled ? "Paired pads reconnect by themselves"
+                                    : "Turn on to use a controller";
+  if (cur->kind == BR_PAIRED) {
+    hint1 = bt_peer_is(&p->st, p->st.paired[cur->idx].addr)
+                ? "Enter:disconnect  Esc:back"
+                : "Enter:connect  Esc:back";
+    hint2 = "Del twice:forget";
+  } else if (cur->kind == BR_FOUND) {
+    hint1 = "Enter:pair  Esc:back";
+    hint2 = "Put the pad in pairing mode";
+  } else if (cur->kind == BR_SEARCH) {
+    hint2 = "Put the pad in pairing mode";
+  }
+  display_draw_text(px + 4, y + 3, hint1, COLOR_GRAY, C_TITLE_BG);
+  display_draw_text(px + 4, y + 3 + FOOTER_H, hint2, COLOR_GRAY, C_TITLE_BG);
+}
+
+static void bt_enter(bt_page_t *p) {
+  const bt_pad_status_t *st = &p->st;
+  const bt_row_t *r = &p->rows[p->sel];
+  p->msg[0] = '\0';
+  switch (r->kind) {
+  case BR_POWER:
+    bt_pad_set_enabled(!st->enabled);
+    break;
+  case BR_SEARCH:
+    if (st->link == BT_PAD_LINK_NONE)
+      bt_pad_scan(!st->scanning);
+    break;
+  case BR_PAIRED: {
+    const bt_pad_record_t *pr = &st->paired[r->idx];
+    if (bt_peer_is(st, pr->addr))
+      bt_pad_disconnect();
+    else if (st->link != BT_PAD_LINK_NONE)
+      snprintf(p->msg, sizeof(p->msg), "One pad at a time");
+    else
+      bt_pad_connect(pr->addr, pr->name);
+    break;
+  }
+  case BR_FOUND:
+    if (st->link != BT_PAD_LINK_NONE)
+      snprintf(p->msg, sizeof(p->msg), "One pad at a time");
+    else
+      bt_pad_connect(st->found[r->idx].addr, st->found[r->idx].name);
+    break;
+  default:
+    break;
+  }
+}
+
+static void bt_forget(bt_page_t *p) {
+  const bt_row_t *r = &p->rows[p->sel];
+  if (r->kind != BR_PAIRED) {
+    p->forget_armed = -1;
+    return;
+  }
+  const bt_pad_record_t *pr = &p->st.paired[r->idx];
+  if (p->forget_armed != p->sel) {
+    p->forget_armed = p->sel;
+    snprintf(p->msg, sizeof(p->msg), "Del again to forget %.20s",
+             pr->name[0] ? pr->name : "it");
+    return;
+  }
+  p->forget_armed = -1;
+  uint8_t addr[6];
+  memcpy(addr, pr->addr, 6);
+  bool ok = bt_pad_forget(addr);
+  snprintf(p->msg, sizeof(p->msg), ok ? "Forgotten" : "Could not forget it");
+}
+
+static void bluetooth_page(void) {
+  bt_page_t *p = (bt_page_t *)umm_malloc(sizeof(bt_page_t));
+  if (!p) {
+    ctl_alert("Not enough memory for Bluetooth");
+    return;
+  }
+  memset(p, 0, sizeof(*p));
+  p->forget_armed = -1;
+  int saved_font = display_get_font();
+  display_set_font(0);
+  kbd_flush_events();
+  kbd_consume_menu_press();
+  bool redraw = true;
+  uint32_t last_poll = 0;
+  for (;;) {
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (redraw || now - last_poll >= 250) {
+      last_poll = now;
+      bt_pad_get_status(&p->st);
+      p->st.reports = 0; // counts every HID report: not a reason to redraw
+      bt_build_rows(p);
+      if (redraw || memcmp(&p->st, &p->shown, sizeof(p->st)) != 0) {
+        p->shown = p->st;
+        bg_restore();
+        bt_draw(p);
+        display_flush();
+      }
+      redraw = false;
+    }
+    kbd_poll();
+    dev_commands_poll();
+    dev_commands_process();
+    if (dev_commands_wants_exit())
+      break;
+    bt_pad_service(); // a pairing's new bond goes to the SD card
+    uint32_t pressed = kbd_get_buttons_pressed() | kbd_get_pad_nav_pressed();
+    if ((pressed & BTN_ESC) || kbd_consume_menu_press()) // the menu key: back
+      break;
+    if (pressed & (BTN_UP | BTN_DOWN)) {
+      bt_move(p, (pressed & BTN_DOWN) ? 1 : -1);
+      p->forget_armed = -1;
+      p->msg[0] = '\0';
+      redraw = true;
+    }
+    if (pressed & BTN_ENTER) {
+      p->forget_armed = -1;
+      bt_enter(p);
+      redraw = true;
+    }
+    if (pressed & BTN_DEL) {
+      bt_forget(p);
+      redraw = true;
+    }
+    watchdog_update();
+    sleep_ms(16);
+  }
+  bt_pad_service();
+  display_set_font(saved_font);
+  umm_free(p);
+}
+
 // ── Shared menu loop
 // ────────────────────────────────────────────────────────────────
 
@@ -942,6 +1239,11 @@ static bool menu_loop(lua_State *L, int context) {
         break;
       case ITEM_CONTROLS:
         controls_page(!is_launcher);
+        need_bg_restore = true;
+        need_redraw = true;
+        break;
+      case ITEM_BLUETOOTH:
+        bluetooth_page();
         need_bg_restore = true;
         need_redraw = true;
         break;
