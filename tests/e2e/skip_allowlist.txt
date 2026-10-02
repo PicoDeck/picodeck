@@ -15,3 +15,8 @@ test_cdogs_gamepad.py::*
 
 # Needs a built Rally checkout with the gamepad work (PICODECK_RALLY_DIR, PicoDeck/rally).
 test_rally_gamepad.py::*
+
+# Need the PicoDeck/doom build (PICODECK_DOOM_DIR) and the local-only
+# apps/tic-80 build (PICODECK_TIC80_DIR).
+test_doom_gamepad.py::*
+test_tic80_gamepad.py::*
