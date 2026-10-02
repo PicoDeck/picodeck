@@ -370,7 +370,7 @@ simulator-web:
 UNIT_BUILD_DIR := build_unit
 UNIT_CC ?= $(shell command -v clang 2>/dev/null || echo cc)
 
-test-unit: download-lua
+test-unit: download-lua download-fatfs
 	@cmake -S tests/unit -B $(UNIT_BUILD_DIR) -DCMAKE_C_COMPILER=$(UNIT_CC) \
 		-DCMAKE_BUILD_TYPE=Debug >/dev/null
 	@cmake --build $(UNIT_BUILD_DIR) -j$$(nproc 2>/dev/null || echo 4)
