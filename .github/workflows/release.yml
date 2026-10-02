@@ -214,10 +214,16 @@ jobs:
       # token never blocks PicoDeck's own site rebuild above. Web-sim's
       # daily follow check is the fallback if this dispatch doesn't land;
       # the step still goes red here so the token's owner sees it needs
-      # renewing.
+      # renewing. The tag rides along: web-sim waits for GitHub's latest
+      # release to name it, rather than taking a lagging latest for "no
+      # new release".
       - name: Tell PicoDeck/web-sim to rebuild the browser demo
         if: env.HAVE_WEB_SIM_TOKEN == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.WEB_SIM_DISPATCH_TOKEN }}
-        run: gh api repos/PicoDeck/web-sim/dispatches -f event_type=picodeck-release
+          TAG: ${{ github.ref_name }}
+        run: >-
+          gh api repos/PicoDeck/web-sim/dispatches
+          -f event_type=picodeck-release
+          -f "client_payload[tag]=$TAG"

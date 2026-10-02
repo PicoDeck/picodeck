@@ -422,7 +422,7 @@ static void lua_service_full(lua_State *L) {
 
 // The cheap part plus, when due, the full pass.
 static void lua_service(lua_State *L, bool force) {
-  watchdog_update(); // kick watchdog
+  watchdog_update(); // kick watchdog (the web build yields here when due)
   if (s_exit_requested || dev_commands_wants_exit())
     lua_bridge_raise_exit(L);  // new, or an earlier one that was swallowed
   if (force || g_lua_service_pending ||

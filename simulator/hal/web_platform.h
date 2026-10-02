@@ -22,6 +22,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // ── The core provides ────────────────────────────────────────────────────────
 
 // Run one Core 1 tick (audio, MOD player, network poll, HTTP callbacks) and
@@ -42,5 +46,9 @@ void web_yield_if_due(void);
 
 // Mount <sd_root>/data on IndexedDB and load saved data (blocks until loaded).
 void web_fs_init(const char *sd_root);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
