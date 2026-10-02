@@ -2,6 +2,7 @@
 #include "pio_psram_bulk.h"
 #include "pio_psram_qpi.h"
 #include "../hardware.h"
+#include "display.h"
 
 #include "pico/time.h"
 #include <stdio.h>
@@ -77,10 +78,12 @@ const char *pio_psram_mode_str(void) {
 
 #define DBG_BLOCK 4096u
 
-// Static buffer: the SRAM heap can be too fragmented for a 4KB malloc even at
-// the launcher, and a diagnostic must not depend on heap state. Single buffer
-// (SRAM is tight): the expected pattern is regenerated per byte on compare.
-static uint8_t s_dbg_buf[DBG_BLOCK];
+// The buffer is the start of the display's back buffer (SRAM, so the
+// figures stay SRAM <-> PIO PSRAM): a dev command run at the launcher, which
+// redraws it. A static 4 KB buffer held SRAM the MP3 decoder now uses
+// (issue #28), and the SRAM heap can be too fragmented for a 4 KB malloc.
+// Single buffer: the expected pattern is regenerated per byte on compare.
+#define s_dbg_buf ((uint8_t *)display_get_back_buffer())
 
 static inline uint8_t debug_pattern_byte(uint32_t addr, uint32_t i) {
     return (uint8_t)((addr >> 12) * 197u + i * 13u + 5u);
