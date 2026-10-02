@@ -92,6 +92,16 @@ static int b64_decode_char(char c) {
 static void b64_recv_char(int c);
 static void b64_recv_abort(const char *why);
 
+// The default alarm pool's free and lost slots (the `alarmpool` command).
+// cmake/picodeck_pico_time.cmake compiles the real one into its patched
+// pico_time; an SDK it leaves unpatched (2.3.1 on) gets this one.
+__attribute__((weak)) bool picodeck_alarm_pool_census(int *free_slots,
+                                                      int *lost_slots) {
+    (void)free_slots;
+    (void)lost_slots;
+    return false;
+}
+
 // Map a dev-command key name to a BTN_* mask (0 = not a named button).
 static uint32_t dev_key_name_to_mask(const char *key) {
     static const struct { const char *name; uint32_t mask; } map[] = {
@@ -477,6 +487,14 @@ static void dev_command_run(void *arg) {
 
     if (strcmp(s_cmd_buf, "ping") == 0) {
         printf("[DEV] pong\n");
+    } else if (strcmp(s_cmd_buf, "alarmpool") == 0) {
+        // Issue #58: a slot that is in none of the default pool's lists
+        // (lost) only comes from a leak; tests/e2e/test_kbd_hw.py checks it.
+        int free_slots, lost_slots;
+        if (picodeck_alarm_pool_census(&free_slots, &lost_slots))
+            printf("[DEV] AlarmPool: free=%d lost=%d\n", free_slots, lost_slots);
+        else
+            printf("[DEV] AlarmPool: unavailable (pico_time not patched)\n");
     } else if (strcmp(s_cmd_buf, "stack") == 0) {
         // Peak use of Core 0's 4 KB main stack since boot, and of the app
         // runtime's PSP stack since launch (when an app is running).
@@ -849,6 +867,7 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   ping           - Check device is responding\n");
         printf("[DEV]   ver            - Show firmware build date/time\n");
         printf("[DEV]   stack          - Main, app and OS-command stack peak use\n");
+        printf("[DEV]   alarmpool      - Default alarm pool: free and lost slots\n");
         printf("[DEV]   kbdstat [reset|fault|log|hw] - Keyboard bus engine counters\n");
         printf("[DEV]   xipstat [reset|off|prio core0|prio none|mp3idle on|mp3idle off] - XIP cache, bus contention and MP3 decode timing\n");
         printf("[DEV]   exit           - Signal current app to exit (error if none)\n");
