@@ -136,6 +136,12 @@ static struct {
     {0, 0}
 };
 
+// Keys the STM32 repeats as HOLD (keyboard.ino: F-keys, Esc, modifiers, so
+// also Shift+F5 = the menu key and Shift+Esc = Brk), not as fresh PRESSED.
+#define HOLD_REPEAT_MASK (BTN_ESC | BTN_MENU | BTN_F1 | BTN_F2 | BTN_F3 | \
+                          BTN_F4 | BTN_F5 | BTN_F9 | BTN_SHIFT | BTN_CTRL | \
+                          BTN_FN)
+
 bool hal_input_init(void) {
     memset(g_char_buffer, 0, sizeof(g_char_buffer));
     g_char_head = 0;
@@ -170,7 +176,14 @@ void hal_input_handle_event(const SDL_Event* event) {
                 uint8_t code = kbd_button_to_keycode(mask);
                 if (pressed) {
                     g_buttons |= mask;
-                    g_buttons_pressed |= mask;
+                    // The STM32 repeats a held F-key, Esc, Brk and the
+                    // modifiers (and the menu key) as HOLD: no new press
+                    // edge. Arrows, Enter, Tab, Backspace and Del repeat as
+                    // fresh PRESSED items, as do letters (the branch below).
+                    // So a SDL auto-repeat of the first kind must not edge,
+                    // or a held menu key would flicker the system menu.
+                    if (!(event->key.repeat && (mask & HOLD_REPEAT_MASK)))
+                        g_buttons_pressed |= mask;
                     if (!(mask & BTN_MENU))
                         stage_event_locked(KBD_EV_DOWN, code, 0, rep);
                     if (mask & BTN_ENTER)
