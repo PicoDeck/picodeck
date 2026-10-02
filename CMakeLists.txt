@@ -184,7 +184,7 @@ target_compile_options(image_decoders PRIVATE -O2)
 set(LIBMAD_DIR ${CMAKE_SOURCE_DIR}/third_party/libmad)
 
 # Hot path — placed in SRAM via .time_critical section rename.
-# synth.c (~3.4KB) is the final PCM synthesis step that runs every granule
+# synth.c (~3.3KB) is the final PCM synthesis step that runs every granule
 # on Core 1; keeping it in SRAM keeps it off the XIP cache Core 0's Lua VM
 # uses.  layer3.c (~11KB) stays in flash: no SRAM is left for it (the
 # decoder's hot state comes first, issue #28 in src/drivers/CLAUDE.md).
@@ -202,7 +202,7 @@ add_library(libmad_ram STATIC
     ${LIBMAD_DIR}/synth.c ${LIBMAD_L3_RAM_SRC}
 )
 target_include_directories(libmad_ram PUBLIC ${LIBMAD_DIR})
-target_compile_definitions(libmad_ram PRIVATE PROGMEM=)
+target_compile_definitions(libmad_ram PRIVATE PROGMEM= MAD_TEXT_IN_RAM=1)
 # Issue #28: the MP3 decoder's hottest state (mp3_player.c) and the
 # synthesis window D[] in SRAM, off the XIP cache the app's core shares.
 option(PICODECK_MP3_SRAM "MP3 decoder hot state and window in SRAM" ON)

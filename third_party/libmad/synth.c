@@ -48,10 +48,20 @@ static inline __attribute__((always_inline)) int16_t scale(mad_fixed_t sample) {
 }
 
 
+/* PicoDeck: on the device this file runs from SRAM (MAD_TEXT_IN_RAM: the
+   build renames its .text to .time_critical); init and mute run once per
+   play, so they stay in flash there. */
+# if defined(MAD_TEXT_IN_RAM)
+#  define MAD_COLD __attribute__((section(".text.mad_cold")))
+# else
+#  define MAD_COLD
+# endif
+
 /*
     NAME:	synth->init()
     DESCRIPTION:	initialize synth struct
 */
+MAD_COLD
 void mad_synth_init(struct mad_synth *synth) {
     mad_synth_mute(synth);
 
@@ -66,6 +76,7 @@ void mad_synth_init(struct mad_synth *synth) {
     NAME:	synth->mute()
     DESCRIPTION:	zero all polyphase filterbank values, resetting synthesis
 */
+MAD_COLD
 void mad_synth_mute(struct mad_synth *synth) {
     unsigned int ch, s, v;
 
@@ -574,8 +585,11 @@ void synth_full(struct mad_synth *, struct mad_frame const *,
 # else
 /*
     NAME:	synth->full()
-    DESCRIPTION:	perform full frequency PCM synthesis
+    DESCRIPTION:	perform full frequency PCM synthesis (PicoDeck: static,
+		so that its one caller, mad_synth_granule, holds the only
+		copy: an out-of-line one took 1 KB of SRAM)
 */
+static
 void synth_full(struct mad_synth *synth, struct mad_frame const *frame,
                 unsigned int nch, unsigned int ns) {
     unsigned int phase, ch, s, sb, pe, po;
