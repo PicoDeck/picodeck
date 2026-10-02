@@ -126,6 +126,12 @@ bool text_input_show(const char *title, const char *prompt,
             continue;
         }
 
+        // The menu key cancels, like Esc, and takes the latch.
+        if (kbd_consume_menu_press()) {
+            running = false;
+            continue;
+        }
+
         char     ch      = kbd_get_char();
         uint32_t pressed = kbd_get_buttons_pressed();
 

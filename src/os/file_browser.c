@@ -215,6 +215,12 @@ bool file_browser_show(const char *start_path, const char *root_path,
       kbd_clear_state();
       display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false;
     }
+    // The menu key cancels the browser, like Esc (and takes the latch, so it
+    // cannot open the system menu once the browser has returned).
+    if (kbd_consume_menu_press()) {
+      kbd_clear_state();
+      display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false;
+    }
     uint32_t pressed = kbd_get_buttons_pressed();
 
     if (pressed & BTN_UP) {

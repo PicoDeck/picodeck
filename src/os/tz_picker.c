@@ -197,6 +197,9 @@ bool tz_picker_show(void) {
         // Let a dev "exit" unwind this modal (cancel; the Lua hook handles exit).
         if (dev_commands_wants_exit())
             return false;
+        // The menu key cancels, like Esc, and takes the latch.
+        if (kbd_consume_menu_press())
+            return false;
 
         char     ch      = kbd_get_char();
         uint32_t pressed = kbd_get_buttons_pressed();

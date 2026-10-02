@@ -571,22 +571,24 @@ static void ctl_draw(const gamepad_edit_t *e, bool error) {
   display_draw_text(px + 4, y + 3 + FOOTER_H, hint2, COLOR_GRAY, C_TITLE_BG);
 }
 
-// Runs until Esc (or a dev exit), then saves what changed and rebuilds the
-// installed map (gamepad_apply). Keys come from the event queue, as the
+// Runs until Esc, the menu key outside a capture (returns true: the caller
+// closes the whole menu) or a dev exit, then saves what changed and rebuilds
+// the installed map (gamepad_apply). Keys come from the event queue, as the
 // gamepad's do (keycodes: letters bind); navigation from the button masks.
 // A bindings file that is there but could not be read keeps the page shut:
 // the page would show the defaults and save them over it.
-static void controls_run(gamepad_edit_t *e, bool in_app) {
+static bool controls_run(gamepad_edit_t *e, bool in_app) {
+  bool close_menu = false;
   gamepad_edit_init(e, in_app && app_identity_current() != NULL);
   ctl_load_t load = {e, GAMEPAD_FILE_MISSING, GAMEPAD_FILE_MISSING};
   if (!app_stack_run_os(ctl_load_on_stack, &load)) {
     ctl_alert("Not enough memory for Controls");
-    return;
+    return false;
   }
   if (load.global == GAMEPAD_FILE_UNREADABLE ||
       load.game == GAMEPAD_FILE_UNREADABLE) {
     ctl_alert("Could not read the bindings");
-    return;
+    return false;
   }
   if (load.global == GAMEPAD_FILE_IGNORED ||
       load.game == GAMEPAD_FILE_IGNORED) {
@@ -622,6 +624,10 @@ static void controls_run(gamepad_edit_t *e, bool in_app) {
         redraw = true;
       }
     } else {
+      if (menu) { // leave like Esc (saving below), and close the menu too
+        close_menu = true;
+        break;
+      }
       uint32_t pressed = kbd_get_buttons_pressed();
       if (pressed & BTN_ESC)
         break;
@@ -663,21 +669,25 @@ static void controls_run(gamepad_edit_t *e, bool in_app) {
     }
     gamepad_apply(); // the effective map, from the files as they now are
   }
+  return close_menu;
 }
 
-static void controls_page(bool in_app) {
+// Returns true when the menu key left the page: the menu closes with it.
+static bool controls_page(bool in_app) {
+  bool close_menu = false;
   int saved_font = display_get_font();
   display_set_font(0);
   gamepad_edit_t *e = NULL;
   if (lua_psram_alloc_largest_block() >= CTL_HEAP_MIN)
     e = (gamepad_edit_t *)umm_malloc(sizeof(*e));
   if (e) {
-    controls_run(e, in_app);
+    close_menu = controls_run(e, in_app);
     umm_free(e);
   } else {
     ctl_alert("Not enough memory for Controls");
   }
   display_set_font(saved_font);
+  return close_menu;
 }
 
 // ── Shared menu loop
@@ -949,7 +959,8 @@ static bool menu_loop(lua_State *L, int context) {
         need_redraw = true;
         break;
       case ITEM_CONTROLS:
-        controls_page(!is_launcher);
+        if (controls_page(!is_launcher))
+          running = false; // the menu key left Controls: close the menu
         need_bg_restore = true;
         need_redraw = true;
         break;
@@ -1000,9 +1011,10 @@ static bool menu_loop(lua_State *L, int context) {
   }
   bg_free();
   kbd_clear_state();
-  // kbd_clear_state() keeps a latched menu press, which the app's service
-  // pass would turn into a second menu: one that arrived while a modal of the
-  // menu's own (Wi-Fi, time zone) had the keyboard, or after the last poll.
+  // kbd_clear_state() keeps a latched menu press. The loop takes one at the
+  // top of every pass (the OS modals it opens take theirs too); this catches
+  // only one injected during the teardown or after a dev exit, which the
+  // app's service pass would turn into a second menu.
   kbd_consume_menu_press();
   save_brightness_if_changed(entry_brightness);
   display_set_clip_rect(saved_clip_x, saved_clip_y, saved_clip_w, saved_clip_h);

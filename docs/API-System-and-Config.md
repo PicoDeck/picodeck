@@ -181,7 +181,7 @@ picocalc.sys.log(string.format("PSRAM: %dKB free / %dKB total",
 ---
 
 #### `picocalc.sys.addMenuItem(label, callback)`
-Adds a custom item to the system menu overlay (Menu key; the same key, or a controller's Home, closes the menu again). Maximum **4 items per app**.
+Adds a custom item to the system menu overlay (Menu key). Maximum **4 items per app**.
 
 - **Parameters:**
   - `label` (string): Menu item text

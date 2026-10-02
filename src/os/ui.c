@@ -443,6 +443,8 @@ bool ui_text_input(const char *prompt, const char *default_val,
     // A dev "exit" must be able to unwind this modal: cancel so the Lua hook
     // can process the exit once control returns to the app.
     if (dev_commands_wants_exit()) break;
+    // The menu key cancels, like Esc, and takes the latch.
+    if (kbd_consume_menu_press()) break;
     uint32_t btns = kbd_get_buttons_pressed();
     char c        = kbd_get_char();
 
@@ -526,6 +528,9 @@ bool ui_confirm(const char *message) {
     dev_commands_process();
     // Let a dev "exit" unwind this modal (cancel; the Lua hook handles exit).
     if (dev_commands_wants_exit()) { display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false; }
+    // The menu key answers No, like Esc, even in the grace period, and takes
+    // the latch: left set it would open the system menu after the dialog.
+    if (kbd_consume_menu_press()) { display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false; }
     uint32_t btns = kbd_get_buttons_pressed();
     char c        = kbd_get_char();
     if (!armed) {

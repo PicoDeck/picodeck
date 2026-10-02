@@ -147,6 +147,12 @@ void usb_msc_enter_mode(void) {
         printf("[USB MSC] ESC key pressed, exiting\n");
         break;
       }
+      // The menu key leaves too, and takes the latch (it would open the
+      // system menu once this screen has closed).
+      if (kbd_consume_menu_press()) {
+        printf("[USB MSC] menu key pressed, exiting\n");
+        break;
+      }
     }
 
     // Check for ESC via CDC serial (for automated workflows)
