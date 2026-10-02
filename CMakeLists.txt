@@ -360,6 +360,8 @@ add_executable(picodeck
     src/drivers/kbd_bus.c
     src/drivers/kbd_i2c.c
     src/drivers/pad_source.c
+    src/drivers/hid_pad.c
+    src/drivers/bt_pad_store.c
     src/drivers/sdcard.c
     src/drivers/wifi.c
     src/drivers/rng.c
@@ -485,10 +487,46 @@ if(PICO_BOARD STREQUAL "pimoroni_pico_plus2_w_rp2350" OR
         MG_ENABLE_DRIVER_PICO_W=1
         MG_ENABLE_TCPIP_DRIVER_INIT=0
         CYW43_LWIP=0
+        # wifi_bus_clock() retunes the CYW43's PIO SPI divider per clk_sys;
+        # dynamic, so a re-init of the bus picks up the current divider too.
+        CYW43_PIO_CLOCK_DIV_DYNAMIC=1
     )
     message(STATUS "WiFi enabled for board: ${PICO_BOARD} (Mongoose TCPIP)")
+
+    # ── Bluetooth gamepads (src/drivers/bt_pad.c, issue #26) ────────────────
+    # BTstack's Classic HID host on the CYW43, off until the user turns it on
+    # (Settings -> Bluetooth): the firmware carries it, a device that never
+    # enables it never loads the BT firmware. CYW43_ENABLE_BLUETOOTH (from
+    # pico_btstack_hci_transport_cyw43) also swaps in the WiFi+BT firmware
+    # blob. Not pico_btstack_cyw43: its btstack_cyw43_init sets BTstack up
+    # inside cyw43_arch_init with a flash TLV; bt_pad.c provides that hook.
+    option(PICODECK_BT "Bluetooth gamepads (BTstack Classic HID host)" ON)
+    if(PICODECK_BT)
+        target_link_libraries(picodeck
+            pico_btstack_classic
+            pico_btstack_hci_transport_cyw43
+            pico_btstack_run_loop_async_context
+        )
+        target_sources(picodeck PRIVATE src/drivers/bt_pad.c)
+        target_include_directories(picodeck PRIVATE src/drivers/btstack)
+        target_compile_definitions(picodeck PRIVATE PICODECK_BT=1)
+        # BTstack's pools are static (btstack_config.h, no HAVE_MALLOC) and
+        # all of its static state goes to QMI PSRAM (bt_psram.ld). The
+        # CYW43's BT shared-bus driver mallocs ~940 B for its firmware
+        # download, a third of the SRAM heap: umm instead.
+        set_source_files_properties(
+            ${PICO_SDK_PATH}/src/rp2_common/pico_cyw43_driver/cybt_shared_bus/cybt_shared_bus.c
+            PROPERTIES COMPILE_DEFINITIONS "malloc=bt_pad_malloc;free=bt_pad_free")
+        set(_bt_ld ${CMAKE_SOURCE_DIR}/src/drivers/btstack/bt_psram.ld)
+        target_link_options(picodeck PRIVATE "LINKER:-T,${_bt_ld}")
+        set_property(TARGET picodeck APPEND PROPERTY LINK_DEPENDS ${_bt_ld})
+        message(STATUS "Bluetooth gamepads: on (BTstack ${PICO_BTSTACK_PATH})")
+    else()
+        target_sources(picodeck PRIVATE src/drivers/bt_pad_stub.c)
+    endif()
 else()
     message(STATUS "WiFi disabled for board: ${PICO_BOARD}")
+    target_sources(picodeck PRIVATE src/drivers/bt_pad_stub.c)
 endif()
 
 # Enable USB serial for stdio (printf goes to USB-C serial — handy for debug)

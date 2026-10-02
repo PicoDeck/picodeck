@@ -389,7 +389,7 @@ test-numfmt-sweep:
 #   make fuzz FUZZ_TARGETS=wav FUZZ_SECONDS=120
 FUZZ_BUILD_DIR := build_fuzz
 FUZZ_SECONDS ?= 60
-FUZZ_TARGETS ?= elf_plan app_manifest wav qoa
+FUZZ_TARGETS ?= elf_plan app_manifest wav qoa hid_pad
 
 fuzz-build:
 	@cmake -S tests/unit -B $(FUZZ_BUILD_DIR) -DCMAKE_C_COMPILER=clang \

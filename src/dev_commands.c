@@ -740,6 +740,13 @@ static void dev_command_run(void *arg) {
         char reply[DEV_OP_REPLY_MAX];
         dev_op_pad(s_cmd_buf + 3, reply, sizeof(reply));
         printf("[DEV] %s\n", reply);
+    } else if (strncmp(s_cmd_buf, "bt ", 3) == 0 ||
+               strcmp(s_cmd_buf, "bt") == 0) {
+        // Bluetooth gamepads (drivers/bt_pad.h): dev_ops.c, shared with
+        // the simulator's dev_command RPC.
+        char reply[DEV_OP_REPLY_MAX];
+        dev_op_bt(s_cmd_buf + 2, reply, sizeof(reply));
+        printf("[DEV] %s\n", reply);
     } else if (strncmp(s_cmd_buf, "put ", 4) == 0) {
         const char *args = s_cmd_buf + 4;
         uint32_t size = 0;

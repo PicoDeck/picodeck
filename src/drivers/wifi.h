@@ -81,12 +81,32 @@ bool wifi_hw_disconnected(void);
 // system_clock_khz) that handshake fails 64 times 1 ms apart
 // ("cyw43_kso_set(0): failed"): Core 0 stalls for ~68 ms. A connect still
 // in flight when the radio went idle can wake the bus again later, hence
-// the pause, not only the sleep. Core 0.
+// the pause, not only the sleep. Also a no-op while Bluetooth is on
+// (bt_pad_radio_in_use): BT runs through the same driver, a paused driver
+// reads as powered off, and BT's next transfer would power-cycle the chip;
+// wifi_bus_clock() keeps the bus in spec at the new clock instead. Core 0.
 void wifi_pause_radio(void);
 // Undoes wifi_pause_radio() (a no-op when not paused): call it once sysclk
 // is back to the one the CYW43's PIO SPI was set up for (200 MHz).
 // wifi_connect() calls it too. Core 0.
 void wifi_resume_radio(void);
+
+// Clock changes (launcher_apply_clock, Core 0, with Core 1 paused). The
+// CYW43's PIO SPI clock is clk_sys / (2 x div); the SDK sets div once, at
+// init (2: 50 MHz at 200 MHz, the chip's limit), so at 300 MHz the bus ran
+// at 75 MHz. wifi_bus_hold(true) takes the driver's async-context lock, so
+// no CYW43 transfer (WiFi or Bluetooth, from Core 0's driver interrupt)
+// runs across the switch; wifi_bus_clock(khz) sets div = ceil(khz / 100 MHz)
+// (at least 2), the bus at or under 50 MHz at that clk_sys: once for the
+// faster of the two clocks before the switch (in spec at both), once for
+// the new clock after it. wifi_bus_hold(false) releases the lock (the
+// driver's pending work runs then). No-ops without the CYW43.
+void wifi_bus_hold(bool hold);
+void wifi_bus_clock(uint32_t khz);
+// How often wifi_bus_clock() could not find the bus's state machine (its
+// divider then stays the old one: out of spec above 200 MHz). The `bt`
+// dev command reports it; the hardware tests require 0.
+uint32_t wifi_bus_errors(void);
 
 // How long a caller should wait for wifi_hw_disconnected() after
 // wifi_disconnect(): Core 1 drains the request on its next tick, but may be

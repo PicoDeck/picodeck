@@ -85,6 +85,10 @@ picodeck_unit_test(test_kbd_pad INCLUDES ${SRC}/drivers)
 # Pad sources (the `pad` dev command, the simulator's controller, later a BT
 # or USB pad) ORed into the same gamepad.
 picodeck_unit_test(test_pad_source SOURCES ${SRC}/drivers/pad_source.c INCLUDES ${SRC}/drivers)
+# A Bluetooth pad's HID descriptor and reports -> PAD_* (bt_pad.c's parser).
+picodeck_unit_test(test_hid_pad SOURCES ${SRC}/drivers/hid_pad.c INCLUDES ${SRC}/drivers)
+# The Bluetooth pads' bonding store (link keys + paired pads, on the SD card).
+picodeck_unit_test(test_bt_pad_store SOURCES ${SRC}/drivers/bt_pad_store.c INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_bus SOURCES ${SRC}/drivers/kbd_bus.c INCLUDES ${SRC}/drivers)
 # The default alarm pool fix (cmake/picodeck_pico_time.cmake, #58): the
 # cancellation pass cut out of the patched pico_time the firmware build

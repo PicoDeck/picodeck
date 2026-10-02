@@ -55,7 +55,7 @@ Dev commands while an app runs (`src/dev_commands.c`, `lua_bridge.c`, native `sy
 ### Tests
 - **E2E (simulator)**: `SDL_VIDEODRIVER=dummy pytest tests/e2e -n auto` (see `tests/e2e/README.md`; config and markers in the repo-level `pytest.ini`). Runs against `build_sim/picodeck_simulator`; `PICODECK_SIM_BINARY` (or `--simulator-path`) selects another build: `make simulator-asan` (`build_sim_asan/`, enables `asan_only` tests), `make simulator-tsan`, `make simulator-net` / `-net-asan` / `-net-tsan` (`build_sim_net/`…, the firmware network stack; enables `firmware_net` tests). Virtual time and `--real-umm` are described in `simulator/CLAUDE.md`. Lua fixture apps report through `tests/e2e/lib/picotest.lua` (staged as `/system/lib/picotest.lua`).
 - **E2E (hardware)**: `--target hw:/dev/serial/by-id/<PicoDeck device>` runs the `hardware`/`both` tests on a real PicoCalc through `tests/e2e/hw_target.py` (they skip, allow-listed, on the simulator).
-- **Unit**: `make test-unit` (host C tests: `tests/unit/CMakeLists.txt` → `build_unit/`, ctest, ASan+UBSan; covers the pure modules `elf_plan`, `fs_path`, `app_manifest`, `config`/`appconfig` over an in-memory SD fake, `wav`, `qoa`, `audio_ring`, `zip_name`, `text_wrap`, `lua_numfmt` vs glibc, fonts, the keyboard decode, `pad_source`, the patched alarm pool's cancellation pass (`test_pico_time_pass`, cut from the SDK's `time.c` under `PICO_SDK_PATH`, else from a 2.2.0 fixture), and `lua_hook_arm` against the real Lua core, which `make test-unit` fetches with `download-lua`), `python3 -m pytest tests/unit`, `make test-lua`.
+- **Unit**: `make test-unit` (host C tests: `tests/unit/CMakeLists.txt` → `build_unit/`, ctest, ASan+UBSan; covers the pure modules `elf_plan`, `fs_path`, `app_manifest`, `config`/`appconfig` over an in-memory SD fake, `wav`, `qoa`, `audio_ring`, `zip_name`, `text_wrap`, `lua_numfmt` vs glibc, fonts, the keyboard decode, `pad_source`, `hid_pad` (Bluetooth pads' HID reports), the patched alarm pool's cancellation pass (`test_pico_time_pass`, cut from the SDK's `time.c` under `PICO_SDK_PATH`, else from a 2.2.0 fixture), and `lua_hook_arm` against the real Lua core, which `make test-unit` fetches with `download-lua`), `python3 -m pytest tests/unit`, `make test-lua`.
 - **Fuzz**: `make fuzz` runs the libFuzzer targets in `tests/fuzz/` (clang; `FUZZ_TARGETS=`, `FUZZ_SECONDS=`). CI runs them nightly (`.github/workflows/fuzz.yml`) and the unit job on every push (`unit.yml`). There is no linter.
 
 ## Architecture
@@ -74,6 +74,7 @@ main()
   config_load()                 // /system/config.json
   boot_crypto_init()            // on the OS stack: Core 0 CTR_DRBG seed + CA bundle parse
   wifi_init() → http_init() → tcp_init()
+  bt_pad_init()                 // Bluetooth pads, only if the user turned them on
   multicore_launch_core1()      // Core 1: wifi_poll, http, mp3, fileplayer
   system_menu_init()
   launcher_run()                // Never returns
@@ -88,7 +89,7 @@ main()
 - `display`, `input`, `fs`, `sys`, `wifi`, `audio`, `tcp`, `ui` → `picocalc.<same>`. Lua input also has `pollEvent()` (ordered `{type="down"|"up"|"char", key, char, mods, button, repeat}` events, nil when empty) and `isKeyDown(k)`; Lua TCP sockets are `picocalc.tcp.new(host, port, tls)` objects.
 - `http` → `picocalc.network.http` (OO connections); `soundplayer` → `picocalc.sound`; `graphics` → `picocalc.graphics.image`; `video` → `picocalc.video`; `modplayer` → `picocalc.modplayer`; `zip` → `picocalc.zip`; `crypto` → `picocalc.crypto` (SHA-256/SHA-1/HMAC/AES-CTR/ECDH).
 - `appconfig` → `picocalc.config` **and** `picocalc.appconfig` (same store, two names).
-- `gamepad` → `picocalc.gamepad`: `PAD_*` buttons aliased to keys (primary + alternate slot; the keys still report through `input`), resolved in the shared keyboard decode (`src/drivers/CLAUDE.md`), ORed with the pad sources (`src/drivers/pad_source.h`: the `pad` dev command, the simulator's game controller, later a BT/USB pad); key names and the bindings files (`/system/gamepad.json`, per app `/data/<id>/gamepad.json`, loaded at every launch) in `src/os/gamepad_map.c` (`src/os/CLAUDE.md`).
+- `gamepad` → `picocalc.gamepad`: `PAD_*` buttons aliased to keys (primary + alternate slot; the keys still report through `input`), resolved in the shared keyboard decode (`src/drivers/CLAUDE.md`), ORed with the pad sources (`src/drivers/pad_source.h`: the `pad` dev command, the simulator's game controller, a Bluetooth pad: `src/drivers/bt_pad.c`, Settings → Bluetooth); key names and the bindings files (`/system/gamepad.json`, per app `/data/<id>/gamepad.json`, loaded at every launch) in `src/os/gamepad_map.c` (`src/os/CLAUDE.md`).
 - `picocalc.sysconfig` is Lua-only and needs the `"sysconfig"` requirement; there is no `g_api.config`.
 - `g_api.version`: 1 = Phase 1, 2 = Phase 2, 3 = `fs->browse`, 4 = clip rect + mode-7 plane, 5 = zip read-in-place handles, 6 = fonts (setFont/getFont/getFontWidth/getFontHeight/textWidth/loadFont/unloadFont/drawTextTransparent), 7 = video time seek/position, progress OSD, `hasEnded`, 8 = TLS verification: `http->setInsecure`, `tcp->connectEx` (`PCTCP_TLS`/`PCTCP_TLS_INSECURE`), 9 = `gamepad` (the first table after `version`: native apps check `version >= 9` before reading it).
 
@@ -119,8 +120,8 @@ main()
 - Apps and OS register items with `system_menu_add_item()` / `picocalc.sys.addMenuItem()`.
 
 ### Memory Map
-- **SRAM heap**: ~4.8 KB (4912 B: `__end__`=0x2007ecd0 to `__HeapLimit`=0x20080000; the 400 KB double framebuffer is BSS), so effectively none: scratch buffers go through `umm_malloc`.
-- **QMI PSRAM (8 MB)**: Lua heap via `umm_malloc` at 0x11200000 (cached alias), 6 MB minus the 128 KB Core 1 pool; ELF app data/BSS. Every umm allocation costs at least one 200-byte block (small Lua objects share slabs; see `src/os/CLAUDE.md`).
+- **SRAM heap**: ~4.8 KB (4876 B: `__end__`=0x2007ecf4 to `__HeapLimit`=0x20080000, of which the SDK reserves 2 KB; the 400 KB double framebuffer is BSS), so effectively none: scratch buffers go through `umm_malloc`.
+- **QMI PSRAM (8 MB)**: Lua heap via `umm_malloc` at 0x11200000 (cached alias), 6 MB minus the 128 KB Core 1 pool; ELF app data/BSS. Below it, BTstack's static state is linked at 0x11100000 (`src/drivers/btstack/bt_psram.ld`, NOLOAD, zeroed at Bluetooth's first start); the rest of the low 2 MB is unused (the boot self-test touches 0x3E0-0x4E0). Every umm allocation costs at least one 200-byte block (small Lua objects share slabs; see `src/os/CLAUDE.md`).
 - **PIO PSRAM (8 MB)**: the OS owns everything below `0x48000` (MP3 PCM ring); apps get `0x48000`+, range-checked for Lua and native. Accessed via `pio_psram_read`/`pio_psram_write` and `g_api.psram`.
 - **Main stack (MSP)**: 4 KB in SCRATCH (`__StackBottom`=0x20081000, `__StackTop`=0x20082000), `MSPLIM`-guarded. Boot, the launcher (menus, USB MSC) and every IRQ run here; dev commands and screenshot save move to a short-lived 32 KB PSRAM stack. Measured peak ~2.2-2.5 KB; the `stack` dev command prints it and the running app's stack peak.
 - **Lua VM stack**: 64 KB `umm_malloc` per launch, on the PSP. PSRAM because no SRAM region that size exists; costs ~10-50% on C-call-heavy Lua code (pure Lua loops unchanged).

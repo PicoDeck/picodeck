@@ -8,7 +8,7 @@
 // "Gamepad"): keys resolved through the pad map, with their own tap, repeat
 // and Shift/Alt rules. Every other source reports its whole PAD_* state
 // here: the `pad` dev command (tests without hardware), the simulator's SDL
-// game controller, and later a Bluetooth or USB-host pad (issue #26). The
+// game controller, and a Bluetooth pad (bt_pad.c; issue #26). The
 // keyboard driver ORs them all into the gamepad at every kbd_poll(), so the
 // keyboard keeps working while a pad is connected and an app cannot tell
 // which source a press came from (kbd_get_pad* return
@@ -55,8 +55,8 @@
 typedef enum {
   PAD_SOURCE_TEST = 0, // the `pad` dev command (dev_ops.c): tests, no pad
   PAD_SOURCE_HOST,     // the simulator's SDL game controller (hal_pad.c)
-  PAD_SOURCE_BT,       // reserved: a Bluetooth pad (issue #26)
-  PAD_SOURCE_USB,      // reserved: a USB-host pad (issue #26)
+  PAD_SOURCE_BT,       // a Bluetooth pad (bt_pad.c)
+  PAD_SOURCE_USB,      // reserved: a USB-host pad
   PAD_SOURCE_COUNT
 } pad_source_id_t;
 

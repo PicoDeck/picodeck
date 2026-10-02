@@ -497,6 +497,7 @@ void __attribute__((naked)) isr_hardfault(void) {
 #include "drivers/keyboard.h"
 #include "drivers/sdcard.h"
 #include "drivers/wifi.h"
+#include "drivers/bt_pad.h"
 #include "drivers/rng.h"
 #include "fonts/font_registry.h"
 #include "core1_stats.h"
@@ -2327,6 +2328,9 @@ int main(void) {
   wifi_init();
   http_init();
   tcp_init();
+  // Bluetooth pads, only if the user turned them on: loads the BT firmware
+  // over the CYW43's bus before Core 1 (and its WiFi traffic) starts.
+  bt_pad_init();
   watchdog_update();
 
   // Debug: check free size after WiFi/HTTP init
