@@ -322,6 +322,7 @@ add_executable(picodeck
     src/os/terminal_render.c
     src/os/lua_bridge_terminal.c
     src/os/crypto.c
+    src/os/ssh_blob.c
     src/os/lua_bridge_crypto.c
     src/os/lua_bridge_mod.c
     src/os/lua_bridge_zip.c
