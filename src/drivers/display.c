@@ -1543,6 +1543,57 @@ const uint16_t *display_get_framebuffer(void) { return s_framebuffer; }
 
 uint16_t *display_get_back_buffer(void) { return s_framebuffer; }
 
+// ── Bulk back-buffer pixel blocks (see display.h) ────────────────────────────
+// The framebuffer holds byte-swapped RGB565; both directions convert here so
+// callers deal in host-order values.
+
+bool display_set_pixels_block(int x, int y, int w, int h,
+                              const void *rgb565_host, size_t len) {
+  if (w <= 0 || h <= 0) return false;
+  if (x < 0 || y < 0 || x + w > FB_WIDTH || y + h > FB_HEIGHT) return false;
+  if (len != (size_t)w * (size_t)h * 2u) return false;
+
+  const uint8_t *src = (const uint8_t *)rgb565_host;
+  bool wrote_any = false;
+  for (int row = 0; row < h; row++) {
+    const uint8_t *s = src + (size_t)row * (size_t)w * 2u;
+    int py = y + row;
+    // Same clip test as display_set_pixel, hoisted out of the inner loop.
+    if (py < s_clip_y0 || py > s_clip_y1) continue;
+    for (int col = 0; col < w; col++) {
+      int px = x + col;
+      if (px < s_clip_x0 || px > s_clip_x1) continue;
+      uint16_t v = (uint16_t)(s[0] | ((uint16_t)s[1] << 8));
+      s_framebuffer[py * FB_WIDTH + px] = (uint16_t)((v >> 8) | (v << 8));
+      wrote_any = true;
+      s += 2;
+    }
+  }
+  return wrote_any;
+}
+
+bool display_get_pixels_block(int x, int y, int w, int h,
+                              void *rgb565_host, size_t len) {
+  if (w <= 0 || h <= 0) return false;
+  if (x < 0 || y < 0 || x + w > FB_WIDTH || y + h > FB_HEIGHT) return false;
+  if (len != (size_t)w * (size_t)h * 2u) return false;
+
+  uint8_t *dst = (uint8_t *)rgb565_host;
+  for (int row = 0; row < h; row++) {
+    uint8_t *d = dst + (size_t)row * (size_t)w * 2u;
+    const uint16_t *src = &s_framebuffer[(y + row) * FB_WIDTH + x];
+    for (int col = 0; col < w; col++) {
+      uint16_t be = src[col];
+      uint16_t v = (uint16_t)((be >> 8) | (be << 8));
+      d[0] = (uint8_t)(v & 0xFF);
+      d[1] = (uint8_t)(v >> 8);
+      d += 2;
+    }
+  }
+  return true;
+}
+
+
 const uint16_t *display_get_front_buffer(void) {
   return s_framebuffers[1 - s_back_buffer_idx];
 }

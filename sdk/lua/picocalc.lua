@@ -81,6 +81,20 @@ function picocalc.display.setPixel(x, y, color) end
 ---@return integer color RGB565 colour
 function picocalc.display.getPixel(x, y) end
 
+---A handle on the frame being drawn (the back buffer), for bulk pixel access.
+---
+---Lua cannot dereference a raw pointer, so this is the capability rather than
+---the address the C `display->getBackBuffer()` returns: read and write the
+---back buffer as host-order RGB565 with no intermediate image. For a single
+---pixel use `display.setPixel()` / `display.getPixel()`, which this does not
+---mirror.
+---
+---The handle refers to the back buffer by role, not by address, so it stays
+---correct across `flush()` (which swaps the buffers under it). It is the same
+---stateless object every call returns.
+---@return PicoDeckFramebuffer
+function picocalc.display.getBackBuffer() end
+
 ---Fill a solid rectangle.
 ---@param x integer
 ---@param y integer
@@ -666,6 +680,13 @@ function PicoDeckFile:seek(offset, whence) end
 ---@return integer offset
 function PicoDeckFile:tell() end
 
+---The total size of this open file in bytes, without moving the read
+---position. `seek(0, "end")` then `tell()` gives the same number but leaves the
+---handle at end of file.
+---@return integer? bytes `nil` if the size could not be read
+---@return string? error
+function PicoDeckFile:fsize() end
+
 ---Open a file on the SD card.
 ---@param path string Absolute SD card path
 ---@param mode? string `"r"` (default), `"w"`, `"a"`, `"r+"`, etc.
@@ -723,6 +744,13 @@ function picocalc.fs.readFile(path) end
 ---@param path string
 ---@return integer
 function picocalc.fs.size(path) end
+
+---Return `true` if the path exists and is a directory. `false` for a file, for
+---a missing path, and for a path the sandbox refuses (the same "not usable"
+---answer `fs.exists` gives).
+---@param path string
+---@return boolean
+function picocalc.fs.isDir(path) end
 
 ---@class PicoDeckDirEntry
 ---@field name string File or directory name (not full path)
@@ -3222,6 +3250,42 @@ function picocalc.zip.list(zip_path) end
 ---@return string? error
 function picocalc.zip.extract(zip_path, dest_dir, progress_fn) end
 
+---@class PicoDeckFramebuffer
+---A handle on the frame being drawn. From `picocalc.display.getBackBuffer()`.
+local PicoDeckFramebuffer = {}
+
+---Width of the framebuffer in pixels (320).
+---@return integer
+function PicoDeckFramebuffer:width() end
+
+---Height of the framebuffer in pixels (320).
+---@return integer
+function PicoDeckFramebuffer:height() end
+
+---Read a rectangle of the back buffer as host-order RGB565, row-major, top row
+---first -- the same encoding `PicoDeckImage:getPixels()` uses. The clip rect
+---does not apply (matching `display.getPixel()`); the rectangle must lie
+---inside the screen or this raises.
+---@param x integer 0-319
+---@param y integer 0-319
+---@param w integer pixels
+---@param h integer pixels
+---@return string pixels `w * h * 2` bytes
+function PicoDeckFramebuffer:getPixels(x, y, w, h) end
+
+---Write host-order RGB565 into the back buffer. Clipped to the clip rect
+---exactly as `display.setPixel()` is, so a partly hidden rectangle writes only
+---its visible part. `data` must be exactly `w * h * 2` bytes or this raises.
+---Returns `false` when the rectangle is wholly outside the clip rect, meaning
+---nothing was drawn.
+---@param data string `w * h * 2` bytes
+---@param x integer
+---@param y integer
+---@param w integer pixels
+---@param h integer pixels
+---@return boolean drew `false` if nothing was visible
+function PicoDeckFramebuffer:setPixels(data, x, y, w, h) end
+
 ---@class PicoDeckZipArchive : userdata
 local PicoDeckZipArchive = {}
 
@@ -3247,6 +3311,23 @@ function PicoDeckZipArchive:exists(name) end
 ---@return integer? bytes
 function PicoDeckZipArchive:size(name) end
 
+---Number of entries in the archive: files plus directory entries. `0` once the
+---archive is closed.
+---@return integer count
+function PicoDeckZipArchive:numEntries() end
+
+---The index of an entry, as `statIndex()` and `extractEntry()` address it, or
+---`nil` if no entry has that exact name.
+---@param name string
+---@return integer? index
+function PicoDeckZipArchive:locate(name) end
+
+---One entry's metadata by index, keyed the way `list()` reports it. `nil` for a
+---bad index or a closed archive.
+---@param index integer
+---@return { name: string, size: integer, compressed_size: integer, is_dir: boolean }? entry
+function PicoDeckZipArchive:statIndex(index) end
+
 ---Decompress a whole entry into a Lua string. Fails if the entry exceeds
 ---`max_len` (when given) or the 4 MB in-memory cap.
 ---@param name string
@@ -3262,6 +3343,13 @@ function PicoDeckZipArchive:read(name, max_len) end
 ---@return boolean ok
 ---@return string? error
 function PicoDeckZipArchive:extract(name, dest_path) end
+
+---`extract()` addressed by entry index instead of name.
+---@param index integer
+---@param dest_path string
+---@return boolean ok
+---@return string? error
+function PicoDeckZipArchive:extractEntry(index, dest_path) end
 
 ---Extract every file entry into a directory. Optional progress callback.
 ---@param dest_dir string

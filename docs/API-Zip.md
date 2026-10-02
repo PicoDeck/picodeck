@@ -66,9 +66,9 @@ if not ar then error(err) end
 
 ### Archive Methods
 
-The archive object returned by `picocalc.zip.open()` is the Lua surface for random access, and it is addressed **by entry name**: there are no entry indexes, no `locate` and no `statIndex`, and `ar:read` returns a string rather than filling a caller buffer. (The C API works by index; see [the C-to-Lua mapping](#c-to-lua-mapping).) Use it as `ar:method(...)`.
+The archive object returned by `picocalc.zip.open()` is the Lua surface for random access. Entries can be addressed **by name** (`exists`, `size`, `read`, `extract`) or **by index** (`numEntries`, `locate`, `statIndex`, `extractEntry`) — the index forms mirror the C API, so a port can keep its indexes; `ar:read` returns a string rather than filling a caller buffer. See [the C-to-Lua mapping](#c-to-lua-mapping). Use it as `ar:method(...)`.
 
-Errors come in two kinds. A **runtime failure** (missing entry, bad archive, permission, size cap) is reported in the return values, per method: `ar:read` gives `nil, errorString`, `ar:extract` and `ar:extractAll` give `false, errorString`, `ar:exists` gives `false` and `ar:size` gives a bare `nil`; `ar:list` cannot fail. **Misuse** raises a Lua error: calling any method on a closed archive raises `archive is closed` (except `:close()`, which is a no-op when already closed), and a missing or wrongly typed argument raises the usual argument error.
+Errors come in two kinds. A **runtime failure** (missing entry, bad archive, permission, size cap) is reported in the return values, per method: `ar:read` gives `nil, errorString`, `ar:extract` and `ar:extractAll` give `false, errorString`, `ar:exists` gives `false`, and `ar:size`, `ar:locate` and `ar:statIndex` give a bare `nil`; `ar:list` and `ar:numEntries` cannot fail. **Misuse** raises a Lua error: calling any method on a closed archive raises `archive is closed` (except `:close()`, which is a no-op when already closed), and a missing or wrongly typed argument raises the usual argument error.
 
 #### `ar:list()`
 List the archive's file entries (directory entries are skipped). Same result shape as `picocalc.zip.list`.
@@ -107,6 +107,57 @@ Get an entry's uncompressed size.
 ```lua
 local bytes = ar:size("music/theme.mod")
 ```
+
+---
+
+#### `ar:numEntries()`
+How many entries the archive holds: files **and** directory entries.
+
+- **Returns:** (number) Entry count, or `0` once the archive is closed
+- **Errors:** none
+
+Unlike `ar:list()`, which skips directory entries, this counts them — it is the
+loop bound for walking an archive by index.
+
+---
+
+#### `ar:locate(name)`
+The index of an entry, for the index-addressed calls below.
+
+- **Parameters:**
+  - `name` (string): Entry name
+- **Returns:** (number or nil) Entry index, or `nil` if no entry has that exact name
+
+```lua
+local i = ar:locate("music/theme.mod")
+if i then
+    local st = ar:statIndex(i)
+    print(st.size, "bytes, compressed to", st.compressed_size)
+end
+```
+
+---
+
+#### `ar:statIndex(index)`
+One entry's metadata, addressed by index.
+
+- **Parameters:**
+  - `index` (number): Entry index, as `numEntries()` bounds it
+- **Returns:** (table or nil) A table with `name` (string), `size` (uncompressed bytes), `compressed_size` (bytes) and `is_dir` (boolean) — the same keys `ar:list()` reports — or `nil` (no error string) for a bad index or a closed archive
+
+Directory entries are included here, unlike in `ar:list()`.
+
+---
+
+#### `ar:extractEntry(index, dest_path)`
+`ar:extract()` addressed by entry index instead of name. Constant memory, and
+the destination is caller-chosen as always.
+
+- **Parameters:**
+  - `index` (number): Entry index
+  - `dest_path` (string): Destination file path (subject to the write sandbox)
+- **Returns:** (boolean, string) `true` on success, or `false, errorString`
+- **Errors:** none; failures come back as `false, error`
 
 ---
 
@@ -172,18 +223,19 @@ ar:close()
 
 ### C-to-Lua mapping
 
-The native `g_api.zip` (see [Native API](#native-api-c)) and the Lua archive object cover the same ground with different shapes: C addresses entries by index and fills a buffer you allocate, Lua addresses them by name and returns a string. Porting either way:
+The native `g_api.zip` (see [Native API](#native-api-c)) and the Lua archive object cover the same ground with two shapes: both address entries by **index** (`numEntries`/`locate`/`statIndex`/`extractEntry`) and both by **name** (`exists`/`size`/`read`/`extract`). C fills a buffer you allocate; Lua returns a string. Porting either way:
 
 | C (`api->zip->...`) | Lua | Note |
 |---|---|---|
 | `extract(zip_path, dest_dir)` | `picocalc.zip.extract(zip_path, dest_dir [, progress])` | Lua adds a progress callback and an error string |
 | `list(zip_path)` (count) | `picocalc.zip.list(zip_path)` (table) | Lua returns the entries, files only |
 | `open(path)` (`NULL` on error) | `picocalc.zip.open(path)` (`nil, err`) | at most 4 open per app in both |
-| `numEntries(z)` + `statIndex(z, i, &st)` loop | `ar:list()` | Lua skips directory entries; C counts them |
-| `locate(z, name)` (index or -1) | `ar:exists(name)` | Lua has no index to keep |
-| `statIndex(z, idx, &st)` then `st.size` | `ar:size(name)` | `nil` if absent |
-| `read(z, idx, buf, cap)` | `ar:read(name [, max_len])` | Lua allocates the string; no undersized-buffer case |
-| `extractEntry(z, idx, dest)` | `ar:extract(name, dest)` | |
+| `numEntries(z)` | `ar:numEntries()` | Same |
+| `locate(z, name)` (index or -1) | `ar:locate(name)` | Same, but Lua returns `nil` rather than `-1`. `ar:exists(name)` is the boolean form |
+| `statIndex(z, idx, &st)` | `ar:statIndex(idx)` | Same fields; Lua returns a table or `nil` instead of a bool out-param |
+| `read(z, idx, buf, cap)` | `ar:read(name [, max_len])` | Lua allocates the string; there is no undersized-buffer case (hence no `PCZIP_ERR_TOO_SMALL`) |
+| `extractEntry(z, idx, dest)` | `ar:extractEntry(idx, dest)` | Same |
+| (none) | `ar:size(name)` / `ar:read(name)` / `ar:extract(name, dest)` | Name-addressed convenience over the index calls |
 | (none) | `ar:extractAll(dest [, progress])` | C: use `extract` |
 | `close(z)` | `ar:close()` | Lua also closes on GC, `<close>` and app exit |
 
