@@ -81,7 +81,7 @@ Read a rectangle as a string of host-order RGB565, row-major, top row first — 
 
 - **Parameters:** `x`, `y` (number) top-left; `w`, `h` (number) size in pixels
 - **Returns:** (string) `w * h * 2` bytes
-- **Errors:** if the rectangle is not wholly inside the screen, or `w`/`h` is not positive
+- **Errors:** if the rectangle is not wholly inside the screen, or `w`/`h` is not positive. The rectangle is checked before anything is allocated, so a huge request raises `outside the screen` rather than running out of memory
 
 The clip rect does not apply to reads (matching `display.getPixel()`).
 
@@ -92,10 +92,10 @@ Write host-order RGB565 into the back buffer.
   - `data` (string): exactly `w * h * 2` bytes
   - `x`, `y` (number): top-left
   - `w`, `h` (number): size in pixels
-- **Returns:** (boolean) `false` when the rectangle lies wholly outside the clip rect, so nothing was drawn; `true` otherwise
+- **Returns:** (boolean) `true` when anything was drawn; `false` when the rectangle is on screen but lies wholly outside the clip rect, so nothing was drawn
 - **Errors:** if `data` is not exactly `w * h * 2` bytes, the rectangle is not inside the screen, or `w`/`h` is not positive
 
-Clipped to the clip rect exactly as `display.setPixel()` is, so a partly hidden rectangle writes only its visible part. Note the asymmetry, which matches the single-pixel calls: writes respect the clip rect, reads do not.
+Clipped to the clip rect exactly as `display.setPixel()` is, so a partly hidden rectangle writes only its visible part, each pixel at the position it would have unclipped. Note the asymmetry, which matches the single-pixel calls: writes respect the clip rect, reads do not.
 
 ```lua
 -- Push a computed frame straight into the back buffer, no image in between.

@@ -29,16 +29,31 @@ static int l_fb_height(lua_State *L) {
   return 1;
 }
 
+// Reads the rectangle arguments at idx..idx+3 and raises unless it is a
+// non-empty rectangle wholly inside the screen. w and h are bounded by the
+// screen BEFORE they are multiplied, so the byte count cannot overflow and a
+// huge request fails here, not in an allocation. Returns the byte count.
+static size_t fb_check_rect(lua_State *L, int idx, int *x, int *y, int *w,
+                            int *h) {
+  *x = (int)lb_checkint(L, idx);
+  *y = (int)lb_checkint(L, idx + 1);
+  *w = (int)lb_checkint(L, idx + 2);
+  *h = (int)lb_checkint(L, idx + 3);
+  if (*w <= 0 || *h <= 0)
+    return (size_t)luaL_error(L, "rectangle (%d, %d, %d, %d) has no area",
+                              *x, *y, *w, *h);
+  if (*w > FB_WIDTH || *h > FB_HEIGHT || *x < 0 || *y < 0 ||
+      *x > FB_WIDTH - *w || *y > FB_HEIGHT - *h)
+    return (size_t)luaL_error(L, "rectangle (%d, %d, %d, %d) outside the screen",
+                              *x, *y, *w, *h);
+  return (size_t)*w * (size_t)*h * 2u;
+}
+
 // fb:getPixels(x, y, w, h) → string (host-order RGB565, row-major)
 static int l_fb_get_pixels(lua_State *L) {
   luaL_checkudata(L, 1, FB_MT);
-  int x = (int)lb_checkint(L, 2);
-  int y = (int)lb_checkint(L, 3);
-  int w = (int)lb_checkint(L, 4);
-  int h = (int)lb_checkint(L, 5);
-  if (w <= 0 || h <= 0)
-    return luaL_error(L, "rectangle (%d, %d, %d, %d) has no area", x, y, w, h);
-  size_t n = (size_t)w * (size_t)h * 2u;
+  int x, y, w, h;
+  size_t n = fb_check_rect(L, 2, &x, &y, &w, &h);
   luaL_Buffer b;
   void *buf = luaL_buffinitsize(L, &b, n);
   if (!display_get_pixels_block(x, y, w, h, buf, n))
@@ -48,19 +63,15 @@ static int l_fb_get_pixels(lua_State *L) {
   return 1;
 }
 
-// fb:setPixels(data, x, y, w, h) → true, or false when nothing was visible
-// (wholly outside the clip rect). A rectangle off the screen raises.
+// fb:setPixels(data, x, y, w, h) → true when anything was drawn, false when
+// the rectangle is on screen but wholly outside the clip rect. A rectangle
+// that is not inside the screen raises, as getPixels does.
 static int l_fb_set_pixels(lua_State *L) {
   luaL_checkudata(L, 1, FB_MT);
   size_t len = 0;
   const char *data = luaL_checklstring(L, 2, &len);
-  int x = (int)lb_checkint(L, 3);
-  int y = (int)lb_checkint(L, 4);
-  int w = (int)lb_checkint(L, 5);
-  int h = (int)lb_checkint(L, 6);
-  if (w <= 0 || h <= 0)
-    return luaL_error(L, "rectangle (%d, %d, %d, %d) has no area", x, y, w, h);
-  size_t n = (size_t)w * (size_t)h * 2u;
+  int x, y, w, h;
+  size_t n = fb_check_rect(L, 3, &x, &y, &w, &h);
   if (len != n)
     return luaL_error(L, "pixel data is %u bytes, expected %u (%dx%d pixels)",
                       (unsigned)len, (unsigned)n, w, h);
@@ -80,7 +91,6 @@ static const luaL_Reg l_fb_methods[] = {
 #define FB_SINGLETON "picocalc.display.framebuffer.singleton"
 
 static int l_display_get_back_buffer(lua_State *L) {
-  (void)display_get_back_buffer();  // fail loudly if there is no back buffer
   lua_getfield(L, LUA_REGISTRYINDEX, FB_SINGLETON);
   return 1;
 }
