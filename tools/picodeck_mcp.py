@@ -1468,7 +1468,7 @@ async def pad(state: str, hold_ms: int = 0, delay_ms: int = 150,
     the keyboard, like a physical controller.
 
     state: buttons joined by '+' ("a", "up+a"; up down left right a b x y l
-    r start select, and home, which opens the system menu), "none" (release
+    r start select, and home, which opens or closes the system menu), "none" (release
     everything, stay connected) or "off" (disconnect). A single state is held
     until the next call, or for hold_ms. A list ("home, up, a") presses each
     in turn, each held hold_ms (default 100), delay_ms apart (default 150).

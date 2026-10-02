@@ -175,7 +175,7 @@ Bitmask values for button states:
 | `picocalc.input.BTN_RIGHT` | D-pad Right |
 | `picocalc.input.BTN_ENTER` | Enter key |
 | `picocalc.input.BTN_ESC` | Escape key |
-| `picocalc.input.BTN_MENU` | Menu key (system overlay, auto-handled) |
+| `picocalc.input.BTN_MENU` | Menu key (system overlay, auto-handled; opens the menu and, pressed again while it is open, closes it) |
 | `picocalc.input.BTN_F1` | F1 key |
 | `picocalc.input.BTN_F2` | F2 key |
 | `picocalc.input.BTN_F3` | F3 key |
