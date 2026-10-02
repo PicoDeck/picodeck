@@ -13,5 +13,5 @@ test_menu_key_hold.py::*
 # C-Dogs checkout (PICODECK_CDOGS_DIR).
 test_cdogs_gamepad.py::*
 
-# Needs the Rally repo checkout (PICODECK_RALLY_DIR, PicoDeck/rally).
+# Needs a built Rally checkout with the gamepad work (PICODECK_RALLY_DIR, PicoDeck/rally).
 test_rally_gamepad.py::*

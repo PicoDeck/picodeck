@@ -29,6 +29,10 @@ RALLY = Path(os.environ.get("PICODECK_RALLY_DIR",
 def _bundle_dir(tmp_path):
     if not (RALLY / "tools" / "bundle.py").exists() or not (RALLY / "main.elf").exists():
         pytest.skip(f"{RALLY} is not a built Rally checkout (PICODECK_RALLY_DIR)")
+    # A checkout on a branch without the gamepad work (pad_input.h) would fail
+    # every case here, so it skips like a missing one.
+    if not (RALLY / "app" / "pad_input.h").exists():
+        pytest.skip(f"{RALLY} has no gamepad support (app/pad_input.h)")
     sys.path.insert(0, str(RALLY / "tools"))
     import bundle
     out = tmp_path / "bundle"
