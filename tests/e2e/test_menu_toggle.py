@@ -161,6 +161,21 @@ def _dev_mode(target) -> bool:
         return False
 
 
+def _bt_available(target) -> bool:
+    """Whether Settings has its Bluetooth row (between Controls and Time
+    zone): the firmware's `bt` dev command says (older builds lack it)."""
+    try:
+        return any("available=1" in ln for ln in target.command("bt"))
+    except Exception:
+        return False
+
+
+# Settings rows: Brightness, Battery %, Show FPS, Controls, [Bluetooth,]
+# Time zone, ... (the Bluetooth row only where it is available).
+def _downs_to_time_zone(target) -> int:
+    return 5 if _bt_available(target) else 4
+
+
 def _into_settings(target):
     """Open the Settings page from the main menu's first row. The rows run
     Battery, [RAM (dev mode),] Settings, so the count of Downs depends on
@@ -256,14 +271,16 @@ def test_menu_key_closes_the_whole_menu_from_settings(target, how, pad_cleanup):
 @both
 @pytest.mark.parametrize("how", INPUTS)
 def test_menu_key_cancels_a_modal_the_menu_opened(target, how, pad_cleanup):
-    """The time-zone picker (Settings, 5th row) is a modal of the menu's own:
-    the menu key cancels it like Esc, and takes the press, so it neither
-    waits to act after the picker nor opens a second menu."""
+    """The time-zone picker (Settings, after Bluetooth where it is) is a
+    modal of the menu's own: the menu key cancels it like Esc, and takes the
+    press, so it neither waits to act after the picker nor opens a second
+    menu."""
     screen = _start_lua(target)
+    downs = _downs_to_time_zone(target)  # asked before the menu opens
     _press(target, how)
     screen.wait(True, "the menu did not open")
     settings = _into_settings(target)
-    for _ in range(4):  # Brightness, Battery %, Show FPS, Controls, Time zone
+    for _ in range(downs):
         target.keypress("down")
         time.sleep(0.2)
     selected = _region(target)  # the Time zone row selected, before Enter
@@ -284,6 +301,32 @@ def test_menu_key_cancels_a_modal_the_menu_opened(target, how, pad_cleanup):
     _press(target, how)  # now it closes the menu
     screen.wait(False, "the menu key did not close the menu after the picker")
     screen.stays_closed("the menu re-opened after the picker")
+    _finish_lua(target)
+
+
+@both
+@pytest.mark.parametrize("how", INPUTS)
+def test_menu_key_closes_the_whole_menu_from_bluetooth(target, how,
+                                                       pad_cleanup):
+    """The Bluetooth page (Settings, after Controls) is left by the menu key
+    like Controls: the whole menu closes and stays closed."""
+    if not _bt_available(target):
+        pytest.skip("no Bluetooth on this target")
+    screen = _start_lua(target)
+    _press(target, how)
+    screen.wait(True, "the menu did not open")
+    _into_settings(target)
+    for _ in range(4):  # Brightness, Battery %, Show FPS, Controls, Bluetooth
+        target.keypress("down")
+        time.sleep(0.2)
+    selected = _region(target)
+    target.keypress("enter")
+    time.sleep(0.5)
+    assert _changed(selected, _region(target)) > OPEN_PIXELS, \
+        "the Bluetooth page did not open"
+    _press(target, how)
+    screen.wait(False, "the menu key did not close the menu from Bluetooth")
+    screen.stays_closed("the menu re-opened after leaving Bluetooth")
     _finish_lua(target)
 
 

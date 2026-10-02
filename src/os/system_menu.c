@@ -720,13 +720,36 @@ typedef struct {
   bt_pad_status_t st, shown; // now, and as last drawn
   bt_row_t rows[BT_ROWS_MAX];
   int n_rows, sel;
-  int forget_armed; // the paired row Del was pressed on once, or -1
-  char msg[48];     // the page's own notice (over the status note)
+  // The selection by what it is, not by row: the rows are rebuilt from
+  // every poll (a search adds devices, a pairing moves one to Paired), and
+  // the cursor stays on the same device.
+  uint8_t sel_kind;
+  uint8_t sel_addr[6];
+  bool forget_armed;        // Del pressed once on forget_addr's row
+  uint8_t forget_addr[6];
+  char msg[48];             // the page's own notice (over the status note)
 } bt_page_t;
 
 static bool bt_is_pad_cod(uint32_t cod) {
   uint32_t major = (cod >> 8) & 0x1F, minor = (cod >> 2) & 0x0F;
   return major == 0x05 && (minor == 0x01 || minor == 0x02);
+}
+
+// The device a row stands for (NULL for the setting, search and headers).
+static const uint8_t *bt_row_addr(const bt_page_t *p, const bt_row_t *r) {
+  if (r->kind == BR_PAIRED)
+    return p->st.paired[r->idx].addr;
+  if (r->kind == BR_FOUND)
+    return p->st.found[r->idx].addr;
+  return NULL;
+}
+
+static void bt_note_sel(bt_page_t *p) {
+  const bt_row_t *r = &p->rows[p->sel];
+  const uint8_t *a = bt_row_addr(p, r);
+  p->sel_kind = r->kind;
+  if (a)
+    memcpy(p->sel_addr, a, 6);
 }
 
 static void bt_build_rows(bt_page_t *p) {
@@ -753,10 +776,23 @@ static void bt_build_rows(bt_page_t *p) {
     p->rows[n++] = (bt_row_t){BR_FOUND, (uint8_t)i};
   }
   p->n_rows = n;
+  // Back on the selected device (found or paired: pairing moves it), or the
+  // selected setting/search row; else the nearest row left.
+  int at = -1;
+  for (int i = 0; i < n && at < 0; i++) {
+    const uint8_t *a = bt_row_addr(p, &p->rows[i]);
+    bool dev = p->sel_kind == BR_PAIRED || p->sel_kind == BR_FOUND;
+    if (dev ? (a && memcmp(a, p->sel_addr, 6) == 0)
+            : p->rows[i].kind == p->sel_kind)
+      at = i;
+  }
+  if (at >= 0)
+    p->sel = at;
   if (p->sel >= n)
     p->sel = n - 1;
   while (p->sel > 0 && p->rows[p->sel].kind == BR_HEAD)
     p->sel--;
+  bt_note_sel(p);
 }
 
 static void bt_move(bt_page_t *p, int d) {
@@ -767,6 +803,7 @@ static void bt_move(bt_page_t *p, int d) {
       break;
   }
   p->sel = s;
+  bt_note_sel(p);
 }
 
 static bool bt_peer_is(const bt_pad_status_t *st, const uint8_t addr[6]) {
@@ -906,36 +943,41 @@ static void bt_enter(bt_page_t *p) {
   }
 }
 
+// Del twice on the same pad (by address: the rows move under the cursor).
 static void bt_forget(bt_page_t *p) {
   const bt_row_t *r = &p->rows[p->sel];
   if (r->kind != BR_PAIRED) {
-    p->forget_armed = -1;
+    p->forget_armed = false;
     return;
   }
   const bt_pad_record_t *pr = &p->st.paired[r->idx];
-  if (p->forget_armed != p->sel) {
-    p->forget_armed = p->sel;
+  if (!p->forget_armed || memcmp(p->forget_addr, pr->addr, 6) != 0) {
+    p->forget_armed = true;
+    memcpy(p->forget_addr, pr->addr, 6);
     snprintf(p->msg, sizeof(p->msg), "Del again to forget %.20s",
              pr->name[0] ? pr->name : "it");
     return;
   }
-  p->forget_armed = -1;
-  uint8_t addr[6];
-  memcpy(addr, pr->addr, 6);
-  bool ok = bt_pad_forget(addr);
+  p->forget_armed = false;
+  bool ok = bt_pad_forget(p->forget_addr);
   snprintf(p->msg, sizeof(p->msg), ok ? "Forgotten" : "Could not forget it");
 }
 
-static void bluetooth_page(void) {
+// Returns true when the menu key left the page: the menu closes with it (as
+// from Controls, issue #59).
+static bool bluetooth_page(void) {
   bt_page_t *p = (bt_page_t *)umm_malloc(sizeof(bt_page_t));
   if (!p) {
     ctl_alert("Not enough memory for Bluetooth");
-    return;
+    return false;
   }
   memset(p, 0, sizeof(*p));
-  p->forget_armed = -1;
+  p->sel_kind = BR_POWER;
+  bool close_menu = false;
   int saved_font = display_get_font();
   display_set_font(0);
+  // A menu key pressed before now (the press that opened the menu, or one
+  // injected meanwhile) is not this page's.
   kbd_flush_events();
   kbd_consume_menu_press();
   bool redraw = true;
@@ -961,17 +1003,21 @@ static void bluetooth_page(void) {
     if (dev_commands_wants_exit())
       break;
     bt_pad_service(); // a pairing's new bond goes to the SD card
+    if (kbd_consume_menu_press()) { // the menu key closes the whole menu
+      close_menu = true;
+      break;
+    }
     uint32_t pressed = kbd_get_buttons_pressed() | kbd_get_pad_nav_pressed();
-    if ((pressed & BTN_ESC) || kbd_consume_menu_press()) // the menu key: back
+    if (pressed & BTN_ESC)
       break;
     if (pressed & (BTN_UP | BTN_DOWN)) {
       bt_move(p, (pressed & BTN_DOWN) ? 1 : -1);
-      p->forget_armed = -1;
+      p->forget_armed = false;
       p->msg[0] = '\0';
       redraw = true;
     }
     if (pressed & BTN_ENTER) {
-      p->forget_armed = -1;
+      p->forget_armed = false;
       bt_enter(p);
       redraw = true;
     }
@@ -985,6 +1031,7 @@ static void bluetooth_page(void) {
   bt_pad_service();
   display_set_font(saved_font);
   umm_free(p);
+  return close_menu;
 }
 
 // ── Shared menu loop
@@ -1262,7 +1309,8 @@ static bool menu_loop(lua_State *L, int context) {
         need_redraw = true;
         break;
       case ITEM_BLUETOOTH:
-        bluetooth_page();
+        if (bluetooth_page())
+          running = false; // the menu key left Bluetooth: close the menu
         need_bg_restore = true;
         need_redraw = true;
         break;
