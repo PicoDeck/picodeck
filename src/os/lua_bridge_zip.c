@@ -251,7 +251,7 @@ static int l_ar_locate(lua_State *L) {
 // The metadata of one entry, keyed the way :list() reports it.
 static int l_ar_stat_index(lua_State *L) {
   lua_zip_archive_t *ar = check_archive(L);
-  lua_Integer idx = lb_checkint(L, 2);
+  lua_Integer idx = luaL_checkinteger(L, 2);  // an identifier: exact integers only
   zip_entry_info_t info;
   if (!zip_reader_stat_index(&ar->zr, (int)idx, &info)) {
     lua_pushnil(L);
@@ -273,7 +273,7 @@ static int l_ar_stat_index(lua_State *L) {
 // :extract() is this, addressed by entry name.
 static int l_ar_extract_entry(lua_State *L) {
   lua_zip_archive_t *ar = check_archive(L);
-  lua_Integer idx = lb_checkint(L, 2);
+  lua_Integer idx = luaL_checkinteger(L, 2);  // an identifier: exact integers only
   const char *dest = luaL_checkstring(L, 3);
 
   if (!fs_sandbox_check(L, dest, true)) {

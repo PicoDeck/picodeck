@@ -68,7 +68,7 @@ if not ar then error(err) end
 
 The archive object returned by `picocalc.zip.open()` is the Lua surface for random access. Entries can be addressed **by name** (`exists`, `size`, `read`, `extract`) or **by index** (`numEntries`, `locate`, `statIndex`, `extractEntry`) — the index forms mirror the C API, so a port can keep its indexes; `ar:read` returns a string rather than filling a caller buffer. See [the C-to-Lua mapping](#c-to-lua-mapping). Use it as `ar:method(...)`.
 
-Errors come in two kinds. A **runtime failure** (missing entry, bad archive, permission, size cap) is reported in the return values, per method: `ar:read` gives `nil, errorString`, `ar:extract` and `ar:extractAll` give `false, errorString`, `ar:exists` gives `false`, and `ar:size`, `ar:locate` and `ar:statIndex` give a bare `nil`; `ar:list` and `ar:numEntries` cannot fail. **Misuse** raises a Lua error: calling any method on a closed archive raises `archive is closed` (except `:close()`, which is a no-op when already closed), and a missing or wrongly typed argument raises the usual argument error.
+Errors come in two kinds. A **runtime failure** (missing entry, bad archive, permission, size cap) is reported in the return values, per method: `ar:read` gives `nil, errorString`, `ar:extract` and `ar:extractAll` give `false, errorString`, `ar:exists` gives `false`, and `ar:size`, `ar:locate` and `ar:statIndex` give a bare `nil`; `ar:list` cannot fail. **Misuse** raises a Lua error: calling any method on a closed archive raises `archive is closed` (except `:close()`, which is a no-op when already closed), and a missing or wrongly typed argument raises the usual argument error.
 
 #### `ar:list()`
 List the archive's file entries (directory entries are skipped). Same result shape as `picocalc.zip.list`.
@@ -113,16 +113,25 @@ local bytes = ar:size("music/theme.mod")
 #### `ar:numEntries()`
 How many entries the archive holds: files **and** directory entries.
 
-- **Returns:** (number) Entry count, or `0` once the archive is closed
-- **Errors:** none
+- **Returns:** (number) Entry count
+- **Errors:** raises `archive is closed` on a closed archive
 
 Unlike `ar:list()`, which skips directory entries, this counts them — it is the
-loop bound for walking an archive by index.
+loop bound for walking an archive by index. Indexes are **0-based, as in the C
+API**: the valid indexes are `0 .. numEntries() - 1`. (`ar:list()` returns a
+1-based Lua array, so do not reuse its loop bounds.)
+
+```lua
+for i = 0, ar:numEntries() - 1 do
+    local st = ar:statIndex(i)
+    if not st.is_dir then print(i, st.name, st.size) end
+end
+```
 
 ---
 
 #### `ar:locate(name)`
-The index of an entry, for the index-addressed calls below.
+The index of an entry, for the index-addressed calls below. Indexes are 0-based, as in the C API (the first entry is `0`).
 
 - **Parameters:**
   - `name` (string): Entry name
@@ -142,8 +151,9 @@ end
 One entry's metadata, addressed by index.
 
 - **Parameters:**
-  - `index` (number): Entry index, as `numEntries()` bounds it
-- **Returns:** (table or nil) A table with `name` (string), `size` (uncompressed bytes), `compressed_size` (bytes) and `is_dir` (boolean) — the same keys `ar:list()` reports — or `nil` (no error string) for a bad index or a closed archive
+  - `index` (number): Entry index, **0-based, as in the C API**: valid indexes are `0 .. numEntries() - 1`. Must be an integer (a fractional value raises)
+- **Returns:** (table or nil) A table with `name` (string), `size` (uncompressed bytes), `compressed_size` (bytes) and `is_dir` (boolean) — the same keys `ar:list()` reports — or `nil` (no error string) for an index outside `0 .. numEntries() - 1`
+- **Errors:** raises `archive is closed` on a closed archive
 
 Directory entries are included here, unlike in `ar:list()`.
 
@@ -154,10 +164,10 @@ Directory entries are included here, unlike in `ar:list()`.
 the destination is caller-chosen as always.
 
 - **Parameters:**
-  - `index` (number): Entry index
+  - `index` (number): Entry index, **0-based, as in the C API** (`0 .. numEntries() - 1`). Must be an integer
   - `dest_path` (string): Destination file path (subject to the write sandbox)
 - **Returns:** (boolean, string) `true` on success, or `false, errorString`
-- **Errors:** none; failures come back as `false, error`
+- **Errors:** raises `archive is closed` on a closed archive; other failures come back as `false, error`. An index outside `0 .. numEntries() - 1` returns `false, "no such entry"` **before** the destination is opened, so an existing file at `dest_path` is left untouched
 
 ---
 
