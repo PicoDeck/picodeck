@@ -121,7 +121,7 @@ Whether a path exists and is a directory.
 
 - **Parameters:**
   - `path` (string): Absolute path
-- **Returns:** (boolean) `true` only when the path exists **and** is a directory. `false` for a file, for a missing path, and for a path the sandbox refuses — the same "not usable" answer `fs.exists` gives.
+- **Returns:** (boolean) `true` only when the path exists **and** is a directory (the volume root `/` is one, for an app with the `root-filesystem` requirement; `fs.exists("/")` and `fs.stat("/")` agree, the latter with `size` 0 and no timestamp). `false` for a file, for a missing path, and for a path the sandbox refuses — the same "not usable" answer `fs.exists` gives.
 - **Errors:** none
 
 ```lua
