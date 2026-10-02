@@ -27,6 +27,7 @@ static inline uint32_t mp3_id3v2_size(const uint8_t *p, size_t n) {
         return 0;
     uint32_t size = ((uint32_t)p[6] << 21) | ((uint32_t)p[7] << 14) |
                     ((uint32_t)p[8] << 7) | (uint32_t)p[9];
-    uint32_t footer = (p[5] & 0x10) ? MP3_ID3V2_HEADER : 0u;  // v2.4 footer
+    // A footer (v2.4 only: in v2.3 the flag's bit is undefined)
+    uint32_t footer = (p[3] >= 4 && (p[5] & 0x10)) ? MP3_ID3V2_HEADER : 0u;
     return MP3_ID3V2_HEADER + size + footer;
 }

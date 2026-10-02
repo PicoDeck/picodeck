@@ -64,6 +64,44 @@ struct mad_header {
     mad_timer_t duration;			/* audio playing time of frame */
 };
 
+/* PicoDeck: a Layer III frame between mad_frame_decode_begin() and
+   mad_frame_decode_end() (layer3.c): its side information, and where the
+   next granule's main_data starts. */
+struct mad_l3_sideinfo {
+    unsigned int main_data_begin;
+    unsigned int private_bits;
+
+    unsigned char scfsi[2];
+
+    struct mad_l3_granule {
+        struct mad_l3_channel {
+            /* from side info */
+            unsigned short part2_3_length;
+            unsigned short big_values;
+            unsigned short global_gain;
+            unsigned short scalefac_compress;
+
+            unsigned char flags;
+            unsigned char block_type;
+            unsigned char table_select[3];
+            unsigned char subblock_gain[3];
+            unsigned char region0_count;
+            unsigned char region1_count;
+
+            /* from main_data */
+            unsigned char scalefac[39];	/* scalefac_l and/or scalefac_s */
+        } ch[2];
+    } gr[2];
+};
+
+struct mad_l3_ctx {
+    struct mad_l3_sideinfo si;
+    struct mad_bitptr ptr;		/* main_data, at the next granule */
+    unsigned int nch, ngr, sfreqi;
+    unsigned int md_len, data_bitlen, frame_free, next_md_begin;
+    int result;
+};
+
 /* PicoDeck: the frame's big arrays, which the caller binds
    (mad_frame_bind) so that each can live where it is cheapest to reach:
    SRAM or QMI PSRAM through the XIP cache the app's core shares (issue
@@ -86,9 +124,8 @@ struct mad_frame {
     mad_fixed_t *xr_raw;		/* [576 * 2] */
     mad_fixed_t *tmp;			/* [576] */
 
-    /* PicoDeck: a Layer III frame between mad_frame_decode_begin() and
-       mad_frame_decode_end() (layer3.c's struct l3_ctx) */
-    unsigned char l3[320] __attribute__((aligned(4)));
+    /* PicoDeck: the Layer III frame in progress */
+    struct mad_l3_ctx l3;
 };
 
 # define MAD_NCHANNELS(header)		((header)->mode ? 2 : 1)

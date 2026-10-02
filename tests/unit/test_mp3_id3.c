@@ -23,6 +23,8 @@ static void test_a_v24_footer_adds_ten_bytes(void) {
   uint8_t p[10];
   header(p, 4, 0x10, 100);
   CHECK_EQ_U32(mp3_id3v2_size(p, 10), 120);
+  header(p, 3, 0x10, 100);                     // v2.3 has no footer
+  CHECK_EQ_U32(mp3_id3v2_size(p, 10), 110);
 }
 
 static void test_anything_else_is_no_tag(void) {

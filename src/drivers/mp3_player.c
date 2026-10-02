@@ -45,7 +45,8 @@ typedef struct mad_frame_mem frame_psram_t;
 static frame_psram_t *s_mad_frame_mem = NULL;
 static struct mad_synth  *s_mad_synth  = NULL;
 #if defined(PICODECK_MP3_SRAM)
-// The decoder's hottest state in SRAM on the device (issue #28), 17.6 KB;
+// The decoder's hottest state in SRAM on the device (issue #28): 15,628 B
+// here, 17.4 KB with libmad's window D[] (synth.c, MAD_D_IN_RAM);
 // the rest (the stream and its bit reservoir, the IMDCT overlap, the
 // short-block reorder buffer, the input) stays in QMI PSRAM. In QMI PSRAM
 // every access went through the 16 KB XIP cache Core 0 shares: a 44.1 kHz
@@ -605,6 +606,10 @@ static void decode_fill_ring(void) {
     // A restart in place needs one frame to start the new audio: more
     // would only keep the old audio playing longer (and risk its stage
     // running dry). Core 1 decodes on as soon as the restart ends.
+    // (max_frames counts frames heard, and MP3_SCHED_BURST is a granule
+    // budget: unheld, the burst ends the update first, through
+    // mp3_sched_next, and the frame cap never binds. The expression stays
+    // as it is: the #20/#28 merges both rely on it.)
     uint32_t max_frames = s_stage_held ? 1u : MP3_SCHED_BURST;
     uint32_t frames_decoded = 0;   // frames heard, finished in this update
     uint32_t granules = 0;         // granules decoded in this update
@@ -950,7 +955,9 @@ void mp3_player_destroy(mp3_player_t *player) {
 }
 
 bool mp3_player_load(mp3_player_t *player, const char *path) {
-    if (!player || !path) return false;
+    // (mp3_player_create returns the player even when init failed: then
+    // the decoder's buffers are missing.)
+    if (!player || !path || !s_initialized) return false;
 
     // Video audio and file playback share the decoder: stop fed mode first.
     if (s_fed_mode) mp3_player_stop_fed();
@@ -1008,7 +1015,7 @@ bool mp3_player_load(mp3_player_t *player, const char *path) {
 // stream fades out first, so the restart cannot click.
 bool mp3_player_play(mp3_player_t *player, uint8_t repeat_count) {
     (void)repeat_count;
-    if (!player || !s_file) return false;
+    if (!player || !s_file || !s_initialized) return false;
     fade_out_and_wait();
 
     mutex_enter_blocking(&s_mp3_mutex);

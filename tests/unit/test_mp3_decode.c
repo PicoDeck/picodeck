@@ -362,6 +362,27 @@ static void test_id3v2_tags_before_stereo_frames(void) {
   free(b.data);
 }
 
+// A player whose init could not allocate the decoder (umm full): create()
+// still hands it out, and load() and play() refuse instead of using the
+// missing buffers.
+void umm_fake_fail(bool fail);
+static void test_a_player_without_its_decoder_refuses_to_load(void) {
+  blob_t b = load_fixture("chord22m.mp3");
+  put_file("/plain.mp3", b);
+  mp3_player_deinit();
+  umm_fake_fail(true);
+  mp3_player_t *p = mp3_player_create();
+  CHECK(p != NULL);
+  CHECK(!mp3_player_load(p, "/plain.mp3"));
+  CHECK(!mp3_player_play(p, 1));
+  mp3_player_update();
+  umm_fake_fail(false);
+  CHECK(mp3_player_init());
+  CHECK(mp3_player_load(p, "/plain.mp3"));
+  mp3_player_stop(p);
+  free(b.data);
+}
+
 int main(void) {
   CHECK(mp3_player_init());
   test_mono_plays_every_sample_in_order();
@@ -370,6 +391,7 @@ int main(void) {
   test_fed_mode_never_decodes_ahead();
   test_id3v2_tags_are_skipped_at_play_and_at_every_loop();
   test_id3v2_tags_before_stereo_frames();
+  test_a_player_without_its_decoder_refuses_to_load();
   mp3_player_deinit();
   return check_report("test_mp3_decode");
 }

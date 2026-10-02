@@ -62,32 +62,7 @@ enum {
     MS_STEREO = 0x2
 };
 
-struct sideinfo {
-    unsigned int main_data_begin;
-    unsigned int private_bits;
-
-    unsigned char scfsi[2];
-
-    struct granule {
-        struct channel {
-            /* from side info */
-            unsigned short part2_3_length;
-            unsigned short big_values;
-            unsigned short global_gain;
-            unsigned short scalefac_compress;
-
-            unsigned char flags;
-            unsigned char block_type;
-            unsigned char table_select[3];
-            unsigned char subblock_gain[3];
-            unsigned char region0_count;
-            unsigned char region1_count;
-
-            /* from main_data */
-            unsigned char scalefac[39];	/* scalefac_l and/or scalefac_s */
-        } ch[2];
-    } gr[2];
-};
+/* struct mad_l3_sideinfo: frame.h (the frame keeps it between granules) */
 
 /*
     scalefactor bit lengths
@@ -526,7 +501,7 @@ mad_fixed_t const is_lsf_table[2][15] PROGMEM = {
 */
 static
 enum mad_error III_sideinfo(struct mad_bitptr *ptr, unsigned int nch,
-                            int lsf, struct sideinfo *si,
+                            int lsf, struct mad_l3_sideinfo *si,
                             unsigned int *data_bitlen,
                             unsigned int *priv_bitlen) {
     unsigned int ngr, gr, ch, i;
@@ -548,10 +523,10 @@ enum mad_error III_sideinfo(struct mad_bitptr *ptr, unsigned int nch,
     }
 
     for (gr = 0; gr < ngr; ++gr) {
-        struct granule *granule = &si->gr[gr];
+        struct mad_l3_granule *granule = &si->gr[gr];
 
         for (ch = 0; ch < nch; ++ch) {
-            struct channel *channel = &granule->ch[ch];
+            struct mad_l3_channel *channel = &granule->ch[ch];
 
             channel->part2_3_length    = mad_bit_read(ptr, 12);
             channel->big_values        = mad_bit_read(ptr, 9);
@@ -623,8 +598,8 @@ enum mad_error III_sideinfo(struct mad_bitptr *ptr, unsigned int nch,
 */
 static
 unsigned int III_scalefactors_lsf(struct mad_bitptr *ptr,
-                                  struct channel *channel,
-                                  struct channel *gr1ch, int mode_extension) {
+                                  struct mad_l3_channel *channel,
+                                  struct mad_l3_channel *gr1ch, int mode_extension) {
     struct mad_bitptr start;
     unsigned int scalefac_compress, index, slen[4], part, n, i;
     unsigned int const *nsfb;
@@ -733,8 +708,8 @@ unsigned int III_scalefactors_lsf(struct mad_bitptr *ptr,
     DESCRIPTION:	decode channel scalefactors of one granule from a bitstream
 */
 static
-unsigned int III_scalefactors(struct mad_bitptr *ptr, struct channel *channel,
-                              struct channel const *gr0ch, unsigned int scfsi) {
+unsigned int III_scalefactors(struct mad_bitptr *ptr, struct mad_l3_channel *channel,
+                              struct mad_l3_channel const *gr0ch, unsigned int scfsi) {
     struct mad_bitptr start;
     unsigned int slen1, slen2, sfbi;
 
@@ -836,7 +811,7 @@ unsigned int III_scalefactors(struct mad_bitptr *ptr, struct channel *channel,
     DESCRIPTION:	calculate scalefactor exponents
 */
 static
-void III_exponents(struct channel const *channel,
+void III_exponents(struct mad_l3_channel const *channel,
                    unsigned int const *sfbwidth, signed int exponents[39]) {
     signed int gain;
     unsigned int scalefac_multiplier, sfbi;
@@ -957,7 +932,7 @@ mad_fixed_t III_requantize(unsigned int value, signed int exp) {
 */
 static
 enum mad_error III_huffdecode(struct mad_bitptr *ptr, mad_fixed_t xr[576],
-                              struct channel *channel,
+                              struct mad_l3_channel *channel,
                               unsigned int const *sfbwidth,
                               unsigned int part2_length) {
     signed int exponents[39], exp;
@@ -1308,7 +1283,7 @@ y_final:
     DESCRIPTION:	reorder frequency lines of a short block into subband order
 */
 static
-enum mad_error III_reorder(mad_fixed_t xr[576], struct channel const *channel,
+enum mad_error III_reorder(mad_fixed_t xr[576], struct mad_l3_channel const *channel,
                            unsigned int const sfbwidth[39], mad_fixed_t tmp[576]) {
     unsigned int sb, l, f, w, sbw[3], sw[3];
     //  mad_fixed_t *tmp; // [32][3][6]
@@ -1369,7 +1344,7 @@ enum mad_error III_reorder(mad_fixed_t xr[576], struct channel const *channel,
 */
 static
 enum mad_error III_stereo(mad_fixed_t xr[2][576],
-                          struct granule const *granule,
+                          struct mad_l3_granule const *granule,
                           struct mad_header *header,
                           unsigned int const *sfbwidth) {
     short modes[39];
@@ -1389,7 +1364,7 @@ enum mad_error III_stereo(mad_fixed_t xr[2][576],
     /* intensity stereo */
 
     if (header->mode_extension & I_STEREO) {
-        struct channel const *right_ch = &granule->ch[1];
+        struct mad_l3_channel const *right_ch = &granule->ch[1];
         mad_fixed_t const *right_xr = xr[1];
         unsigned int is_pos;
 
@@ -2432,7 +2407,7 @@ unsigned int III_sfreqi(struct mad_header const *header) {
 */
 static
 enum mad_error III_decode_granule(struct mad_bitptr *ptr, struct mad_frame *frame,
-                                  struct sideinfo *si, unsigned int nch,
+                                  struct mad_l3_sideinfo *si, unsigned int nch,
                                   unsigned int sfreqi, unsigned int gr) {
     struct mad_header *header = &frame->header;
     mad_fixed_t *xr[2]; // Moved from stack to dynheap
@@ -2442,13 +2417,13 @@ enum mad_error III_decode_granule(struct mad_bitptr *ptr, struct mad_frame *fram
     /* scalefactors, Huffman decoding, requantization */
 
     {
-        struct granule *granule = &si->gr[gr];
+        struct mad_l3_granule *granule = &si->gr[gr];
         unsigned int const *sfbwidth[2];
         unsigned int ch;
         enum mad_error error;
 
         for (ch = 0; ch < nch; ++ch) {
-            struct channel *channel = &granule->ch[ch];
+            struct mad_l3_channel *channel = &granule->ch[ch];
             unsigned int part2_length;
 
             sfbwidth[ch] = sfbwidth_table[sfreqi].l;
@@ -2485,7 +2460,7 @@ enum mad_error III_decode_granule(struct mad_bitptr *ptr, struct mad_frame *fram
         /* reordering, alias reduction, IMDCT, overlap-add, frequency inversion */
 
         for (ch = 0; ch < nch; ++ch) {
-            struct channel const *channel = &granule->ch[ch];
+            struct mad_l3_channel const *channel = &granule->ch[ch];
             mad_fixed_t (*sample)[32] = &frame->sbsample[ch][0];  /* one granule */
             unsigned int sb, l, i, sblimit;
             mad_fixed_t output[36];
@@ -2585,24 +2560,11 @@ enum mad_error III_decode_granule(struct mad_bitptr *ptr, struct mad_frame *fram
     return MAD_ERROR_NONE;
 }
 
-/*
-    PicoDeck: what the granules of one frame share between
-    mad_layer_III_begin(), mad_layer_III_granule() and mad_layer_III_end(),
-    kept in the frame (struct mad_frame's l3 bytes).
-*/
-struct l3_ctx {
-    struct sideinfo si;
-    struct mad_bitptr ptr;		/* main_data, at the next granule */
-    unsigned int nch, ngr, sfreqi;
-    unsigned int md_len, data_bitlen, frame_free, next_md_begin;
-    int result;
-};
-
-typedef char l3_ctx_fits[sizeof(struct l3_ctx) <=
-                         sizeof(((struct mad_frame *)0)->l3) ? 1 : -1];
-
-static inline struct l3_ctx *l3_ctx(struct mad_frame *frame) {
-    return (struct l3_ctx *) frame->l3;
+/* PicoDeck: what the granules of one frame share between
+   mad_layer_III_begin(), mad_layer_III_granule() and mad_layer_III_end():
+   struct mad_frame's l3 (struct mad_l3_ctx, frame.h). */
+static inline struct mad_l3_ctx *l3_ctx(struct mad_frame *frame) {
+    return &frame->l3;
 }
 
 /*
@@ -2614,7 +2576,7 @@ static inline struct l3_ctx *l3_ctx(struct mad_frame *frame) {
 */
 int mad_layer_III_begin(struct mad_stream *stream, struct mad_frame *frame) {
     struct mad_header *header = &frame->header;
-    struct l3_ctx *c = l3_ctx(frame);
+    struct mad_l3_ctx *c = l3_ctx(frame);
     unsigned int nch, priv_bitlen, next_md_begin = 0;
     unsigned int si_len, data_bitlen, md_len;
     unsigned int frame_space, frame_used, frame_free;
@@ -2747,7 +2709,7 @@ int mad_layer_III_begin(struct mad_stream *stream, struct mad_frame *frame) {
 */
 int mad_layer_III_granule(struct mad_stream *stream, struct mad_frame *frame,
                           unsigned int gr) {
-    struct l3_ctx *c = l3_ctx(frame);
+    struct mad_l3_ctx *c = l3_ctx(frame);
     enum mad_error error;
 
     error = III_decode_granule(&c->ptr, frame, &c->si, c->nch, c->sfreqi, gr);
@@ -2766,7 +2728,7 @@ int mad_layer_III_granule(struct mad_stream *stream, struct mad_frame *frame,
 		main_data the next frame draws on; the frame's result
 */
 int mad_layer_III_end(struct mad_stream *stream, struct mad_frame *frame) {
-    struct l3_ctx *c = l3_ctx(frame);
+    struct mad_l3_ctx *c = l3_ctx(frame);
     unsigned int md_len = c->md_len, frame_free = c->frame_free;
     unsigned int next_md_begin = c->next_md_begin;
 

@@ -88,8 +88,9 @@ void mad_header_init(struct mad_header *header) {
 }
 
 /*
-    NAME:	frame->init()
-    DESCRIPTION:	initialize frame struct
+    NAME:	frame->bind()
+    DESCRIPTION:	PicoDeck: point the frame's arrays at mem's (before
+		mad_frame_init, which clears them)
 */
 void mad_frame_bind(struct mad_frame *frame, struct mad_frame_mem *mem) {
     frame->sbsample = mem->sbsample;
@@ -98,6 +99,10 @@ void mad_frame_bind(struct mad_frame *frame, struct mad_frame_mem *mem) {
     frame->tmp      = mem->tmp;
 }
 
+/*
+    NAME:	frame->init()
+    DESCRIPTION:	initialize frame struct
+*/
 void mad_frame_init(struct mad_frame *frame) {
     mad_header_init(&frame->header);
 
