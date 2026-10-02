@@ -6,8 +6,10 @@
 #include "fakes/sdcard_fake.h"
 #include "sdcard.h"
 #include "zip_archive.h"
+#include "zip_util.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 // zip_util.c also calls these; the tests never reach them.
 bool sdcard_stat(const char *path, sdcard_stat_t *out) {
@@ -70,7 +72,40 @@ static void test_read(void) {
   CHECK_EQ_INT(zip_archive_read(z, idx, buf, sizeof(buf)), -1);  // closed
 }
 
+// A bad entry index must be refused BEFORE the destination is opened: opening
+// it "w" first destroyed an existing file at dest.
+static void test_extract_entry_bad_index_keeps_dest(void) {
+  sdfake_reset();
+  sdfake_put("/t.zip", (const char *)k_zip, sizeof(k_zip));
+  sdfake_put("/keep.txt", "precious", 8);
+  zip_reader_t zr;
+  char err[ZIP_ERR_MAX];
+  CHECK(zip_reader_open(&zr, "/t.zip", err));
+  int n = zip_reader_num_entries(&zr);
+  CHECK_EQ_INT(n, 2);
+  int bad[] = {n, n + 1, 999, -1};
+  for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+    err[0] = 0;
+    CHECK(!zip_reader_extract_entry(&zr, bad[i], "/keep.txt", err));
+    CHECK(strstr(err, "no such entry") != NULL);
+    size_t len = 0;
+    const char *d = sdfake_get("/keep.txt", &len);
+    CHECK(d && len == 8 && memcmp(d, "precious", 8) == 0);
+    zip_entry_info_t info;
+    CHECK(!zip_reader_stat_index(&zr, bad[i], &info));
+  }
+  CHECK_EQ_INT(zip_reader_locate(&zr, "absent.txt"), -1);
+  // A valid index still extracts (over the existing file).
+  CHECK(zip_reader_extract_entry(&zr, zip_reader_locate(&zr, "hello.txt"),
+                                 "/keep.txt", err));
+  size_t len = 0;
+  const char *d = sdfake_get("/keep.txt", &len);
+  CHECK(d && len == 11 && memcmp(d, "hello world", 11) == 0);
+  zip_reader_close(&zr);
+}
+
 int main(void) {
   test_read();
+  test_extract_entry_bad_index_keeps_dest();
   return check_report("test_zip_archive");
 }
