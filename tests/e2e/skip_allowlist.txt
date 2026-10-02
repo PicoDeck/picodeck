@@ -8,3 +8,10 @@ test_cdogs_memory.py::*
 # Needs a C compiler, pkg-config and the SDL2 headers to build its LD_PRELOAD shim
 # (missing tools only: a shim that fails to compile fails the test).
 test_menu_key_hold.py::*
+
+# Needs a cdogs trace build (PICODECK_CDOGS_TRACE_ELF, -DPICODECK_KEY_TRACE) and a
+# C-Dogs checkout (PICODECK_CDOGS_DIR).
+test_cdogs_gamepad.py::*
+
+# Needs the Rally repo checkout (PICODECK_RALLY_DIR, PicoDeck/rally).
+test_rally_gamepad.py::*
