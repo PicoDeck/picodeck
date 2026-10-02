@@ -270,3 +270,18 @@ bool bt_pad_addr_parse(const char *s, uint8_t addr[6]) {
   }
   return true;
 }
+
+// ── Pairing policy ──────────────────────────────────────────────────────────
+
+bool bt_pad_pairing_allowed(bool pairing, const uint8_t peer[6],
+                            const uint8_t addr[6]) {
+  return pairing && peer && addr && memcmp(peer, addr, 6) == 0;
+}
+
+bool bt_pad_connection_allowed(const bt_store_t *s, bool pairing,
+                               const uint8_t peer[6], const uint8_t addr[6]) {
+  if (!addr)
+    return false;
+  return bt_store_find_pad(s, addr, NULL) ||
+         bt_pad_pairing_allowed(pairing, peer, addr);
+}

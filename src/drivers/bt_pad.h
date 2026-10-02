@@ -69,6 +69,7 @@ typedef struct {
   bool pad_ready;        // its descriptor is in: reports reach the gamepad
   const char *profile;   // its button layout ("PlayStation", "generic", ...)
   uint32_t reports;      // input reports since power on
+  bool radio_in_use;     // bt_pad_radio_in_use(), in the same snapshot
   char note[48];         // the last thing that happened, for the menu
 } bt_pad_status_t;
 

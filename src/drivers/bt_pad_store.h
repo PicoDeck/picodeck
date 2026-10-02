@@ -87,3 +87,19 @@ bool bt_store_remove_pad(bt_store_t *s, const uint8_t addr[6]);
 // hex pairs joined by ':').
 void bt_pad_addr_str(const uint8_t addr[6], char out[18]);
 bool bt_pad_addr_parse(const char *s, uint8_t addr[6]);
+
+// ── Pairing policy (bt_pad.c, simulator/sim_bt.c) ──────────────────────────
+// Who may bond with us. A pad that is already paired authenticates with its
+// link key and never needs to pair again; anything that asks to pair (a PIN
+// request, an SSP confirmation) is answered only during a pairing the user
+// started from the Bluetooth page, for a found device that is not paired,
+// and only for that device: `pairing` is set for that connect alone, `peer`
+// is its address. Everything else gets a negative reply, so a device that
+// takes a paired pad's address cannot re-bond as it and inject input.
+bool bt_pad_pairing_allowed(bool pairing, const uint8_t peer[6],
+                            const uint8_t addr[6]);
+
+// Whether a device that pages us may connect at all (the ACL filter): a
+// paired pad (reconnecting), or the device being paired.
+bool bt_pad_connection_allowed(const bt_store_t *s, bool pairing,
+                               const uint8_t peer[6], const uint8_t addr[6]);

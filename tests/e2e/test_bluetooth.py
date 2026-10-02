@@ -224,6 +224,31 @@ def test_forget_and_unknown_devices(simulator):
     assert status(sim)["link"] == "none"
 
 
+def test_spoofed_address_cannot_re_pair(simulator):
+    """A device that takes a paired pad's address but has no link key gets
+    through the connection filter (it is the address that is paired) and
+    asks to pair again: refused, since only a pairing the user started from
+    the page, for a found unpaired device, may bond. Unknown addresses are
+    refused at the connection itself."""
+    sim = simulator
+    _pair(sim)
+    _keys(sim, ["esc", "esc", "esc"])
+    bt(sim, "disconnect")
+    wait_status(sim, "link", "none")
+    before = _bonds(sim)
+    assert bt(sim, f"sim spoof {PAD}") == "BT sim: refused"
+    st = status(sim)
+    assert st["note"] == f"Refused pairing from {PAD}", st
+    assert st["link"] == "none", st
+    assert bt(sim, "sim spoof 99:88:77:66:55:44") == "BT sim: refused"
+    assert status(sim)["note"] == "Refused 99:88:77:66:55:44 (not paired)"
+    bt(sim, "sim press none", ok=False)  # no pad connected: no report
+    assert _bonds(sim) == before  # nothing re-bonded
+    # The real pad still reconnects with its key.
+    bt(sim, f"sim wake {PAD}")
+    wait_status(sim, "link", "connected")
+
+
 def test_status_errors(simulator):
     sim = simulator
     assert bt(sim, "connect nonsense", ok=False).startswith("Usage:")

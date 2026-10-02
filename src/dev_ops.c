@@ -220,11 +220,13 @@ void bt_pad_sim_clear(void);
 bool bt_pad_sim_report(uint32_t state);
 bool bt_pad_sim_drop(void);
 bool bt_pad_sim_wake(const uint8_t addr[6]);
+bool bt_pad_sim_spoof(const uint8_t addr[6]);
 
 // "bt sim add <addr> <cod hex> <name>" (a device in pairing mode in range),
 // "bt sim clear", "bt sim press <buttons|none>" (the connected pad's state,
 // as `pad` names it), "bt sim drop" (link loss), "bt sim wake <addr>" (a
-// bonded pad reconnects).
+// bonded pad reconnects), "bt sim spoof <addr>" (a device with that address
+// and no link key asks to pair: replies "refused" or "bonded").
 static bool pad_parse(char *spec, uint32_t *state, const char **bad);
 
 static bool dev_op_bt_sim(char *args, char *reply, size_t n) {
@@ -266,12 +268,17 @@ static bool dev_op_bt_sim(char *args, char *reply, size_t n) {
     snprintf(reply, n, ok ? "BT sim: dropped" : "Error: bt sim: no link");
     return ok;
   }
+  if (strncmp(args, "spoof ", 6) == 0 && bt_pad_addr_parse(args + 6, addr)) {
+    bool bonded = bt_pad_sim_spoof(addr);
+    snprintf(reply, n, bonded ? "BT sim: bonded" : "BT sim: refused");
+    return true;
+  }
   if (strncmp(args, "wake ", 5) == 0 && bt_pad_addr_parse(args + 5, addr)) {
     bool ok = bt_pad_sim_wake(addr);
     snprintf(reply, n, ok ? "BT sim: waking" : "Error: bt sim: refused");
     return ok;
   }
-  snprintf(reply, n, "Usage: bt sim add|clear|press|drop|wake");
+  snprintf(reply, n, "Usage: bt sim add|clear|press|drop|wake|spoof");
   return false;
 }
 #endif
@@ -321,8 +328,8 @@ bool dev_op_bt(char *args, char *reply, size_t n) {
              st.available, st.enabled, bt_power_name(st.power), st.scanning,
              bt_link_name(st.link), st.link ? a : "-", st.pad_ready,
              st.profile ? st.profile : "-", (unsigned long)st.reports,
-             (unsigned)st.n_paired, (unsigned)st.n_found,
-             bt_pad_radio_in_use(), st.note);
+             (unsigned)st.n_paired, (unsigned)st.n_found, st.radio_in_use,
+             st.note);
     return true;
   }
   if (strcmp(args, "on") == 0 || strcmp(args, "off") == 0) {

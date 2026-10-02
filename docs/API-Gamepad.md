@@ -90,7 +90,7 @@ Bluetooth is **off** until you turn it on: system menu → Settings → **Blueto
 2. On the Bluetooth page choose **Search for controllers**. The search takes about 10 seconds; controllers are listed first, other devices dimmed below them.
 3. Choose your controller. The page says **Connected** and the header shows the gamepad icon.
 
-The controller is remembered (up to 4; pairing a fifth forgets the oldest). Next time, switch it on (the PS or Home button) while Bluetooth is on and it reconnects by itself, in the launcher or in a game. On the Bluetooth page, Enter on a paired controller connects or disconnects it, and **Del** twice forgets it.
+The controller is remembered (up to 4; pairing a fifth forgets the oldest). Next time, switch it on (the PS or Home button) while Bluetooth is on and it reconnects by itself, in the launcher or in a game. On the Bluetooth page, Enter on a paired controller connects or disconnects it, and **Del** twice forgets it. A paired controller connects with the key it was paired with; one that was paired with another console or computer since has lost that key, so forget it and pair it again. Only the controller you choose from the search, while it pairs, may pair: nothing else nearby can pair with your PicoDeck or pose as your controller.
 
 ### Buttons
 

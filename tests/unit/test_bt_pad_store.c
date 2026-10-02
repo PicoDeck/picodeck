@@ -198,8 +198,31 @@ static void test_addr(void) {
   CHECK(!bt_pad_addr_parse(NULL, b));
 }
 
+static void test_pairing_policy(void) {
+  uint8_t pad[6] = {1, 2, 3, 4, 5, 6}, other[6] = {1, 2, 3, 4, 5, 7};
+  // Only during a pairing the user started, and only for that device.
+  CHECK(bt_pad_pairing_allowed(true, pad, pad));
+  CHECK(!bt_pad_pairing_allowed(true, pad, other));
+  CHECK(!bt_pad_pairing_allowed(false, pad, pad));
+  CHECK(!bt_pad_pairing_allowed(true, NULL, pad));
+  CHECK(!bt_pad_pairing_allowed(true, pad, NULL));
+  // A paired pad's address may connect (and must then authenticate with
+  // its key: it may not pair again); an unknown one only while being paired.
+  bt_store_init(&s_s);
+  bt_pad_record_t r = rec(9, "Wireless Controller");
+  uint8_t ev[6];
+  bt_store_add_pad(&s_s, &r, ev);
+  CHECK(bt_pad_connection_allowed(&s_s, false, pad, r.addr));
+  CHECK(!bt_pad_pairing_allowed(false, pad, r.addr)); // paired: no re-bond
+  CHECK(!bt_pad_connection_allowed(&s_s, false, pad, other));
+  CHECK(bt_pad_connection_allowed(&s_s, true, other, other));
+  CHECK(!bt_pad_connection_allowed(&s_s, true, pad, other));
+  CHECK(!bt_pad_connection_allowed(&s_s, true, pad, NULL));
+}
+
 int main(void) {
   test_tlv();
+  test_pairing_policy();
   test_pads();
   test_file();
   test_addr();

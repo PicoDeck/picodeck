@@ -53,6 +53,8 @@ typedef struct {
   found_t found[BT_PAD_FOUND_MAX];
   bt_pad_link_t link;
   bool pending;     // a connect waiting for the scan to stop
+  bool pairing;     // pairing a found device the user chose (peer): only it
+                    // may bond (bt_pad_pairing_allowed), only until it opens
   bool cancel;      // disconnect/forget asked while connecting
   bool forgotten;   // ...and the pad forgotten: no record when it opens
   uint16_t cid;
@@ -130,12 +132,23 @@ static void update_connectable(void) {
                             s_bt->link == BT_PAD_LINK_NONE);
 }
 
-// Only paired pads may connect to us (their reconnection): BTstack would
-// otherwise let any device that pages bond with Just Works before
-// hid_host can refuse it, and its key would take a paired pad's place.
+// Only paired pads may connect to us (their reconnection), and the device
+// being paired: BTstack would otherwise let any device that pages bond with
+// Just Works before hid_host can refuse it.
 static int connection_filter(bd_addr_t addr, hci_link_type_t link_type) {
   (void)link_type;
-  return s_bt && bt_store_find_pad(&s_bt->store, addr, NULL);
+  return s_bt && bt_pad_connection_allowed(&s_bt->store, s_bt->pairing,
+                                           s_bt->peer.addr, addr);
+}
+
+// The pairing the user started is over (opened, failed or closed): nobody
+// may bond again until the next one. A paired pad never needs to: it
+// authenticates with its link key.
+static void end_pairing(void) {
+  if (!s_bt->pairing)
+    return;
+  s_bt->pairing = false;
+  gap_set_bondable_mode(0);
 }
 
 static uint32_t now_ms(void) { return to_ms_since_boot(get_absolute_time()); }
@@ -227,6 +240,7 @@ static void start_connect(void) {
                                 &s_bt->cid);
   if (st != ERROR_CODE_SUCCESS) {
     s_bt->link = BT_PAD_LINK_NONE;
+    end_pairing();
     char code[8];
     snprintf(code, sizeof(code), "0x%02x", st);
     note("Could not connect (%s)", code);
@@ -263,6 +277,7 @@ static void hid_event(uint8_t *packet) {
   }
   case HID_SUBEVENT_CONNECTION_OPENED: {
     uint8_t st = hid_subevent_connection_opened_get_status(packet);
+    end_pairing();
     if (st != ERROR_CODE_SUCCESS) {
       s_bt->link = BT_PAD_LINK_NONE;
       s_bt->cid = 0;
@@ -333,6 +348,7 @@ static void hid_event(uint8_t *packet) {
     break;
   }
   case HID_SUBEVENT_CONNECTION_CLOSED:
+    end_pairing();
     pad_source_disconnect(PAD_SOURCE_BT); // nothing stays held
     s_bt->link = BT_PAD_LINK_NONE;
     s_bt->cid = 0;
@@ -344,6 +360,12 @@ static void hid_event(uint8_t *packet) {
   default:
     break;
   }
+}
+
+static void refused_pairing(const uint8_t *addr) {
+  char a[18];
+  bt_pad_addr_str(addr, a);
+  note("Refused pairing from %s", a);
 }
 
 static void packet_handler(uint8_t type, uint16_t channel, uint8_t *packet,
@@ -370,6 +392,7 @@ static void packet_handler(uint8_t type, uint16_t channel, uint8_t *packet,
       s_bt->power = BT_PAD_OFF;
       s_bt->stopping = false;
       s_bt->inquiring = s_bt->naming = s_bt->scanning = s_bt->pending = false;
+      end_pairing();
       if (s_bt->link != BT_PAD_LINK_NONE)
         pad_source_disconnect(PAD_SOURCE_BT);
       s_bt->link = BT_PAD_LINK_NONE;
@@ -433,9 +456,26 @@ static void packet_handler(uint8_t type, uint16_t channel, uint8_t *packet,
       next_name();
     }
     break;
-  case HCI_EVENT_PIN_CODE_REQUEST: // legacy pairing: the common default
+  // Pairing requests are answered only for the device the user is pairing
+  // (bt_pad_pairing_allowed): anything else, a device using a paired pad's
+  // address included, is refused and cannot bond as it.
+  case HCI_EVENT_PIN_CODE_REQUEST: // legacy pairing: the common default PIN
     hci_event_pin_code_request_get_bd_addr(packet, addr);
-    gap_pin_code_response(addr, "0000");
+    if (bt_pad_pairing_allowed(s_bt->pairing, s_bt->peer.addr, addr)) {
+      gap_pin_code_response(addr, "0000");
+    } else {
+      gap_pin_code_negative(addr);
+      refused_pairing(addr);
+    }
+    break;
+  case HCI_EVENT_USER_CONFIRMATION_REQUEST: // SSP Just Works
+    hci_event_user_confirmation_request_get_bd_addr(packet, addr);
+    if (bt_pad_pairing_allowed(s_bt->pairing, s_bt->peer.addr, addr)) {
+      gap_ssp_confirmation_response(addr);
+    } else {
+      gap_ssp_confirmation_negative(addr);
+      refused_pairing(addr);
+    }
     break;
   case HCI_EVENT_HID_META:
     hid_event(packet);
@@ -475,7 +515,10 @@ static void setup_btstack(void) {
   gap_ssp_set_io_capability(SSP_IO_CAPABILITY_NO_INPUT_NO_OUTPUT);
   gap_ssp_set_authentication_requirement(
       SSP_IO_AUTHREQ_MITM_PROTECTION_NOT_REQUIRED_GENERAL_BONDING);
-  gap_set_bondable_mode(1);
+  // Bonding only during a pairing the user started (end_pairing), and every
+  // pairing request answered by us, not BTstack (packet_handler).
+  gap_set_bondable_mode(0);
+  gap_ssp_set_auto_accept(0);
   gap_discoverable_control(0); // pads are found by us, not the other way
   s_bt->initialised = true;
 }
@@ -505,6 +548,13 @@ static uint32_t power_off_locked(void *arg) {
   (void)arg;
   if (!s_bt->initialised || s_bt->power == BT_PAD_OFF)
     return 0;
+  if (s_bt->power == BT_PAD_FAILED || hci_get_state() == HCI_STATE_OFF) {
+    // A start that failed never left OFF: no HCI_STATE_OFF will come.
+    s_bt->power = BT_PAD_OFF;
+    s_bt->stopping = false;
+    note("Off%s", "");
+    return 0;
+  }
   // Halting disconnects the pad and stops every scan before the transport
   // closes (BTSTACK_EVENT_STATE -> HCI_STATE_OFF).
   s_bt->stopping = true;
@@ -517,6 +567,13 @@ static uint32_t power_off_locked(void *arg) {
 static void load_store_job(void *arg) {
   (void)arg;
   sd_atomic_recover(BT_FILE);
+  int size = sdcard_fsize(BT_FILE);
+  if (size < 0)
+    return; // none yet: an empty store
+  if (size > BT_STORE_FILE_MAX) { // never one this wrote: not read at all
+    printf("[BT] %s is damaged: starting with no paired pads\n", BT_FILE);
+    return;
+  }
   int len = 0;
   char *buf = sdcard_read_file(BT_FILE, &len);
   if (!buf)
@@ -619,6 +676,7 @@ static uint32_t status_locked(void *arg) {
                    ? hid_pad_profile_label(s_bt->profile)
                    : NULL;
   o->reports = s_bt->reports;
+  o->radio_in_use = s_bt->power != BT_PAD_OFF;
   memcpy(o->note, s_bt->note, sizeof(o->note));
   return 0;
 }
@@ -670,6 +728,16 @@ static uint32_t connect_locked(void *arg) {
     return 1;
   s_bt->peer = *d;
   s_bt->link = BT_PAD_LINK_CONNECTING;
+  // Pairing is allowed only for a device the search found that is not
+  // paired yet; a paired pad reconnects with its key or fails (forget it
+  // and pair it again).
+  bool found = false;
+  for (int i = 0; i < s_bt->n_found; i++)
+    found |= memcmp(s_bt->found[i].d.addr, d->addr, 6) == 0;
+  if (found && !bt_store_find_pad(&s_bt->store, d->addr, NULL)) {
+    s_bt->pairing = true;
+    gap_set_bondable_mode(1);
+  }
   if (s_bt->scanning) {
     s_bt->scanning = false;
     if (s_bt->inquiring)

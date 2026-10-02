@@ -35,6 +35,7 @@ static struct {
   uint8_t n_found;
   bt_pad_device_t found[BT_PAD_FOUND_MAX];
   bt_pad_link_t link;
+  bool pairing; // as bt_pad.c: pairing a found, unpaired device (peer)
   bt_pad_device_t peer;
   uint32_t link_at;
   bool link_ok;
@@ -95,6 +96,12 @@ static void tick(void) {
     note("Search done: %s", s.n_found ? "pick a pad" : "nothing found");
   }
   if (s.link == BT_PAD_LINK_CONNECTING && t - s.link_at >= CONNECT_MS) {
+    bool pairing = s.pairing;
+    s.pairing = false; // over, whatever happens (bt_pad.c's end_pairing)
+    // An unpaired device must pair first: only the one being paired may.
+    if (s.link_ok && !bt_store_find_pad(&s.store, s.peer.addr, NULL) &&
+        !bt_pad_pairing_allowed(pairing, s.peer.addr, s.peer.addr))
+      s.link_ok = false;
     if (!s.link_ok) {
       s.link = BT_PAD_LINK_NONE;
       note("Could not connect (%s)", "0x04");
@@ -191,6 +198,7 @@ void bt_pad_get_status(bt_pad_status_t *o) {
                    ? hid_pad_profile_label(hid_pad_profile_for_name(s.peer.name))
                    : NULL;
   o->reports = s.reports;
+  o->radio_in_use = s.power != BT_PAD_OFF;
   memcpy(o->note, s.note, sizeof(o->note));
 }
 
@@ -221,6 +229,11 @@ bool bt_pad_connect(const uint8_t addr[6], const char *name) {
     strncpy(s.peer.name, name, BT_PAD_NAME_MAX - 1);
   // A pad answers when it is in range (pairing mode) or already bonded.
   s.link_ok = in_range(addr) || bt_store_find_pad(&s.store, addr, NULL);
+  // Pairing only for a device the search found that is not paired yet.
+  bool found = false;
+  for (int i = 0; i < s.n_found; i++)
+    found |= memcmp(s.found[i].addr, addr, 6) == 0;
+  s.pairing = found && !bt_store_find_pad(&s.store, addr, NULL);
   s.link = BT_PAD_LINK_CONNECTING;
   s.link_at = now_ms();
   note("Connecting to %s...", s.peer.name[0] ? s.peer.name : "pad");
@@ -294,6 +307,26 @@ bool bt_pad_sim_drop(void) {
   if (s.link == BT_PAD_LINK_NONE)
     return false;
   drop_link("%s disconnected");
+  return true;
+}
+
+// A device pages the PicoDeck with `addr` and no link key, and asks to pair
+// (a device spoofing a paired pad's address). The connection filter lets a
+// paired address in; the pairing request is refused unless the user is
+// pairing that very device (bt_pad_pairing_allowed). True if it bonded.
+bool bt_pad_sim_spoof(const uint8_t addr[6]) {
+  tick();
+  char a[18];
+  bt_pad_addr_str(addr, a);
+  if (s.power != BT_PAD_ON ||
+      !bt_pad_connection_allowed(&s.store, s.pairing, s.peer.addr, addr)) {
+    note("Refused %s (not paired)", a);
+    return false;
+  }
+  if (!bt_pad_pairing_allowed(s.pairing, s.peer.addr, addr)) {
+    note("Refused pairing from %s", a);
+    return false;
+  }
   return true;
 }
 
