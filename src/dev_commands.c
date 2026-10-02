@@ -94,7 +94,7 @@ static void b64_recv_abort(const char *why);
 
 // The default alarm pool's free and lost slots (the `alarmpool` command).
 // cmake/picodeck_pico_time.cmake compiles the real one into its patched
-// pico_time; an SDK it leaves unpatched (2.3.1 on) gets this one.
+// pico_time; an SDK it leaves unpatched (2.3.1 on) gets this one, false.
 __attribute__((weak)) bool picodeck_alarm_pool_census(int *free_slots,
                                                       int *lost_slots) {
     (void)free_slots;
@@ -490,8 +490,18 @@ static void dev_command_run(void *arg) {
     } else if (strcmp(s_cmd_buf, "alarmpool") == 0) {
         // Issue #58: a slot that is in none of the default pool's lists
         // (lost) only comes from a leak; tests/e2e/test_kbd_hw.py checks it.
-        int free_slots, lost_slots;
-        if (picodeck_alarm_pool_census(&free_slots, &lost_slots))
+        // A slot Core 1 is adding at that instant reads as lost for a
+        // moment, so a nonzero count is read again (up to three reads).
+        int free_slots = 0, lost_slots = 0;
+        bool ok = false;
+        for (int i = 0; i < 3; i++) {
+            if (i)
+                busy_wait_us(500);
+            ok = picodeck_alarm_pool_census(&free_slots, &lost_slots);
+            if (!ok || lost_slots == 0)
+                break;
+        }
+        if (ok)
             printf("[DEV] AlarmPool: free=%d lost=%d\n", free_slots, lost_slots);
         else
             printf("[DEV] AlarmPool: unavailable (pico_time not patched)\n");
@@ -605,8 +615,9 @@ static void dev_command_run(void *arg) {
         // unanswered so the recovery path runs (tests/e2e/test_kbd_hw.py).
         // sys_khz is the clock right now: the clock-change test reads it.
         // A KbdFail line follows for the first and the latest failure of
-        // the latest failure streak, if there was one ("reset" clears them
-        // and `kbdstat log`'s trace too). ago_ms wraps after 71.6 min.
+        // the latest failure streak, if there was one ("reset" clears them,
+        // except during a streak, and `kbdstat log`'s trace). ago_ms wraps
+        // after 71.6 min.
         if (strcmp(s_cmd_buf, "kbdstat reset") == 0)
             kbd_i2c_reset_stats();
         else if (strcmp(s_cmd_buf, "kbdstat fault") == 0)
@@ -870,7 +881,7 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   ping           - Check device is responding\n");
         printf("[DEV]   ver            - Show firmware build date/time\n");
         printf("[DEV]   stack          - Main, app and OS-command stack peak use\n");
-        printf("[DEV]   alarmpool      - Default alarm pool: free and lost slots\n");
+        printf("[DEV]   alarmpool      - Default alarm pool: free and lost slots (lost re-read 3x)\n");
         printf("[DEV]   kbdstat [reset|fault|log|hw] - Keyboard bus engine counters\n");
         printf("[DEV]   xipstat [reset|off|prio core0|prio none|mp3idle on|mp3idle off] - XIP cache, bus contention and MP3 decode timing\n");
         printf("[DEV]   exit           - Signal current app to exit (error if none)\n");

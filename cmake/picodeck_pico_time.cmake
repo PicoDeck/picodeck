@@ -44,19 +44,23 @@ set(_PICODECK_PICO_TIME_TO
                     }
                 } else {
                     prev = &entry->next;")
-# Core 0 (the pool's core), task context. The pool's spin lock masks this
-# core's interrupts, so its IRQ handler cannot move entries mid-walk, and the
-# other core only touches the free and new lists under that lock. An entry a
-# core is adding between its two lock sections reads as lost for that moment.
+# On the pool's core (core 0), task context; it returns false on the other.
+# The pool's spin lock masks this core's interrupts, so its IRQ handler cannot
+# move entries mid-walk, and the other core only touches the free and new
+# lists under that lock. An entry a core is adding between its two lock
+# sections reads as lost for that moment (the dev command reads again).
 set(_PICODECK_PICO_TIME_CENSUS [=[
 
 #if !PICO_TIME_DEFAULT_ALARM_POOL_DISABLED
 // PicoDeck (cmake/picodeck_pico_time.cmake): the default pool's slots for the
 // `alarmpool` dev command: free, and lost (in no list; only a leak puts one
-// there). Core 0, task context.
+// there). The pool's core (core 0), task context; false on the other core,
+// where its interrupt handler could move entries under the walk.
 bool picodeck_alarm_pool_census(int *free_slots, int *lost_slots);
 bool picodeck_alarm_pool_census(int *free_slots, int *lost_slots) {
     alarm_pool_t *pool = alarm_pool_get_default();
+    if (get_core_num() != pool->core_num)
+        return false;
     int cap = pool->num_entries, listed = 0, nfree = 0;
     uint32_t save = spin_lock_blocking(pool->lock);
     for (int16_t i = pool->ordered_head; i >= 0 && listed <= cap; i = pool->entries[i].next)

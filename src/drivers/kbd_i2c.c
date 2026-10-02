@@ -634,8 +634,12 @@ void kbd_i2c_reset_stats(void) {
   for (unsigned i = 0; i < sizeof(s_why) / sizeof(s_why[0]); i++)
     s_why[i] = 0;
   s_cuts = 0;
-  s_first_fail = (kbd_i2c_fail_t){0};
-  s_last_fail = (kbd_i2c_fail_t){0};
+  // A streak still going keeps its records: the next failure would only
+  // update "last", leaving "first" empty until the streak ended.
+  if (s_bus.fail_streak == 0) {
+    s_first_fail = (kbd_i2c_fail_t){0};
+    s_last_fail = (kbd_i2c_fail_t){0};
+  }
   s_trace_n = 0;
   s_isr_us = 0;
   s_max_read_us = 0;

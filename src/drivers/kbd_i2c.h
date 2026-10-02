@@ -107,7 +107,9 @@ void kbd_i2c_get_failures(kbd_i2c_fail_t *first, kbd_i2c_fail_t *last);
 int kbd_i2c_get_trace(kbd_i2c_event_t *out, int max);
 void kbd_i2c_get_hw(kbd_i2c_hw_t *out);
 const char *kbd_i2c_state_name(uint8_t state);
-void kbd_i2c_reset_stats(void);  // the counters, failure records and trace
+// The counters and the trace, and the failure records unless a failure
+// streak is still going (they describe it).
+void kbd_i2c_reset_stats(void);
 void kbd_i2c_inject_fault(void); // the next transaction is NACKed (kbdstat fault)
 
 #endif
