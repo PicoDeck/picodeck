@@ -22,7 +22,8 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _dev(sim, cmd, timeout=20.0):
-    return sim.call("dev_command", {"cmd": cmd}, timeout=timeout)
+    return sim.call("dev_command", {"cmd": cmd, "timeout_ms": int(timeout * 750)},
+                    timeout=timeout)
 
 
 def _build_archive(dest: Path) -> dict:
