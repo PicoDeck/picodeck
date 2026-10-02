@@ -10,7 +10,8 @@
 //   player), it never does.
 // - ID3v2 tags: a tagged file plays and loops exactly as the same file
 //   untagged, with no decode error: play() and every loop start past the
-//   tags (one in the decode buffer, one longer than it, two in a row).
+//   tags (in the first 8 KB read, ending just short of it, longer than it,
+//   two in a row), mono and stereo.
 //
 // fixtures/mp3/chord22m.mp3: 1 s of test_mp3_fed's chord, 22.05 kHz mono
 // MPEG-2 at 32 kbps (39 frames of 576 samples, no ID3 tag, no Xing frame),
@@ -257,14 +258,18 @@ static void test_fed_mode_never_decodes_ahead(void) {
   free(b.data);
 }
 
-// An ID3v2.3 tag of `body` bytes whose contents look like MP3 frame
-// headers (0xFF 0xF3 ... as in cover art), before the file's audio.
-static blob_t tagged(blob_t audio, uint32_t body, int tags) {
+// ID3v2.3 tags of the given body sizes (bodies[0] first, up to 2), whose
+// contents look like MP3 frame headers (0xFF 0xF3 ... as in cover art),
+// before the file's audio.
+static blob_t tagged(blob_t audio, const uint32_t *bodies, int tags) {
   blob_t b;
-  b.len = audio.len + (uint32_t)tags * (10u + body);
+  b.len = audio.len;
+  for (int t = 0; t < tags; t++)
+    b.len += 10u + bodies[t];
   b.data = malloc(b.len);
   uint8_t *p = b.data;
   for (int t = 0; t < tags; t++) {
+    uint32_t body = bodies[t];
     p[0] = 'I'; p[1] = 'D'; p[2] = '3'; p[3] = 3; p[4] = 0; p[5] = 0;
     p[6] = (uint8_t)((body >> 21) & 0x7f); p[7] = (uint8_t)((body >> 14) & 0x7f);
     p[8] = (uint8_t)((body >> 7) & 0x7f);  p[9] = (uint8_t)(body & 0x7f);
@@ -275,6 +280,20 @@ static blob_t tagged(blob_t audio, uint32_t body, int tags) {
   memcpy(p, audio.data, audio.len);
   return b;
 }
+
+// Tag sizes around the 8 KB first read (rewind_locked reads 8192 bytes):
+// a tag ending just short of it left load()'s probe less than a frame.
+#define NEAR_READ(short_by) (8192u - 10u - (short_by))
+static const struct { uint32_t bodies[2]; int tags; } TAG_CASES[] = {
+  {{4534}, 1},                    // in the first read (Nova Rail's: 4.5 KB)
+  {{NEAR_READ(10)}, 1},           // ending 10 bytes before its end
+  {{NEAR_READ(50)}, 1},
+  {{NEAR_READ(300)}, 1},
+  {{20000}, 1},                   // longer than it
+  {{20000, 7882}, 2},             // two, the second ending near a read's end
+  {{300, 300}, 2},                // two in a row
+};
+#define TAG_CASE_COUNT (sizeof TAG_CASES / sizeof TAG_CASES[0])
 
 // Plays `path` looping for `renders` mixer renders; the output and the
 // decode errors (mp3stats' mad_err).
@@ -304,13 +323,8 @@ static void test_id3v2_tags_are_skipped_at_play_and_at_every_loop(void) {
   put_file("/plain.mp3", b);
   uint32_t errs = play_looped("/plain.mp3", want, RENDERS);
   CHECK(diag(DIAG_FRAMES) > 3 * 39);
-  static const struct { uint32_t body; int tags; } cases[] = {
-    {4534, 1},    // in the 8 KB decode buffer (Nova Rail's: 4.5 KB)
-    {20000, 1},   // longer than it: read again from its end
-    {300, 2},     // two in a row
-  };
-  for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
-    blob_t t = tagged(b, cases[c].body, cases[c].tags);
+  for (size_t c = 0; c < TAG_CASE_COUNT; c++) {
+    blob_t t = tagged(b, TAG_CASES[c].bodies, TAG_CASES[c].tags);
     put_file("/tagged.mp3", t);
     uint32_t terrs = play_looped("/tagged.mp3", got, RENDERS);
     CHECK_EQ_U32(terrs, errs);
@@ -319,9 +333,30 @@ static void test_id3v2_tags_are_skipped_at_play_and_at_every_loop(void) {
     for (size_t i = 0; i < (size_t)RENDERS * 128; i++)
       if (got[i] != want[i]) { first = i; break; }
     if (first != SIZE_MAX)
-      printf("  tag %u x%d: output differs from frame %zu\n",
-             (unsigned)cases[c].body, cases[c].tags, first);
+      printf("  tags %u,%u: output differs from frame %zu\n",
+             (unsigned)TAG_CASES[c].bodies[0], (unsigned)TAG_CASES[c].bodies[1],
+             first);
     CHECK(first == SIZE_MAX);
+    free(t.data);
+  }
+  free(b.data);
+}
+
+// 44.1 kHz stereo frames are larger (418 B at 128 kbps): the same tags,
+// and the file loads and decodes the frames the untagged one does.
+static void test_id3v2_tags_before_stereo_frames(void) {
+  blob_t b = load_fixture("chord128.mp3");
+  enum { RENDERS = 200 };
+  static int32_t want[RENDERS * 128], got[RENDERS * 128];
+  put_file("/plain.mp3", b);
+  play_looped("/plain.mp3", want, RENDERS);
+  uint32_t frames = diag(DIAG_FRAMES);
+  for (size_t c = 0; c < TAG_CASE_COUNT; c++) {
+    blob_t t = tagged(b, TAG_CASES[c].bodies, TAG_CASES[c].tags);
+    put_file("/tagged.mp3", t);
+    play_looped("/tagged.mp3", got, RENDERS);
+    CHECK_EQ_U32(diag(DIAG_FRAMES), frames);
+    CHECK(memcmp(got, want, sizeof want) == 0);
     free(t.data);
   }
   free(b.data);
@@ -334,6 +369,7 @@ int main(void) {
   test_decoding_ahead_loses_no_frame();
   test_fed_mode_never_decodes_ahead();
   test_id3v2_tags_are_skipped_at_play_and_at_every_loop();
+  test_id3v2_tags_before_stereo_frames();
   mp3_player_deinit();
   return check_report("test_mp3_decode");
 }

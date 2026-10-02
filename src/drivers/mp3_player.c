@@ -772,29 +772,25 @@ static int read_from_locked(uint32_t pos) {
 static bool rewind_locked(void) {
     if (!s_file)
         return false;
+    // After each tag the read starts again where it ends, so the buffer
+    // starts with the next tag or the audio and holds as much of it as it
+    // can: libmad (and load()'s probe) need a whole frame, and the next
+    // header, in the buffer.
+    uint32_t start = 0;  // the first byte past the tags
     int rd = read_from_locked(0);
-    if (rd <= 0)
-        return false;
-    uint32_t base = 0;   // the file offset of the buffer's first byte
-    uint32_t at = 0;     // the first byte past the tags, from the buffer's start
-    for (int tags = 0; tags < 4; tags++) {   // (a file rarely has two)
-        uint32_t tag = mp3_id3v2_size(s_decode_buffer + at, (uint32_t)rd - at);
+    for (int tags = 0; rd > 0 && tags < 4; tags++) {   // (a file rarely has two)
+        uint32_t tag = mp3_id3v2_size(s_decode_buffer, (uint32_t)rd);
         if (tag == 0)
             break;
-        at += tag;
-        if (at + MP3_ID3V2_HEADER > (uint32_t)rd) {
-            // The tag runs on past the buffer: read from its end.
-            base += at;
-            at = 0;
-            rd = read_from_locked(base);
-            if (rd <= 0)
-                return false;
-        }
+        start += tag;
+        rd = read_from_locked(start);
     }
-    s_data_start = base + at;
-    s_bytes_in_buffer = rd - (int)at;
-    s_buffer_pos = (int)at;
-    s_file_pos = base + (uint32_t)rd;
+    if (rd <= 0)
+        return false;
+    s_data_start = start;
+    s_bytes_in_buffer = rd;
+    s_buffer_pos = 0;
+    s_file_pos = start + (uint32_t)rd;
     memset(s_decode_buffer + rd, 0, MAD_BUFFER_GUARD);
     mad_stream_init(s_mad_stream);
     mad_frame_init(s_mad_frame);
