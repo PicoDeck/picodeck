@@ -1000,8 +1000,9 @@ bool video_player_load(video_player_t *player, const char *path) {
 static void video_boost_clock(video_priv_t *priv) {
     if (priv->overclocked) return;
 
-    // The CYW43 PIO SPI clock divider is set at init (200 MHz) and is NOT
-    // updated by launcher_apply_clock(), so WiFi must be disconnected first.
+    // WiFi is disconnected for the boost: the radio's traffic and power are
+    // not wanted during playback. (launcher_apply_clock retunes the CYW43's
+    // PIO SPI divider for 300 MHz, so a live link would stay in spec.)
     priv->wifi_was_connected = false;
     if (wifi_is_available()) {
         wifi_status_t wst = wifi_get_status();

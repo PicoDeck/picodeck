@@ -808,10 +808,12 @@ static bool run_app(int idx) {
 
   // ── Shared pre-launch setup ───────────────────────────────────────────────
 
-  // Disconnect WiFi before clock change if app doesn't need it.
-  // The CYW43 PIO SPI clock divider is set at init time (200 MHz) and is NOT
-  // updated by launcher_apply_clock(), so running WiFi at a different sys clock
-  // causes SPI timing failures ("hdr mismatch" errors) that stall Core 1.
+  // Disconnect WiFi before clock change if app doesn't need it, to save
+  // the power and the radio time. (launcher_apply_clock retunes the CYW43's
+  // PIO SPI divider for the new clock and holds its bus across the switch,
+  // so a link left up would stay in spec; before that, the divider fixed at
+  // init for 200 MHz ran the bus at 75 MHz at 300 MHz: "hdr mismatch"
+  // errors that stalled Core 1.)
   if (app->system_clock_khz > 0 && !app->has_http && wifi_is_available()) {
     wifi_status_t wst = wifi_get_status();
     if (wst == WIFI_STATUS_CONNECTED || wst == WIFI_STATUS_CONNECTING ||

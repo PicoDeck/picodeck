@@ -144,6 +144,7 @@ def bt_state(target):
 
 
 def test_power_cycle_and_search(target, bt_state):
+    wifi_before = target.status().get("wifi")
     t0 = time.monotonic()
     bt(target, "on")
     st = wait_power(target, "on")
@@ -168,8 +169,16 @@ def test_power_cycle_and_search(target, bt_state):
     bt(target, "off")
     st = wait_power(target, "off")
     assert st["radio_in_use"] == "0"
-    # WiFi was not disturbed by the controller going up and down.
-    assert target.status().get("wifi") in ("connected", "online", "disconnected")
+    assert st["bus_errors"] == "0", st
+    # WiFi was not disturbed by the controller going up and down: a link
+    # that was up is still up (the boot's time sync may have left it off
+    # on purpose; then it must not have failed either).
+    wifi_after = target.status().get("wifi")
+    print(f"WiFi before {wifi_before!r}, after {wifi_after!r}")
+    if wifi_before in ("connected", "online"):
+        assert wifi_after in ("connected", "online"), wifi_after
+    else:
+        assert wifi_after != "failed", wifi_after
 
 
 def _host_ip() -> str:
@@ -257,11 +266,11 @@ def test_clock_change_keeps_bluetooth(target, bt_state):
                 "description": "E2E: 300 MHz with Bluetooth on",
                 "author": "PicoDeck E2E", "requirements": [],
                 "system_clock_khz": 300000}
-    target.stage_lua_app(CLOCK_APP, CLOCK_LUA, id=CLOCK_ID,
-                         files={"app.json": json.dumps(manifest)})
-    bt(target, "on")
-    wait_power(target, "on")
     try:
+        target.stage_lua_app(CLOCK_APP, CLOCK_LUA, id=CLOCK_ID,
+                             files={"app.json": json.dumps(manifest)})
+        bt(target, "on")
+        wait_power(target, "on")
         mark = target.log_cursor()
         target.launch_app(CLOCK_APP)
         out = target.wait_for_exit(timeout=30, poll_s=2.0)
@@ -269,9 +278,11 @@ def test_clock_change_keeps_bluetooth(target, bt_state):
         log = "\n".join(target.get_log_lines(mark))
         assert "Changing clock: 200 -> 300" in log, log[-2000:]
         assert "kso_set" not in log, log[-3000:]
+        assert "state machine not found" not in log, log[-3000:]
         st = bt(target)
         assert st["power"] == "on", st
         assert st["radio_in_use"] == "1", st
+        assert st["bus_errors"] == "0", st
         # The controller still answers: a search starts and ends.
         bt(target, "scan")
         deadline = time.monotonic() + 45
