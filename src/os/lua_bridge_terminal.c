@@ -21,14 +21,14 @@ typedef struct {
 // The live terminal at idx, or a Lua error. term is NULL once __gc freed it
 // (reachable only from a later finaliser: __gc is not a method).
 static lua_terminal_t* check_terminal(lua_State* L, int idx) {
-    lua_terminal_t* t = (lua_terminal_t*)luaL_checkudata(L, idx, TERMINAL_MT);
+    lua_terminal_t* t = (lua_terminal_t*)lb_checkudata(L, idx, TERMINAL_MT);
     if (!t->term)
         luaL_error(L, "attempt to use a destroyed terminal");
     return t;
 }
 
 static int l_terminal_gc(lua_State* L) {
-    lua_terminal_t* t = (lua_terminal_t*)luaL_checkudata(L, 1, TERMINAL_MT);
+    lua_terminal_t* t = (lua_terminal_t*)lb_checkudata(L, 1, TERMINAL_MT);
     if (t->term) {
 #ifdef PICODECK_SIMULATOR
         if (sim_get_active_terminal() == t->term)

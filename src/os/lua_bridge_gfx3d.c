@@ -37,7 +37,7 @@ static uint32_t now_us(void) {
 // ── Context ─────────────────────────────────────────────────────────────────
 
 static int l_ctx_gc(lua_State *L) {
-  ctx_ud_t *u = (ctx_ud_t *)luaL_checkudata(L, 1, CTX_MT);
+  ctx_ud_t *u = (ctx_ud_t *)lb_checkudata(L, 1, CTX_MT);
   if (u->g) {
     if (u->g == s_g) {  // the app's live context: the VM is closing
       s_g = NULL;
@@ -76,13 +76,13 @@ static void need_scene(lua_State *L, const char *fn) {
 // ── Meshes ──────────────────────────────────────────────────────────────────
 
 static mesh_ud_t *check_mesh(lua_State *L, int idx) {
-  mesh_ud_t *u = (mesh_ud_t *)luaL_checkudata(L, idx, MESH_MT);
+  mesh_ud_t *u = (mesh_ud_t *)lb_checkudata(L, idx, MESH_MT);
   if (!u->m) luaL_error(L, "attempt to use a freed mesh");
   return u;
 }
 
 static int l_mesh_gc(lua_State *L) {
-  mesh_ud_t *u = (mesh_ud_t *)luaL_checkudata(L, 1, MESH_MT);
+  mesh_ud_t *u = (mesh_ud_t *)lb_checkudata(L, 1, MESH_MT);
   if (u->m) {
     gfx3d_mesh_free(u->m);
     u->m = NULL;
@@ -357,7 +357,7 @@ static int l_gfx3d_drawList(lua_State *L) {
   for (lua_Integer k = 0; k < n; k++) {
     const lua_Integer i = (start - 1 + k) % n + 1;
     lua_rawgeti(L, 1, i);
-    mesh_ud_t *u = (mesh_ud_t *)luaL_testudata(L, -1, MESH_MT);
+    mesh_ud_t *u = (mesh_ud_t *)lb_testudata(L, -1, MESH_MT);
     if (!u || !u->m) {
       s_us_geom += geom;
       return luaL_error(L, "gfx3d.drawList: list[%d] is not a live mesh", (int)i);
@@ -420,7 +420,7 @@ static bool resolve_sprite(void *ud, int slot, const uint16_t **data, int *w,
   lua_State *L = (lua_State *)ud;
   lua_getfield(L, LUA_REGISTRYINDEX, SPRITES_KEY);
   lua_rawgeti(L, -1, slot);
-  lua_image_t *img = (lua_image_t *)luaL_testudata(L, -1, GRAPHICS_IMAGE_MT);
+  lua_image_t *img = (lua_image_t *)lb_testudata(L, -1, GRAPHICS_IMAGE_MT);
   lua_pop(L, 2);  // the image stays anchored in the sprites table
   if (!img || !img->data) return false;
   *data = img->data;

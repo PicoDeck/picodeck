@@ -85,6 +85,8 @@ Read a rectangle as a string of host-order RGB565, row-major, top row first — 
 
 The clip rect does not apply to reads (matching `display.getPixel()`).
 
+On the device (200 MHz) a read costs about 0.16-0.2 µs per byte, mostly writing the new string into PSRAM: a 320 x 27 strip (17 KB) takes about 3.7 ms and a 320 x 240 block (150 KB) about 24 ms, plus the collector's work for that much garbage. Reading back what you drew every frame is rarely worth it; `setPixels` is about four times cheaper per byte.
+
 ##### `fb:setPixels(data, x, y, w, h)`
 Write host-order RGB565 into the back buffer.
 
@@ -1551,7 +1553,7 @@ Coordinates and sizes round like every other quantity; colors must be integers. 
 
 Everything that draws an image reads its pixels at draw time, so a write shows at the next draw, with one exception: `sprite:setSourceRect` copies its rectangle out of the image when you call it (and `sprite:copy()` copies that copy). After writing to a sprite sheet, call `setSourceRect` again on the sprites that use it.
 
-Each call costs a Lua-to-C call: for more than a few pixels, build a string and use `setPixels`. A bulk string lives on the Lua heap like any other (a whole 256×256 image is 128 KB), so work in rows or tiles on large images. `getPixels` of a rectangle narrower than the image briefly needs twice the string's size (it is assembled in a buffer, then copied).
+Each call costs a Lua-to-C call: for more than a few pixels, build a string and use `setPixels`. A bulk string lives on the Lua heap like any other (a whole 256×256 image is 128 KB), so work in rows or tiles on large images. `getPixels` writes straight into the string it returns, so a read needs only that string's memory.
 
 #### `img:getPixel(x, y)`
 Returns the color of one pixel.

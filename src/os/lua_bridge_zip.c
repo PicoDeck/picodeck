@@ -98,7 +98,7 @@ static int s_lua_zip_open_count = 0;
 
 static lua_zip_archive_t *check_archive(lua_State *L) {
     lua_zip_archive_t *ar =
-        (lua_zip_archive_t *)luaL_checkudata(L, 1, ZIP_MT);
+        (lua_zip_archive_t *)lb_checkudata(L, 1, ZIP_MT);
     if (!ar->open)
         luaL_error(L, "archive is closed");
     return ar;
@@ -321,8 +321,8 @@ static int l_ar_read(lua_State *L) {
         lua_pushstring(L, "size cap");
         return 2;
     }
-    luaL_Buffer b;
-    void *buf = luaL_buffinitsize(L, &b, (size_t)info.size);
+    picodeck_lua_strbuf_t sb;  // extracted straight into the result string
+    void *buf = picodeck_lua_strbuf_init(L, &sb, (size_t)info.size);
     char err[ZIP_ERR_MAX];
     int n = zip_reader_read_to_buf(&ar->zr, idx, buf, (size_t)info.size, err);
     if (n < 0) {
@@ -330,7 +330,7 @@ static int l_ar_read(lua_State *L) {
         lua_pushstring(L, err);
         return 2;
     }
-    luaL_pushresultsize(&b, (size_t)n);
+    picodeck_lua_strbuf_push(L, &sb, (size_t)n);
     return 1;
 }
 
@@ -393,7 +393,7 @@ static int l_ar_extract_all(lua_State *L) {
 // ── ar:close() ───────────────────────────────────────────────────────────────
 static int l_ar_close(lua_State *L) {
     lua_zip_archive_t *ar =
-        (lua_zip_archive_t *)luaL_checkudata(L, 1, ZIP_MT);
+        (lua_zip_archive_t *)lb_checkudata(L, 1, ZIP_MT);
     archive_do_close(ar);  // double-close is a no-op, not an error
     return 0;
 }
@@ -402,7 +402,7 @@ static int l_ar_close(lua_State *L) {
 // or leaves a <close> scope.
 static int l_ar_gc(lua_State *L) {
     lua_zip_archive_t *ar =
-        (lua_zip_archive_t *)luaL_checkudata(L, 1, ZIP_MT);
+        (lua_zip_archive_t *)lb_checkudata(L, 1, ZIP_MT);
     archive_do_close(ar);
     return 0;
 }

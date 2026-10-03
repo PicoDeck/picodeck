@@ -169,9 +169,16 @@ if(EXISTS ${LUA_SRC}/lua.h)
     # The service hook's interrupt-safe, depth-independent arming (issue #21).
     picodeck_unit_test(test_lua_hook_arm)
     target_link_libraries(test_lua_hook_arm PRIVATE lua_host)
+    # String results built in place by the bulk bridge calls (fb:getPixels,
+    # fs.read, ...): they must behave exactly as Lua-made strings.
+    picodeck_unit_test(test_lua_strbuf)
+    target_link_libraries(test_lua_strbuf PRIVATE lua_host)
+    # The bridge's one-call argument checks (lb_checkudata, lb_checkint).
+    picodeck_unit_test(test_lua_fastarg)
+    target_link_libraries(test_lua_fastarg PRIVATE lua_host)
 else()
     message(WARNING "Lua sources not found at ${LUA_SRC} (run `make download-lua`): "
-                    "test_lua_hook_arm is not built")
+                    "test_lua_hook_arm, test_lua_strbuf and test_lua_fastarg are not built")
 endif()
 
 # The dev `mv`: path hygiene and the command over the vendored FatFS on a RAM

@@ -133,7 +133,7 @@ target_include_directories(lua_sim PUBLIC ${LUA_DIR})
 include(${PICODECK_ROOT}/cmake/picodeck_lua.cmake)
 picodeck_patch_luaconf(${LUA_DIR})
 target_compile_definitions(lua_sim PUBLIC ${PICODECK_LUA_DEFINITIONS})
-target_sources(lua_sim PRIVATE ${PICODECK_LUA_SOURCES})  # picodeck_lua_sprintf, picodeck_lua_arm_hook
+target_sources(lua_sim PRIVATE ${PICODECK_LUA_SOURCES})  # picodeck_lua_sprintf, _arm_hook, _strbuf, lua_fastarg.c
 target_compile_definitions(lua_sim PRIVATE PICODECK_SIMULATOR=1)
 target_compile_options(lua_sim PRIVATE -O2 -Wall)
 # The string hash seed comes from sim_test_control.c (sim_lua_seed.h): fixed

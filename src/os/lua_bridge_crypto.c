@@ -11,7 +11,7 @@ typedef struct {
 } aes_ctr_ud_t;
 
 static aes_ctr_ud_t *check_aes_ctr(lua_State *L, int idx) {
-    aes_ctr_ud_t *ud = (aes_ctr_ud_t *)luaL_checkudata(L, idx, AES_CTR_MT);
+    aes_ctr_ud_t *ud = (aes_ctr_ud_t *)lb_checkudata(L, idx, AES_CTR_MT);
     if (!ud->ctx) luaL_error(L, "aes_ctr: cipher has been freed");
     return ud;
 }
@@ -21,11 +21,10 @@ static int l_aes_ctr_update(lua_State *L) {
     size_t len;
     const char *input = luaL_checklstring(L, 2, &len);
 
-    // Straight into the result string's buffer: no temporary allocation to
-    // leak if an error unwinds (the result is still copied once into the
-    // string).
-    luaL_Buffer b;
-    uint8_t *output = (uint8_t *)luaL_buffinitsize(L, &b, len);
+    // Straight into the result string: no temporary allocation to leak if
+    // an error unwinds, and no second copy.
+    picodeck_lua_strbuf_t sb;
+    uint8_t *output = (uint8_t *)picodeck_lua_strbuf_init(L, &sb, len);
 
     int ret = g_api.crypto->aesUpdate(ud->ctx,
                                       (const uint8_t *)input, output,
@@ -33,12 +32,12 @@ static int l_aes_ctr_update(lua_State *L) {
     if (ret != 0)
         return luaL_error(L, "aes_ctr: encrypt/decrypt failed (%d)", ret);
 
-    luaL_pushresultsize(&b, len);
+    picodeck_lua_strbuf_push(L, &sb, len);
     return 1;
 }
 
 static int l_aes_ctr_free(lua_State *L) {
-    aes_ctr_ud_t *ud = (aes_ctr_ud_t *)luaL_checkudata(L, 1, AES_CTR_MT);
+    aes_ctr_ud_t *ud = (aes_ctr_ud_t *)lb_checkudata(L, 1, AES_CTR_MT);
     if (ud->ctx) {
         g_api.crypto->aesFree(ud->ctx);
         ud->ctx = NULL;
@@ -60,7 +59,7 @@ typedef struct {
 } ecdh_ud_t;
 
 static ecdh_ud_t *check_ecdh(lua_State *L, int idx) {
-    ecdh_ud_t *ud = (ecdh_ud_t *)luaL_checkudata(L, idx, ECDH_MT);
+    ecdh_ud_t *ud = (ecdh_ud_t *)lb_checkudata(L, idx, ECDH_MT);
     if (!ud->ctx) luaL_error(L, "ecdh: context has been freed");
     return ud;
 }
@@ -104,7 +103,7 @@ static int l_ecdh_compute_shared(lua_State *L) {
 }
 
 static int l_ecdh_free(lua_State *L) {
-    ecdh_ud_t *ud = (ecdh_ud_t *)luaL_checkudata(L, 1, ECDH_MT);
+    ecdh_ud_t *ud = (ecdh_ud_t *)lb_checkudata(L, 1, ECDH_MT);
     if (ud->ctx) {
         g_api.crypto->ecdhFree(ud->ctx);
         ud->ctx = NULL;
@@ -131,13 +130,15 @@ static int l_crypto_random_bytes(lua_State *L) {
         return luaL_error(L, "randomBytes: no cryptographic RNG "
                              "(TRNG seeding failed)");
 
-    luaL_Buffer b;
-    uint8_t *buf = (uint8_t *)luaL_buffinitsize(L, &b, (size_t)n);
+    // Straight into the result string, so no freed scratch block is left
+    // holding the bytes.
+    picodeck_lua_strbuf_t sb;
+    uint8_t *buf = (uint8_t *)picodeck_lua_strbuf_init(L, &sb, (size_t)n);
     g_api.crypto->randomBytes(buf, (uint32_t)n);
     if (!rng_ready())  // the DRBG failed during this request (buf zeroed)
         return luaL_error(L, "randomBytes: cryptographic RNG failed");
 
-    luaL_pushresultsize(&b, (size_t)n);
+    picodeck_lua_strbuf_push(L, &sb, (size_t)n);
     return 1;
 }
 
