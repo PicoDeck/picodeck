@@ -2794,7 +2794,8 @@ function PicoDeckCamera:screenToWorld(sx, sy) end
 ---@param dt number Seconds since the last update
 function PicoDeckCamera:update(dt) end
 
----Return the current draw offset applied to the display.
+---Return the screen position of world (0, 0), with the camera position, zoom
+---and shake folded in: screen = world * zoom + offset (whole pixels).
 ---@return integer ox
 ---@return integer oy
 function PicoDeckCamera:getOffset() end

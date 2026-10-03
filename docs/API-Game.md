@@ -221,14 +221,15 @@ camera:update(1 / 30)
 ---
 
 #### `camera:getOffset()`
-Get the current draw offset (camera position plus shake). Add this to world coordinates (scaled by the zoom) to get screen coordinates.
+Get the screen position of world (0, 0), with the camera position, zoom and shake folded in: `screen = world * zoom + offset`. The values are whole pixels (truncated toward zero).
 
 - **Parameters:** None
-- **Returns:** (number, number) Offset `ox, oy`
+- **Returns:** (integer, integer) Offset `ox, oy`
 
 ```lua
 local ox, oy = camera:getOffset()
-picocalc.display.fillRect(player.x - ox, player.y - oy, 8, 8, 0xFFFF)
+local z = camera:getZoom()
+picocalc.display.fillRect(player.x * z + ox, player.y * z + oy, 8, 8, 0xFFFF)
 ```
 
 ---
