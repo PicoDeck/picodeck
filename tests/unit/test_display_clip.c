@@ -733,6 +733,67 @@ static void test_get_pixels(void) {
   }
 }
 
+// disp_copy_px_bytes against the per-byte loop it replaced, at every byte
+// offset of both sides (Lua strings and odd-x rows are not word aligned), for
+// every count through two unrolled blocks plus a remainder, both directions.
+static void test_copy_px_bytes_alignments(void) {
+  uint8_t src[4 + 2 * 40], dst[4 + 2 * 40 + 4], want[sizeof dst];
+  for (size_t i = 0; i < sizeof src; i++) src[i] = (uint8_t)(i * 37 + 11);
+  int bad = 0;
+  for (int sw = 0; sw < 2; sw++)
+    for (int so = 0; so < 4; so++)
+      for (int d0 = 0; d0 < 4; d0++)
+        for (size_t n = 0; n <= 40; n++) {
+          memset(dst, 0xEE, sizeof dst);
+          memset(want, 0xEE, sizeof want);
+          disp_copy_px_bytes(dst + d0, src + so, n, sw);
+          for (size_t i = 0; i < n; i++) {
+            uint16_t v = (uint16_t)(src[so + 2 * i] | (src[so + 2 * i + 1] << 8));
+            v = disp_px(v, sw);
+            want[d0 + 2 * i] = (uint8_t)(v & 0xFF);
+            want[d0 + 2 * i + 1] = (uint8_t)(v >> 8);
+          }
+          if (memcmp(dst, want, sizeof dst) != 0) bad++;
+        }
+  CHECK(bad == 0);
+}
+
+// Get then set round-trips any rectangle (odd x and odd widths put rows off
+// word alignment), and get reads exactly the pixels a per-pixel loop reads.
+static void test_get_set_pixels_odd_rects(void) {
+  static uint8_t out[SW * SH * 2 + 3];
+  int bad = 0;
+  for (int sw = 0; sw < 2; sw++)
+    for (int x = 0; x < 4; x++)
+      for (int w = 1; w <= 9; w++)
+        for (int off = 0; off < 4; off++) {
+          reset(0);
+          for (int yy = 0; yy < SH; yy++)
+            for (int xx = 0; xx < SW; xx++)
+              screen(s_got)[yy * CW + xx] =
+                  disp_px((uint16_t)(yy * 211 + xx * 7 + 3), sw);
+          const int y = 3, h = 5;
+          disp_get_pixels(screen(s_got), CW, x, y, w, h, out + off, sw);
+          for (int r = 0; r < h; r++)
+            for (int c = 0; c < w; c++) {
+              const uint8_t *p = out + off + 2 * (r * w + c);
+              if ((uint16_t)(p[0] | (p[1] << 8)) !=
+                  (uint16_t)((y + r) * 211 + (x + c) * 7 + 3))
+                bad++;
+            }
+          // Write it back one row lower; the rows must match what was read.
+          disp_clip_t full = {0, 0, SW - 1, SH - 1};
+          CHECK(disp_set_pixels(screen(s_got), CW, &full, x, y + 1, w, h,
+                                out + off, sw));
+          for (int r = 0; r < h; r++)
+            for (int c = 0; c < w; c++)
+              if (screen(s_got)[(y + 1 + r) * CW + x + c] !=
+                  disp_px((uint16_t)((y + r) * 211 + (x + c) * 7 + 3), sw))
+                bad++;
+        }
+  CHECK(bad == 0);
+}
+
 int main(void) {
   test_clip_rect();
   test_fill_matches_reference();
@@ -755,5 +816,7 @@ int main(void) {
   test_span16();
   test_set_pixels();
   test_get_pixels();
+  test_copy_px_bytes_alignments();
+  test_get_set_pixels_odd_rects();
   return check_report("test_display_clip");
 }

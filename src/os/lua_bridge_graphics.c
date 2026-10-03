@@ -15,7 +15,7 @@ static uint16_t s_graphics_bg_color = COLOR_BLACK;
 // runs after an object's own (resurrection) can still hand it to a method.
 // So every __gc leaves its object marked dead (an image's data is NULL, the
 // other types set `destroyed`) and every check_* rejects a dead object with a
-// Lua error. Finalisers use luaL_checkudata directly.
+// Lua error. Finalisers use lb_checkudata directly.
 static lua_image_t *check_image(lua_State *L, int idx) {
   return lb_check_image(L, idx);
 }
@@ -36,7 +36,7 @@ static void anchor_set(lua_State *L, int idx, int slot, int valueidx) {
 }
 
 static int l_graphics_image_gc(lua_State *L) {
-  lua_image_t *img = (lua_image_t *)luaL_checkudata(L, 1, GRAPHICS_IMAGE_MT);
+  lua_image_t *img = (lua_image_t *)lb_checkudata(L, 1, GRAPHICS_IMAGE_MT);
   if (img->data) {
     umm_free(img->data);
     img->data = NULL;
@@ -421,11 +421,11 @@ static int l_graphics_image_getPixels(lua_State *L) {
     lua_pushlstring(L, (const char *)&img->data[y * img->w], row * h);
     return 1;
   }
-  luaL_Buffer b;
-  char *out = luaL_buffinitsize(L, &b, row * h);
+  picodeck_lua_strbuf_t sb;  // rows copied straight into the result string
+  char *out = picodeck_lua_strbuf_init(L, &sb, row * h);
   for (int r = 0; r < h; r++)
     memcpy(out + r * row, &img->data[(y + r) * img->w + x], row);
-  luaL_pushresultsize(&b, row * h);
+  picodeck_lua_strbuf_push(L, &sb, row * h);
   return 1;
 }
 
@@ -477,7 +477,7 @@ static int l_graphics_image_loadFromBuffer(lua_State *L) {
   if (lua_type(L, 1) == LUA_TSTRING) {
     data = (const uint8_t *)lua_tolstring(L, 1, &len);
   } else {
-    qmi_buf_t *b = (qmi_buf_t *)luaL_testudata(L, 1, QMI_BUF_MT);
+    qmi_buf_t *b = (qmi_buf_t *)lb_testudata(L, 1, QMI_BUF_MT);
     if (!b)
       return luaL_typeerror(L, 1, "string or qmibuf");
     if (!b->p)
@@ -817,7 +817,18 @@ static int l_graphics_drawPlayfield(lua_State *L) {
       continue;
     }
     int py = oy + (row - 1) * block_size;
+    lb_array_t cells;
+    lb_array_begin(L, -1, &cells);
     for (int col = 1; col <= cols; col++) {
+      lua_Integer v;
+      if (picodeck_lua_array_getint(&cells.a, col, &v)) {
+        // An integer cell (the common case), read in place.
+        uint16_t fill = (uint16_t)v;
+        int px = ox + (col - 1) * block_size;
+        display_fill_rect(px, py, block_size, block_size, fill);
+        display_draw_rect(px, py, block_size, block_size, grid_color);
+        continue;
+      }
       lua_rawgeti(L, -1, col);       // push playfield[row][col]
       if (!lua_isnil(L, -1)) {
         uint16_t fill = (uint16_t)lua_tointeger(L, -1);
@@ -852,14 +863,16 @@ static int l_graphics_updateDrawParticles(lua_State *L) {
 
   int n     = (int)lua_rawlen(L, 1); // total values in flat array
   int write = 1;                     // compaction write cursor (1-indexed)
+  lb_array_t a;                      // in place where the array part allows
+  lb_array_begin(L, 1, &a);
 
   for (int base = 1; base <= n; base += 6) {
-    lua_rawgeti(L, 1, base);     float x    = (float)lua_tonumber(L, -1); lua_pop(L, 1);
-    lua_rawgeti(L, 1, base + 1); float y    = (float)lua_tonumber(L, -1); lua_pop(L, 1);
-    lua_rawgeti(L, 1, base + 2); float vx   = (float)lua_tonumber(L, -1); lua_pop(L, 1);
-    lua_rawgeti(L, 1, base + 3); float vy   = (float)lua_tonumber(L, -1); lua_pop(L, 1);
-    lua_rawgeti(L, 1, base + 4); float life = (float)lua_tonumber(L, -1); lua_pop(L, 1);
-    lua_rawgeti(L, 1, base + 5); uint16_t color = (uint16_t)lua_tointeger(L, -1); lua_pop(L, 1);
+    float x    = lb_array_number(&a, base);
+    float y    = lb_array_number(&a, base + 1);
+    float vx   = lb_array_number(&a, base + 2);
+    float vy   = lb_array_number(&a, base + 3);
+    float life = lb_array_number(&a, base + 4);
+    uint16_t color = (uint16_t)lb_array_integer(&a, base + 5);
 
     x    += vx * dt;
     y    += vy * dt;
@@ -867,20 +880,17 @@ static int l_graphics_updateDrawParticles(lua_State *L) {
 
     if (life > 0.0f) {
       display_set_pixel((int)x, (int)y, color);
-      lua_pushnumber(L,  x);     lua_rawseti(L, 1, write++);
-      lua_pushnumber(L,  y);     lua_rawseti(L, 1, write++);
-      lua_pushnumber(L,  vx);    lua_rawseti(L, 1, write++);
-      lua_pushnumber(L,  vy);    lua_rawseti(L, 1, write++);
-      lua_pushnumber(L,  life);  lua_rawseti(L, 1, write++);
-      lua_pushinteger(L, color); lua_rawseti(L, 1, write++);
+      lb_array_set_number(&a, write++, x);
+      lb_array_set_number(&a, write++, y);
+      lb_array_set_number(&a, write++, vx);
+      lb_array_set_number(&a, write++, vy);
+      lb_array_set_number(&a, write++, life);
+      lb_array_set_integer(&a, write++, color);
     }
   }
 
   // Clear dead-particle slots at the tail so lua_rawlen stays correct.
-  for (int i = write; i <= n; i++) {
-    lua_pushnil(L);
-    lua_rawseti(L, 1, i);
-  }
+  for (int i = write; i <= n; i++) lb_array_set_nil(&a, i);
 
   lua_pushinteger(L, (write - 1) / 6); // return live particle count
   return 1;
@@ -928,11 +938,14 @@ static int l_graphics_draw3DWireframe(lua_State *L) {
   int n_verts = (int)lua_rawlen(L, 1) / 3;
   if (n_verts > 64) n_verts = 64;
   int px[64], py[64];
+  lb_array_t verts, edges;
+  lb_array_begin(L, 1, &verts);
+  lb_array_begin(L, 2, &edges);
 
   for (int i = 0; i < n_verts; i++) {
-    lua_rawgeti(L, 1, i*3 + 1); float vx = (float)lua_tonumber(L, -1); lua_pop(L, 1);
-    lua_rawgeti(L, 1, i*3 + 2); float vy = (float)lua_tonumber(L, -1); lua_pop(L, 1);
-    lua_rawgeti(L, 1, i*3 + 3); float vz = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+    float vx = lb_array_number(&verts, i*3 + 1);
+    float vy = lb_array_number(&verts, i*3 + 2);
+    float vz = lb_array_number(&verts, i*3 + 3);
 
     float rx = m00*vx + m01*vy + m02*vz;
     float ry = m10*vx + m11*vy + m12*vz;
@@ -946,8 +959,8 @@ static int l_graphics_draw3DWireframe(lua_State *L) {
   // Draw edges.
   int n_edges_flat = (int)lua_rawlen(L, 2);
   for (int i = 1; i <= n_edges_flat; i += 2) {
-    lua_rawgeti(L, 2, i);     int a = (int)lua_tointeger(L, -1) - 1; lua_pop(L, 1);
-    lua_rawgeti(L, 2, i + 1); int b = (int)lua_tointeger(L, -1) - 1; lua_pop(L, 1);
+    int a = (int)lb_array_integer(&edges, i) - 1;
+    int b = (int)lb_array_integer(&edges, i + 1) - 1;
     if (a >= 0 && a < n_verts && b >= 0 && b < n_verts)
       display_draw_line(px[a], py[a], px[b], py[b], edge_color);
   }
@@ -978,7 +991,7 @@ typedef struct {
 } lua_tilemap_t;
 
 static lua_tilemap_t *check_tilemap(lua_State *L, int idx) {
-  lua_tilemap_t *tm = (lua_tilemap_t *)luaL_checkudata(L, idx, GRAPHICS_TILEMAP_MT);
+  lua_tilemap_t *tm = (lua_tilemap_t *)lb_checkudata(L, idx, GRAPHICS_TILEMAP_MT);
   if (tm->destroyed)
     luaL_error(L, "attempt to use a destroyed tilemap");
   return tm;
@@ -1036,7 +1049,7 @@ typedef struct {
 } lua_font_t;
 
 static lua_font_t *check_font(lua_State *L, int idx) {
-  lua_font_t *f = (lua_font_t *)luaL_checkudata(L, idx, GRAPHICS_FONT_MT);
+  lua_font_t *f = (lua_font_t *)lb_checkudata(L, idx, GRAPHICS_FONT_MT);
   if (f->destroyed)
     luaL_error(L, "attempt to use a destroyed font");
   return f;
@@ -1161,7 +1174,7 @@ static uint8_t s_global_stencil[8];
 static bool s_has_global_stencil = false;
 
 static lua_sprite_t *check_sprite(lua_State *L, int idx) {
-  lua_sprite_t *s = (lua_sprite_t *)luaL_checkudata(L, idx, GRAPHICS_SPRITE_MT);
+  lua_sprite_t *s = (lua_sprite_t *)lb_checkudata(L, idx, GRAPHICS_SPRITE_MT);
   if (s->destroyed)
     luaL_error(L, "attempt to use a destroyed sprite");
   return s;
@@ -1327,7 +1340,7 @@ static int l_sprite_addEmptyCollisionSprite(lua_State *L);
 static int l_graphics_setStencilPattern(lua_State *L);
 
 static int l_sprite_gc(lua_State *L) {
-  lua_sprite_t *s = (lua_sprite_t *)luaL_checkudata(L, 1, GRAPHICS_SPRITE_MT);
+  lua_sprite_t *s = (lua_sprite_t *)lb_checkudata(L, 1, GRAPHICS_SPRITE_MT);
   // A listed sprite is anchored, so this only happens at lua_close. Unlink
   // it anyway: s_sprites[] must never hold a freed sprite.
   int i = sprite_list_find(s);
@@ -2999,7 +3012,7 @@ typedef struct {
 
 static lua_spritesheet_t *check_spritesheet(lua_State *L, int idx) {
   lua_spritesheet_t *ss =
-      (lua_spritesheet_t *)luaL_checkudata(L, idx, GRAPHICS_SPRITESHEET_MT);
+      (lua_spritesheet_t *)lb_checkudata(L, idx, GRAPHICS_SPRITESHEET_MT);
   if (ss->destroyed)
     luaL_error(L, "attempt to use a destroyed spritesheet");
   return ss;
@@ -3007,7 +3020,7 @@ static lua_spritesheet_t *check_spritesheet(lua_State *L, int idx) {
 
 static int l_spritesheet_gc(lua_State *L) {
   lua_spritesheet_t *ss =
-      (lua_spritesheet_t *)luaL_checkudata(L, 1, GRAPHICS_SPRITESHEET_MT);
+      (lua_spritesheet_t *)lb_checkudata(L, 1, GRAPHICS_SPRITESHEET_MT);
   ss->image = NULL;
   ss->destroyed = true;
   return 0;
@@ -3247,7 +3260,7 @@ static int l_tilemap_draw(lua_State *L) {
 }
 
 static int l_tilemap_gc(lua_State *L) {
-  lua_tilemap_t *tm = (lua_tilemap_t *)luaL_checkudata(L, 1, GRAPHICS_TILEMAP_MT);
+  lua_tilemap_t *tm = (lua_tilemap_t *)lb_checkudata(L, 1, GRAPHICS_TILEMAP_MT);
   if (tm->tiles) {
     umm_free(tm->tiles);
     tm->tiles = NULL;
@@ -3434,7 +3447,7 @@ typedef struct {
 } lua_animation_loop_t;
 
 static lua_animation_loop_t *check_animation_loop(lua_State *L, int idx) {
-  lua_animation_loop_t *loop = (lua_animation_loop_t *)luaL_checkudata(
+  lua_animation_loop_t *loop = (lua_animation_loop_t *)lb_checkudata(
       L, idx, GRAPHICS_ANIMATION_LOOP_MT);
   if (loop->destroyed)
     luaL_error(L, "attempt to use a destroyed animation loop");
@@ -3456,7 +3469,7 @@ static void loop_set_frames(lua_State *L, lua_animation_loop_t *loop,
   lua_createtable(L, n, 0);
   for (int i = 0; i < n; i++) {
     lua_rawgeti(L, tbl_idx, i + 1);
-    loop->frames[i] = (lua_image_t *)luaL_testudata(L, -1, GRAPHICS_IMAGE_MT);
+    loop->frames[i] = (lua_image_t *)lb_testudata(L, -1, GRAPHICS_IMAGE_MT);
     if (loop->frames[i] && !loop->frames[i]->data)
       loop->frames[i] = NULL;  // a freed image is an empty frame too
     if (loop->frames[i])
@@ -3470,7 +3483,7 @@ static void loop_set_frames(lua_State *L, lua_animation_loop_t *loop,
 }
 
 static int l_animation_loop_gc(lua_State *L) {
-  lua_animation_loop_t *loop = (lua_animation_loop_t *)luaL_checkudata(
+  lua_animation_loop_t *loop = (lua_animation_loop_t *)lb_checkudata(
       L, 1, GRAPHICS_ANIMATION_LOOP_MT);
   loop->frame_count = 0;
   loop->valid = false;
@@ -3708,14 +3721,14 @@ typedef struct {
 } lua_animator_t;
 
 static lua_animator_t *check_animator(lua_State *L, int idx) {
-  lua_animator_t *a = (lua_animator_t *)luaL_checkudata(L, idx, GRAPHICS_ANIMATOR_MT);
+  lua_animator_t *a = (lua_animator_t *)lb_checkudata(L, idx, GRAPHICS_ANIMATOR_MT);
   if (a->destroyed)
     luaL_error(L, "attempt to use a destroyed animator");
   return a;
 }
 
 static int l_animator_gc(lua_State *L) {
-  lua_animator_t *a = (lua_animator_t *)luaL_checkudata(L, 1, GRAPHICS_ANIMATOR_MT);
+  lua_animator_t *a = (lua_animator_t *)lb_checkudata(L, 1, GRAPHICS_ANIMATOR_MT);
   a->ended = true;
   a->destroyed = true;
   return 0;
@@ -3918,7 +3931,7 @@ static lua_animation_blinker_t *s_blinkers[MAX_BLINKERS];
 static int s_blinker_count = 0;
 
 static lua_animation_blinker_t *check_blinker(lua_State *L, int idx) {
-  lua_animation_blinker_t *b = (lua_animation_blinker_t *)luaL_checkudata(
+  lua_animation_blinker_t *b = (lua_animation_blinker_t *)lb_checkudata(
       L, idx, GRAPHICS_ANIMATION_BLINKER_MT);
   if (b->destroyed)
     luaL_error(L, "attempt to use a destroyed blinker");
@@ -3940,7 +3953,7 @@ static void blinker_list_remove(lua_animation_blinker_t *b) {
 }
 
 static int l_animation_blinker_gc(lua_State *L) {
-  lua_animation_blinker_t *b = (lua_animation_blinker_t *)luaL_checkudata(
+  lua_animation_blinker_t *b = (lua_animation_blinker_t *)lb_checkudata(
       L, 1, GRAPHICS_ANIMATION_BLINKER_MT);
   b->running = false;
   b->destroyed = true;
@@ -4169,7 +4182,7 @@ static int l_font_new(lua_State *L) {
 }
 
 static int l_font_gc(lua_State *L) {
-  lua_font_t *f = (lua_font_t *)luaL_checkudata(L, 1, GRAPHICS_FONT_MT);
+  lua_font_t *f = (lua_font_t *)lb_checkudata(L, 1, GRAPHICS_FONT_MT);
   if (f->owned) {
     if (display_get_font() == f->font_id) display_set_font(0);
     font_registry_unload(f->font_id);
@@ -4319,7 +4332,7 @@ static int l_graphics_getTextSizeForMaxWidth(lua_State *L) {
 // a fresh PSRAM image. Returns the pixel buffer or NULL when out of memory.
 static uint16_t *render_text_image(lua_State *L, const char *text, int w, int h,
                                    uint16_t bg, int font_idx) {
-  // Resolve the font FIRST: font_for_arg -> check_font -> luaL_checkudata
+  // Resolve the font FIRST: font_for_arg -> check_font -> lb_checkudata
   // longjmps on a wrong-type font argument, and anything allocated before
   // that point would be orphaned (up to 200KB of PSRAM).
   const pc_font_t *f = font_for_arg(L, font_idx);

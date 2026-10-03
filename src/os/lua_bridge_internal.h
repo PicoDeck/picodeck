@@ -20,6 +20,8 @@
 #include "lauxlib.h"
 #include "lua.h"
 #include "lualib.h"
+#include "lua_strbuf.h"  // string results built in place (bulk calls)
+#include "lua_fastarg.h"  // one-call argument checks (lb_checkudata, lb_checkint)
 
 #include "hardware/watchdog.h"
 #include "pico/stdlib.h"
@@ -40,13 +42,77 @@ typedef struct {
     uint16_t  transparent_color;  // 0 = disabled
 } lua_image_t;
 
+// luaL_checkudata / luaL_testudata, same results and errors, without the
+// registry lookup by name on every call: each type's metatable pointer is
+// remembered per VM (lua_bridge.c). Use these for every bridge type.
+void *lb_checkudata(lua_State *L, int idx, const char *tname);
+void *lb_testudata(lua_State *L, int idx, const char *tname);
+
+// Integer keys of the table at absolute index `idx`, read and written as
+// lua_rawgeti + lua_tonumber / lua_tointeger and lua_push* + lua_rawseti do
+// (same values, same conversions), but in place for keys in the table's
+// array part (picodeck_lua_array_*, lua_fastarg.h). For bulk loops over
+// number sequences: particles, wireframe vertices, playfields.
+typedef struct {
+  lua_State *L;
+  int idx;
+  picodeck_lua_array_t a;
+} lb_array_t;
+
+static inline void lb_array_begin(lua_State *L, int idx, lb_array_t *t) {
+  t->L = L;
+  t->idx = lua_absindex(L, idx);
+  picodeck_lua_array_of(L, t->idx, &t->a);
+}
+
+static inline float lb_array_number(lb_array_t *t, lua_Integer i) {
+  float v;
+  if (picodeck_lua_array_getnum(&t->a, i, &v)) return v;
+  lua_rawgeti(t->L, t->idx, i);
+  v = (float)lua_tonumber(t->L, -1);
+  lua_pop(t->L, 1);
+  return v;
+}
+
+static inline lua_Integer lb_array_integer(lb_array_t *t, lua_Integer i) {
+  lua_Integer v;
+  if (picodeck_lua_array_getint(&t->a, i, &v)) return v;
+  lua_rawgeti(t->L, t->idx, i);
+  v = lua_tointeger(t->L, -1);
+  lua_pop(t->L, 1);
+  return v;
+}
+
+// A standard-API set may resize the table: the view is refreshed after it.
+static inline void lb_array_set_number(lb_array_t *t, lua_Integer i, float v) {
+  if (picodeck_lua_array_setnum(&t->a, i, v)) return;
+  lua_pushnumber(t->L, v);
+  lua_rawseti(t->L, t->idx, i);
+  picodeck_lua_array_of(t->L, t->idx, &t->a);
+}
+
+static inline void lb_array_set_integer(lb_array_t *t, lua_Integer i,
+                                        lua_Integer v) {
+  if (picodeck_lua_array_setint(&t->a, i, v)) return;
+  lua_pushinteger(t->L, v);
+  lua_rawseti(t->L, t->idx, i);
+  picodeck_lua_array_of(t->L, t->idx, &t->a);
+}
+
+static inline void lb_array_set_nil(lb_array_t *t, lua_Integer i) {
+  if (picodeck_lua_array_setnil(&t->a, i)) return;
+  lua_pushnil(t->L);
+  lua_rawseti(t->L, t->idx, i);
+  picodeck_lua_array_of(t->L, t->idx, &t->a);
+}
+
 #define GRAPHICS_IMAGE_MT "picocalc.graphics.image"
 
 // The live image at idx, or a Lua error (wrong type, or pixels freed by its
 // finaliser: data is NULL only after __gc). Every image argument goes
-// through this, never a bare luaL_checkudata.
+// through this, never a bare lb_checkudata.
 static inline lua_image_t *lb_check_image(lua_State *L, int idx) {
-  lua_image_t *img = (lua_image_t *)luaL_checkudata(L, idx, GRAPHICS_IMAGE_MT);
+  lua_image_t *img = (lua_image_t *)lb_checkudata(L, idx, GRAPHICS_IMAGE_MT);
   if (!img->data)
     luaL_error(L, "attempt to use a freed image");
   return img;
@@ -54,7 +120,7 @@ static inline lua_image_t *lb_check_image(lua_State *L, int idx) {
 
 // sys.qmiPsramAlloc buffer handle (lua_bridge_sys.c): a full userdata that
 // owns a umm_malloc block. p is NULL once freed. Check it with
-// luaL_checkudata/luaL_testudata(L, idx, QMI_BUF_MT), never lua_touserdata.
+// lb_checkudata/lb_testudata(L, idx, QMI_BUF_MT), never lua_touserdata.
 #define QMI_BUF_MT "picocalc.sys.qmibuf"
 typedef struct {
     uint8_t *p;

@@ -19,7 +19,7 @@ typedef struct {
 } tcp_ud_t;
 
 static tcp_ud_t *check_tcp(lua_State *L, int idx) {
-    tcp_ud_t *ud = (tcp_ud_t *)luaL_checkudata(L, idx, TCP_MT);
+    tcp_ud_t *ud = (tcp_ud_t *)lb_checkudata(L, idx, TCP_MT);
     return ud;
 }
 

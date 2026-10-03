@@ -15,6 +15,7 @@
 #include "os/os.h"
 #include "os/core0_idle.h"
 #include "os/xip_stats.h"
+#include "os/pc_prof.h"
 #include "tusb.h"
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
@@ -708,6 +709,9 @@ static void dev_command_run(void *arg) {
             mp3_player_bench(path, frames ? (uint32_t)frames : 200u,
                              (uint32_t)flags);
         }
+    } else if (strcmp(s_cmd_buf, "prof") == 0 ||
+               strncmp(s_cmd_buf, "prof ", 5) == 0) {
+        pc_prof_command(s_cmd_buf + 4);
     } else if (strcmp(s_cmd_buf, "xipstat") == 0 ||
                strncmp(s_cmd_buf, "xipstat ", 8) == 0) {
         dev_xipstat(s_cmd_buf[7] ? s_cmd_buf + 8 : "");

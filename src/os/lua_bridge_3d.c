@@ -53,11 +53,13 @@ static int l_graphics_draw3DWireframeEx(lua_State *L) {
     int px[64], py[64];
     float rvx[64], rvy[64], rvz[64];  // rotated positions for lighting
     bool vis[64];                     // in front of the near plane
+    lb_array_t verts;                 // read in place where it can be
+    lb_array_begin(L, 1, &verts);
 
     for (int i = 0; i < n_verts; i++) {
-        lua_rawgeti(L, 1, i*3 + 1); float vx = (float)lua_tonumber(L, -1); lua_pop(L, 1);
-        lua_rawgeti(L, 1, i*3 + 2); float vy = (float)lua_tonumber(L, -1); lua_pop(L, 1);
-        lua_rawgeti(L, 1, i*3 + 3); float vz = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+        float vx = lb_array_number(&verts, i*3 + 1);
+        float vy = lb_array_number(&verts, i*3 + 2);
+        float vz = lb_array_number(&verts, i*3 + 3);
 
         float rx = m00*vx + m01*vy + m02*vz;
         float ry = m10*vx + m11*vy + m12*vz;
@@ -86,10 +88,12 @@ static int l_graphics_draw3DWireframeEx(lua_State *L) {
         int b5_base = fill_color & 0x1F;
 
         int n_face_indices = (int)lua_rawlen(L, 13);
+        lb_array_t faces;
+        lb_array_begin(L, 13, &faces);
         for (int i = 1; i + 2 <= n_face_indices; i += 3) {
-            lua_rawgeti(L, 13, i);     int a = (int)lua_tointeger(L, -1) - 1; lua_pop(L, 1);
-            lua_rawgeti(L, 13, i + 1); int b = (int)lua_tointeger(L, -1) - 1; lua_pop(L, 1);
-            lua_rawgeti(L, 13, i + 2); int c = (int)lua_tointeger(L, -1) - 1; lua_pop(L, 1);
+            int a = (int)lb_array_integer(&faces, i) - 1;
+            int b = (int)lb_array_integer(&faces, i + 1) - 1;
+            int c = (int)lb_array_integer(&faces, i + 2) - 1;
 
             if (a < 0 || a >= n_verts || b < 0 || b >= n_verts || c < 0 || c >= n_verts)
                 continue;
@@ -127,9 +131,11 @@ static int l_graphics_draw3DWireframeEx(lua_State *L) {
     // Draw edges if fill_mode is 0 or 2
     if (fill_mode == 0 || fill_mode == 2) {
         int n_edges_flat = (int)lua_rawlen(L, 2);
+        lb_array_t edges;
+        lb_array_begin(L, 2, &edges);
         for (int i = 1; i <= n_edges_flat; i += 2) {
-            lua_rawgeti(L, 2, i);     int a = (int)lua_tointeger(L, -1) - 1; lua_pop(L, 1);
-            lua_rawgeti(L, 2, i + 1); int b = (int)lua_tointeger(L, -1) - 1; lua_pop(L, 1);
+            int a = (int)lb_array_integer(&edges, i) - 1;
+            int b = (int)lb_array_integer(&edges, i + 1) - 1;
             if (a < 0 || a >= n_verts || b < 0 || b >= n_verts)
                 continue;
             if (vis[a] && vis[b]) {

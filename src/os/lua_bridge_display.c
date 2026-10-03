@@ -18,13 +18,13 @@
 #define FB_MT "picocalc.display.framebuffer"
 
 static int l_fb_width(lua_State *L) {
-  luaL_checkudata(L, 1, FB_MT);
+  lb_checkudata(L, 1, FB_MT);
   lua_pushinteger(L, FB_WIDTH);
   return 1;
 }
 
 static int l_fb_height(lua_State *L) {
-  luaL_checkudata(L, 1, FB_MT);
+  lb_checkudata(L, 1, FB_MT);
   lua_pushinteger(L, FB_HEIGHT);
   return 1;
 }
@@ -51,15 +51,15 @@ static size_t fb_check_rect(lua_State *L, int idx, int *x, int *y, int *w,
 
 // fb:getPixels(x, y, w, h) → string (host-order RGB565, row-major)
 static int l_fb_get_pixels(lua_State *L) {
-  luaL_checkudata(L, 1, FB_MT);
+  lb_checkudata(L, 1, FB_MT);
   int x, y, w, h;
   size_t n = fb_check_rect(L, 2, &x, &y, &w, &h);
-  luaL_Buffer b;
-  void *buf = luaL_buffinitsize(L, &b, n);
+  picodeck_lua_strbuf_t sb;  // read straight into the result string
+  void *buf = picodeck_lua_strbuf_init(L, &sb, n);
   if (!display_get_pixels_block(x, y, w, h, buf, n))
     return luaL_error(L, "rectangle (%d, %d, %d, %d) outside the screen",
                       x, y, w, h);
-  luaL_pushresultsize(&b, n);
+  picodeck_lua_strbuf_push(L, &sb, n);
   return 1;
 }
 
@@ -67,7 +67,7 @@ static int l_fb_get_pixels(lua_State *L) {
 // the rectangle is on screen but wholly outside the clip rect. A rectangle
 // that is not inside the screen raises, as getPixels does.
 static int l_fb_set_pixels(lua_State *L) {
-  luaL_checkudata(L, 1, FB_MT);
+  lb_checkudata(L, 1, FB_MT);
   size_t len = 0;
   const char *data = luaL_checklstring(L, 2, &len);
   int x, y, w, h;

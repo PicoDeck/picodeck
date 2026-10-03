@@ -34,7 +34,7 @@ bool fs_sandbox_check(lua_State *L, const char *path, bool write) {
 // ── File handles ────────────────────────────────────────────────────────────
 // fs.open returns a full userdata (FS_FILE_MT) that owns the sdcard_fopen
 // handle; it is never a raw pointer in Lua's hands:
-//   - every handle function checks the type with luaL_checkudata, so nil, a
+//   - every handle function checks the type with lb_checkudata, so nil, a
 //     light userdata or another module's userdata is a Lua error, not a FIL;
 //   - close sets f to NULL, so a second close is a no-op and any other use
 //     of a closed handle is a Lua error ("attempt to use a closed file");
@@ -55,7 +55,7 @@ typedef struct {
 
 // The open handle at idx, or a Lua error (wrong type, or closed).
 static lua_fs_file_t *check_file(lua_State *L, int idx) {
-  lua_fs_file_t *h = (lua_fs_file_t *)luaL_checkudata(L, idx, FS_FILE_MT);
+  lua_fs_file_t *h = (lua_fs_file_t *)lb_checkudata(L, idx, FS_FILE_MT);
   if (!h->f)
     luaL_error(L, "attempt to use a closed file");
   return h;
@@ -105,8 +105,9 @@ static int l_fs_open(lua_State *L) {
 
 // fs.read(h, len) / h:read(len) -> string, or nil at end of file / on error.
 // len must be >= 0; it is clamped to the bytes left in the file, so an
-// absurd length never becomes an allocation.  Reads straight into a Lua
-// buffer (no temporary umm_malloc to leak if pushing the string fails).
+// absurd length never becomes an allocation.  Reads straight into the string
+// it returns (picodeck_lua_strbuf: no temporary umm_malloc to leak if an
+// error unwinds, and no second copy).
 static int l_fs_read(lua_State *L) {
   lua_fs_file_t *h = check_file(L, 1);
   lua_Integer want = luaL_checkinteger(L, 2);
@@ -122,14 +123,14 @@ static int l_fs_read(lua_State *L) {
     lua_pushnil(L);
     return 1;
   }
-  luaL_Buffer b;
-  char *buf = luaL_buffinitsize(L, &b, (size_t)want);
+  picodeck_lua_strbuf_t sb;  // read straight into the result string
+  char *buf = picodeck_lua_strbuf_init(L, &sb, (size_t)want);
   int n = sdcard_fread(h->f, buf, (int)want);
   if (n <= 0) {
     lua_pushnil(L);
     return 1;
   }
-  luaL_pushresultsize(&b, (size_t)n);
+  picodeck_lua_strbuf_push(L, &sb, (size_t)n);
   return 1;
 }
 
@@ -147,7 +148,7 @@ static int l_fs_write(lua_State *L) {
 static int l_fs_close(lua_State *L) {
   if (lua_isnoneornil(L, 1))
     return 0;
-  fs_file_release((lua_fs_file_t *)luaL_checkudata(L, 1, FS_FILE_MT));
+  fs_file_release((lua_fs_file_t *)lb_checkudata(L, 1, FS_FILE_MT));
   return 0;
 }
 
@@ -192,12 +193,12 @@ static int l_fs_tell(lua_State *L) {
 
 // __gc and __close: close a handle the app dropped or scoped.
 static int l_fs_file_gc(lua_State *L) {
-  fs_file_release((lua_fs_file_t *)luaL_checkudata(L, 1, FS_FILE_MT));
+  fs_file_release((lua_fs_file_t *)lb_checkudata(L, 1, FS_FILE_MT));
   return 0;
 }
 
 static int l_fs_file_tostring(lua_State *L) {
-  lua_fs_file_t *h = (lua_fs_file_t *)luaL_checkudata(L, 1, FS_FILE_MT);
+  lua_fs_file_t *h = (lua_fs_file_t *)lb_checkudata(L, 1, FS_FILE_MT);
   if (h->f)
     lua_pushfstring(L, "file (%p)", (void *)h);
   else
@@ -274,8 +275,8 @@ static int l_fs_readFile(lua_State *L) {
     lua_pushnil(L);
     return 1;
   }
-  luaL_Buffer b;
-  char *buf = luaL_buffinitsize(L, &b, (size_t)size);
+  picodeck_lua_strbuf_t sb;
+  char *buf = picodeck_lua_strbuf_init(L, &sb, (size_t)size);
   sdfile_t f = sdcard_fopen(path, "rb");
   if (!f) {
     lua_pushnil(L);
@@ -287,7 +288,7 @@ static int l_fs_readFile(lua_State *L) {
     lua_pushnil(L);
     return 1;
   }
-  luaL_pushresultsize(&b, (size_t)n);
+  picodeck_lua_strbuf_push(L, &sb, (size_t)n);
   return 1;
 }
 

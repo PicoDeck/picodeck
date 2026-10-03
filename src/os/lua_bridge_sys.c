@@ -371,10 +371,10 @@ static int l_sys_pio_psram_read(lua_State *L) {
   lua_Integer len  = luaL_checkinteger(L, 2);
   pio_check_app_range(L, "pioPsramRead", addr, len);
   if (!pio_psram_available() || len == 0) { lua_pushnil(L); return 1; }
-  luaL_Buffer buf;
-  char *p = luaL_buffinitsize(L, &buf, (size_t)len);
+  picodeck_lua_strbuf_t sb;  // read straight into the result string
+  char *p = picodeck_lua_strbuf_init(L, &sb, (size_t)len);
   pio_psram_read((uint32_t)addr, (uint8_t *)p, (uint32_t)len);
-  luaL_pushresultsize(&buf, (size_t)len);
+  picodeck_lua_strbuf_push(L, &sb, (size_t)len);
   return 1;
 }
 
@@ -417,7 +417,7 @@ static void qmi_buf_release(qmi_buf_t *b) {
 
 // The buffer's bytes [off, off+len), or a Lua error.
 static uint8_t *qmi_buf_span(lua_State *L, lua_Integer off, lua_Integer len) {
-  qmi_buf_t *b = (qmi_buf_t *)luaL_checkudata(L, 1, QMI_BUF_MT);
+  qmi_buf_t *b = (qmi_buf_t *)lb_checkudata(L, 1, QMI_BUF_MT);
   if (!b->p)
     luaL_error(L, "qmiPsram: buffer freed");
   int64_t o = (int64_t)off, n = (int64_t)len, size = (int64_t)b->size;
@@ -443,7 +443,7 @@ static int l_sys_qmi_psram_alloc(lua_State *L) {
 
 // sys.qmiPsramFree(handle) — idempotent
 static int l_sys_qmi_psram_free(lua_State *L) {
-  qmi_buf_release((qmi_buf_t *)luaL_checkudata(L, 1, QMI_BUF_MT));
+  qmi_buf_release((qmi_buf_t *)lb_checkudata(L, 1, QMI_BUF_MT));
   return 0;
 }
 
@@ -468,7 +468,7 @@ static int l_sys_qmi_psram_read(lua_State *L) {
 }
 
 static int l_qmi_buf_gc(lua_State *L) {
-  qmi_buf_release((qmi_buf_t *)luaL_checkudata(L, 1, QMI_BUF_MT));
+  qmi_buf_release((qmi_buf_t *)lb_checkudata(L, 1, QMI_BUF_MT));
   return 0;
 }
 

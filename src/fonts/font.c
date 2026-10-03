@@ -67,6 +67,65 @@ static void blit_cell(uint16_t *buf, int buf_w,
   }
 }
 
+// The first n (1..8) pixels of one glyph byte b (bit 7 = d[0]): a case per
+// pixel, falling through, so each pixel is a bit test and a select (opaque)
+// or a conditional store (transparent), with no shift or loop count per
+// pixel. Font 0 is 6 wide, so most bytes are partial.
+#define GLYPH_PX(i, bit) \
+  case (i) + 1:          \
+    if (transparent) {   \
+      if (b & (bit)) d[i] = fg; \
+    } else {             \
+      d[i] = (b & (bit)) ? fg : bg; \
+    }                    \
+    __attribute__((fallthrough));
+static inline void blit_glyph_byte(uint16_t *d, unsigned b, int n,
+                                   uint16_t fg, uint16_t bg,
+                                   bool transparent) {
+  switch (n) {
+    GLYPH_PX(7, 0x01)
+    GLYPH_PX(6, 0x02)
+    GLYPH_PX(5, 0x04)
+    GLYPH_PX(4, 0x08)
+    GLYPH_PX(3, 0x10)
+    GLYPH_PX(2, 0x20)
+    GLYPH_PX(1, 0x40)
+    GLYPH_PX(0, 0x80)
+    default:
+      break;
+  }
+}
+#undef GLYPH_PX
+
+// One glyph cell with no column clipping (the common case: the whole cell is
+// inside the clip's columns): n rows of it, from glyph row `rows` drawn at
+// `dst`. A glyph row is drawn a byte (eight columns) at a time; transparent
+// text skips empty bytes. blit_cell above covers everything else (a cell cut
+// by the clip's left or right edge, the fallback box) and is what this must
+// match pixel for pixel (tests/unit/test_font.c compares both against the
+// original renderer).
+static inline void blit_glyph_rows(uint16_t *dst, int buf_w, int n, int w,
+                                   const uint8_t *rows, int stride,
+                                   uint16_t fg, uint16_t bg, bool transparent) {
+  if (stride == 1) {  // every built-in font: one byte per row
+    for (; n > 0; n--, rows++, dst += buf_w) {
+      unsigned b = *rows;
+      if (transparent && !b) continue;
+      blit_glyph_byte(dst, b, w, fg, bg, transparent);
+    }
+    return;
+  }
+  for (; n > 0; n--, rows += stride, dst += buf_w) {
+    uint16_t *d = dst;
+    const uint8_t *bits = rows;
+    for (int left = w; left > 0; left -= 8, d += 8) {
+      unsigned b = *bits++;
+      if (transparent && !b) continue;
+      blit_glyph_byte(d, b, left < 8 ? left : 8, fg, bg, transparent);
+    }
+  }
+}
+
 int font_render(const pc_font_t *f, uint16_t *buf, int buf_w,
                 int cx0, int cy0, int cx1, int cy1,
                 int x, int y, const char *text,
@@ -76,6 +135,10 @@ int font_render(const pc_font_t *f, uint16_t *buf, int buf_w,
   // is still summed (the return value is the text width).
   if ((long long)y + h - 1 < cy0 || y > cy1 || cx1 < cx0)
     return font_text_width(f, text);
+  // The rows every cell of this line keeps (the line is not wholly outside
+  // the clip's rows, so this is a non-empty range inside 0..h-1).
+  const int r0 = y < cy0 ? (int)((long long)cy0 - y) : 0;
+  const int r1 = (long long)y + h - 1 > cy1 ? (int)((long long)cy1 - y) : h - 1;
   long long xx = x;  // 64-bit pen: a long string near INT_MAX cannot overflow
   for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
     if (xx > cx1)  // the rest lies right of the clip: just measure it
@@ -93,8 +156,16 @@ int font_render(const pc_font_t *f, uint16_t *buf, int buf_w,
     // for the bitmap pointer, so re-deriving it inside a call would be waste.
     int adv = f->widths ? f->widths[gi] : f->max_width;
     const uint8_t *glyph = f->bitmaps + (size_t)gi * h * f->stride;
-    blit_cell(buf, buf_w, cx0, cy0, cx1, cy1, xx, y, adv, h,
-              glyph, f->stride, fg, bg, transparent);
+    if (xx >= cx0 && xx + adv - 1 <= cx1) {
+      // Whole cell inside the clip's columns, so xx is a valid column and
+      // y + r0 a valid row of buf.
+      blit_glyph_rows(buf + ((long long)y + r0) * buf_w + xx, buf_w,
+                      r1 - r0 + 1, adv, glyph + (size_t)r0 * f->stride,
+                      f->stride, fg, bg, transparent);
+    } else {
+      blit_cell(buf, buf_w, cx0, cy0, cx1, cy1, xx, y, adv, h,
+                glyph, f->stride, fg, bg, transparent);
+    }
     xx += adv;
   }
   return (int)(xx - x);

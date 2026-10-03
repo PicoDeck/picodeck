@@ -24,14 +24,14 @@
 #define PLAYER_UV_SAMPLE 1
 
 static sound_sample_t *check_sample(lua_State *L, int idx) {
-    sound_sample_t **ud = luaL_checkudata(L, idx, SAMPLE_USERDATA);
+    sound_sample_t **ud = lb_checkudata(L, idx, SAMPLE_USERDATA);
     if (!*ud)
         luaL_argerror(L, idx, "sample has been freed");
     return *ud;
 }
 
 static sound_player_t *check_player(lua_State *L, int idx) {
-    sound_player_t **ud = luaL_checkudata(L, idx, PLAYER_USERDATA);
+    sound_player_t **ud = lb_checkudata(L, idx, PLAYER_USERDATA);
     if (!*ud)
         luaL_argerror(L, idx, "sampleplayer has been freed");
     return *ud;
@@ -64,14 +64,14 @@ static void anchor_sample(lua_State *L, int player_idx, int sample_idx) {
 // __gc NULLs the pointer (the slot may already belong to another player),
 // and a later finaliser can still reach the handle: reject it.
 static fileplayer_t *check_fileplayer(lua_State *L, int idx) {
-    fileplayer_t **ud = luaL_checkudata(L, idx, FILEPLAYER_USERDATA);
+    fileplayer_t **ud = lb_checkudata(L, idx, FILEPLAYER_USERDATA);
     if (!*ud)
         luaL_error(L, "attempt to use a destroyed fileplayer");
     return *ud;
 }
 
 static mp3_player_t *check_mp3player(lua_State *L, int idx) {
-    mp3_player_t **ud = luaL_checkudata(L, idx, MP3PLAYER_USERDATA);
+    mp3_player_t **ud = lb_checkudata(L, idx, MP3PLAYER_USERDATA);
     if (!*ud)
         luaL_error(L, "attempt to use a destroyed mp3player");
     return *ud;
@@ -308,7 +308,7 @@ static int l_sound_sample_save(lua_State *L) {
 }
 
 static int l_sound_sample_gc(lua_State *L) {
-    sound_sample_t **ud = luaL_checkudata(L, 1, SAMPLE_USERDATA);
+    sound_sample_t **ud = lb_checkudata(L, 1, SAMPLE_USERDATA);
     if (*ud) {
         g_api.soundplayer->sampleFree(*ud);   // detaches any player still using it
         *ud = NULL;
@@ -482,7 +482,7 @@ static int l_sound_sampleplayer_getRate(lua_State *L) {
 static void release_player_cbs(lua_State *L, sound_player_t *player);
 
 static int l_sound_sampleplayer_gc(lua_State *L) {
-    sound_player_t **ud = luaL_checkudata(L, 1, PLAYER_USERDATA);
+    sound_player_t **ud = lb_checkudata(L, 1, PLAYER_USERDATA);
     if (*ud) {
         // Free first (detaches the player's callbacks under the mixer lock,
         // so Core 1 stops firing them), then give the slots back: releasing
@@ -797,7 +797,7 @@ static int l_sound_fileplayer_getRate(lua_State *L) {
 }
 
 static int l_sound_fileplayer_gc(lua_State *L) {
-    fileplayer_t **ud = luaL_checkudata(L, 1, FILEPLAYER_USERDATA);
+    fileplayer_t **ud = lb_checkudata(L, 1, FILEPLAYER_USERDATA);
     if (*ud) {
         // As for sampleplayers: free first (fileplayer_destroy detaches the
         // callbacks under the player lock), then give the Lua callback slots
@@ -827,7 +827,7 @@ static const void *s_mp3_owner = NULL;
 static int l_sound_mp3player_new(lua_State *L) {
     lua_rawgetp(L, LUA_REGISTRYINDEX, &s_mp3_owner);  // weak cache
     if (lua_rawgeti(L, -1, 1) == LUA_TUSERDATA) {
-        mp3_player_t **live = luaL_checkudata(L, -1, MP3PLAYER_USERDATA);
+        mp3_player_t **live = lb_checkudata(L, -1, MP3PLAYER_USERDATA);
         if (*live && (const void *)live == s_mp3_owner)
             return 1;  // the one live handle
     }
@@ -941,7 +941,7 @@ static int l_sound_mp3player_setLoop(lua_State *L) {
 // Only the owning handle stops the player (see s_mp3_owner); a stale handle
 // just goes dead.
 static int l_sound_mp3player_gc(lua_State *L) {
-    mp3_player_t **ud = luaL_checkudata(L, 1, MP3PLAYER_USERDATA);
+    mp3_player_t **ud = lb_checkudata(L, 1, MP3PLAYER_USERDATA);
     if (*ud && (const void *)ud == s_mp3_owner) {
         g_api.soundplayer->mp3PlayerFree(*ud);
         s_mp3_owner = NULL;

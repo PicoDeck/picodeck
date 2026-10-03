@@ -44,6 +44,8 @@ char lua_bridge_exit_tag; // address used as sentinel, value irrelevant
 // colours as RGB565 integers (or we provide helper constructors)
 
 uint16_t l_checkcolor(lua_State *L, int idx) {
+  lua_Integer v;
+  if (picodeck_lua_tointeger_strict(L, idx, &v)) return (uint16_t)v;
   return (uint16_t)luaL_checkinteger(L, idx);
 }
 
@@ -80,8 +82,9 @@ static int lb_argfail(lua_State *L, int arg, const char *what,
 
 // Converts the value at stack index idx; errors blame argument `arg`.
 static lua_Integer lb_toint(lua_State *L, int idx, int arg, const char *what) {
-  if (lua_isinteger(L, idx))
-    return lua_tointeger(L, idx);
+  lua_Integer v;
+  if (picodeck_lua_tointeger_strict(L, idx, &v))  // integers: one stack read
+    return v;
   lua_Number n;
   if (!what) {
     n = luaL_checknumber(L, idx);  // positional: the standard type error
@@ -133,6 +136,93 @@ float lb_checkfloat(lua_State *L, int idx) {
 
 float lb_optfloat(lua_State *L, int idx, float def) {
   return lua_isnoneornil(L, idx) ? def : lb_checkfloat(L, idx);
+}
+
+// ── Userdata type checks
+// ──────────────────────────────────────────────────────────────
+// luaL_checkudata finds the type's metatable by name in the registry on every
+// call (hash and strcmp the name, a table get, a raw compare), about 8 us of a
+// short call on the device. A metatable never changes once registered, so
+// each VM remembers it per type: a table keyed by the type-name pointer (the
+// *_MT macros are string literals) holds the metatable's address, found
+// through the registry the first time a name is checked. lb_checkudata then
+// compares one pointer (picodeck_lua_udata_with_mt); anything that does not
+// match takes luaL_checkudata, so results and errors are unchanged.
+//
+// A table address means something only inside its VM, and the next app's VM
+// may well allocate a different type's metatable at the same address, so
+// every VM gets its own table: lua_bridge_register creates it (lb_mt_reset)
+// before any bridge function of that VM can run, as a userdata anchored in
+// the registry, so it is freed with the VM. (A block kept across apps would
+// stay wherever the first app's heap put it and split the free space later
+// apps need whole; C-Dogs needs one ~5.9 MB block.) Its own finaliser clears
+// s_mt_slots, so nothing points at it once lua_close frees it; a finaliser
+// that runs after that one checks types the standard way. Core 0 only, one
+// VM at a time.
+#define LB_MT_SLOTS 64     // power of two
+#define LB_MT_MAX_USED 48  // keep probe chains short
+typedef struct {
+  const char *name;
+  const void *mt;
+} lb_mt_slot_t;
+static lb_mt_slot_t *s_mt_slots;
+static uint32_t s_mt_used;
+#define LB_MT_SLOTS_KEY "picocalc.bridge.mt_slots"
+
+static int lb_mt_slots_gc(lua_State *L) {
+  if (lua_touserdata(L, 1) == (void *)s_mt_slots) {
+    s_mt_slots = NULL;
+    s_mt_used = 0;
+  }
+  return 0;
+}
+
+static void lb_mt_reset(lua_State *L) {
+  s_mt_slots = NULL;  // nothing of the last VM's is used meanwhile
+  s_mt_used = 0;
+  lb_mt_slot_t *t = lua_newuserdatauv(L, LB_MT_SLOTS * sizeof(lb_mt_slot_t), 0);
+  memset(t, 0, LB_MT_SLOTS * sizeof(lb_mt_slot_t));
+  lua_createtable(L, 0, 1);
+  lua_pushcfunction(L, lb_mt_slots_gc);
+  lua_setfield(L, -2, "__gc");
+  lua_setmetatable(L, -2);
+  lua_setfield(L, LUA_REGISTRYINDEX, LB_MT_SLOTS_KEY);
+  s_mt_slots = t;
+}
+
+// The registered metatable of type `tname` in this VM, or NULL (not
+// registered yet, or no table).
+static const void *lb_mt_lookup(lua_State *L, const char *tname) {
+  lb_mt_slot_t *t = s_mt_slots;
+  if (!t) return NULL;
+  uint32_t i = (uint32_t)((uintptr_t)tname >> 2) & (LB_MT_SLOTS - 1);
+  for (uint32_t n = 0; n < LB_MT_SLOTS; n++, i = (i + 1) & (LB_MT_SLOTS - 1)) {
+    if (t[i].name == tname) return t[i].mt;
+    if (!t[i].name) break;
+  }
+  // First check of this name in this VM: ask the registry, as
+  // luaL_checkudata does, and remember a registered metatable.
+  const void *mt = NULL;
+  if (luaL_getmetatable(L, tname) == LUA_TTABLE) mt = lua_topointer(L, -1);
+  lua_pop(L, 1);
+  if (mt && s_mt_used < LB_MT_MAX_USED && !t[i].name) {
+    t[i].name = tname;
+    t[i].mt = mt;
+    s_mt_used++;
+  }
+  return mt;
+}
+
+void *lb_checkudata(lua_State *L, int idx, const char *tname) {
+  const void *mt = lb_mt_lookup(L, tname);
+  void *p = mt ? picodeck_lua_udata_with_mt(L, idx, mt) : NULL;
+  return p ? p : luaL_checkudata(L, idx, tname);
+}
+
+void *lb_testudata(lua_State *L, int idx, const char *tname) {
+  const void *mt = lb_mt_lookup(L, tname);
+  void *p = mt ? picodeck_lua_udata_with_mt(L, idx, mt) : NULL;
+  return p ? p : luaL_testudata(L, idx, tname);
 }
 
 // ── Registration
@@ -512,6 +602,7 @@ static int l_base_load_text(lua_State *L) {
 }
 
 void lua_bridge_register(lua_State *L) {
+  lb_mt_reset(L);  // a new VM: no metatable address from the last one holds
   printf("[LUA] lua_bridge_register start, PSRAM free=%lu\n",
          (unsigned long)umm_free_heap_size());
 
