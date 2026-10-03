@@ -352,23 +352,9 @@ void display_deinit(void) {
 // ─────────────────────────────────────────────────────────
 
 void display_clear(uint16_t color) {
-  // Big-endian swap: ST7365P wants bytes big-endian over SPI
-  uint16_t be = (color >> 8) | (color << 8);
-
-  // Fast path: use memset for black (0x0000) or white (0xFFFF)
-  if (be == 0x0000 || be == 0xFFFF) {
-    memset(s_framebuffer, be & 0xFF, FB_SIZE);
-    return;
-  }
-
-  // Optimized: fill in 32-pixel chunks for better memory bandwidth
-  uint32_t color32 = ((uint32_t)be << 16) | be; // Two pixels
-  uint32_t *fb32 = (uint32_t *)s_framebuffer;
-  size_t count32 = (FB_WIDTH * FB_HEIGHT) / 2; // Number of 32-bit words
-
-  for (size_t i = 0; i < count32; i++) {
-    fb32[i] = color32;
-  }
+  // The whole buffer, ignoring the clip rect, with fillRect's store loop
+  // (display_clip.h). Big-endian swap: the ST7365P wants bytes big-endian.
+  disp_fill_px(s_framebuffer, (size_t)FB_WIDTH * FB_HEIGHT, fb_color(color));
 }
 
 void display_set_pixel(int x, int y, uint16_t color) {
@@ -386,8 +372,8 @@ uint16_t display_get_pixel(int x, int y) {
 }
 
 void display_fill_rect(int x, int y, int w, int h, uint16_t color) {
-  // Clipped once in int64 (x + w cannot overflow); full-width bands use
-  // 32-bit stores.
+  // Clipped once in int64 (x + w cannot overflow); rows go out as 32-bit
+  // stores (disp_fill_px), a full-width band as one run.
   disp_clip_t c = cur_clip();
   disp_fill(s_framebuffer, FB_WIDTH, &c, x, y, w, h, fb_color(color));
 }

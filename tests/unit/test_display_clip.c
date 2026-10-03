@@ -166,6 +166,72 @@ static void test_lines_match_reference(void) {
   CHECK_EQ_INT(bad, 0);
 }
 
+static void ref_fill(uint16_t *fb, int stride, const disp_clip_t *c, int x,
+                     int y, int w, int h, uint16_t v) {
+  for (int r = y; r < y + h; r++)
+    for (int i = x; i < x + w; i++)
+      if (i >= c->x0 && i <= c->x1 && r >= c->y0 && r <= c->y1)
+        fb[r * stride + i] = v;
+}
+
+// Rects of every width and start parity (the store loop's aligned, odd-start
+// and odd-length cases), columns, and rects clipped on any side.
+static void test_fill_matches_reference(void) {
+  int bad = 0;
+  for (int i = 0; i < 20000; i++) {
+    disp_clip_t c = random_clip();
+    int x = rnd(-20, SW + 4), y = rnd(-20, SH + 4);
+    int w = rnd(0, SW + 24), h = rnd(0, SH + 24);
+    if (i % 5 == 0) w = 1;
+    reset(0);
+    disp_fill(screen(s_got), CW, &c, x, y, w, h, 0x5A3C);
+    ref_fill(screen(s_want), CW, &c, x, y, w, h, 0x5A3C);
+    if (!same("fill") && bad++ < 5)
+      printf("  fill %d,%d %dx%d clip %d,%d-%d,%d\n", x, y, w, h, c.x0, c.y0,
+             c.x1, c.y1);
+  }
+  CHECK_EQ_INT(bad, 0);
+}
+
+// A rect as wide as the buffer's rows is filled as one run; the run is set
+// at both start alignments and the guard pixels around it stay untouched.
+static void test_fill_full_width(void) {
+  enum { W = 21, H = 7, G = 3 };  // odd width: runs end mid-word
+  static uint16_t buf[G + W * H + G + 1];
+  disp_clip_t c = {0, 0, W - 1, H - 1};
+  for (int shift = 0; shift < 2; shift++) {
+    uint16_t *fb = buf + G + shift;
+    for (int y0 = 0; y0 < H; y0++)
+      for (int h = 1; y0 + h <= H; h++) {
+        for (size_t i = 0; i < sizeof buf / sizeof buf[0]; i++) buf[i] = 0xEEEE;
+        disp_fill(fb, W, &c, -5, y0, W + 9, h, 0x0F0F);  // clipped to full width
+        bool ok = true;
+        for (int i = -G - shift; i < W * H + G + 1 - shift; i++) {
+          bool in = i >= y0 * W && i < (y0 + h) * W;
+          if (fb[i] != (in ? 0x0F0F : 0xEEEE)) ok = false;
+        }
+        if (!ok) printf("  full width: shift %d rows %d+%d\n", shift, y0, h);
+        CHECK(ok);
+      }
+  }
+}
+
+static void test_fill_px_runs(void) {
+  enum { N = 40, G = 4 };
+  static uint16_t buf[G + 1 + N + G];
+  for (int a = 0; a < 2; a++)            // start on a word boundary or not
+    for (int n = 0; n <= N; n++) {
+      for (size_t i = 0; i < sizeof buf / sizeof buf[0]; i++) buf[i] = 0x1111;
+      uint16_t *p = buf + G + a;
+      disp_fill_px(p, (size_t)n, 0xBEEF);
+      bool ok = true;
+      for (int i = -G - a; i < N + G + 1 - a; i++)
+        if (p[i] != ((i >= 0 && i < n) ? 0xBEEF : 0x1111)) ok = false;
+      if (!ok) printf("  fill_px: align %d n %d\n", a, n);
+      CHECK(ok);
+    }
+}
+
 static void test_huge_lines(void) {
   disp_clip_t c = {0, 0, SW - 1, SH - 1};
   // (0,0) -> (1e9,1e9) is the diagonal, returned without walking 1e9 steps.
@@ -187,6 +253,13 @@ static void test_huge_lines(void) {
   disp_line(screen(s_got), CW, &c, 1000000000, -1000000000, 1000000001,
             1000000000, 7);
   CHECK(same("off-screen line"));
+  // Straight lines take the fill path, before the general empty-clip check:
+  // an empty clip still draws nothing.
+  disp_clip_t empty = {5, 5, 4, 4};
+  reset(0);
+  disp_line(screen(s_got), CW, &empty, 0, 5, 40, 5, 7);
+  disp_line(screen(s_got), CW, &empty, 5, 0, 5, 30, 7);
+  CHECK(same("straight lines, empty clip"));
   // A long shallow line that crosses the screen: same pixels as walking it.
   reset(0);
   disp_line(screen(s_got), CW, &c, -30000, -10, 30000, 40, 7);
@@ -662,6 +735,9 @@ static void test_get_pixels(void) {
 
 int main(void) {
   test_clip_rect();
+  test_fill_matches_reference();
+  test_fill_full_width();
+  test_fill_px_runs();
   test_lines_match_reference();
   test_huge_lines();
   test_triangles_match_reference();

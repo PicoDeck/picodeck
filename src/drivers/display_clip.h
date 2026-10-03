@@ -27,8 +27,9 @@
 #include <math.h>
 #include <string.h>
 
-// Extra attributes for the image blitters' loops. The firmware (built -Os)
-// defines it as optimize("O2") before including this header; elsewhere empty.
+// Extra attributes for the hot loops: the image blitters and disp_fill_px.
+// The firmware (built -Os) defines it as optimize("O2") before including
+// this header; elsewhere empty.
 #ifndef DISP_HOT
 #define DISP_HOT
 #endif
@@ -70,6 +71,29 @@ static inline uint16_t disp_px(uint16_t c, bool swap) {
 
 // ── Solid fills ─────────────────────────────────────────────────────────────
 
+// The 16-bit pixel buffer seen as 32-bit words, for paired stores. may_alias:
+// the buffer is uint16_t, and these stores must not be reordered past 16-bit
+// accesses to the same pixels.
+typedef uint32_t __attribute__((may_alias)) disp_u32a_t;
+
+// Set n consecutive pixels from p to v: a 16-bit store when p is not 4-byte
+// aligned, then pairs as 32-bit stores eight at a time, then a 16-bit store
+// for an odd last pixel. On the device the plain -Os loops this replaced cost
+// a compare and a branch per store: ~5 cycles a word for display_clear, ~10
+// for a full-width fillRect, one 16-bit store per pixel for any other rect.
+DISP_HOT static inline void disp_fill_px(uint16_t *p, size_t n, uint16_t v) {
+  if (n && ((uintptr_t)p & 2)) { *p++ = v; n--; }
+  disp_u32a_t *q = (disp_u32a_t *)(void *)p;
+  const uint32_t v2 = ((uint32_t)v << 16) | v;
+  size_t words = n / 2;
+  for (; words >= 8; words -= 8, q += 8) {
+    q[0] = v2; q[1] = v2; q[2] = v2; q[3] = v2;
+    q[4] = v2; q[5] = v2; q[6] = v2; q[7] = v2;
+  }
+  while (words--) *q++ = v2;
+  if (n & 1) *(uint16_t *)(void *)q = v;
+}
+
 // Fill a clipped rect with an already-converted pixel value.
 static inline void disp_fill(uint16_t *fb, int stride, const disp_clip_t *c,
                              int64_t x, int64_t y, int64_t w, int64_t h,
@@ -77,17 +101,15 @@ static inline void disp_fill(uint16_t *fb, int stride, const disp_clip_t *c,
   disp_span_t s;
   if (!disp_clip_rect(c, x, y, w, h, &s)) return;
   uint16_t *row = fb + (size_t)s.y * stride + s.x;
-  if (s.w == stride && s.x == 0 && ((uintptr_t)row & 3) == 0 &&
-      ((size_t)s.w * s.h) % 2 == 0) {
-    // Full-width band: 32-bit stores over the whole block.
-    uint32_t v2 = ((uint32_t)v << 16) | v;
-    uint32_t *p = (uint32_t *)(void *)row;
-    size_t n = (size_t)s.w * s.h / 2;
-    for (size_t i = 0; i < n; i++) p[i] = v2;
-    return;
+  if (s.w == stride) {
+    // Full-width band: one contiguous run.
+    disp_fill_px(row, (size_t)s.w * s.h, v);
+  } else if (s.w == 1) {
+    // A column (a vertical line, a rect's side).
+    for (int r = 0; r < s.h; r++, row += stride) *row = v;
+  } else {
+    for (int r = 0; r < s.h; r++, row += stride) disp_fill_px(row, s.w, v);
   }
-  for (int r = 0; r < s.h; r++, row += stride)
-    for (int i = 0; i < s.w; i++) row[i] = v;
 }
 
 // Horizontal span xa..xb (either order) on row y.
@@ -111,8 +133,22 @@ static inline void disp_plot(uint16_t *fb, int stride, const disp_clip_t *c,
 // is inside the clip and stop after the last: a line runs at most clip width
 // (or height) + 1 iterations however long it is, and plots exactly the pixels
 // the unclipped loop would have (the unit test checks this against the loop).
+//
+// A horizontal or vertical line is a fill: the walk would set every pixel of
+// that row or column span anyway, one plot and its clip test at a time (on
+// the device a full-width line took 189 us that way and takes ~16 as a fill,
+// a 280-pixel column 165 against 20).
 static inline void disp_line(uint16_t *fb, int stride, const disp_clip_t *c,
                              int x0, int y0, int x1, int y1, uint16_t v) {
+  if (y0 == y1) {
+    disp_hspan(fb, stride, c, y0, x0, x1, v);
+    return;
+  }
+  if (x0 == x1) {
+    int64_t ya = y0 < y1 ? y0 : y1, yb = y0 < y1 ? y1 : y0;
+    disp_fill(fb, stride, c, x0, ya, 1, yb - ya + 1, v);
+    return;
+  }
   if (c->x1 < c->x0 || c->y1 < c->y0) return;
   // Trivial reject: bounding box misses the clip.
   if ((x0 < c->x0 && x1 < c->x0) || (x0 > c->x1 && x1 > c->x1) ||
@@ -317,7 +353,7 @@ static inline void disp_span16(uint16_t *row, int x0, int x1, uint16_t v) {
     n--;
   }
   uint32_t v2 = ((uint32_t)v << 16) | v;
-  uint32_t *q = (uint32_t *)(void *)p;
+  disp_u32a_t *q = (disp_u32a_t *)(void *)p;  // may_alias: see disp_u32a_t
   for (; n >= 2; n -= 2) *q++ = v2;
   if (n) *(uint16_t *)(void *)q = v;
 }
