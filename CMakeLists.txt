@@ -290,6 +290,7 @@ add_executable(picodeck
     src/os/perf.c
     src/os/core0_idle.c
     src/os/xip_stats.c
+    src/os/pc_prof.c
     src/os/fps_counter.c
     src/os/lua_bridge_graphics.c
     src/os/lua_bridge_3d.c
