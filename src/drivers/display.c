@@ -372,8 +372,8 @@ uint16_t display_get_pixel(int x, int y) {
 }
 
 void display_fill_rect(int x, int y, int w, int h, uint16_t color) {
-  // Clipped once in int64 (x + w cannot overflow); full-width bands use
-  // 32-bit stores.
+  // Clipped once in int64 (x + w cannot overflow); rows go out as 32-bit
+  // stores (disp_fill_px), a full-width band as one run.
   disp_clip_t c = cur_clip();
   disp_fill(s_framebuffer, FB_WIDTH, &c, x, y, w, h, fb_color(color));
 }

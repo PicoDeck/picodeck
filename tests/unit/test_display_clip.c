@@ -253,6 +253,13 @@ static void test_huge_lines(void) {
   disp_line(screen(s_got), CW, &c, 1000000000, -1000000000, 1000000001,
             1000000000, 7);
   CHECK(same("off-screen line"));
+  // Straight lines take the fill path, before the general empty-clip check:
+  // an empty clip still draws nothing.
+  disp_clip_t empty = {5, 5, 4, 4};
+  reset(0);
+  disp_line(screen(s_got), CW, &empty, 0, 5, 40, 5, 7);
+  disp_line(screen(s_got), CW, &empty, 5, 0, 5, 30, 7);
+  CHECK(same("straight lines, empty clip"));
   // A long shallow line that crosses the screen: same pixels as walking it.
   reset(0);
   disp_line(screen(s_got), CW, &c, -30000, -10, 30000, 40, 7);

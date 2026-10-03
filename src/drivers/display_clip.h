@@ -27,8 +27,9 @@
 #include <math.h>
 #include <string.h>
 
-// Extra attributes for the image blitters' loops. The firmware (built -Os)
-// defines it as optimize("O2") before including this header; elsewhere empty.
+// Extra attributes for the hot loops: the image blitters and disp_fill_px.
+// The firmware (built -Os) defines it as optimize("O2") before including
+// this header; elsewhere empty.
 #ifndef DISP_HOT
 #define DISP_HOT
 #endif
@@ -135,8 +136,8 @@ static inline void disp_plot(uint16_t *fb, int stride, const disp_clip_t *c,
 //
 // A horizontal or vertical line is a fill: the walk would set every pixel of
 // that row or column span anyway, one plot and its clip test at a time (on
-// the device a full-width line took 192 us that way against 18 us as a
-// fill, a 280-pixel column 171 us against 28).
+// the device a full-width line took 189 us that way and takes ~16 as a fill,
+// a 280-pixel column 165 against 20).
 static inline void disp_line(uint16_t *fb, int stride, const disp_clip_t *c,
                              int x0, int y0, int x1, int y1, uint16_t v) {
   if (y0 == y1) {
@@ -352,7 +353,7 @@ static inline void disp_span16(uint16_t *row, int x0, int x1, uint16_t v) {
     n--;
   }
   uint32_t v2 = ((uint32_t)v << 16) | v;
-  uint32_t *q = (uint32_t *)(void *)p;
+  disp_u32a_t *q = (disp_u32a_t *)(void *)p;  // may_alias: see disp_u32a_t
   for (; n >= 2; n -= 2) *q++ = v2;
   if (n) *(uint16_t *)(void *)q = v;
 }
