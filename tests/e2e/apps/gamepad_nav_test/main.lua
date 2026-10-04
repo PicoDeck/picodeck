@@ -1,7 +1,8 @@
 -- Gamepad navigation fixture (tests/e2e/test_gamepad_nav.py). Logs every
 -- non-zero gamepad.getNavPressed() and getButtonsRepeated() mask with the
 -- time, reading each twice per frame (both reads must agree). X turns
--- repeat off (input.setRepeat(0)). Esc exits after its frame is logged.
+-- repeat off (input.setRepeat(0)); Y clears input state (input.clearState()).
+-- Esc exits after its frame is logged.
 local pc = picocalc
 local input, gp, log = pc.input, pc.gamepad, pc.sys.log
 
@@ -26,6 +27,10 @@ while pc.sys.getTimeMs() < deadline do
     if gp.getButtonsPressed() & gp.PAD_X ~= 0 then
         input.setRepeat(0)
         log("NAV:NOREPEAT")
+    end
+    if gp.getButtonsPressed() & gp.PAD_Y ~= 0 then
+        input.clearState()
+        log("NAV:CLEARED")
     end
     if input.getButtonsPressed() & input.BTN_ESC ~= 0 then break end
     pc.sys.sleep(16)

@@ -131,3 +131,32 @@ def test_setrepeat_zero_turns_gamepad_repeat_off(simulator):
     _hold(sim, "down", 0.6)
     assert [m for m, _ in _lines(sim, mark, "NAV")] == [PAD_DOWN], _texts(sim, mark)
     _finish(sim, seq)
+
+
+def test_dpad_held_across_clearstate_does_not_repeat(simulator):
+    """Down and Y pressed together: Y's handler calls input.clearState() mid-
+    hold. Down's already-armed repeat deadline (from the real press edge in
+    the same frame) must not go on to fire afterward — a regression deleting
+    lb_gamepad_repeat_reset() from l_input_clearState would still produce
+    repeats here, since the physical hold never breaks. (The equivalent
+    app-launch guarantee is verified by inspection only: every test gets a
+    fresh simulator/app launch, so a launch-time test could never tell a
+    missing reset from a correct one.)
+    """
+    sim = simulator
+    seq = _start(sim)
+    mark = _mark(sim, seq)
+    sim.pad("down+y")
+    sim.wait_for_log(r"^NAV:CLEARED$", timeout=10, since_seq=mark)
+    cleared = _mark(sim, mark)
+    time.sleep(0.6)
+    sim.pad("none")
+    time.sleep(0.15)
+    assert not [m for m, _ in _lines(sim, cleared, "NAV") if m == PAD_DOWN], \
+        _texts(sim, cleared)
+    # a fresh press after release still repeats normally
+    mark2 = _mark(sim, seq)
+    _hold(sim, "down", 0.1)
+    assert [m for m, _ in _lines(sim, mark2, "NAV")] == [PAD_DOWN], \
+        _texts(sim, mark2)
+    _finish(sim, seq)
