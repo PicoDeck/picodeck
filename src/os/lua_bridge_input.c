@@ -128,6 +128,10 @@ static void repeat_reset(void) {
   s_repeat_reset = false;
 }
 
+// Deferred, like clearState's: the next getButtonsRepeated() call resets the
+// clock before it steps, rather than reaching into btn_repeat_t from here.
+void lb_input_repeat_reset(void) { s_repeat_reset = true; }
+
 // setRepeat(delayMs, rateMs) — delayMs = 0 disables repeat entirely.
 static int l_input_setRepeat(lua_State *L) {
   lua_Integer delay = lb_checkint(L, 1);

@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from helpers import stage_lua_app
+from test_menu_toggle import Screen
 
 PAD_DOWN, PAD_A, PAD_B, PAD_X, PAD_START = 1 << 1, 1 << 4, 1 << 5, 1 << 6, 1 << 10
 APP = "gamepad_nav_test"
@@ -144,8 +145,9 @@ def test_dpad_held_across_clearstate_does_not_repeat(simulator):
     the same frame) must not go on to fire afterward — a regression deleting
     lb_gamepad_repeat_reset() from l_input_clearState would still produce
     repeats here, since the physical hold never breaks. (The equivalent
-    app-launch guarantee is covered below, by
-    test_dpad_held_across_app_launch_does_not_repeat.)
+    app-launch and system-menu-close guarantees are covered below, by
+    test_dpad_held_across_app_launch_does_not_repeat and
+    test_dpad_held_across_menu_close_does_not_repeat.)
     """
     sim = simulator
     seq = _start(sim)
@@ -188,3 +190,35 @@ def test_dpad_held_across_app_launch_does_not_repeat(simulator):
         _texts(sim, seq2)
     sim.pad("none")
     _finish(sim, seq2)
+
+
+def test_dpad_held_across_menu_close_does_not_repeat(simulator):
+    """Down held when the system menu opens, and held again when it closes,
+    must not repeat from its pre-menu deadline: lua_bridge.c resets both
+    repeat clocks where it returns from system_menu_show, like
+    input.clearState() does. Opening/closing the menu is the pad's Home
+    button (kbd_consume_menu_press, test_menu_toggle.py's own technique),
+    pressed twice while Down stays continuously held."""
+    sim = simulator
+    seq = _start(sim)
+    mark = _mark(sim, seq)
+    sim.pad("down")
+    sim.wait_for_log(rf"^NAV:NAV {PAD_DOWN} ", timeout=10, since_seq=mark)
+    screen = Screen(sim)
+    sim.pad("down+home")  # Home's fresh press edge opens the menu
+    screen.wait(True, "the menu did not open")
+    sim.pad("down")       # Home released; Down never was
+    sim.pad("down+home")  # a fresh Home press edge closes it
+    screen.wait(False, "the menu did not close")
+    mark2 = _mark(sim, seq)
+    time.sleep(0.5)  # past the old delay/rate: a leftover deadline would fire
+    assert not [m for m, _ in _lines(sim, mark2, "NAV") if m == PAD_DOWN], \
+        _texts(sim, mark2)
+    sim.pad("none")
+    time.sleep(0.15)
+    # a fresh press still works: the reset did not just wedge the clock off
+    mark3 = _mark(sim, seq)
+    _hold(sim, "down", 0.1)
+    assert [m for m, _ in _lines(sim, mark3, "NAV")] == [PAD_DOWN], \
+        _texts(sim, mark3)
+    _finish(sim, seq)

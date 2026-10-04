@@ -205,6 +205,12 @@ bool lua_json_decode_push(lua_State *L, const char *s, size_t len,
 // picocalc.input.setRepeat()'s timing, shared by input.getButtonsRepeated
 // and gamepad.getButtonsRepeated (lua_bridge_input.c).
 void lb_input_repeat_timing(uint32_t *delay_ms, uint32_t *rate_ms);
+// Disarm input's own repeat clock (lua_bridge_input.c), at the system menu's
+// close: a button held when the menu opened, and held again when it closed,
+// must not repeat from its pre-menu deadline (kbd_clear_state() there keeps
+// it held with no press edge, same as input.clearState()).
+void lb_input_repeat_reset(void);
 // Disarm the gamepad's repeat clock (lua_bridge_gamepad.c), at
-// input.setRepeat, input.clearState and every app launch.
+// input.setRepeat, input.clearState, every app launch and the system menu's
+// close.
 void lb_gamepad_repeat_reset(void);
