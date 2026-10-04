@@ -51,6 +51,22 @@ def _key(sim, key):
     return lambda: sim.keypress(key)
 
 
+def _refuses(sim, prompt, key):
+    """Wait for `prompt`, press `key` after the grace period, and expect no
+    PM:RESULT within 0.3 s. F4/F5 are the keyboard's default A/B gamepad
+    aliases for an app's own input reads, but the OS's confirm and
+    text-input dialogs only take a pad source's A/B (kbd_get_pad_nav_pressed)
+    or the keyboard's own Enter/Esc."""
+    mark = _mark(sim)
+    sim.wait_for_log(rf"^{prompt}$", timeout=10, since_seq=0)
+    time.sleep(GRACE)
+    sim.keypress(key)
+    time.sleep(0.3)
+    assert not [t for t in _texts(sim, mark) if t.startswith("PM:RESULT")], \
+        _texts(sim, mark)
+    return mark
+
+
 def _done(sim):
     sim.wait_for_log(r"^PM:DONE$", timeout=10, since_seq=0)
     sim.wait_for_exit(timeout=10)
@@ -78,6 +94,26 @@ def test_text_input_takes_a_and_b(simulator):
     _answer(sim, "PM:CONFIRM 2", _key(sim, "esc"), "false")
     _answer(sim, "PM:TEXT 1", _pad(sim, "b"), "nil")
     _answer(sim, "PM:TEXT 2", _pad(sim, "a"), "abc")
+    _done(sim)
+
+
+def test_f4_f5_do_not_answer_confirm_or_text_input(simulator):
+    """Neither F4 nor F5 answers these dialogs: only a pad source's A/B, or
+    the keyboard's own Enter/Esc, do."""
+    sim = simulator
+    _launch(sim)
+    mark = _refuses(sim, "PM:CONFIRM 1", "f4")
+    sim.keypress("enter")
+    sim.wait_for_log(r"^PM:RESULT true$", timeout=10, since_seq=mark)
+    mark = _refuses(sim, "PM:CONFIRM 2", "f5")
+    sim.keypress("esc")
+    sim.wait_for_log(r"^PM:RESULT false$", timeout=10, since_seq=mark)
+    mark = _refuses(sim, "PM:TEXT 1", "f4")
+    sim.keypress("esc")
+    sim.wait_for_log(r"^PM:RESULT nil$", timeout=10, since_seq=mark)
+    mark = _refuses(sim, "PM:TEXT 2", "f5")
+    sim.keypress("enter")
+    sim.wait_for_log(r"^PM:RESULT abc$", timeout=10, since_seq=mark)
     _done(sim)
 
 
