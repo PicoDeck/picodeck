@@ -197,7 +197,7 @@ Like `getButtonsPressed()`, plus a repeat edge for each button still held after 
 
 - **Returns:** (number) Bitmask of `PAD_*` constants
 
-Every call in one frame returns the same mask. `picocalc.input.setRepeat()` sets the timing for this and for `picocalc.input.getButtonsRepeated()`, and `setRepeat(0)` turns both off. A button already held when your app starts (or when it calls `picocalc.input.clearState()`) does not repeat until it is pressed again.
+Every call in one frame returns the same mask. `picocalc.input.setRepeat()` sets the timing for this and for `picocalc.input.getButtonsRepeated()`, and `setRepeat(0)` turns both off. A controller button, or a gamepad key that reports a hold (the function keys, etc.), already held when your app starts (or when it calls `picocalc.input.clearState()`) does not repeat until it is pressed again; a keyboard arrow held across that moment may step once more and then repeat, since the keyboard re-sends a held arrow as a fresh press.
 
 ---
 
