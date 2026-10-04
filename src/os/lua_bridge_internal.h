@@ -201,3 +201,10 @@ void lua_bridge_require_init(lua_State *L);
 void lua_json_encode_push(lua_State *L, int idx, int indent);
 bool lua_json_decode_push(lua_State *L, const char *s, size_t len,
                           const char **err);
+
+// picocalc.input.setRepeat()'s timing, shared by input.getButtonsRepeated
+// and gamepad.getButtonsRepeated (lua_bridge_input.c).
+void lb_input_repeat_timing(uint32_t *delay_ms, uint32_t *rate_ms);
+// Disarm the gamepad's repeat clock (lua_bridge_gamepad.c), at
+// input.setRepeat, input.clearState and every app launch.
+void lb_gamepad_repeat_reset(void);

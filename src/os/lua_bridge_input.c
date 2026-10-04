@@ -108,6 +108,7 @@ static int l_input_clearState(lua_State *L) {
   (void)L;
   kbd_clear_state();
   s_repeat_reset = true;
+  lb_gamepad_repeat_reset();
   return 0;
 }
 
@@ -137,7 +138,13 @@ static int l_input_setRepeat(lua_State *L) {
   s_repeat_delay_ms = (uint32_t)delay;
   s_repeat_rate_ms  = (uint32_t)rate;
   repeat_reset();
+  lb_gamepad_repeat_reset();
   return 0;
+}
+
+void lb_input_repeat_timing(uint32_t *delay_ms, uint32_t *rate_ms) {
+  *delay_ms = s_repeat_delay_ms;
+  *rate_ms = s_repeat_rate_ms;
 }
 
 // getButtonsRepeated() -> mask of real press edges PLUS synthetic repeat edges

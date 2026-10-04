@@ -506,6 +506,19 @@ function picocalc.gamepad.getButtonsPressed() end
 ---@return integer bitmask
 function picocalc.gamepad.getButtonsReleased() end
 
+---Like `getButtonsPressed()`, plus a repeat edge for each button held past
+---`picocalc.input.setRepeat()`'s delay (200 ms by default), then one every
+---rate (80 ms). Every call in one frame returns the same mask.
+---@return integer bitmask
+function picocalc.gamepad.getButtonsRepeated() end
+
+---What a menu or list acts on: D-pad presses with auto-repeat, the other
+---buttons' presses, plus `PAD_A` for an Enter press and `PAD_B` for an Esc
+---press (unless the player bound that key to a button). Every call in one
+---frame returns the same mask.
+---@return integer bitmask
+function picocalc.gamepad.getNavPressed() end
+
 ---Name of the key bound to a button, for on-screen hints ("F4", "Del", "W"),
 ---or `nil` when that slot is unbound.
 ---@param btn integer One PAD_* constant

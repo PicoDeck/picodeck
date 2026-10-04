@@ -10,7 +10,7 @@ A logical gamepad with 12 buttons, two analog sticks and two analog triggers. Re
 - **Two slots per button.** Each button has a **primary** and an **alternate** key. The button is held while either key is down.
 - **One button per key.** Within one map a key drives at most one button.
 - **Same polling as the input masks.** `picocalc.input.update()` updates the gamepad too. A tap shorter than one frame still gives one press edge and, on the next frame, one release edge.
-- **Esc is not a gamepad button.** Keep Esc as back/quit.
+- **Esc is not a gamepad button.** Keep Esc as back/quit. `getNavPressed()` reads it as B, so in a menu B and Esc both go back.
 - **What is down at the system menu stays hidden.** A button down when the menu opens or closes (B closing it, a direction held on through it), when an OS dialog returns, or when your app starts, from a key or a controller, reads as not held, with no edges, until it is released; pressed again it reads normally. Other buttons are not affected. See [`update()`](API-Input.md).
 - **A connected controller drives the same buttons.** A game controller and the keyboard work together: a button is held while either holds it, with one press edge and one release edge, and your game cannot tell which one pressed it, so it needs no code for controllers. `getLabel()` still names the keyboard key. A controller's Home button opens the system menu (and closes it again when pressed while it is open, like the menu key), and the D-pad and A/B move through it and the launcher, so a player with only a controller can leave a game. The header shows a gamepad icon while one is connected. On the device that is a [Bluetooth controller](#bluetooth-controllers); in the simulator, a controller plugged into the computer.
 
@@ -189,6 +189,46 @@ while true do
     picocalc.display.flush()
 end
 ```
+
+---
+
+#### `picocalc.gamepad.getButtonsRepeated()`
+Like `getButtonsPressed()`, plus a repeat edge for each button still held after `picocalc.input.setRepeat()`'s delay (200 ms unless you change it), then one every rate (80 ms). Use it for anything that should keep moving while a button is held.
+
+- **Returns:** (number) Bitmask of `PAD_*` constants
+
+Every call in one frame returns the same mask. `picocalc.input.setRepeat()` sets the timing for this and for `picocalc.input.getButtonsRepeated()`, and `setRepeat(0)` turns both off. A button already held when your app starts (or when it calls `picocalc.input.clearState()`) does not repeat until it is pressed again.
+
+---
+
+#### `picocalc.gamepad.getNavPressed()`
+What a menu or list acts on, so one call drives it from the keyboard, a rebound key or a controller:
+
+- the D-pad, with auto-repeat as in `getButtonsRepeated()`;
+- the other buttons' presses, without repeat (holding A confirms once);
+- `PAD_A` when Enter is pressed and `PAD_B` when Esc is pressed, unless the player bound that key to a button (then it means that button only).
+
+- **Returns:** (number) Bitmask of `PAD_*` constants
+
+Every call in one frame returns the same mask.
+
+```lua
+local gp = picocalc.gamepad
+while true do
+    picocalc.input.update()
+    local nav = gp.getNavPressed()
+    if nav & gp.PAD_UP ~= 0 then sel = math.max(1, sel - 1) end
+    if nav & gp.PAD_DOWN ~= 0 then sel = math.min(#items, sel + 1) end
+    if nav & gp.PAD_A ~= 0 then open(items[sel]) end
+    if nav & gp.PAD_B ~= 0 then return end -- B or Esc: back
+    draw()
+    picocalc.display.flush()
+end
+```
+
+`PAD_UP`, `PAD_DOWN`, `PAD_LEFT`, `PAD_RIGHT`, `PAD_A` and `PAD_B` have the same values as `BTN_UP`, `BTN_DOWN`, `BTN_LEFT`, `BTN_RIGHT`, `BTN_ENTER` and `BTN_ESC`.
+
+Both functions are newer than the rest of `picocalc.gamepad`; check `if gp and gp.getNavPressed then` on older firmware.
 
 ---
 

@@ -1,0 +1,7 @@
+{
+    "id": "com.test.gamepad_nav_test",
+    "name": "Gamepad Nav Test",
+    "description": "picocalc.gamepad navigation helpers for E2E testing",
+    "version": "1.0",
+    "author": "PicoDeck E2E"
+}
