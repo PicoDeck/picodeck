@@ -448,10 +448,16 @@ static bool ui_text_input_run(const char *prompt, const char *default_val,
     char c        = kbd_get_char();
 
     if ((btns | nav) & BTN_ESC) break;
-    // Real Enter hardware always sets BTN_ENTER alongside '\n'; the sim's
-    // button-only injection (used by tests/e2e/test_pad_modals.py) needs
-    // BTN_ENTER checked on its own, as Esc already is above.
-    if (c == '\n' || ((btns | nav) & BTN_ENTER)) { accepted = true; break; }  // Enter = 0x0A
+    // Characters reach kbd_get_char one per poll from a backlog, but button
+    // edges arrive all at once: typing 'c' then Enter in the same poll gives
+    // the BTN_ENTER edge now but 'c' now and '\n' only on a later poll. A
+    // physical Enter always leaves a '\n' behind the characters typed before
+    // it, so take a keyboard Enter from its char, not its button edge (else
+    // the dialog could accept before 'c' is added, and leave that '\n'
+    // behind for the app's next getChar). A pad A is its own nav edge; a
+    // bare BTN_ENTER with no char pending can only be an injected button
+    // with no matching char (e.g. a dev tool's keypress), so accept that too.
+    if (c == '\n' || (nav & BTN_ENTER) || (!c && (btns & BTN_ENTER))) { accepted = true; break; }  // Enter = 0x0A
     if (c == '\b') {
       if (len > 0) { len--; dirty = true; }
     } else if (c >= 32 && c < 127 && len < MAX_CHARS) {
