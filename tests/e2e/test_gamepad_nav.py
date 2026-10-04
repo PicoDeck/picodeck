@@ -1,8 +1,9 @@
 """picocalc.gamepad.getNavPressed / getButtonsRepeated: menus and lists on
 the gamepad (D-pad auto-repeat, Enter and Esc folded into A and B).
 
-The fixture (apps/gamepad_nav_test) logs every non-zero mask with its time
-and reads each twice per frame. The repeat clock is covered by
+The fixture (fixtures/gamepad_nav_test/main.lua, staged hidden per test so it
+never counts against the launcher's app cap) logs every non-zero mask with
+its time and reads each twice per frame. The repeat clock is covered by
 tests/unit/test_btn_repeat.c and the binding check by tests/unit/test_kbd_pad.c.
 """
 import json
@@ -10,9 +11,12 @@ import re
 import time
 from pathlib import Path
 
+from helpers import stage_lua_app
+
 PAD_DOWN, PAD_A, PAD_B, PAD_X, PAD_START = 1 << 1, 1 << 4, 1 << 5, 1 << 6, 1 << 10
 APP = "gamepad_nav_test"
 APP_ID = "com.test.gamepad_nav_test"
+FIXTURE_SRC = (Path(__file__).parent / "fixtures" / APP / "main.lua").read_text()
 
 
 def _texts(sim, since):
@@ -25,6 +29,7 @@ def _mark(sim, seq=0):
 
 def _start(sim):
     seq = _mark(sim)
+    stage_lua_app(Path(sim.sd_card_path), APP, FIXTURE_SRC, id=APP_ID)
     sim.launch_app(APP)
     sim.wait_for_log(r"^NAV:READY ", timeout=10, since_seq=seq)
     return seq
