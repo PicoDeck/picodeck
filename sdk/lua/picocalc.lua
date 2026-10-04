@@ -417,7 +417,8 @@ function picocalc.input.getRawKey() end
 ---stale presses don't leak into the new scene.
 function picocalc.input.clearState() end
 
----Configure key auto-repeat for menus and lists.
+---Configure key auto-repeat for menus and lists. Also times
+---`picocalc.gamepad.getButtonsRepeated()` and the D-pad in `getNavPressed()`.
 ---@param delay_ms integer Initial hold time before repeat starts (0 = disable repeat)
 ---@param rate_ms? integer Interval between repeats once started (default 80, min 1)
 function picocalc.input.setRepeat(delay_ms, rate_ms) end
