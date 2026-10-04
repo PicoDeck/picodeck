@@ -139,6 +139,34 @@ local BTN = {
     ENTER = input.BTN_ENTER, ESC = input.BTN_ESC,
 }
 
+-- The keys, with the gamepad's D-pad, A and B merged in where the firmware
+-- has the gamepad helpers: a controller and rebound keys drive a comic too.
+-- Those six PAD_* bits are BTN_UP..BTN_ESC's own (os.h), so the masks stay
+-- in BTN_* space and a comic's advanceControl (a BTN_* constant) still works.
+local gp = picocalc.gamepad
+local PAD_NAV = 0
+if gp and gp.getButtonsRepeated then
+    PAD_NAV = gp.PAD_UP | gp.PAD_DOWN | gp.PAD_LEFT | gp.PAD_RIGHT
+              | gp.PAD_A | gp.PAD_B
+end
+
+local function readHeld()
+    if PAD_NAV == 0 then return input.getButtons() end
+    return input.getButtons() | (gp.getButtons() & PAD_NAV)
+end
+
+local function readPressed()
+    if PAD_NAV == 0 then return input.getButtonsPressed() end
+    return input.getButtonsPressed() | (gp.getButtonsPressed() & PAD_NAV)
+end
+
+-- Once per frame: input.getButtonsRepeated advances its clock per call.
+local function readRepeated()
+    local r = input.getButtonsRepeated and input.getButtonsRepeated() or 0
+    if PAD_NAV == 0 then return r end
+    return r | (gp.getButtonsRepeated() & PAD_NAV)
+end
+
 -- ── Validation ──────────────────────────────────────────────────────────────
 -- comicData is user-authored; fail loudly at new() with a path to the mistake
 -- instead of a nil-index three frames into rendering.
@@ -1087,7 +1115,7 @@ function Comic:handleScrollInput(pressed, repeated, dt)
         -- ticks (33ms) beat against slower hardware frames, so tick-stepping
         -- moved 1-3 steps per frame in an uneven rhythm — judder. Velocity
         -- scaling keeps every drawn frame's movement proportional instead.
-        local held = input.getButtons()
+        local held = readHeld()
         local dir = 0
         if held & fwd ~= 0 then dir = 1 end
         if held & back ~= 0 then dir = -1 end
@@ -1180,8 +1208,8 @@ function Comic:update()
     if dt > 100 then dt = 100 end
     self.lastFrameMs = now
 
-    local pressed = input.getButtonsPressed()
-    local repeated = input.getButtonsRepeated and input.getButtonsRepeated() or 0
+    local pressed = readPressed()
+    local repeated = readRepeated()
 
     -- Fades run to completion regardless of input.
     if self.state == "fade_out" or self.state == "fade_in" then
@@ -1381,7 +1409,7 @@ function Panels.start(comicData, opts)
         sys.log("PANELS:ERR " .. tostring(err))
         while true do
             input.update()
-            if input.getButtonsPressed() & BTN.ESC ~= 0 then
+            if readPressed() & BTN.ESC ~= 0 then
                 return "error", err
             end
             drawErrorScreen(err)
@@ -1393,7 +1421,7 @@ function Panels.start(comicData, opts)
 
     while true do
         input.update()
-        local pressed = input.getButtonsPressed()
+        local pressed = readPressed()
 
         if errorInfo then
             if pressed & BTN.ESC ~= 0 then

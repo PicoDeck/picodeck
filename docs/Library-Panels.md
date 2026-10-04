@@ -123,6 +123,7 @@ Validates the comic table and raises a descriptive error naming the offending pa
 - Pushing **forward at the end of a sequence** transitions to the next sequence.
 - **Up/Down + Enter** — navigate and confirm a [choice menu](#choices).
 - **Esc** — exit; `Panels.start` saves progress and returns `"quit"`.
+- A game controller or the gamepad's rebound keys work too: its D-pad scrolls and advances, A confirms a choice (like Enter) and B leaves (like Esc). `advanceControl` still takes a `BTN_*` constant; `BTN_UP`, `BTN_DOWN`, `BTN_LEFT`, `BTN_RIGHT` and `BTN_ENTER` also match the gamepad's D-pad and A.
 
 Key repeat is configured from `Panels.Settings.repeatDelayMs` / `repeatRateMs` at `Panels.new` time.
 
