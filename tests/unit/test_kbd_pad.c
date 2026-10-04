@@ -754,6 +754,19 @@ static void test_menu_key_held_across_clear(void) {
   CHECK_EQ_U32(pad_released(), 0);
 }
 
+// gamepad.getNavPressed folds Enter/Esc into A/B only while the key is
+// no button's key; kbd_padmap_has_key answers that.
+static void test_padmap_has_key(void) {
+  kbd_padmap_t m = KBD_PAD_DEFAULT_MAP;
+  CHECK(kbd_padmap_has_key(&m, KEY_F4)); // A's primary
+  CHECK(kbd_padmap_has_key(&m, KEY_UP));
+  CHECK(!kbd_padmap_has_key(&m, KEY_ENTER)); // not bound by default
+  CHECK(!kbd_padmap_has_key(&m, KEY_ESC));
+  CHECK(!kbd_padmap_has_key(&m, 0)); // 0 marks an unbound slot, not a key
+  m.key[10][1] = KEY_ENTER;          // Start's alternate slot
+  CHECK(kbd_padmap_has_key(&m, KEY_ENTER));
+}
+
 int main(void) {
   test_default_bindings();
   test_alias_keeps_the_key();
@@ -781,5 +794,6 @@ int main(void) {
   test_alt_release_lag_insert();
   test_two_shift_keys();
   test_menu_key_held_across_clear();
+  test_padmap_has_key();
   return check_report("test_kbd_pad");
 }

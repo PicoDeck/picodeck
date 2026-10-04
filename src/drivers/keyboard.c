@@ -187,7 +187,14 @@ bool kbd_init(void) {
 // only the OS-level menu key and Brk flags are set right away.
 static void kbd_poll_impl(bool bg);
 
-void kbd_poll(void) { kbd_poll_impl(false); }
+static uint32_t s_poll_count; // foreground polls (kbd_poll_count)
+
+void kbd_poll(void) {
+  s_poll_count++;
+  kbd_poll_impl(false);
+}
+
+uint32_t kbd_poll_count(void) { return s_poll_count; }
 
 void kbd_poll_background(void) { kbd_poll_impl(true); }
 
