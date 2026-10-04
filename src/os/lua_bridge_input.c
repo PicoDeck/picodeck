@@ -1,13 +1,12 @@
 #include "lua_bridge_internal.h"
 #include "../drivers/kbd_event_queue.h"
+#include "btn_repeat.h"
 
 // Auto-repeat state. Declared up here because clearState() has to disarm it;
 // the repeat logic itself lives further down next to getButtonsRepeated().
-#define REPEAT_BUTTON_BITS 32
-
 static uint32_t s_repeat_delay_ms = 200;  // matches the value every app picked
 static uint32_t s_repeat_rate_ms  = 80;
-static uint32_t s_repeat_next[REPEAT_BUTTON_BITS];
+static btn_repeat_t s_repeat;
 static bool     s_repeat_reset = false;
 
 // ── picocalc.input.* ─────────────────────────────────────────────────────────
@@ -114,10 +113,8 @@ static int l_input_clearState(lua_State *L) {
 
 // ── Button auto-repeat ───────────────────────────────────────────────────────
 //
-// kbd_get_buttons_pressed() reports one edge per physical press and never
-// repeats, so apps that want held-to-scroll had to hand-roll a delay/rate timer
-// against sys.getTimeMs(). apps/minesweeper, apps/editor, apps/filemanager,
-// apps/store and apps/wikipedia each carry their own copy of that logic.
+// The clock itself is src/os/btn_repeat.c (host-tested), shared with
+// picocalc.gamepad.getButtonsRepeated().
 //
 // getChar() does repeat (the STM32 firmware emits HOLD events), which is why
 // text fields already feel right and only button-driven UIs needed this.
@@ -126,7 +123,7 @@ static int l_input_clearState(lua_State *L) {
 // lua_bridge_input_init runs on every lua_bridge_register.
 
 static void repeat_reset(void) {
-  for (int i = 0; i < REPEAT_BUTTON_BITS; i++) s_repeat_next[i] = 0;
+  btn_repeat_reset(&s_repeat);
   s_repeat_reset = false;
 }
 
@@ -149,47 +146,11 @@ static int l_input_setRepeat(lua_State *L) {
 // Call at most ONCE per frame: it advances the per-button repeat clocks, so a
 // second call in the same frame would consume the next repeat early.
 static int l_input_getButtonsRepeated(lua_State *L) {
-  uint32_t held    = kbd_get_buttons();
-  uint32_t pressed = kbd_get_buttons_pressed();
-  uint32_t out     = pressed;  // real edges always pass through unchanged
-
   if (s_repeat_reset) repeat_reset();
-
-  if (s_repeat_delay_ms > 0) {
-    uint32_t now = to_ms_since_boot(get_absolute_time());
-
-    for (int i = 0; i < REPEAT_BUTTON_BITS; i++) {
-      uint32_t bit = 1u << i;
-
-      if (!(held & bit)) {
-        s_repeat_next[i] = 0;   // released: disarm
-        continue;
-      }
-
-      if (pressed & bit) {
-        // Fresh press: arm the initial delay. Guard against a 0 deadline,
-        // which is the "not armed" sentinel.
-        s_repeat_next[i] = now + s_repeat_delay_ms;
-        if (s_repeat_next[i] == 0) s_repeat_next[i] = 1;
-        continue;
-      }
-
-      // Held without a press edge. A zero deadline means we never saw the
-      // press — e.g. the key was already down when the app started — so it
-      // must not repeat until it is released and pressed again.
-      if (s_repeat_next[i] == 0) continue;
-
-      // Signed comparison so this stays correct across the 32-bit ms wrap
-      // (~49.7 days uptime).
-      if ((int32_t)(now - s_repeat_next[i]) >= 0) {
-        out |= bit;
-        s_repeat_next[i] = now + s_repeat_rate_ms;
-        if (s_repeat_next[i] == 0) s_repeat_next[i] = 1;
-      }
-    }
-  }
-
-  lua_pushinteger(L, out);
+  lua_pushinteger(L, btn_repeat_step(&s_repeat, kbd_get_buttons(),
+                                     kbd_get_buttons_pressed(),
+                                     to_ms_since_boot(get_absolute_time()),
+                                     s_repeat_delay_ms, s_repeat_rate_ms));
   return 1;
 }
 

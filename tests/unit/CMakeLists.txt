@@ -87,6 +87,8 @@ picodeck_unit_test(test_kbd_hide INCLUDES ${SRC}/drivers)
 # Pad sources (the `pad` dev command, the simulator's controller, later a BT
 # or USB pad) ORed into the same gamepad.
 picodeck_unit_test(test_pad_source SOURCES ${SRC}/drivers/pad_source.c INCLUDES ${SRC}/drivers)
+# The button auto-repeat clock (input.getButtonsRepeated, gamepad.getButtonsRepeated).
+picodeck_unit_test(test_btn_repeat SOURCES ${SRC}/os/btn_repeat.c)
 # A Bluetooth pad's HID descriptor and reports -> PAD_* (bt_pad.c's parser).
 picodeck_unit_test(test_hid_pad SOURCES ${SRC}/drivers/hid_pad.c INCLUDES ${SRC}/drivers)
 # The Bluetooth pads' bonding store (link keys + paired pads, on the SD card).
