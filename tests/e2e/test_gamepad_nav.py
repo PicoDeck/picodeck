@@ -144,9 +144,8 @@ def test_dpad_held_across_clearstate_does_not_repeat(simulator):
     the same frame) must not go on to fire afterward — a regression deleting
     lb_gamepad_repeat_reset() from l_input_clearState would still produce
     repeats here, since the physical hold never breaks. (The equivalent
-    app-launch guarantee is verified by inspection only: every test gets a
-    fresh simulator/app launch, so a launch-time test could never tell a
-    missing reset from a correct one.)
+    app-launch guarantee is covered below, by
+    test_dpad_held_across_app_launch_does_not_repeat.)
     """
     sim = simulator
     seq = _start(sim)
@@ -159,9 +158,33 @@ def test_dpad_held_across_clearstate_does_not_repeat(simulator):
     time.sleep(0.15)
     assert not [m for m, _ in _lines(sim, cleared, "NAV") if m == PAD_DOWN], \
         _texts(sim, cleared)
-    # a fresh press after release still repeats normally
+    # a fresh press after release registers normally (0.1 s is under the
+    # repeat delay, so this checks only the one press, not repeats)
     mark2 = _mark(sim, seq)
     _hold(sim, "down", 0.1)
     assert [m for m, _ in _lines(sim, mark2, "NAV")] == [PAD_DOWN], \
         _texts(sim, mark2)
     _finish(sim, seq)
+
+
+def test_dpad_held_across_app_launch_does_not_repeat(simulator):
+    """s_rep (lua_bridge_gamepad.c) is a static that survives across app
+    launches inside one simulator process, so a test can tell the reset in
+    lua_bridge_gamepad_init from a zeroed static: hold Down until a REP line
+    appears (the clock is armed), leave with Esc while Down is still held,
+    relaunch with Down still held, and the new app's clock must start fresh —
+    without the reset, the old (now long-expired) deadline fires as soon as
+    the app starts, before any fresh press."""
+    sim = simulator
+    seq = _start(sim)
+    mark = _mark(sim, seq)
+    sim.pad("down")
+    sim.wait_for_log(rf"^NAV:REP {PAD_DOWN} ", timeout=10, since_seq=mark)
+    _finish(sim, seq)
+    # Down is still held (sim.pad was never released) across the relaunch.
+    seq2 = _start(sim)
+    time.sleep(0.3)
+    assert not [m for m, _ in _lines(sim, seq2, "NAV") if m == PAD_DOWN], \
+        _texts(sim, seq2)
+    sim.pad("none")
+    _finish(sim, seq2)
