@@ -1,0 +1,7 @@
+{
+    "id": "com.test.pad_modal_test",
+    "name": "Pad Modal Test",
+    "description": "OS confirm and text-input dialogs on a controller",
+    "version": "1.0",
+    "author": "PicoDeck E2E"
+}

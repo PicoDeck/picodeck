@@ -134,7 +134,9 @@ static bool text_input_run(const char *title, const char *prompt,
         }
 
         char     ch      = kbd_get_char();
-        uint32_t pressed = kbd_get_buttons_pressed();
+        // A controller, as the launcher reads it: A accepts, B cancels.
+        uint32_t pressed = kbd_get_buttons_pressed() |
+                           (kbd_get_pad_nav_pressed() & (BTN_ENTER | BTN_ESC));
 
         if (pressed & BTN_ENTER) {
             confirmed = true;
