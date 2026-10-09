@@ -19,6 +19,11 @@
 // operands go in s0-s3, s4-s7 and s8-s11, the results in s12-s15. The
 // lanes from n up to the next multiple of 4 are computed too and never
 // read: a register has CS_STRIP lanes.
+// The rule: F and its operand expressions must compile to code with no
+// calls. s0-s15 are call-clobbered and GCC keeps no local register variable
+// across a call, so one call corrupts the lanes, on the device only (the
+// host runs the plain loops). Every F is CS_LANE_FN (always inlined, at any
+// optimisation level), and K and L are read once before the loop.
 _Static_assert(CS_STRIP % 4 == 0, "four lanes at a time");
 #if CS_ARMV8_FP
 #define LD4(p, v, R0, R1, R2, R3, LIST)                                                    \
@@ -150,7 +155,7 @@ static float __attribute__((noinline)) eval_scalars(const charshader_t *s, const
   break;
 
 // smooth(e0, e1, x) as cs_smooth computes it, given 1 / (e1 - e0).
-static inline float smooth_scaled(float x, float e0, float inv) { return cs_smooth_k((x - e0) * inv); }
+CS_LANE_FN float smooth_scaled(float x, float e0, float inv) { return cs_smooth_k((x - e0) * inv); }
 
 // The rarer operations and operand forms, out of the main loop's way (its
 // code stays compact in the XIP cache): one loop each, a scalar operand

@@ -80,13 +80,17 @@ struct charshader {
 
 // ── per-element operations: the VM's loops and the folder share these ──────
 // Truth is "not 0" (and, or, not, select); comparisons give 0 or 1.
-static inline float cs_add(float a, float b) { return a + b; }
-static inline float cs_sub(float a, float b) { return a - b; }
-static inline float cs_mul(float a, float b) { return a * b; }
+// CS_LANE_FN marks the functions the VM's LANES_* macros apply
+// (charshader_vm.c): always inlined, because on the device those macros pin
+// a lane's operands and results to s0-s15, which any call clobbers.
+#define CS_LANE_FN static inline __attribute__((always_inline))
+CS_LANE_FN float cs_add(float a, float b) { return a + b; }
+CS_LANE_FN float cs_sub(float a, float b) { return a - b; }
+CS_LANE_FN float cs_mul(float a, float b) { return a * b; }
 static inline float cs_div(float a, float b) { return a / b; }
 static inline float cs_mod(float a, float b) { return a - cs_floor(a / b) * b; }
-static inline float cs_min(float a, float b) { return a < b ? a : b; }
-static inline float cs_max(float a, float b) { return a > b ? a : b; }
+CS_LANE_FN float cs_min(float a, float b) { return a < b ? a : b; }
+CS_LANE_FN float cs_max(float a, float b) { return a > b ? a : b; }
 static inline float cs_lt(float a, float b) { return a < b ? 1.0f : 0.0f; }
 static inline float cs_le(float a, float b) { return a <= b ? 1.0f : 0.0f; }
 static inline float cs_eq(float a, float b) { return a == b ? 1.0f : 0.0f; }
@@ -94,15 +98,15 @@ static inline float cs_ne(float a, float b) { return a != b ? 1.0f : 0.0f; }
 static inline float cs_and(float a, float b) { return a != 0.0f && b != 0.0f ? 1.0f : 0.0f; }
 static inline float cs_or(float a, float b) { return a != 0.0f || b != 0.0f ? 1.0f : 0.0f; }
 static inline float cs_step(float e, float x) { return x >= e ? 1.0f : 0.0f; }
-static inline float cs_mad(float a, float b, float c) {
+CS_LANE_FN float cs_mad(float a, float b, float c) {
   const float t = a * b;  // two roundings, as a separate multiply and add
   return t + c;
 }
-static inline float cs_clamp(float x, float lo, float hi) { return x < lo ? lo : x > hi ? hi : x; }
-static inline float cs_mix(float a, float b, float t) { return a + (b - a) * t; }
+CS_LANE_FN float cs_clamp(float x, float lo, float hi) { return x < lo ? lo : x > hi ? hi : x; }
+CS_LANE_FN float cs_mix(float a, float b, float t) { return a + (b - a) * t; }
 // smooth(e0, e1, x) is cs_smooth_k((x - e0) * (1 / (e1 - e0))): the VM
 // computes the reciprocal once per instruction when e0 and e1 are scalars.
-static inline float cs_smooth_k(float k) {
+CS_LANE_FN float cs_smooth_k(float k) {
   k = k > 0.0f ? (k < 1.0f ? k : 1.0f) : 0.0f;  // NaN is 0
   return k * k * (3.0f - 2.0f * k);
 }
