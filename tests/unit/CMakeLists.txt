@@ -142,7 +142,9 @@ picodeck_unit_test(test_gfx3d SOURCES ${SRC}/os/gfx3d.c INCLUDES ${SRC}/drivers
 target_link_libraries(test_gfx3d PRIVATE m)
 target_compile_options(test_gfx3d PRIVATE -ffp-contract=off -Wdouble-promotion)
 # picocalc.chargrid core (src/os/chargrid*.c) over host malloc.
-picodeck_unit_test(test_chargrid SOURCES ${SRC}/os/chargrid.c
+picodeck_unit_test(test_chargrid SOURCES ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c
+                   ${SRC}/fonts/font_6x8.c
+                   INCLUDES ${SRC}/fonts
                    DEFINES CG_MALLOC=malloc CG_FREE=free)
 target_compile_options(test_chargrid PRIVATE -ffp-contract=off -Wdouble-promotion)
 # Lua float formatting vs glibc (built without PICODECK_LUA_SPRINTF: no luaconf).

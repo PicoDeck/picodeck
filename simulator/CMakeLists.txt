@@ -396,6 +396,7 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/gfx3d.c
     ${PICODECK_ROOT}/src/os/lua_bridge_gfx3d.c
     ${PICODECK_ROOT}/src/os/chargrid.c
+    ${PICODECK_ROOT}/src/os/chargrid_shapes.c
     ${PICODECK_ROOT}/src/os/module_path.c
     ${PICODECK_ROOT}/src/os/lua_bridge_require.c
     ${PICODECK_ROOT}/src/os/lua_corolib.c
@@ -502,7 +503,8 @@ add_executable(picodeck_simulator
 set_source_files_properties(${PICODECK_ROOT}/src/os/gfx3d.c PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 
-set_source_files_properties(${PICODECK_ROOT}/src/os/chargrid.c PROPERTIES
+set_source_files_properties(${PICODECK_ROOT}/src/os/chargrid.c
+    ${PICODECK_ROOT}/src/os/chargrid_shapes.c PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 
 target_include_directories(picodeck_simulator PRIVATE

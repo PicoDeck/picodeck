@@ -59,6 +59,7 @@ chargrid_t *chargrid_create(int cols, int rows, int cell_w, int cell_h) {
   g->bg = g->fg + n;
   memset(g->fg, CG_DEFAULT_FG, n);
   chargrid_default_palette(g->palette);
+  chargrid_set_font(g, NULL);
   g->dirty = true;
   return g;
 }
@@ -121,5 +122,63 @@ void chargrid_fill(chargrid_t *g, int x, int y, int w, int h, int glyph, int fg,
     if (fg >= 0) memset(g->fg + i, fg, (size_t)n);
     if (bg >= 0) memset(g->bg + i, bg, (size_t)n);
   }
+  g->dirty = true;
+}
+
+// Glyph `code` of font f into rows[0..ch-1], centred (cropped when the font
+// is larger than the cell). Codes outside the font are its hollow box, as
+// font_render draws them.
+static void mask_from_font(const pc_font_t *f, int code, int cw, int ch, uint16_t *rows) {
+  for (int r = 0; r < ch; r++) rows[r] = 0;
+  const int fw = f->max_width, fh = f->height;
+  const int ox = (cw - fw) / 2, oy = (ch - fh) / 2;
+  const bool have = code >= f->first && code <= f->last;
+  const uint8_t *bm =
+      have ? f->bitmaps + (size_t)(code - f->first) * (size_t)fh * (size_t)f->stride : NULL;
+  for (int gr = 0; gr < fh; gr++) {
+    const int r = gr + oy;
+    if (r < 0 || r >= ch) continue;
+    for (int gc = 0; gc < fw; gc++) {
+      const int c = gc + ox;
+      if (c < 0 || c >= cw) continue;
+      bool on;
+      if (bm)
+        on = (bm[(size_t)gr * f->stride + (size_t)(gc >> 3)] & (0x80 >> (gc & 7))) != 0;
+      else
+        on = gr < fh - 1 && gc < fw - 1 && (gr == 0 || gr == fh - 2 || gc == 0 || gc == fw - 2);
+      if (on) rows[r] |= (uint16_t)(1u << c);
+    }
+  }
+}
+
+static inline bool is_defined(const chargrid_t *g, int code) {
+  return (g->defined[code >> 3] >> (code & 7)) & 1u;
+}
+
+void chargrid_set_font(chargrid_t *g, const pc_font_t *f) {
+  for (int code = 0; code < 256; code++) {
+    if (is_defined(g, code)) continue;
+    uint16_t *rows = g->masks + (size_t)code * (size_t)g->cell_h;
+    if (code >= CG_DOT1 && code <= CG_SHAPE_LAST)
+      chargrid_shape(code, g->cell_w, g->cell_h, rows);
+    else if (code >= 0x20 && f)
+      mask_from_font(f, code, g->cell_w, g->cell_h, rows);
+    else
+      for (int r = 0; r < g->cell_h; r++) rows[r] = 0;
+  }
+  g->dirty = true;
+}
+
+void chargrid_define_glyph(chargrid_t *g, int code, const uint16_t *rows) {
+  if (code < 1 || code > 255) return;
+  const int cw = g->cell_w;
+  uint16_t *dst = g->masks + (size_t)code * (size_t)g->cell_h;
+  for (int r = 0; r < g->cell_h; r++) {
+    uint16_t m = 0;
+    for (int c = 0; c < cw; c++)
+      if (rows[r] & (1u << (cw - 1 - c))) m |= (uint16_t)(1u << c);
+    dst[r] = m;
+  }
+  g->defined[code >> 3] |= (uint8_t)(1u << (code & 7));
   g->dirty = true;
 }
