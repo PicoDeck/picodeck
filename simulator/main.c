@@ -29,7 +29,9 @@
 #include "launcher.h"
 #include "lua_psram_alloc.h"
 #include "stubs/umm_malloc.h"  // sim_umm_use_real (--real-umm)
-#include "splash_logo.h"
+#include "splash.h"
+#include "splash_render.h"
+#include "drivers/display_raster.h"
 #include "drivers/display.h"
 #include "drivers/audio.h"
 #include "drivers/sound.h"
@@ -265,63 +267,31 @@ static void parse_args(int argc, char** argv) {
     unlink(g_crash_log_path);
 }
 
-// Draw splash screen with status message
-static void draw_splash_screen(const char* status, const char* subtext) {
-    // Clear to black
-    uint16_t* fb = hal_display_get_framebuffer();
-    for (int i = 0; i < 320 * 320; i++) {
-        fb[i] = 0x0000;  // Black in RGB565
-    }
-
-#if LOGO_W > 0 && LOGO_H > 0
-    // Draw logo centered
-    int lx = (320 - LOGO_W) / 2;
-    int ly = (320 - LOGO_H) / 2 - 16;
-
-    // Draw the logo pixel by pixel
-    for (int dy = 0; dy < LOGO_H && ly + dy < 320; dy++) {
-        for (int dx = 0; dx < LOGO_W && lx + dx < 320; dx++) {
-            if (lx + dx >= 0 && ly + dy >= 0) {
-                fb[(ly + dy) * 320 + (lx + dx)] = logo_data[dy * LOGO_W + dx];
-            }
-        }
-    }
-
-    // Draw status text (using simple font approximation)
-    if (status && status[0]) {
-        // Draw status at bottom of screen
-        // For now, we'll skip text drawing since we don't have a simple text renderer here
-        // The visual logo is sufficient for the splash screen
-        (void)status;
-        (void)subtext;
-    }
-#endif
-
-    // Present to screen
-    hal_display_present();
-}
-
-// Show boot splash sequence with artificial delays
+// Show the boot splash with artificial delays (for screencasts): the
+// device's boot animation in real time (src/os/splash_render.c), then the
+// boot's status steps over its still frame.
 static void show_boot_splash(void) {
     printf("[Core0] Showing boot splash screen...\n");
     fflush(stdout);
 
-    // Initial splash - "PicoDeck Simulator"
-    draw_splash_screen("PicoDeck Simulator", "Starting up...");
-    hal_sleep_ms(800);
+    const uint32_t t0 = hal_get_time_ms();
+    for (;;) {
+        const float t = (float)(hal_get_time_ms() - t0) / 1000.0f;
+        display_raster_target_t r;
+        display_get_raster_target(&r);
+        splash_render(r.fb, r.stride, r.swap, t, NULL, NULL);
+        display_flush();
+        if (t >= SPLASH_T_END) break;
+        hal_sleep_ms(16);
+    }
 
-    // Show initialization steps like hardware does
-    draw_splash_screen("Initialising keyboard...", NULL);
-    hal_sleep_ms(600);
-
-    draw_splash_screen("Mounting SD card...", NULL);
-    hal_sleep_ms(800);
-
-    draw_splash_screen("Initialising WiFi...", NULL);
-    hal_sleep_ms(600);
-
-    draw_splash_screen("Loading...", NULL);
-    hal_sleep_ms(500);
+    static const char *const steps[] = {"Initialising keyboard...", "Mounting SD card...",
+                                        "Initialising WiFi...", "Loading..."};
+    static const uint32_t delays_ms[] = {600, 800, 600, 500};
+    for (int i = 0; i < 4; i++) {
+        splash_draw_static(steps[i], NULL);
+        hal_sleep_ms(delays_ms[i]);
+    }
 
     printf("[Core0] Splash sequence complete\n");
     fflush(stdout);

@@ -354,6 +354,9 @@ add_executable(picodeck
     src/os/clock.c
     src/os/tz_picker.c
     src/os/ui.c
+    src/os/splash.c
+    src/os/splash_render.c
+    src/os/splash_logo_cells.c
     src/usb/usb_descriptors.c
     src/usb/usb_msc.c
     src/os/image_decoders.cpp
@@ -474,6 +477,10 @@ set_source_files_properties(src/os/chargrid.c src/os/chargrid_shapes.c src/os/ch
 # The bridge inlines noise.h: no FMA contraction, so noise matches the simulator.
 set_source_files_properties(src/os/lua_bridge_chargrid.c PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
+# The boot splash's frames: the chargrid shader's maths, no FMA contraction
+# (the device and the simulator agree; tests/unit test_splash_m33).
+set_source_files_properties(src/os/splash_render.c PROPERTIES
+    COMPILE_OPTIONS "-O2;-ffp-contract=off;-Wdouble-promotion")
 
 # ── PIO PSRAM Bulk Transfer (improved driver with 16-bit counters) ─────────────
 # Supports up to 8187 bytes per transaction (vs 27 bytes in polpo library).

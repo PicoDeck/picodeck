@@ -59,7 +59,7 @@ make -j4
 # Run with custom SD card path
 ./picodeck_simulator --sd-card /path/to/apps
 
-# Show boot splash screen with delays (for screencasting)
+# Play the boot splash animation, then its status steps (for screencasting)
 ./picodeck_simulator --show-splash
 
 # Enable debug logging
