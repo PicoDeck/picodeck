@@ -554,7 +554,7 @@ static void dev_command_run(void *arg) {
     } else if (strcmp(s_cmd_buf, "splash") == 0) {
         // The boot splash's measurements (src/os/splash.c;
         // tests/e2e/test_splash_hw.py).
-        char line[224];
+        char line[256];
         splash_stats_format(line, sizeof line);
         printf("[DEV] Splash: %s\n", line);
     } else if (strcmp(s_cmd_buf, "exit") == 0) {

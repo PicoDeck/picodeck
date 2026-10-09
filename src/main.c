@@ -2207,6 +2207,12 @@ int main(void) {
   // Initialize the PSRAM allocator BEFORE anything that uses it
   // (SD card file ops use umm_malloc for FIL/FILINFO structs, config_load,
   // WiFi, Lua, OTA update, etc.)
+  //
+  // Its init zeroes the 6 MB heap through the XIP cache, which floods the
+  // QMI for ~0.8 s and starves Core 1's flash fetches: let the boot splash
+  // reach its still frame first (it only waits when the serial host
+  // connected early and cut the USB wait short).
+  splash_wait_still();
   lua_psram_alloc_init();
   {
     void *pool = lua_psram_get_core1_pool();

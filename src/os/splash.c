@@ -54,6 +54,7 @@ static volatile bool s_core1_faulted;  // Core 1's HardFault handler is running
 static struct {
   int state;
   uint32_t first_light_ms, frames, anim_frames, render_sum_us, render_max_us;
+  uint32_t render_max_at_ms;  // uptime at the slowest render's start
   uint32_t ended_ms, handover_ms, waited_ms;
 } s_st;
 
@@ -101,7 +102,10 @@ static void splash_core1(void) {
     if (s_st.frames++ == 0) s_st.first_light_ms = now_ms();
     if (!final) s_st.anim_frames++;
     s_st.render_sum_us += us;
-    if (us > s_st.render_max_us) s_st.render_max_us = us;
+    if (us > s_st.render_max_us) {
+      s_st.render_max_us = us;
+      s_st.render_max_at_ms = (uint32_t)(a / 1000u);
+    }
     drawn_seq = text.seq;
     if (final) {
       if (!drew_final) s_st.ended_ms = now_ms();
@@ -133,6 +137,15 @@ void splash_start(bool animate) {
 }
 
 bool splash_running(void) { return s_running; }
+
+void splash_wait_still(void) {
+  if (!s_running) return;
+  const uint64_t until = s_t0_us + END_US + FINISH_MARGIN_US;
+  while (!s_final && time_us_64() < until) {
+    watchdog_update();
+    busy_wait_us_32(1000);
+  }
+}
 
 // Whether Core 1 has shown a final frame with the latest status.
 static bool latest_shown(void) {
@@ -176,7 +189,7 @@ static void halt(bool wait_for_end) {
   s_st.handover_ms = now_ms();
   s_st.state = !acked ? ST_TIMEOUT : !wait_for_end ? ST_STOPPED
               : shown ? ST_DONE : ST_STALE;
-  char line[224];
+  char line[256];
   splash_stats_format(line, sizeof line);
   printf("[SPLASH] %s\n", line);
 }
@@ -201,11 +214,13 @@ void splash_stats_format(char *buf, size_t n) {
   const uint32_t frames = s_st.frames;
   snprintf(buf, n,
            "state=%s first_light_ms=%lu frames=%lu anim_frames=%lu render_avg_us=%lu "
-           "render_max_us=%lu ended_ms=%lu handover_ms=%lu waited_ms=%lu foreign_flushes=%lu",
+           "render_max_us=%lu render_max_at_ms=%lu ended_ms=%lu handover_ms=%lu waited_ms=%lu "
+           "foreign_flushes=%lu",
            s_state_names[s_st.state], (unsigned long)s_st.first_light_ms,
            (unsigned long)frames, (unsigned long)s_st.anim_frames,
            (unsigned long)(frames ? s_st.render_sum_us / frames : 0),
-           (unsigned long)s_st.render_max_us, (unsigned long)s_st.ended_ms,
+           (unsigned long)s_st.render_max_us, (unsigned long)s_st.render_max_at_ms,
+           (unsigned long)s_st.ended_ms,
            (unsigned long)s_st.handover_ms, (unsigned long)s_st.waited_ms,
            (unsigned long)display_foreign_flushes());
 }
@@ -217,6 +232,7 @@ void splash_start(bool animate) {
   splash_draw_static(NULL, NULL);
 }
 bool splash_running(void) { return false; }
+void splash_wait_still(void) {}
 void splash_set_status(const char *status, const char *subtext) {
   (void)status;
   (void)subtext;

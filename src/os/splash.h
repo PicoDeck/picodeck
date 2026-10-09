@@ -21,6 +21,12 @@ bool splash_running(void);
 // The status and subtext Core 1 draws under the settled logo (copied, cut to
 // 53 characters; NULL clears).
 void splash_set_status(const char *status, const char *subtext);
+// Core 0, before a boot step that floods the QMI bus (the PSRAM heap clear):
+// while the animation still moves, waits until Core 1 has shown its final
+// frame, for at most SPLASH_END_MS + 500 ms after the start. Core 1 renders
+// from flash, which shares the QMI with the PSRAM, and starves meanwhile
+// (one frame took 0.48 s). Returns at once when the splash is not running.
+void splash_wait_still(void);
 // Core 0, at the end of boot: waits until Core 1 has shown the final frame
 // with the latest status, for at most SPLASH_END_MS + 500 ms after the start
 // or 100 ms after this call, whichever is later (normally ~10-25 ms after the
