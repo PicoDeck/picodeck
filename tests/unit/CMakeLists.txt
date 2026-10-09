@@ -431,3 +431,41 @@ else()
     set_tests_properties(test_charshader_m33 PROPERTIES
         ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:abort_on_error=0;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
 endif()
+
+# The boot splash on the Cortex-M33 against the host, bit for bit: the
+# shader cross-check's toolchain checks, flags and comparison script.
+set(SPLASH_XCHECK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/splash_xcheck.c ${SRC}/os/splash_render.c
+    ${SRC}/os/splash_logo_cells.c ${SRC}/fonts/font.c ${SRC}/fonts/font_6x8.c)
+add_executable(splash_xcheck ${SPLASH_XCHECK_SOURCES})
+target_include_directories(splash_xcheck PRIVATE ${SRC}/os ${SRC}/fonts)
+target_compile_options(splash_xcheck PRIVATE -ffp-contract=off -Wdouble-promotion
+                       ${PICODECK_UNIT_SAN_FLAGS})
+target_link_options(splash_xcheck PRIVATE ${PICODECK_UNIT_SAN_FLAGS})
+target_link_libraries(splash_xcheck PRIVATE m)
+if(XCHECK_SKIP)
+    add_test(NAME test_splash_m33 COMMAND ${CMAKE_COMMAND} -E echo "SKIPPED: ${XCHECK_SKIP}")
+    set_tests_properties(test_splash_m33 PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+else()
+    set(SPLASH_XCHECK_ELFS "")
+    foreach(opt O2 Os)
+        set(elf ${CMAKE_CURRENT_BINARY_DIR}/splash_xcheck_m33_${opt}.elf)
+        add_custom_command(OUTPUT ${elf}
+            COMMAND ${PICODECK_ARM_GCC} ${M33_FLAGS} -${opt} -std=gnu11 -ffp-contract=off
+                    -Wall -Wextra -Wdouble-promotion -I${SRC}/os -I${SRC}/fonts
+                    --specs=rdimon.specs ${SPLASH_XCHECK_SOURCES} -lm -o ${elf}
+            DEPENDS ${SPLASH_XCHECK_SOURCES} ${SRC}/os/splash_render.h
+                    ${SRC}/os/splash_logo_cells.h ${SRC}/os/charshader_math.h
+                    ${SRC}/os/noise.h ${SRC}/fonts/font.h
+            COMMENT "Building the splash cross-check for the Cortex-M33 (-${opt})"
+            VERBATIM)
+        list(APPEND SPLASH_XCHECK_ELFS ${elf})
+    endforeach()
+    add_custom_target(splash_xcheck_m33 ALL DEPENDS ${SPLASH_XCHECK_ELFS})
+    add_test(NAME test_splash_m33
+             COMMAND ${CMAKE_COMMAND} -DHOST=$<TARGET_FILE:splash_xcheck>
+                     -DQEMU=${PICODECK_QEMU_ARM}
+                     -DM33=${CMAKE_CURRENT_BINARY_DIR}/splash_xcheck_m33_
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/charshader_xcheck.cmake)
+    set_tests_properties(test_splash_m33 PROPERTIES
+        ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:abort_on_error=0;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
+endif()
