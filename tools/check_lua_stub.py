@@ -102,6 +102,8 @@ OWNERS = {
     ("lua_bridge_sound.c", "sound_player_methods"): ("PicoDeckSamplePlayer", True),
     ("lua_bridge_sound.c", "sound_fileplayer_methods"): ("PicoDeckFilePlayer", True),
     ("lua_bridge_sound.c", "sound_mp3player_methods"): ("PicoDeckMp3Player", True),
+    ("lua_bridge_chargrid.c", "l_chargrid_lib"): ("picocalc.chargrid", False),
+    ("lua_bridge_chargrid.c", "l_noise_lib"): ("picocalc.noise", False),
 }
 
 # "<owner>.<name>" -> reason. Skipped entirely (args and returns).
