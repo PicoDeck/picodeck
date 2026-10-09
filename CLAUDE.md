@@ -74,7 +74,7 @@ main()
   display_init()                // PIO0 SPI, double-buffered SRAM (...under its panel-reset waits)
   lua_psram_alloc_clear_wait()  // the clear saturates the QMI: done before Core 1 runs from flash
   splash_start()                // Core 1 plays the boot animation (src/os/splash.c)
-  USB serial wait (≤ 3 s)
+  USB serial wait               // ≤ 3 s for a host to open the port; stops at 1 s uptime if none configured the device
   Wire g_api struct (function pointers)
   pio_psram_init()              // Mainboard 8MB PIO PSRAM (non-fatal if absent)
   sound_init() → audio_init()

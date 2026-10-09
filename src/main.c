@@ -67,6 +67,11 @@ void runtime_init_per_core_install_stack_guard(void *stack_bottom) {
 // bound PSP overflow checks and to name the stack in the crash record.
 #include "os/app_stack.h"
 #include "os/splash.h"
+#include "tusb.h"
+
+// Uptime by which a USB host has configured the device if one is attached
+// (main(), the boot's wait for the serial console).
+#define USB_HOST_WAIT_MS 1000u
 
 // Native app image placement (defined in native_loader.c) — lets the
 // hardfault handler report crash PC/LR as ELF-relative offsets.
@@ -2109,11 +2114,16 @@ int main(void) {
   // fetches, and Core 1 runs from flash.
   splash_start(boot_attempt == 0 && !s_had_crash);
 
-  // Wait up to 3 s for a USB serial host to connect so early printf output
-  // isn't lost. Skips automatically if already connected.
-  for (int i = 0; i < 30 && !stdio_usb_connected(); i++) {
+  // Wait up to 3 s for a USB serial host to open the port so early printf
+  // output isn't lost. Skips automatically if already connected. A host
+  // configures the device ~0.4 s after reset; on battery or a charger
+  // nothing does, so stop once the uptime reaches USB_HOST_WAIT_MS without
+  // it: the whole boot waits here.
+  for (int i = 0; i < 300 && !stdio_usb_connected(); i++) {
+    if (!tud_mounted() && to_ms_since_boot(get_absolute_time()) >= USB_HOST_WAIT_MS)
+      break;
     watchdog_update();
-    sleep_ms(100);
+    sleep_ms(10);
   }
   watchdog_update();
 
