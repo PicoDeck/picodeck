@@ -69,7 +69,7 @@ Measured on the device (`-O2`, one call), a full-window draw takes:
 |---|---|
 | 53×40 at 6×8 | ~3.1 ms |
 | 40×26 at 8×12 | ~2.5 ms |
-| 64×40 at 5×8 | ~3.7 ms (P2 estimate; Task 9 replaces it with the measured median) |
+| 64×40 at 5×8 | ~3.4 ms |
 | 80×80 at 4×4 | ~5 ms |
 
 Cells of every width take a two-pixels-per-store fast path at any x (odd widths store their last column on its own; pair stores may be unaligned: 53×40 at 6×8 drawn at x = 1 takes ~3.3 ms against ~3.1 ms at x = 0). Only cells cut by the clip rect draw pixel by pixel.
@@ -308,6 +308,16 @@ Returns `{ cells, us, instructions, registers }`: the last run's cells and time,
 ### Performance
 
 A run costs roughly a fixed time per cell per instruction, plus each built-in's own time (`fbm` costs as much as its octaves of `noise`). `shader:getStats()` shows both. Keep work that is the same for a whole column or row in Lua (an `array`), and work that is the same for every cell in a `uniform`.
+
+Measured on the device (one `run`, whole grid):
+
+| Program | Grid | Time |
+|---|---|---|
+| Aurora-class sky: 3 `fbm(…, 3)`, 2 `noise`, 3 `exp`, `sin`, 2 `smooth`, `r,g,b` (61 instructions) | 80×40 | ~75 ms |
+| The same | 80×80 | ~170 ms |
+| Torch: `dist`, `clamp`, `tone` (8 instructions) | 53×40 | ~3.2 ms |
+
+Built-ins, per call: `sin` ~410 ns, `exp` ~350 ns, `log` ~480 ns, `sqrt` ~150 ns, `pow` ~990 ns, `atan2` ~460 ns, `noise` ~1,200 ns, `fbm(…, 3)` ~3,400 ns. At 15 fps (66 ms per frame), about 2,300 cells of an aurora-class program fit alongside drawing and Lua.
 
 ### Example: a torch-lit map window
 
