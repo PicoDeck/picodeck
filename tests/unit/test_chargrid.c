@@ -4,6 +4,7 @@
 #include "font_6x8.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -488,6 +489,27 @@ static void test_blit_scroll(void) {
   chargrid_free(d);
 }
 
+static void test_spleen_font_file(void) {
+  FILE *f = fopen(PICODECK_ROOT "/system/lib/fonts/spleen-5x8.pfn", "rb");
+  CHECK(f != NULL);
+  if (!f) return;
+  static uint8_t buf[4096];
+  const size_t n = fread(buf, 1, sizeof buf, f);
+  fclose(f);
+  pc_font_t font;
+  CHECK(font_from_blob(&font, buf, n));
+  CHECK_EQ_INT(font.max_width, 5);
+  CHECK_EQ_INT(font.height, 8);
+  CHECK_EQ_INT(font.first, 0x20);
+  CHECK_EQ_INT(font.last, 0x7E);
+  chargrid_t *g = chargrid_create(64, 40, font.max_width, font.height);
+  chargrid_set_font(g, &font);
+  int lit = 0;
+  for (int r = 0; r < 8; r++) lit += popcount16(g->masks['A' * 8 + r]);
+  CHECK(lit > 0);
+  chargrid_free(g);
+}
+
 int main(void) {
   test_sizes();
   test_create_defaults();
@@ -503,5 +525,6 @@ int main(void) {
   test_box_stamp();
   test_ramps();
   test_blit_scroll();
+  test_spleen_font_file();
   return check_report("test_chargrid");
 }

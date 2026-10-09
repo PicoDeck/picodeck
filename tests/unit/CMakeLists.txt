@@ -144,7 +144,7 @@ target_compile_options(test_gfx3d PRIVATE -ffp-contract=off -Wdouble-promotion)
 # picocalc.chargrid core (src/os/chargrid*.c) over host malloc.
 picodeck_unit_test(test_chargrid SOURCES ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c
                    ${SRC}/os/chargrid_text.c ${SRC}/os/text_wrap.c
-                   ${SRC}/fonts/font_6x8.c
+                   ${SRC}/fonts/font_6x8.c ${SRC}/fonts/font.c
                    INCLUDES ${SRC}/fonts
                    DEFINES CG_MALLOC=malloc CG_FREE=free)
 target_compile_options(test_chargrid PRIVATE -ffp-contract=off -Wdouble-promotion)

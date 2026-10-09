@@ -49,7 +49,15 @@ A grid's cell size comes from its font (`max width × height`), or is given expl
 | `picocalc.display.FONT_6X8` (0) | 6×8 | 53×40 |
 | `picocalc.display.FONT_8X12` (1) | 8×12 | 40×26 |
 | `picocalc.display.FONT_SCIENTIFICA` (2) | 6×12 | 53×26 |
+| `/system/lib/fonts/spleen-5x8.pfn` via `picocalc.display.loadFont` | 5×8 | 64×40 |
 | No font, 4×4 cells | 4×4 | 80×80 (shapes and defined glyphs only) |
+
+Spleen 5×8 (BSD 2-Clause, Frederic Cambus; source and licence in the repo's `sdk/fonts/spleen/`) gives 64-column grids. Release packaging does not install `/system/lib` (see [API System and Config](API-System-and-Config.md)): copy `system/lib/fonts/spleen-5x8.pfn` to the SD card, or ship a copy in your app directory and load it from `APP_DIR`.
+
+```lua
+local id = picocalc.display.loadFont("/system/lib/fonts/spleen-5x8.pfn")
+local g = picocalc.chargrid.new(64, 40, id)
+```
 
 ### Drawing and performance
 
