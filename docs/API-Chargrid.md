@@ -247,7 +247,7 @@ end
   - unary `-` and `not`;
   - `^`, right-associative, so `-x^2` is `-(x^2)`.
 
-  Comparisons, `and`, `or` and `not` give 1 or 0, and a value is true when it is not 0. `%` is Lua's floored modulo.
+  Comparisons, `and`, `or` and `not` give 1 or 0, and a value is true when it is not 0. `a % b` is `a - floor(a / b) * b` in single precision (GLSL's `mod`): like Lua's `%` for ordinary values (the result takes the sign of `b`), but not at the edges: `x % inf` is NaN (Lua: `x` for `x ≥ 0`), and `6 % 0.1` is 0, as `6 / 0.1` rounds to 60 (Lua: about 0.1).
 - Expressions nest at most 16 deep.
 
 **Inputs:**
@@ -272,10 +272,12 @@ end
 
 NaN, infinities and out-of-range values never reach the grid: an index output that is NaN gives 0, and the ramps treat NaN as 0.
 
+These ten names (`keep`, `glyph`, `level`, `fg`, `r`, `g`, `b`, `tone`, `bg`, `bgtone`) are outputs wherever they are assigned, so do not use one as a temporary: `r = dist(x, y, px, py)` makes `r` an output, and the run then sets fg from the nearest palette colour. Give temporaries other names (`d = dist(...)`).
+
 **Built-ins:**
 - `sin cos abs floor ceil fract sqrt exp log pow min max`;
 - `clamp(x, lo, hi)`, `mix(a, b, t)`, `smooth(e0, e1, x)` (smoothstep), `step(edge, x)`, `select(c, a, b)`, `dist(x0, y0, x1, y1)`, `atan2(y, x)`;
-- `hash(x, y [, seed])`, `noise(x, y [, seed])` and `fbm(x, y, octaves [, seed])`, with exactly the results of `picocalc.noise`. `octaves` must be a constant 1-8.
+- `hash(x, y [, seed])`, `noise(x, y [, seed])` and `fbm(x, y, octaves [, seed])`: for the arguments `picocalc.noise` accepts, exactly its results. Where it raises, the shader computes instead: NaN and infinite coordinates give a value in [0, 1), and a seed is floored (a seed beyond the 32-bit range saturates, where Lua wraps). `octaves` must be a constant 1-8.
 
 The maths functions are fast polynomial approximations: sin and cos within 4e-6 for |x| ≤ 10, exp within 1e-6 relative. They give the same results in the simulator and on the device.
 
@@ -344,6 +346,8 @@ torch:run(view, 0, 0, 53, 33)
 
 Deterministic 2-D noise for scenes and procedural maps: the same inputs give the same results in the simulator and on the device. The hash is the one [ascii.rest](https://ascii.rest) pieces use, so with seed 0 a ported piece looks the same; a seed gives independent noise, and the same seed always gives the same map. Every result is in [0, 1). Coordinates are computed in single precision (about 7 significant digits).
 
+Errors: coordinates must be finite numbers (NaN or an infinity raises), a seed an integer (`2.5` raises; integer-valued floats such as `3.0` are fine), and `octaves` an integer 1-8.
+
 #### `picocalc.noise.hash(x, y [, seed])`
 The lattice hash of the integer point (`floor(x)`, `floor(y)`): `h = x·374761393 + y·668265263 + seed·1442695041` (32-bit wrapping), `h = (h ⊕ (h >> 13)) · 1274126177`, `h = h ⊕ (h >> 16)`, result `(h >> 8) / 2²⁴`. `seed` is an integer (default 0, wrapped to 32 bits).
 
@@ -363,4 +367,4 @@ for y = 0, 39 do
 end
 ```
 
-The chargrid shader has the same three as built-ins (`hash`, `noise`, `fbm`), with identical results.
+The chargrid shader has the same three as built-ins (`hash`, `noise`, `fbm`), with identical results for the arguments these functions accept (the shader does not raise: see its built-ins).

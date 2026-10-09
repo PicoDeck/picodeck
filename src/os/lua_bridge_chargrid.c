@@ -1,9 +1,11 @@
-// picocalc.chargrid: character-cell grids over src/os/chargrid.h, and picocalc.noise (noise.h). Grids are drawn by
-// one C call, and shaders that compute cells in C (charshader.h) (specs/2026-10-09-chargrid-design.md). Cell positions, pixel
-// positions and sizes are quantities (lb_checkint: floats round); glyph
-// codes, palette indices, colours, styles and font ids are exact integers.
-// A grid owns one umm block; nothing in it points at another object (fonts
-// are copied into the glyph cache, blits copy at once).
+// picocalc.chargrid: character-cell grids over src/os/chargrid.h, drawn by
+// one C call, and shaders that compute cells in C (charshader.h); and
+// picocalc.noise (noise.h). The design: specs/2026-10-09-chargrid-design.md.
+// Cell positions, pixel positions and sizes are quantities (lb_checkint:
+// floats round); glyph codes, palette indices, colours, styles and font ids
+// are exact integers. A grid owns one umm block; nothing in it points at
+// another object (fonts are copied into the glyph cache, blits copy at
+// once).
 #include "lua_bridge_internal.h"
 
 #include "../fonts/font_registry.h"
