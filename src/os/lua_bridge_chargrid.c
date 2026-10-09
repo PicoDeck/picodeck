@@ -132,6 +132,7 @@ static size_t seq_len(lua_State *L, const plane_arg_t *p, int n, size_t dflt) {
 // (row-major sequences of w*h entries), clipped to the grid.
 static void write_rect(lua_State *L, chargrid_t *g, plane_arg_t *p, int x, int y, int w, int h) {
   if (w <= 0 || h <= 0) return;
+  g->dirty = true;  // before the loop: plane_at can raise mid-write with cells already changed
   const int64_t r_lo = y < 0 ? -(int64_t)y : 0;
   int64_t r_hi = (int64_t)g->rows - y;
   if (r_hi > h) r_hi = h;
@@ -156,8 +157,7 @@ static void write_rect(lua_State *L, chargrid_t *g, plane_arg_t *p, int x, int y
       for (int k = 0; k < vis; k++) dst[k] = plane_at(L, a, src + (size_t)k);
     }
   }
-  g->dirty = true;
-}
+  }
 
 static const pc_font_t *check_font(lua_State *L, int idx) {
   const lua_Integer id = luaL_checkinteger(L, idx);

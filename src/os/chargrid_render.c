@@ -25,7 +25,7 @@ static inline int64_t floordiv(int64_t a, int64_t b) {  // b > 0
 #define PAIR(p) (bb ^ (xr & k_pairmask[(bits >> (2 * (p))) & 3u]))
 
 // Cells c0..c1 of the row whose first plane index is `base`, all wholly
-// inside the clip, starting at the 4-byte-aligned pixel dst.
+// inside the clip, starting at pixel dst (pair stores are 2-byte aligned).
 #define DEFINE_FAST_ROW(NAME, W, STORES)                                          \
   static void NAME(const chargrid_t *g, size_t base, int c0, int c1, uint16_t *dst, \
                    int stride, bool swap) {                                       \
@@ -67,7 +67,7 @@ static void row_even(const chargrid_t *g, size_t base, int c0, int c1, uint16_t 
 
 typedef void (*fast_row_fn)(const chargrid_t *, size_t, int, int, uint16_t *, int, bool);
 
-// One cell pixel by pixel, clipped: edge cells, odd widths, odd x.
+// One cell pixel by pixel, clipped: edge cells and odd widths (even widths take the pair path at any x).
 static void cell_slow(const chargrid_t *g, size_t i, const chargrid_target_t *t, int64_t x,
                       int64_t y) {
   const int cw = g->cell_w, ch = g->cell_h;

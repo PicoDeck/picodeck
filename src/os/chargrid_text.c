@@ -139,6 +139,8 @@ int chargrid_print_wrapped(chargrid_t *g, int x, int y, int w, int max_rows, con
       if (p < len && s[p] == '\n') p++;
     } else {
       p += ends[take - 1];
+      while (p < len && s[p] == ' ') p++;  // a wrapped row never starts with spaces
+      if (p < len && s[p] == '\n') p++;    // the row already broke here
     }
   }
   return rows;

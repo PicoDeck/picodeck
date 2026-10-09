@@ -1,4 +1,4 @@
-"""chargrid on the device: full-window draw cost at five cell sizes, and the
+"""chargrid on the device: full-window draw cost at six configs, and the
 golden scene rendered on the device matches the simulator's (an integer-only
 renderer; only the byte order differs, so a tight tolerance)."""
 import io
@@ -33,7 +33,7 @@ def test_chargrid_draw_cost(target):
     rows = {r["name"]: r for r in json.loads(target.read_file(f"/data/{BENCH_ID}/bench.json"))}
     for r in rows.values():
         print(f"chargrid {r['name']:>11}: median {r['us_median']:5d} us, "
-              f"max {r['us_max']:5d} us, {r['cells']} cells")
+              f"max {r['us_max']:5d} us, {r['cells']} cells, xip {r['xip']}%")
     met = rows["80x80@4x4"]["us_median"] <= TARGET_US_80X80
     print(f"80x80@4x4 P1 target {TARGET_US_80X80} us: {'met' if met else 'MISSED'}")
     for name, limit in MAX_US.items():

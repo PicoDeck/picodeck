@@ -369,6 +369,17 @@ static void test_print_wrap(void) {
   CHECK_EQ_INT(g->glyph[10 + 2], CG_DOT1);
   CHECK_EQ_INT(chargrid_print_wrapped(g, 0, 0, 0, 0, "x", 1, CG_KEEP, CG_KEEP), 0);
   CHECK_EQ_INT(chargrid_print_wrapped(g, 0, 0, 5, 0, "", 0, CG_KEEP, CG_KEEP), 0);
+  // a word ending exactly at the row width does not leave a blank or space-led row
+  chargrid_fill(g, 0, 0, 10, 6, CG_EMPTY, CG_KEEP, CG_KEEP);
+  CHECK_EQ_INT(chargrid_print_wrapped(g, 0, 0, 5, 0, "hello world", 11, CG_KEEP, CG_KEEP), 2);
+  row_str(g, 0, s); CHECK_STR(s, "hello_____");
+  row_str(g, 1, s); CHECK_STR(s, "world_____");
+  CHECK_EQ_INT(chargrid_print_wrapped(g, 0, 0, 4, 0, "aaaa bbbb cccc", 14, CG_KEEP, CG_KEEP), 3);
+  CHECK_EQ_INT(chargrid_print_wrapped(g, 0, 0, 5, 0, "hello ", 6, CG_KEEP, CG_KEEP), 1);
+  CHECK_EQ_INT(chargrid_print_wrapped(g, 0, 0, 4, 0, "aaaa \nbbb", 9, CG_KEEP, CG_KEEP), 2);
+  chargrid_fill(g, 0, 0, 10, 6, CG_EMPTY, CG_KEEP, CG_KEEP);
+  CHECK_EQ_INT(chargrid_print_wrapped(g, 0, 0, 10, 0, "  indented", 10, CG_KEEP, CG_KEEP), 1);
+  row_str(g, 0, s); CHECK_STR(s, "  indented");
   chargrid_free(g);
 }
 
