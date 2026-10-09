@@ -124,25 +124,51 @@ static inline float noise_frac(float f) {
   return f >= 1.0f && f < 2.0f ? NOISE_ONE_BELOW : 0.0f;
 }
 
-// Value noise with the seed term premultiplied: the four corners share the
-// lattice sum, and only the finaliser runs per corner. Always inlined, so
-// the shader VM's strip loops keep the constants in registers.
-static inline __attribute__((always_inline)) float noise_value_at(float x, float y, uint32_t seed_term) {
-  float flx, fly;
-  const int32_t xi = noise_floor2(x, &flx), yi = noise_floor2(y, &fly);
-  float fx = x - flx, fy = y - fly;
-  // One integer test for the common case, both in [+0, 1); -0.0f takes the
-  // slow path, which keeps it.
-  if (__builtin_expect(noise_bits(fx) >= 0x3F800000u || noise_bits(fy) >= 0x3F800000u, 0)) {
-    fx = noise_frac(fx);
-    fy = noise_frac(fy);
-  }
-  const float u = fx * fx * (3.0f - 2.0f * fx), v = fy * fy * (3.0f - 2.0f * fy);
+// Value noise in three pieces, which noise_value_at puts together and the
+// shader VM's strip loops reuse while a lattice cell or a coordinate repeats
+// (the same functions, so the same results). One coordinate: its lattice
+// index, and *w its smoothstep weight.
+static inline __attribute__((always_inline)) int32_t noise_axis(float x, float *w) {
+  float fl;
+  const int32_t i = noise_floor2(x, &fl);
+  float f = x - fl;
+  // One integer test for the common case, [+0, 1); -0.0f takes the slow
+  // path, which keeps it.
+  if (__builtin_expect(noise_bits(f) >= 0x3F800000u, 0)) f = noise_frac(f);
+  *w = f * f * (3.0f - 2.0f * f);
+  return i;
+}
+
+// A lattice cell's corner hashes a (xi, yi), b (xi + 1, yi), c (xi, yi + 1)
+// and d (xi + 1, yi + 1), as the blend uses them. The seed term is
+// premultiplied: the corners share the lattice sum, and only the finaliser
+// runs per corner.
+typedef struct {
+  float a, ba, ca, abcd;  // a, b - a, c - a, a - b - c + d
+} noise_corners_t;
+
+static inline __attribute__((always_inline)) noise_corners_t noise_corners(int32_t xi, int32_t yi,
+                                                                           uint32_t seed_term) {
   const uint32_t h = (uint32_t)xi * NOISE_K_X + (uint32_t)yi * NOISE_K_Y + seed_term;
   const float a = noise_finish(h), b = noise_finish(h + NOISE_K_X);
   const float c = noise_finish(h + NOISE_K_Y), d = noise_finish(h + NOISE_K_X + NOISE_K_Y);
-  const float r = a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
-  return noise_unit(r);
+  const noise_corners_t k = {a, b - a, c - a, a - b - c + d};
+  return k;
+}
+
+// a + (b - a) u + (c - a) v + (a - b - c + d) u v, clamped to [0, 1).
+static inline __attribute__((always_inline)) float noise_blend(noise_corners_t k, float u,
+                                                               float v) {
+  return noise_unit(k.a + k.ba * u + k.ca * v + k.abcd * u * v);
+}
+
+// Value noise with the seed term premultiplied. Always inlined, so the
+// shader VM's loops keep the constants in registers.
+static inline __attribute__((always_inline)) float noise_value_at(float x, float y,
+                                                                  uint32_t seed_term) {
+  float u, v;
+  const int32_t xi = noise_axis(x, &u), yi = noise_axis(y, &v);
+  return noise_blend(noise_corners(xi, yi, seed_term), u, v);
 }
 
 static inline float noise_value(float x, float y, int32_t seed) {

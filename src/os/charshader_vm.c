@@ -95,9 +95,40 @@ static void __attribute__((noinline)) noise_seeded(const float *a, const float *
     for (int j = 0; j < n; j++) d[j] = cs_fbm3(a[j], b[j], c[j], octaves);
 }
 
-// noise(a, b, seed) and fbm(a, b, octaves, seed) over the strip: the same
-// noise.h functions as cs_noise3 and cs_fbm3, with a scalar seed's term,
-// the octave count and the fbm divisor worked out once.
+// Value noise at (a[j] * f, b[j] * f) for the strip: d[j] = value, or
+// with acc d[j] += amp * value. Neighbouring cells usually share a lattice
+// cell, and often y: the corners and y's weight are reused while they
+// repeat (noise_value_at's own pieces, so the same results). The corners
+// start as those of cell (0, 0); py starts as NaN, which equals nothing.
+static inline __attribute__((always_inline)) void noise_run(const float *a, const float *b,
+                                                            float f, uint32_t st, float *d, int n,
+                                                            bool acc, float amp) {
+  noise_corners_t k = noise_corners(0, 0, st);
+  int32_t cxi = 0, cyi = 0, yi = 0;
+  float py = CS_NAN, v = 0.0f;
+  for (int j = 0; j < n; j++) {
+    float u;
+    const int32_t xi = noise_axis(a[j] * f, &u);
+    const float y = b[j] * f;
+    if (__builtin_expect(y != py, 0)) {
+      yi = noise_axis(y, &v);
+      py = y;
+    }
+    if (__builtin_expect(xi != cxi || yi != cyi, 0)) {
+      k = noise_corners(xi, yi, st);
+      cxi = xi;
+      cyi = yi;
+    }
+    const float r = noise_blend(k, u, v);
+    d[j] = acc ? d[j] + amp * r : r;
+  }
+}
+
+// noise(a, b, seed) and fbm(a, b, octaves, seed) over the strip, with a
+// scalar seed's term, the octave count and fbm's divisor worked out once:
+// noise_value_at and noise_fbm_at's arithmetic, fbm an octave at a time.
+// fbm sums in scratch row 3 (the destination may be a or b; strip_of uses
+// rows 0-2): 0.0f plus each octave's amp * value in turn, as noise_fbm_at.
 static void noise_strip(charshader_t *s, const cs_ins_t *in, float *d, int n) {
   const float *a = strip_of(s, in, 0, n), *b = strip_of(s, in, 1, n);
   if (!(in->scal & 4u)) {
@@ -106,12 +137,19 @@ static void noise_strip(charshader_t *s, const cs_ins_t *in, float *d, int n) {
   }
   const uint32_t st = noise_seed_term(noise_lattice(SC(2)));
   if (in->op == CS_OP_NOISE) {
-    for (int j = 0; j < n; j++) d[j] = noise_value_at(a[j], b[j], st);
-  } else {
-    const int octaves = noise_fbm_octaves(in->aux);
-    const float norm = noise_fbm_norm(octaves);
-    for (int j = 0; j < n; j++) d[j] = noise_fbm_at(a[j], b[j], octaves, st, norm);
+    noise_run(a, b, 1.0f, st, d, n, false, 0.0f);
+    return;
   }
+  const int octaves = noise_fbm_octaves(in->aux);
+  float *sum = s->scratch + 3 * CS_STRIP, amp = 0.5f, f = 1.0f;
+  for (int j = 0; j < n; j++) sum[j] = 0.0f;
+  for (int i = 0; i < octaves; i++) {
+    noise_run(a, b, f, st, sum, n, true, amp);
+    amp *= 0.5f;
+    f *= 2.0f;
+  }
+  const float norm = noise_fbm_norm(octaves);
+  for (int j = 0; j < n; j++) d[j] = noise_below1(sum[j] / norm);
 }
 
 // A layer field over the strip: 0 where the layer is missing or ends.
