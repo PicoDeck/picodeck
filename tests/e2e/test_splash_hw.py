@@ -15,6 +15,9 @@ END_MS = 2800             # SPLASH_END_MS
 # Boot to the launcher was ~4.9 s before the splash moved to Core 1 (host
 # timestamps on a dev `reboot` with a computer attached, 2026-10-10).
 HANDOVER_MS = 5200
+# The PSRAM heap clear overlapping the animation stalled one render 482 ms
+# (~15 ms after splash_wait_still).
+MAX_RENDER_US = 50_000
 
 
 def splash_stats(target) -> dict:
@@ -47,6 +50,7 @@ def test_boot_splash_on_core1(target):
     assert s["ended_ms"] <= s["handover_ms"] <= HANDOVER_MS, s
     assert s["waited_ms"] <= END_MS + 500, s
     assert s["foreign_flushes"] == 0, s
+    assert s["render_max_us"] <= MAX_RENDER_US, s
     # Core 1 runs core1_entry again: its 1 ms service tick advances...
     a = audio_ticks(target)
     time.sleep(1.0)

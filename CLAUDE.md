@@ -78,6 +78,7 @@ main()
   sound_init() → audio_init()
   kbd_init()
   sdcard_init()
+  splash_wait_still()           // the heap clear floods the QMI: wait for the splash's still frame
   lua_psram_alloc_init()        // umm_malloc heap on QMI PSRAM
   config_load()                 // /system/config.json
   boot_crypto_init()            // on the OS stack: Core 0 CTR_DRBG seed + CA bundle parse
@@ -92,7 +93,7 @@ main()
 ### Dual-Core Model
 - **Core 0**: runs the launcher, Lua VM and native apps. Owns the display, keyboard and SD card.
 - **Core 1**: runs the network stack (Mongoose/CYW43) and audio decode (MP3, fileplayer, MOD) on a 1 ms tick. Core 0 talks to it through an IPC ring (`wifi_req_push()`). **Core 0 must never call `mg_*` functions directly.** Core 1 only try-locks shared player/SD state and skips the tick when busy.
-- **During boot** Core 1 first plays the boot splash (`src/os/splash.c`) and owns the display; Core 0 must not draw while `splash_running()` (`ui_draw_splash` hands it the status; error screens call `splash_stop()` first; `display_flush` counts and logs a flush from the wrong core). `splash_finish()` resets Core 1 before `core1_entry` launches.
+- **During boot** Core 1 first plays the boot splash (`src/os/splash.c`) and owns the display; Core 0 must not draw while `splash_running()` (`ui_draw_splash` hands it the status; error screens call `splash_stop()` first; `display_flush` counts and logs a flush from the wrong core), and must not flood the QMI (large PSRAM writes, flash writes) while the animation moves, as Core 1 renders from flash and starves. `splash_finish()` resets Core 1 before `core1_entry` launches.
 
 ### Central API (`src/os/os.h`)
 `PicoCalcAPI g_api` is a function pointer table wired in `main.c`. Sub-tables, native name → Lua name:
