@@ -185,8 +185,7 @@ void chargrid_define_glyph(chargrid_t *g, int code, const uint16_t *rows) {
   g->dirty = true;
 }
 
-// The 4x4 Bayer matrix as offsets in [-0.47, 0.47] (ascii.rest's dither).
-static const float k_bayer_off[16] = {
+const float chargrid_bayer_off[16] = {
     0 / 16.0f - 0.47f,  8 / 16.0f - 0.47f,  2 / 16.0f - 0.47f,  10 / 16.0f - 0.47f,
     12 / 16.0f - 0.47f, 4 / 16.0f - 0.47f,  14 / 16.0f - 0.47f, 6 / 16.0f - 0.47f,
     3 / 16.0f - 0.47f,  11 / 16.0f - 0.47f, 1 / 16.0f - 0.47f,  9 / 16.0f - 0.47f,
@@ -211,14 +210,9 @@ void chargrid_set_color_ramp(chargrid_t *g, const uint8_t *indices, int n, bool 
 
 int chargrid_ramp_step(float v, int n, bool dither, int x, int y) {
   if (n <= 1) return 0;
-  if (!(v >= 0.0f)) v = 0.0f;  // NaN too
-  if (v > 1.0f) v = 1.0f;
-  float s = v * (float)(n - 1) + 0.5f;
-  if (dither) s += k_bayer_off[((unsigned)y & 3u) * 4u + ((unsigned)x & 3u)];
-  int step = (int)s;  // s >= 0.03, so truncation is floor
-  if (step < 0) step = 0;
-  if (step > n - 1) step = n - 1;
-  return step;
+  return chargrid_ramp_index(
+      v, (float)(n - 1), n - 1,
+      dither ? chargrid_bayer_off[((unsigned)y & 3u) * 4u + ((unsigned)x & 3u)] : 0.0f);
 }
 
 void chargrid_shade(chargrid_t *g, int x, int y, float level, bool has_level, float tone,

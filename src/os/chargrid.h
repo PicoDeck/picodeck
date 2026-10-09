@@ -107,6 +107,22 @@ void chargrid_set_color_ramp(chargrid_t *g, const uint8_t *indices, int n, bool 
 // v clamped to 0..1 (NaN is 0), plus the 4x4 Bayer offset at (x, y) when
 // dither; always 0..n-1.
 int chargrid_ramp_step(float v, int n, bool dither, int x, int y);
+// The 4x4 Bayer matrix as offsets in [-0.47, 0.47] (ascii.rest's dither):
+// cell (x, y) dithers by entry (y & 3) * 4 + (x & 3).
+extern const float chargrid_bayer_off[16];
+// chargrid_ramp_step for n = last + 1 >= 2 (top is (float)last), given the
+// cell's dither offset (0.0f when not dithering: adding it changes
+// nothing). Inline for the shader's loops.
+static inline int chargrid_ramp_index(float v, float top, int last, float off) {
+  if (!(v >= 0.0f)) v = 0.0f;  // NaN too
+  if (v > 1.0f) v = 1.0f;
+  float s = v * top + 0.5f;
+  s += off;
+  int step = (int)s;  // s >= 0.03, so truncation is floor
+  if (step < 0) step = 0;
+  if (step > last) step = last;
+  return step;
+}
 // One cell: level -> glyph through the ramp, tone -> fg through the colour
 // ramp. A plane is left alone when its flag is false or its ramp is unset.
 void chargrid_shade(chargrid_t *g, int x, int y, float level, bool has_level,

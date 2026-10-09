@@ -224,6 +224,11 @@ static void exec(charshader_t *s, const chargrid_t *g, chargrid_t *const *lay, i
         noise_strip(s, in, d, n);
         break;
       case CS_OP_DIST: {
+        if ((in->scal & 15u) == 12u) {  // dist(x, y, px, py) to a scalar point
+          const float *a = REG(0), *b = REG(1), kc = SC(2), kd = SC(3);
+          for (int j = 0; j < n; j++) d[j] = cs_dist(a[j], b[j], kc, kd);
+          break;
+        }
         const float *a = strip_of(s, in, 0, n), *b = strip_of(s, in, 1, n);
         const float *c = strip_of(s, in, 2, n), *e = strip_of(s, in, 3, n);
         for (int j = 0; j < n; j++) d[j] = cs_dist(a[j], b[j], c[j], e[j]);
@@ -254,45 +259,78 @@ static inline uint8_t cs_index(float v) {
 
 #define HAS(k) ((s->out_used >> (k)) & 1u)
 
+// One plane over the strip, leaving alone the cells the keep output keeps:
+// values as indices, or through a ramp of steps entries. A ramp works out
+// its scale and its row of dither offsets once (zeros when it does not
+// dither: chargrid_ramp_index adds the offset either way).
+static const float k_no_dither[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+static inline void put_index_k(uint8_t *p, const float *v, const float *keep, bool has_keep,
+                               int n) {
+  for (int j = 0; j < n; j++)
+    if (!has_keep || !(keep[j] >= 0.5f)) p[j] = cs_index(v[j]);
+}
+static void put_index(uint8_t *p, const float *v, const float *keep, int n) {
+  if (keep)
+    put_index_k(p, v, keep, true, n);
+  else
+    put_index_k(p, v, NULL, false, n);
+}
+
+static inline void put_ramp_k(uint8_t *p, const float *v, const float *keep, bool has_keep, int n,
+                              const uint8_t *map, int last, const float *off, int x0) {
+  const float top = (float)last;
+  for (int j = 0; j < n; j++)
+    if (!has_keep || !(keep[j] >= 0.5f))
+      p[j] = map[chargrid_ramp_index(v[j], top, last, off[(unsigned)(x0 + j) & 3u])];
+}
+static void put_ramp(uint8_t *p, const float *v, const float *keep, int n, const uint8_t *map,
+                     int steps, bool dither, int x0, int y) {
+  if (steps <= 1) {  // chargrid_ramp_step is 0
+    for (int j = 0; j < n; j++)
+      if (!keep || !(keep[j] >= 0.5f)) p[j] = map[0];
+    return;
+  }
+  const float *off = dither ? chargrid_bayer_off + ((unsigned)y & 3u) * 4u : k_no_dither;
+  if (keep)
+    put_ramp_k(p, v, keep, true, n, map, steps - 1, off, x0);
+  else
+    put_ramp_k(p, v, NULL, false, n, map, steps - 1, off, x0);
+}
+
 // The output rules (spec, "Lua API: shader"): keep; glyph, else level
 // through the ramp; fg, else r,g,b through the nearest palette entry, else
 // tone, else level, through the colour ramp; bg, else bgtone through the
 // colour ramp. A plane with none of these stays as it is.
 static void apply(charshader_t *s, chargrid_t *g, int x0, int y, int n) {
   const float *keep = HAS(CS_OUT_KEEP) ? output(s, CS_OUT_KEEP, n) : NULL;
-  const float *glyph = HAS(CS_OUT_GLYPH) ? output(s, CS_OUT_GLYPH, n) : NULL;
   const float *level = HAS(CS_OUT_LEVEL) ? output(s, CS_OUT_LEVEL, n) : NULL;
-  const float *fg = HAS(CS_OUT_FG) ? output(s, CS_OUT_FG, n) : NULL;
-  const float *r = HAS(CS_OUT_R) ? output(s, CS_OUT_R, n) : NULL;
-  const float *gr = HAS(CS_OUT_G) ? output(s, CS_OUT_G, n) : NULL;
-  const float *b = HAS(CS_OUT_B) ? output(s, CS_OUT_B, n) : NULL;
-  const float *tone = HAS(CS_OUT_TONE) ? output(s, CS_OUT_TONE, n) : NULL;
-  const float *bg = HAS(CS_OUT_BG) ? output(s, CS_OUT_BG, n) : NULL;
-  const float *bgtone = HAS(CS_OUT_BGTONE) ? output(s, CS_OUT_BGTONE, n) : NULL;
-  const bool rgb = r || gr || b;
-  const int rn = g->ramp_n, cn = g->cramp_n;
   const size_t base = (size_t)y * (size_t)g->cols + (size_t)x0;
-  for (int j = 0; j < n; j++) {
-    if (keep && keep[j] >= 0.5f) continue;
-    const int cx = x0 + j;
-    const size_t i = base + (size_t)j;
-    if (glyph)
-      g->glyph[i] = cs_index(glyph[j]);
-    else if (level && rn)
-      g->glyph[i] = g->ramp[chargrid_ramp_step(level[j], rn, g->ramp_dither, cx, y)];
-    if (fg)
-      g->fg[i] = cs_index(fg[j]);
-    else if (rgb)
-      g->fg[i] = chargrid_nearest(g, r ? r[j] : 0.0f, gr ? gr[j] : 0.0f, b ? b[j] : 0.0f);
-    else if (tone && cn)
-      g->fg[i] = g->cramp[chargrid_ramp_step(tone[j], cn, g->cramp_dither, cx, y)];
-    else if (level && cn)
-      g->fg[i] = g->cramp[chargrid_ramp_step(level[j], cn, g->cramp_dither, cx, y)];
-    if (bg)
-      g->bg[i] = cs_index(bg[j]);
-    else if (bgtone && cn)
-      g->bg[i] = g->cramp[chargrid_ramp_step(bgtone[j], cn, g->cramp_dither, cx, y)];
+  const int rn = g->ramp_n, cn = g->cramp_n;
+  if (HAS(CS_OUT_GLYPH))
+    put_index(g->glyph + base, output(s, CS_OUT_GLYPH, n), keep, n);
+  else if (level && rn)
+    put_ramp(g->glyph + base, level, keep, n, g->ramp, rn, g->ramp_dither, x0, y);
+  uint8_t *fp = g->fg + base;
+  if (HAS(CS_OUT_FG)) {
+    put_index(fp, output(s, CS_OUT_FG, n), keep, n);
+  } else if (HAS(CS_OUT_R) || HAS(CS_OUT_G) || HAS(CS_OUT_B)) {
+    const float *r = HAS(CS_OUT_R) ? output(s, CS_OUT_R, n) : NULL;
+    const float *gr = HAS(CS_OUT_G) ? output(s, CS_OUT_G, n) : NULL;
+    const float *b = HAS(CS_OUT_B) ? output(s, CS_OUT_B, n) : NULL;
+    for (int j = 0; j < n; j++)
+      if (!keep || !(keep[j] >= 0.5f))
+        fp[j] = chargrid_nearest(g, r ? r[j] : 0.0f, gr ? gr[j] : 0.0f, b ? b[j] : 0.0f);
+  } else if (HAS(CS_OUT_TONE) && cn) {
+    put_ramp(fp, output(s, CS_OUT_TONE, n), keep, n, g->cramp, cn, g->cramp_dither, x0, y);
+  } else if (level && cn) {
+    put_ramp(fp, level, keep, n, g->cramp, cn, g->cramp_dither, x0, y);
   }
+  if (HAS(CS_OUT_BG))
+    put_index(g->bg + base, output(s, CS_OUT_BG, n), keep, n);
+  else if (HAS(CS_OUT_BGTONE) && cn)
+    put_ramp(g->bg + base, output(s, CS_OUT_BGTONE, n), keep, n, g->cramp, cn, g->cramp_dither,
+             x0, y);
 }
 
 // The rect clipped to g, in strips: the outputs to the grid, or output `out` into values.
