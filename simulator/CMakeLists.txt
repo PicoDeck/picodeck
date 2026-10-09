@@ -493,6 +493,7 @@ endif()
 
 add_executable(picodeck_simulator
     main.c
+    sim_native_api.c
     sim_test_control.c
     ${SIM_PLATFORM_SOURCES}
     ${PICODECK_CORE_SOURCES}

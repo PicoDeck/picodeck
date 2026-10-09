@@ -10,6 +10,8 @@
 //   * sim_core1_service() (below): one Core 1 tick.
 //   * hal_input_inject_char() (hal/hal_input.h) and
 //     hal_display_get_framebuffer() (hal/hal_display.h).
+//   * sim_native_app_begin() and sim_native_app_end() (sim_native_api.h),
+//     around one run of a compiled-in native app; g_api (os.h) is its API.
 //
 // The web sources must define:
 //   * the four web_* functions below, which the core's __EMSCRIPTEN__ hooks
