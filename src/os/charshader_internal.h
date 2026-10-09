@@ -23,7 +23,7 @@
 #define CS_MAX_NAME 31
 #define CS_MAX_SCALARS 255
 #ifndef CS_STRIP
-#define CS_STRIP 16  // cells per strip (P0: fastest at 80x40; Task 9 re-checks on the device)
+#define CS_STRIP 32  // cells per strip (Task 9b: 32 beats 16 on the device with compact loops)
 #endif
 
 // Scalar slots: cols, rows, the uniforms, then the constants.
