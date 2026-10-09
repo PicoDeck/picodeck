@@ -68,8 +68,12 @@ Dev commands while an app runs (`src/dev_commands.c`, `lua_bridge.c`, native `sy
 ```
 main()
   set_sys_clock_khz(200000)     // 200 MHz overclock
-  Wire g_api struct (function pointers)
+  stdio_init_all()
+  qmi_psram_init()              // QMI PSRAM to quad mode (before Core 1 runs from flash)
   display_init()                // PIO0 SPI, double-buffered SRAM
+  splash_start()                // Core 1 plays the boot animation (src/os/splash.c)
+  USB serial wait (≤ 3 s)
+  Wire g_api struct (function pointers)
   pio_psram_init()              // Mainboard 8MB PIO PSRAM (non-fatal if absent)
   sound_init() → audio_init()
   kbd_init()
@@ -79,6 +83,7 @@ main()
   boot_crypto_init()            // on the OS stack: Core 0 CTR_DRBG seed + CA bundle parse
   wifi_init() → http_init() → tcp_init()
   bt_pad_init()                 // Bluetooth pads, only if the user turned them on
+  splash_finish()               // wait for the animation's final frame; reset Core 1
   multicore_launch_core1()      // Core 1: wifi_poll, http, mp3, fileplayer
   system_menu_init()
   launcher_run()                // Never returns
@@ -87,6 +92,7 @@ main()
 ### Dual-Core Model
 - **Core 0**: runs the launcher, Lua VM and native apps. Owns the display, keyboard and SD card.
 - **Core 1**: runs the network stack (Mongoose/CYW43) and audio decode (MP3, fileplayer, MOD) on a 1 ms tick. Core 0 talks to it through an IPC ring (`wifi_req_push()`). **Core 0 must never call `mg_*` functions directly.** Core 1 only try-locks shared player/SD state and skips the tick when busy.
+- **During boot** Core 1 first plays the boot splash (`src/os/splash.c`) and owns the display; Core 0 must not draw while `splash_running()` (`ui_draw_splash` hands it the status; error screens call `splash_stop()` first; `display_flush` counts and logs a flush from the wrong core). `splash_finish()` resets Core 1 before `core1_entry` launches.
 
 ### Central API (`src/os/os.h`)
 `PicoCalcAPI g_api` is a function pointer table wired in `main.c`. Sub-tables, native name → Lua name:

@@ -16,6 +16,7 @@
 #include "os/core0_idle.h"
 #include "os/xip_stats.h"
 #include "os/pc_prof.h"
+#include "os/splash.h"
 #include "tusb.h"
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
@@ -550,6 +551,12 @@ static void dev_command_run(void *arg) {
                wifi_str,
                sdcard_is_mounted() ? "mounted" : "absent",
                kbd_get_battery_percent());
+    } else if (strcmp(s_cmd_buf, "splash") == 0) {
+        // The boot splash's measurements (src/os/splash.c;
+        // tests/e2e/test_splash_hw.py).
+        char line[224];
+        splash_stats_format(line, sizeof line);
+        printf("[DEV] Splash: %s\n", line);
     } else if (strcmp(s_cmd_buf, "exit") == 0) {
         char reply[DEV_OP_REPLY_MAX];
         dev_op_exit(reply, sizeof(reply));
@@ -918,6 +925,7 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   ping           - Check device is responding\n");
         printf("[DEV]   ver            - Show firmware build date/time\n");
         printf("[DEV]   stack          - Main, app and OS-command stack peak use\n");
+        printf("[DEV]   splash         - The boot splash's state, frame rate and timings\n");
         printf("[DEV]   alarmpool      - Default alarm pool: free and lost slots (lost re-read 3x)\n");
         printf("[DEV]   kbdstat [reset|fault|log|hw] - Keyboard bus engine counters\n");
         printf("[DEV]   xipstat [reset|off|prio core0|prio none|mp3idle on|mp3idle off] - XIP cache, bus contention and MP3 decode timing\n");

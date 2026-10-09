@@ -310,6 +310,11 @@ int ui_draw_tabs(const char **tabs, int count, int active_index, int y) {
 }
 
 void ui_draw_splash(const char *status, const char *subtext) {
+  // While Core 1 plays the boot animation it owns the display: hand it the text.
+  if (splash_running()) {
+    splash_set_status(status, subtext);
+    return;
+  }
   splash_draw_static(status, subtext);
 }
 

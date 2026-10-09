@@ -914,7 +914,16 @@ void display_draw_plane(const uint16_t *tex, int tex_w, int tex_h,
 // Left as a safety valve but no longer set by the native loader.
 bool g_display_flush_blocking = false;
 
+static volatile uint32_t s_owner_core = 0;
+static volatile uint32_t s_foreign_flushes = 0;
+
+void display_set_owner_core(uint32_t core) { s_owner_core = core; }
+uint32_t display_foreign_flushes(void) { return s_foreign_flushes; }
+
 void display_flush(void) {
+  if (get_core_num() != s_owner_core && s_foreign_flushes++ == 0)
+    printf("[DISPLAY] core %u flushed while core %lu owns the display\n",
+           get_core_num(), (unsigned long)s_owner_core);
   if (s_dma_active) {
     // Wait for the previous frame's DMA to finish before starting the next.
     dma_channel_wait_for_finish_blocking(s_dma_chan);
