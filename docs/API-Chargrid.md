@@ -6,7 +6,7 @@ title: "API Chargrid"
 
 A grid of character cells, drawn in one call. Each cell holds a glyph code and a foreground and background palette index. Use it for text screens (an RPG's map window, status panel and dialogue), ASCII art, and animated scenes built from character ramps.
 
-The grid keeps its cells in memory, and `grid:draw()` renders its window in C: a full 320×320 screen of 6×8 cells takes about 9 ms on the device. Your Lua code writes cells (one at a time, a row at a time from strings or tables, or as text) and draws once per frame.
+The grid keeps its cells in memory, and `grid:draw()` renders its window in C: a full 320×320 screen of 6×8 cells takes about 3.1 ms on the device. Your Lua code writes cells (one at a time, a row at a time from strings or tables, or as text) and draws once per frame.
 
 ### Cells, glyphs and colours
 
@@ -59,9 +59,9 @@ Measured on the device (`-O2`, one call), a full-window draw takes:
 
 | Grid | Time |
 |---|---|
-| 53×40 at 6×8 | ~9 ms |
-| 40×26 at 8×12 | ~7.7 ms |
-| 80×80 at 4×4 | ~13.4 ms |
+| 53×40 at 6×8 | ~3.1 ms |
+| 40×26 at 8×12 | ~2.5 ms |
+| 80×80 at 4×4 | ~5 ms |
 
 Cells with an even width at an even x take a two-pixels-per-store fast path; odd widths and odd positions draw pixel by pixel and cost more.
 

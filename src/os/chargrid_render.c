@@ -2,9 +2,12 @@
 // per-cell value stays in registers: called from Lua this runs on the app's
 // PSRAM stack, where a per-cell table cost 33-35% in P0
 // (specs/2026-10-09-chargrid-p0-findings.md). Built at -O2.
+// Pair stores are plain 32-bit STRs that may be unaligned (2-byte aligned):
+// legal on the Cortex-M33 and on hosts, so the framebuffer's alignment and
+// the cell's x parity do not matter.
 #include "chargrid.h"
 
-typedef uint32_t __attribute__((may_alias)) cg_word_t;
+typedef uint32_t __attribute__((aligned(2), may_alias)) cg_word_t;
 
 // Two pixels per 32-bit store. Mask bits b0 (left) and b1 (right) choose fg or
 // bg in each half; the left pixel is the low half (little-endian).
@@ -32,8 +35,9 @@ static inline int64_t floordiv(int64_t a, int64_t b) {  // b > 0
       const uint32_t f = cg_color(g, g->fg[i], swap), b = cg_color(g, g->bg[i], swap); \
       const uint32_t bb = b | (b << 16), xr = (f ^ b) * 0x00010001u;              \
       const uint16_t *m = g->masks + (size_t)g->glyph[i] * (size_t)ch;            \
-      cg_word_t *d = (cg_word_t *)dst;                                            \
-      for (int r = 0; r < ch; r++, d += stride / 2) {                             \
+      uint16_t *row = dst;                                                          \
+      for (int r = 0; r < ch; r++, row += stride) {                               \
+        cg_word_t *d = (cg_word_t *)row;                                          \
         const uint32_t bits = m[r];                                               \
         STORES                                                                    \
       }                                                                           \
@@ -52,8 +56,9 @@ static void row_even(const chargrid_t *g, size_t base, int c0, int c1, uint16_t 
     const uint32_t f = cg_color(g, g->fg[i], swap), b = cg_color(g, g->bg[i], swap);
     const uint32_t bb = b | (b << 16), xr = (f ^ b) * 0x00010001u;
     const uint16_t *m = g->masks + (size_t)g->glyph[i] * (size_t)ch;
-    cg_word_t *d = (cg_word_t *)dst;
-    for (int r = 0; r < ch; r++, d += stride / 2) {
+    uint16_t *row = dst;
+    for (int r = 0; r < ch; r++, row += stride) {
+      cg_word_t *d = (cg_word_t *)row;
       const uint32_t bits = m[r];
       for (int p = 0; p < pairs; p++) d[p] = PAIR(p);
     }
@@ -99,12 +104,11 @@ int chargrid_render(chargrid_t *g, const chargrid_target_t *t, int px, int py, i
   if (r1 > kr1) r1 = kr1;
   if (c1 < c0 || r1 < r0) return 0;
   // Cells wholly inside the clip horizontally take the pair path when the
-  // width is even and their first pixel is 4-byte aligned.
+  // width is even.
   int64_t f0 = floordiv(t->clip_x0 - ox + cw - 1, cw), f1 = floordiv(t->clip_x1 - ox + 1, cw) - 1;
   if (f0 < c0) f0 = c0;
   if (f1 > c1) f1 = c1;
-  const bool pairs = (cw & 1) == 0 && (t->stride & 1) == 0 && ((uintptr_t)t->fb & 3u) == 0 &&
-                     ((ox + f0 * cw) & 1) == 0 && f0 <= f1;
+  const bool pairs = (cw & 1) == 0 && f0 <= f1;
   const fast_row_fn fast = cw == 4 ? row_w4 : cw == 6 ? row_w6 : cw == 8 ? row_w8 : row_even;
   for (int64_t r = r0; r <= r1; r++) {
     const int64_t y = oy + r * ch;

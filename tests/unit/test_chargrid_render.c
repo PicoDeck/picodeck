@@ -9,7 +9,8 @@
 #define BH 48
 #define SENTINEL 0xDEADu
 
-static uint32_t s_words[(BW * BH + 4) / 2];  // 4-byte aligned pixel buffer
+static uint32_t s_words[((BW + 1) * BH + 4) / 2];  // 4-byte aligned pixel buffer
+static int s_stride = BW;                          // row stride in pixels (BW, or BW + 1: odd)
 static uint32_t s_seed = 12345u;
 static uint32_t rnd(void) {
   s_seed = s_seed * 1103515245u + 12345u;
@@ -50,13 +51,13 @@ static int check_case(int cw, int ch, int cols, int rows, uint16_t *fb, bool swa
                       int cy0, int cx1, int cy1, int px, int py, int sx, int sy, int w, int h) {
   chargrid_t *g = chargrid_create(cols, rows, cw, ch);
   fill_random(g);
-  const chargrid_target_t t = {fb, BW, cx0, cy0, cx1, cy1, swap};
-  for (int i = 0; i < BW * BH; i++) fb[i] = SENTINEL;
+  const chargrid_target_t t = {fb, s_stride, cx0, cy0, cx1, cy1, swap};
+  for (int i = 0; i < s_stride * BH; i++) fb[i] = SENTINEL;
   const int n = chargrid_render(g, &t, px, py, sx, sy, w, h);
   int bad = 0;
   for (int y = 0; y < BH; y++)
     for (int x = 0; x < BW; x++)
-      if (fb[y * BW + x] != ref_pixel(g, &t, px, py, sx, sy, w, h, x, y)) bad++;
+      if (fb[y * s_stride + x] != ref_pixel(g, &t, px, py, sx, sy, w, h, x, y)) bad++;
   CHECK_EQ_INT(bad, 0);
   CHECK(!g->dirty);
   chargrid_free(g);
@@ -99,10 +100,19 @@ static void test_render_far(void) {  // far off-screen: nothing drawn, no overfl
   CHECK_EQ_INT(check_case(4, 4, 1024, 64, aligned(), false, 0, 0, BW - 1, BH - 1, -16000000, 0, 0, 0, 1024, 64), 0);
 }
 
-static void test_render_misaligned(void) {  // a 2-byte aligned buffer: the per-pixel path
+static void test_render_misaligned(void) {  // a 2-byte aligned buffer: unaligned pair stores
   uint16_t *odd = (uint16_t *)s_words + 1;
   check_case(6, 8, 12, 7, odd, false, 0, 0, BW - 1, BH - 2, 0, 0, 0, 0, 12, 7);
   check_case(4, 4, 16, 12, odd, true, 0, 0, BW - 1, BH - 2, 2, 2, 0, 0, 16, 12);
+  check_case(6, 8, 12, 5, aligned(), false, 0, 0, BW - 1, BH - 1, 1, 1, 0, 0, 12, 5);  // odd x
+}
+
+static void test_render_odd_stride(void) {  // an odd row stride: rows start on odd halfwords
+  s_stride = BW + 1;
+  check_case(6, 8, 10, 5, aligned(), false, 0, 0, BW - 1, BH - 1, 0, 0, 0, 0, 10, 5);
+  check_case(4, 4, 16, 12, aligned(), true, 0, 0, BW - 1, BH - 1, 2, 1, 0, 0, 16, 12);
+  check_case(8, 12, 8, 4, (uint16_t *)s_words + 1, false, 0, 0, BW - 1, BH - 1, 1, 0, 0, 0, 8, 4);
+  s_stride = BW;
 }
 
 int main(void) {
@@ -111,5 +121,6 @@ int main(void) {
   test_render_window();
   test_render_far();
   test_render_misaligned();
+  test_render_odd_stride();
   return check_report("test_chargrid_render");
 }
