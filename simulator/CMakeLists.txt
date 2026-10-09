@@ -104,7 +104,9 @@ set(LUA_SOURCES
     ${LUA_DIR}/ldump.c
     ${LUA_DIR}/lfunc.c
     ${LUA_DIR}/lgc.c
-    ${LUA_DIR}/linit.c
+    # No linit.c: the bridge opens its own restricted libraries, and the web
+    # build links as a main module (whole archives), where linit.c's
+    # references to the io/os/package/debug libraries it leaves out fail.
     ${LUA_DIR}/llex.c
     ${LUA_DIR}/lmem.c
     ${LUA_DIR}/lobject.c
