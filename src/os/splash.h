@@ -27,8 +27,11 @@ void splash_set_status(const char *status, const char *subtext);
 void splash_finish(void);
 // Core 0, before an error or update screen: stops and resets Core 1 now.
 void splash_stop(void);
-// From the HardFault handler on Core 0: resets Core 1 at once (no waits, no
-// printing), so the fault screen is not drawn over.
+// From the HardFault handler, first thing; it does nothing unless the splash
+// is running. On Core 0 it resets Core 1 at once (no waits, no printing), so
+// the fault screen is not drawn over. On Core 1 it only records the fault:
+// splash_finish() and splash_stop() then leave Core 1 alone and Core 0 spins,
+// unfed watchdog and all, until Core 1's handler reboots after its screen.
 void splash_fault_stop(void);
 // The animation's measurements, "state=… first_light_ms=… …": the [SPLASH]
 // line and the `splash` dev command.

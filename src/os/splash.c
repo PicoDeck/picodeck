@@ -44,6 +44,7 @@ static volatile bool s_running;      // Core 1 owns the display
 static volatile bool s_stop_req, s_stopped;
 static volatile bool s_final;        // Core 1 has shown a frame at SPLASH_T_END...
 static volatile uint32_t s_final_seq;  // ...with this status
+static volatile bool s_core1_faulted;  // Core 1's HardFault handler is running
 // Written by Core 1 while it runs, read by Core 0 after it stops.
 static struct {
   int state;
@@ -143,7 +144,15 @@ static void halt(bool wait_for_end) {
   }
   s_stop_req = true;
   const uint64_t ack = time_us_64();
-  while (!s_stopped && time_us_64() - ack < STOP_ACK_US) busy_wait_us_32(100);
+  while (!s_stopped && !s_core1_faulted && time_us_64() - ack < STOP_ACK_US)
+    busy_wait_us_32(100);
+  if (s_core1_faulted) {
+    // Resetting Core 1 now would cut off its fault screen and its reboot, and
+    // the boot would go on to clear the crash record. Its handler reboots
+    // after its 3 s screen; the boot watchdog, no longer fed, is the backstop.
+    printf("[SPLASH] Core 1 faulted: waiting for its fault handler to reboot\n");
+    for (;;) tight_loop_contents();
+  }
   const bool acked = s_stopped;
   multicore_reset_core1();
   display_wait_for_flush();
@@ -161,7 +170,13 @@ void splash_finish(void) { halt(true); }
 void splash_stop(void) { halt(false); }
 
 void splash_fault_stop(void) {
-  if (!s_running || get_core_num() != 0) return;
+  if (!s_running) return;
+  if (get_core_num() != 0) {
+    // Core 1 faulted while playing the splash: halt() must not reset it.
+    s_core1_faulted = true;
+    __dmb();
+    return;
+  }
   multicore_reset_core1();
   display_set_owner_core(0);
   s_running = false;

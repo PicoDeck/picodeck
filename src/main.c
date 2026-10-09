@@ -127,8 +127,9 @@ static void __attribute__((used)) hardfault_c(uint32_t *frame, uint32_t exc_retu
   // First, so Core 0's keyboard bus engine is off the bus well before the
   // reset below (see the comment there).
   kbd_i2c_halt();
-  // Core 1 may be playing the boot splash: stop it before the fault screen
-  // is drawn (it would draw over it).
+  // Core 1 may be playing the boot splash. On Core 0, stop it before the
+  // fault screen is drawn (it would draw over it); on Core 1, tell Core 0
+  // not to reset this handler before its screen and reboot (splash.h).
   splash_fault_stop();
 
   // ARM exception frame layout (8 words pushed by hardware on entry):
