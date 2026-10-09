@@ -683,6 +683,8 @@ void lua_bridge_register(lua_State *L) {
   lua_bridge_register_3d(L);
   printf("[LUA] registering gfx3d...\n");
   lua_bridge_gfx3d_init(L);
+  printf("[LUA] registering chargrid...\n");
+  lua_bridge_chargrid_init(L);
   printf("[LUA] registering ui...\n");
   lua_bridge_ui_init(L);
   printf("[LUA] registering audio...\n");

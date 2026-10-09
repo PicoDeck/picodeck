@@ -31,7 +31,7 @@
 // ── Framebuffer ──────────────────────────────────────────────────────────────
 // Placed in internal SRAM smoothly now that the Lua heap has been relocated
 // to PSRAM, freeing up 256KB of internal memory!
-static uint16_t s_framebuffers[2][FB_WIDTH * FB_HEIGHT];
+static uint16_t s_framebuffers[2][FB_WIDTH * FB_HEIGHT] __attribute__((aligned(4)));
 
 // Pointer to the current back buffer
 static uint16_t *s_framebuffer = s_framebuffers[0];

@@ -296,6 +296,12 @@ add_executable(picodeck
     src/os/lua_bridge_3d.c
     src/os/gfx3d.c
     src/os/lua_bridge_gfx3d.c
+    src/os/chargrid.c
+    src/os/chargrid_shapes.c
+    src/os/chargrid_text.c
+    src/os/chargrid_render.c
+    src/os/chargrid_display.c
+    src/os/lua_bridge_chargrid.c
     src/os/module_path.c
     src/os/lua_bridge_require.c
     src/os/lua_corolib.c
@@ -457,6 +463,11 @@ set_source_files_properties(src/fonts/font.c PROPERTIES COMPILE_OPTIONS "-O2")
 # gfx3d: -O2 like the display blitters (DISP_HOT), and no FMA contraction so a
 # triangle edge shared by two triangles evaluates bit-identically in both.
 set_source_files_properties(src/os/gfx3d.c PROPERTIES
+    COMPILE_OPTIONS "-O2;-ffp-contract=off;-Wdouble-promotion")
+
+# chargrid: -O2 like gfx3d; the renderer's hot loops keep their state in
+# registers (specs/2026-10-09-chargrid-p0-findings.md).
+set_source_files_properties(src/os/chargrid.c src/os/chargrid_shapes.c src/os/chargrid_text.c src/os/chargrid_render.c PROPERTIES
     COMPILE_OPTIONS "-O2;-ffp-contract=off;-Wdouble-promotion")
 
 # ── PIO PSRAM Bulk Transfer (improved driver with 16-bit counters) ─────────────

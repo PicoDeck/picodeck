@@ -1,0 +1,2 @@
+{ "id": "com.test.chargrid_bench", "name": "chargrid bench", "version": "1.0",
+  "description": "chargrid draw-cost benchmark (hardware test)", "author": "PicoDeck" }
