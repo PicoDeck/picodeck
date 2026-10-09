@@ -313,11 +313,13 @@ Measured on the device (one `run`, whole grid):
 
 | Program | Grid | Time |
 |---|---|---|
-| Aurora-class sky: 3 `fbm(…, 3)`, 2 `noise`, 3 `exp`, `sin`, 2 `smooth`, `r,g,b` (61 instructions) | 80×40 | ~75 ms |
-| The same | 80×80 | ~170 ms |
-| Torch: `dist`, `clamp`, `tone` (8 instructions) | 53×40 | ~3.2 ms |
+| Aurora-class sky: 3 `fbm(…, 3)`, 2 `noise`, 3 `exp`, `sin`, 2 `smooth`, `r,g,b` (61 instructions) | 80×40 | ~33 ms |
+| The same | 80×80 | ~67 ms |
+| Torch: `dist`, `clamp`, `tone` (8 instructions) | 53×40 | ~2.3 ms |
 
-Built-ins, per call: `sin` ~410 ns, `exp` ~350 ns, `log` ~480 ns, `sqrt` ~150 ns, `pow` ~990 ns, `atan2` ~460 ns, `noise` ~1,200 ns, `fbm(…, 3)` ~3,400 ns. At 15 fps (66 ms per frame), about 2,300 cells of an aurora-class program fit alongside drawing and Lua.
+Built-ins, per call: `sin` ~320 ns, `exp` ~300 ns, `log` ~450 ns, `sqrt` ~160 ns, `pow` ~930 ns, `atan2` ~560 ns, `noise` ~330 ns, `fbm(…, 3)` ~1,160 ns. At 15 fps (66 ms per frame), about 5,300 cells of an aurora-class program fit alongside drawing and Lua.
+
+`noise` and `fbm` cost less when neighbouring cells share a lattice cell (the per-call times above step about a tenth of a lattice cell per grid cell): at a frequency of one or more per cell each call works out new corner hashes. Run times vary by a few percent with where the program and the grids land in memory (the device's XIP cache holds both code and PSRAM data).
 
 ### Example: a torch-lit map window
 
