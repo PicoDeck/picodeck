@@ -154,13 +154,13 @@ static void draw_text(uint16_t *fb, int stride, const char *text, int y, uint16_
   font_render(&s_font, fb, stride, 0, 0, SCR - 1, SCR - 1, x, y, text, colour, 0, true);
 }
 
-void splash_render(uint16_t *fb, int stride, bool swap, float t,
-                   const char *status, const char *subtext) {
-  if (!(t >= 0.0f)) t = 0.0f;  // NaN too
-  if (t > SPLASH_T_END) t = SPLASH_T_END;
+// The cells of one frame. Its arrays (pal, cw, cg: ~770 bytes) live only here,
+// so they are gone before the text is drawn and the deepest stack path stays
+// under 1 KB.
+static __attribute__((noinline)) void draw_cells(uint16_t *fb, int stride, bool swap,
+                                                 float t) {
   frame_t f;
   frame_at(t, &f);
-
   uint16_t pal[SPLASH_PALETTE_SIZE];
   for (int i = 0; i < SPLASH_PALETTE_SIZE; i++) {
     const uint16_t c = splash_palette[i];
@@ -214,8 +214,17 @@ void splash_render(uint16_t *fb, int stride, bool swap, float t,
       }
     }
   }
+}
+
+void splash_render(uint16_t *fb, int stride, bool swap, float t,
+                   const char *status, const char *subtext) {
+  if (!(t >= 0.0f)) t = 0.0f;  // NaN too
+  if (t > SPLASH_T_END) t = SPLASH_T_END;
+  draw_cells(fb, stride, swap, t);
   if (t >= SPLASH_T_TEXT) {
-    draw_text(fb, stride, status, SPLASH_STATUS_Y, pal[TEXT_ENTRY]);
-    draw_text(fb, stride, subtext, SPLASH_SUBTEXT_Y, pal[TEXT_ENTRY]);
+    const uint16_t c = splash_palette[TEXT_ENTRY];
+    const uint16_t tc = swap ? (uint16_t)((c >> 8) | (c << 8)) : c;
+    draw_text(fb, stride, status, SPLASH_STATUS_Y, tc);
+    draw_text(fb, stride, subtext, SPLASH_SUBTEXT_Y, tc);
   }
 }
