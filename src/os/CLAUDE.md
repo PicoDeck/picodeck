@@ -91,6 +91,7 @@ Subsystem notes for the launcher, app runners, Lua bridge, sandbox and OS servic
 - A Core 1 HardFault during the animation keeps its own fault screen and reboot: `splash_stop`/`splash_finish` then hold Core 0 until it reboots.
 - Everywhere else (USB mode, the update screen, `picocalc.ui.splash`) the splash is the still frame (`t = SPLASH_T_END`).
 - Core 0 must not flood the QMI while the animation moves: Core 1 renders from flash, which shares the QMI with the PSRAM, and starves (the ~0.8 s heap clear through the cache made one frame take ~0.48 s; the same clear through the uncached alias still slowed Core 1 ~8.5x). So the heap is zeroed before the animation starts (Lua heap, below); `render_max_at_ms` in the `splash` stats points at a culprit.
+- Core 0's boot work runs under the animation up to `splash_finish()`: the heap init, SD, config, the CA bundle, WiFi and Bluetooth start, the launcher's app scan (`launcher_prepare()`) and last the keyboard (`kbd_init()` waits for the STM32 until 2.6 s of uptime). On a warm reboot with WiFi and Bluetooth on it ends ~3.1 s after reset, as the animation does (`waited_ms` ~0), and the launcher draws ~30 ms later; render_max ~25 ms (the app scan).
 - The `splash` dev command prints its measurements.
 
 ## UI widgets (`ui.c`, `text_input.c`)

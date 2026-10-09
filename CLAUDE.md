@@ -78,18 +78,20 @@ main()
   Wire g_api struct (function pointers)
   pio_psram_init()              // Mainboard 8MB PIO PSRAM (non-fatal if absent)
   sound_init() → audio_init()
-  kbd_init()
-  sdcard_init()
   lua_psram_alloc_init()        // umm_malloc heap on QMI PSRAM (headers only: already zeroed)
+  sdcard_init()
   config_load()                 // /system/config.json
   boot_crypto_init()            // on the OS stack: Core 0 CTR_DRBG seed + CA bundle parse
   wifi_init() → http_init() → tcp_init()
   bt_pad_init()                 // Bluetooth pads, only if the user turned them on
+  launcher_prepare()            // the app scan, while the animation plays
+  kbd_init()                    // waits for the STM32 (2.6 s after power-on); the SD retry screen calls it sooner
   splash_finish()               // wait for the animation's final frame; reset Core 1
   multicore_launch_core1()      // Core 1: wifi_poll, http, mp3, fileplayer
   system_menu_init()
   launcher_run()                // Never returns
 ```
+Everything from `splash_start()` to `splash_finish()` runs while Core 1 plays the 2.8 s animation, so a boot step there costs nothing until Core 0's work outlasts it (~3.1 s to the launcher on a warm reboot with WiFi and Bluetooth on); none of it may flood the QMI (Dual-Core Model, below).
 
 ### Dual-Core Model
 - **Core 0**: runs the launcher, Lua VM and native apps. Owns the display, keyboard and SD card.

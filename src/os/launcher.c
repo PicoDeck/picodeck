@@ -1049,17 +1049,23 @@ static void update_desc_scroll(bool *dirty) {
 
 // ── Main entry point ────────────────────────────────────────────────────────
 
-void launcher_run(void) {
+void launcher_prepare(void) {
+  if (s_apps)
+    return;
+  s_apps = umm_malloc(sizeof(app_entry_t) * (MAX_APPS + EXTRA_SLOTS));
   if (!s_apps) {
-    s_apps = umm_malloc(sizeof(app_entry_t) * (MAX_APPS + EXTRA_SLOTS));
-    if (!s_apps) {
-      printf("[LAUNCHER] FATAL: failed to alloc s_apps in PSRAM\n");
-      return;
-    }
-    memset(s_apps, 0, sizeof(app_entry_t) * (MAX_APPS + EXTRA_SLOTS));
+    printf("[LAUNCHER] FATAL: failed to alloc s_apps in PSRAM\n");
+    return;
   }
+  memset(s_apps, 0, sizeof(app_entry_t) * (MAX_APPS + EXTRA_SLOTS));
   scan_apps();
   build_category_indices();
+}
+
+void launcher_run(void) {
+  launcher_prepare();
+  if (!s_apps)
+    return;
 
   // Check for simulator auto-launch
 #ifdef PICODECK_SIMULATOR

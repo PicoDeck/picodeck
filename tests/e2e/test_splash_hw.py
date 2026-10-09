@@ -16,11 +16,12 @@ END_MS = 2800             # SPLASH_END_MS
 # timestamps on a dev `reboot` with a computer attached, 2026-10-10), and the
 # hand-over ~4.99 s with it while the PSRAM heap was cleared through the cache
 # after the animation; ~3.9 s since the heap is cleared by DMA before it
-# (issue #73; WiFi and Bluetooth on).
-HANDOVER_MS = 4300
+# (issue #73; WiFi and Bluetooth on), and ~3.1 s, the animation's end, since
+# the app scan and the keyboard's STM32 wait run under it.
+HANDOVER_MS = 3600
 # The PSRAM heap clear through the cache overlapping the animation stalled one
-# render 482 ms; with the clear before the animation the slowest is ~21 ms
-# (the CA bundle parse).
+# render 482 ms; with the clear before the animation the slowest is ~21-25 ms
+# (the CA bundle parse, the launcher's app scan).
 MAX_RENDER_US = 50_000
 
 

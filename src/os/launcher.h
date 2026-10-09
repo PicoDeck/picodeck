@@ -2,8 +2,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// Allocates the app table and scans /apps/ (app.json, icons). main() calls
+// it before the boot splash hands over, so the scan runs during the
+// animation; launcher_run() calls it when nothing has. Once per boot.
+void launcher_prepare(void);
+
 // Runs the app launcher loop (never returns).
-// Scans /apps/ on SD card, renders a scrollable menu, and launches selected apps.
+// Renders a scrollable menu of the scanned apps and launches selected apps.
 void launcher_run(void);
 
 // Re-scans the SD card for apps and resets the selection.
