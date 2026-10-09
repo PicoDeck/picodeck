@@ -49,7 +49,9 @@ def test_scene_matches_simulator_golden(target):
     want = np.array(Image.open(GOLDEN_DIR / "chargrid" / "scene.png").convert("RGB")).astype(int)
     target.exit_app()
     target.wait_for_exit(timeout=15)
-    differs = (np.abs(got - want).max(axis=2) > 0).mean()
+    diff = np.abs(got - want).max(axis=2) > 0
+    differs = diff.mean()
+    print(f"chargrid scene golden: {differs:.3%} of pixels differ ({int(diff.sum())} of {diff.size})")
     assert differs < 0.01, f"{differs:.2%} of pixels differ from the simulator golden"
 
 
@@ -89,5 +91,7 @@ def test_shader_scene_matches_simulator_golden(target):
     want = np.array(Image.open(GOLDEN_DIR / "chargrid" / "shader_scene.png").convert("RGB")).astype(int)
     target.exit_app()
     target.wait_for_exit(timeout=15)
-    differs = (np.abs(got - want).max(axis=2) > 0).mean()
+    diff = np.abs(got - want).max(axis=2) > 0
+    differs = diff.mean()
+    print(f"chargrid shader scene golden: {differs:.3%} of pixels differ ({int(diff.sum())} of {diff.size})")
     assert differs < 0.01, f"{differs:.2%} of pixels differ from the simulator golden"
