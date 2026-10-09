@@ -400,6 +400,7 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/chargrid_text.c
     ${PICODECK_ROOT}/src/os/chargrid_render.c
     ${PICODECK_ROOT}/src/os/chargrid_display.c
+    ${PICODECK_ROOT}/src/os/lua_bridge_chargrid.c
     ${PICODECK_ROOT}/src/os/module_path.c
     ${PICODECK_ROOT}/src/os/lua_bridge_require.c
     ${PICODECK_ROOT}/src/os/lua_corolib.c

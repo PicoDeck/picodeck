@@ -301,6 +301,7 @@ add_executable(picodeck
     src/os/chargrid_text.c
     src/os/chargrid_render.c
     src/os/chargrid_display.c
+    src/os/lua_bridge_chargrid.c
     src/os/module_path.c
     src/os/lua_bridge_require.c
     src/os/lua_corolib.c

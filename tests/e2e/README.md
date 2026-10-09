@@ -169,6 +169,7 @@ tests/e2e/
 ├── elfgen.py            struct.pack ELF32 builder, valid or malformed, for the loader tests
 ├── fixtures/fonts/      golden PNGs
 ├── fixtures/native_pad_probe/  the gbc / c64 gamepad adapters (staged by test_gamepad.py)
+├── fixtures/chargrid_test/     the picocalc.chargrid contract fixture (staged hidden by test_chargrid.py: the default card has no slot to spare)
 └── skip_allowlist.txt   tests that may skip; any other skip fails the run
 ```
 

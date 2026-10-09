@@ -66,6 +66,10 @@
         "page": "API-Audio-and-Sound.md"
       },
       {
+        "label": "API Chargrid",
+        "page": "API-Chargrid.md"
+      },
+      {
         "label": "API Crypto",
         "page": "API-Crypto.md"
       },

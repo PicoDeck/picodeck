@@ -3447,3 +3447,119 @@ function picocalc.repl.echo(flag) end
 ---@param vertSize? integer Vertex dot size (default 3)
 ---@param faces? integer[] Flat vertex-index triples for filled triangles
 function draw3DWireframeEx(verts, edges, angleX, angleY, angleZ, scx, scy, fov, edgeColor, fillColor, fillMode, vertSize, faces) end
+
+-- =============================================================================
+-- picocalc.chargrid
+-- =============================================================================
+
+---@class PicoDeckCharGrid : userdata
+local PicoDeckCharGrid = {}
+---@return integer cols
+---@return integer rows
+function PicoDeckCharGrid:getSize() end
+---@return integer cellW
+---@return integer cellH
+function PicoDeckCharGrid:getCellSize() end
+---@param fontId integer
+function PicoDeckCharGrid:setFont(fontId) end
+---@param code integer 1-255
+---@param rows integer[] cellH rows, bit cellW-1 = leftmost pixel
+function PicoDeckCharGrid:defineGlyph(code, rows) end
+---@param colors integer[] RGB565
+---@param first? integer default 0
+function PicoDeckCharGrid:setPalette(colors, first) end
+function PicoDeckCharGrid:setColor(index, color) end
+---@return integer color
+function PicoDeckCharGrid:getColor(index) end
+---@param glyphs string|integer[]
+---@param dither? boolean
+function PicoDeckCharGrid:setRamp(glyphs, dither) end
+---@param indices integer[]
+---@param dither? boolean
+function PicoDeckCharGrid:setColorRamp(indices, dither) end
+---@param glyph? integer|string
+---@param fg? integer
+---@param bg? integer
+function PicoDeckCharGrid:clear(glyph, fg, bg) end
+---@param glyph integer|string
+---@param fg? integer
+---@param bg? integer
+function PicoDeckCharGrid:set(x, y, glyph, fg, bg) end
+---@return integer glyph
+---@return integer fg
+---@return integer bg
+function PicoDeckCharGrid:get(x, y) end
+---@param glyph? integer|string
+function PicoDeckCharGrid:fill(x, y, w, h, glyph, fg, bg) end
+---@param glyphs string|integer[]|integer|nil
+---@param fgs? string|integer[]|integer
+---@param bgs? string|integer[]|integer
+---@param x? integer
+function PicoDeckCharGrid:setRow(y, glyphs, fgs, bgs, x) end
+---@return string glyphs
+---@return string fgs
+---@return string bgs
+function PicoDeckCharGrid:getRow(y, x, n) end
+function PicoDeckCharGrid:setRect(x, y, w, h, glyphs, fgs, bgs) end
+---@param levels number[]|nil
+---@param tones? number[]
+---@param x? integer
+function PicoDeckCharGrid:shadeRow(y, levels, tones, x) end
+---@return integer x
+function PicoDeckCharGrid:print(x, y, text, fg, bg) end
+---@return integer rows
+function PicoDeckCharGrid:printWrapped(x, y, w, text, fg, bg) end
+---@param style? integer BOX_SINGLE | BOX_BLOCK | BOX_ASCII
+function PicoDeckCharGrid:box(x, y, w, h, style, fg, bg) end
+---@param transparent? string|integer default " "
+function PicoDeckCharGrid:stamp(x, y, art, fg, bg, transparent) end
+---@param src PicoDeckCharGrid
+---@param transparentGlyph? integer|string
+function PicoDeckCharGrid:blit(src, sx, sy, w, h, dx, dy, transparentGlyph) end
+function PicoDeckCharGrid:scroll(dx, dy, glyph, fg, bg) end
+function PicoDeckCharGrid:draw(px, py, sx, sy, w, h) end
+---@return boolean
+function PicoDeckCharGrid:isDirty() end
+---@return {cells: integer, us: integer}
+function PicoDeckCharGrid:getStats() end
+
+---@class picocalc.chargrid
+---@field EMPTY integer
+---@field DOT1 integer
+---@field DOT2 integer
+---@field DOT3 integer
+---@field DOT4 integer
+---@field SHADE1 integer
+---@field SHADE2 integer
+---@field SHADE3 integer
+---@field SHADE4 integer
+---@field HALF_TOP integer
+---@field HALF_BOTTOM integer
+---@field HALF_LEFT integer
+---@field HALF_RIGHT integer
+---@field BOX_H integer
+---@field BOX_V integer
+---@field BOX_TL integer
+---@field BOX_TR integer
+---@field BOX_BL integer
+---@field BOX_BR integer
+---@field BOX_LT integer
+---@field BOX_RT integer
+---@field BOX_TT integer
+---@field BOX_BT integer
+---@field BOX_X integer
+---@field TRI_UP integer
+---@field TRI_RIGHT integer
+---@field TRI_DOWN integer
+---@field TRI_LEFT integer
+---@field BOX_SINGLE integer
+---@field BOX_BLOCK integer
+---@field BOX_ASCII integer
+picocalc.chargrid = {}
+---@param cols number
+---@param rows number
+---@param fontId? integer
+---@param cellW? number
+---@param cellH? number
+---@return PicoDeckCharGrid
+function picocalc.chargrid.new(cols, rows, fontId, cellW, cellH) end
