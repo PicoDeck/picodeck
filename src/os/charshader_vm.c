@@ -11,6 +11,92 @@
 #define REG(i) (s->regs + (size_t)in->a[i] * CS_STRIP)
 #define SC(i) (s->sc[in->a[i]])
 
+// d[j] = F(...) over the strip's lanes, each operand a register (R) or a
+// scalar (K). On ARMv8 FP (the device) four lanes at a time: VLDM and VSTM
+// move four floats in one instruction, so a simple operation fetches about
+// half the code bytes per lane (the loops are bound by fetching code from
+// the XIP cache); the per-lane arithmetic is the C loops'. Register
+// operands go in s0-s3, s4-s7 and s8-s11, the results in s12-s15. The
+// lanes from n up to the next multiple of 4 are computed too and never
+// read: a register has CS_STRIP lanes.
+_Static_assert(CS_STRIP % 4 == 0, "four lanes at a time");
+#if CS_ARMV8_FP
+#define LD4(p, v, R0, R1, R2, R3, LIST)                                                    \
+  register float v##0 __asm__(R0), v##1 __asm__(R1), v##2 __asm__(R2), v##3 __asm__(R3); \
+  __asm__("vldmia %4!, {" LIST "}"                                                         \
+          : "=t"(v##0), "=t"(v##1), "=t"(v##2), "=t"(v##3), "+r"(p)                      \
+          : "m"(*(const float(*)[4])(p)))
+#define LDA(p) LD4(p, a, "s0", "s1", "s2", "s3", "s0-s3")
+#define LDB(p) LD4(p, b, "s4", "s5", "s6", "s7", "s4-s7")
+#define LDC(p) LD4(p, c, "s8", "s9", "s10", "s11", "s8-s11")
+#define ST4(p, e0, e1, e2, e3)                                           \
+  do {                                                                   \
+    register float r0_ __asm__("s12") = (e0), r1_ __asm__("s13") = (e1); \
+    register float r2_ __asm__("s14") = (e2), r3_ __asm__("s15") = (e3); \
+    __asm__("vstmia %0!, {s12-s15}"                                      \
+            : "+r"(p), "=m"(*(float(*)[4])(p))                           \
+            : "t"(r0_), "t"(r1_), "t"(r2_), "t"(r3_));                   \
+  } while (0)
+#define LANES(SETUP, LOADS, F, X0, X1, X2, X3) \
+  {                                            \
+    SETUP;                                     \
+    float *pd_ = d;                            \
+    for (int j_ = 0; j_ < n; j_ += 4) {        \
+      LOADS;                                   \
+      ST4(pd_, F X0, F X1, F X2, F X3);        \
+    }                                          \
+  }
+#define LANES_RR(F, A, B)                                                         \
+  LANES(const float *pa_ = (A); const float *pb_ = (B), LDA(pa_); LDB(pb_), F, \
+        (a0, b0), (a1, b1), (a2, b2), (a3, b3))
+#define LANES_KR(F, K, B)                                                    \
+  LANES(const float k_ = (K); const float *pb_ = (B), LDB(pb_), F, (k_, b0), \
+        (k_, b1), (k_, b2), (k_, b3))
+#define LANES_RK(F, A, K)                                                    \
+  LANES(const float *pa_ = (A); const float k_ = (K), LDA(pa_), F, (a0, k_), \
+        (a1, k_), (a2, k_), (a3, k_))
+#define LANES_RRR(F, A, B, C)                                                       \
+  LANES(const float *pa_ = (A); const float *pb_ = (B); const float *pc_ = (C),     \
+        LDA(pa_); LDB(pb_); LDC(pc_), F, (a0, b0, c0), (a1, b1, c1), (a2, b2, c2), \
+        (a3, b3, c3))
+#define LANES_RKR(F, A, K, C)                                                                \
+  LANES(const float *pa_ = (A); const float k_ = (K); const float *pc_ = (C),                \
+        LDA(pa_); LDC(pc_), F, (a0, k_, c0), (a1, k_, c1), (a2, k_, c2), (a3, k_, c3))
+#define LANES_RRK(F, A, B, K)                                                                \
+  LANES(const float *pa_ = (A); const float *pb_ = (B); const float k_ = (K),                \
+        LDA(pa_); LDB(pb_), F, (a0, b0, k_), (a1, b1, k_), (a2, b2, k_), (a3, b3, k_))
+#define LANES_RKK(F, A, K, L)                                                                \
+  LANES(const float *pa_ = (A); const float k_ = (K); const float l_ = (L), LDA(pa_), F,     \
+        (a0, k_, l_), (a1, k_, l_), (a2, k_, l_), (a3, k_, l_))
+#else
+#define LANES_RR(F, A, B) \
+  { const float *pa_ = (A), *pb_ = (B); for (int j = 0; j < n; j++) d[j] = F(pa_[j], pb_[j]); }
+#define LANES_KR(F, K, B) \
+  { const float k_ = (K), *pb_ = (B); for (int j = 0; j < n; j++) d[j] = F(k_, pb_[j]); }
+#define LANES_RK(F, A, K) \
+  { const float *pa_ = (A), k_ = (K); for (int j = 0; j < n; j++) d[j] = F(pa_[j], k_); }
+#define LANES_RRR(F, A, B, C)                                                  \
+  {                                                                            \
+    const float *pa_ = (A), *pb_ = (B), *pc_ = (C);                            \
+    for (int j = 0; j < n; j++) d[j] = F(pa_[j], pb_[j], pc_[j]);              \
+  }
+#define LANES_RKR(F, A, K, C)                                                  \
+  {                                                                            \
+    const float *pa_ = (A), k_ = (K), *pc_ = (C);                              \
+    for (int j = 0; j < n; j++) d[j] = F(pa_[j], k_, pc_[j]);                  \
+  }
+#define LANES_RRK(F, A, B, K)                                                  \
+  {                                                                            \
+    const float *pa_ = (A), *pb_ = (B), k_ = (K);                              \
+    for (int j = 0; j < n; j++) d[j] = F(pa_[j], pb_[j], k_);                  \
+  }
+#define LANES_RKK(F, A, K, L)                                                  \
+  {                                                                            \
+    const float *pa_ = (A), k_ = (K), l_ = (L);                                \
+    for (int j = 0; j < n; j++) d[j] = F(pa_[j], k_, l_);                      \
+  }
+#endif
+
 // Operand i as a strip: its register, or its scalar broadcast to scratch row i.
 static const float *strip_of(charshader_t *s, const cs_ins_t *in, int i, int n) {
   if (!((in->scal >> i) & 1u)) return REG(i);
@@ -41,21 +127,18 @@ static float __attribute__((noinline)) eval_scalars(const charshader_t *s, const
   break;
 
 // Never both scalars (eval_scalars).
-#define BINARY(F)                                         \
-  switch (in->scal & 3u) {                                \
-    case 0: {                                             \
-      const float *a = REG(0), *b = REG(1);               \
-      for (int j = 0; j < n; j++) d[j] = F(a[j], b[j]);   \
-    } break;                                              \
-    case 1: {                                             \
-      const float ka = SC(0), *b = REG(1);                \
-      for (int j = 0; j < n; j++) d[j] = F(ka, b[j]);     \
-    } break;                                              \
-    default: {                                            \
-      const float *a = REG(0), kb = SC(1);                \
-      for (int j = 0; j < n; j++) d[j] = F(a[j], kb);     \
-    } break;                                              \
-  }                                                       \
+#define BINARY(F)                           \
+  switch (in->scal & 3u) {                  \
+    case 0:                                 \
+      LANES_RR(F, REG(0), REG(1));          \
+      break;                                \
+    case 1:                                 \
+      LANES_KR(F, SC(0), REG(1));           \
+      break;                                \
+    default:                                \
+      LANES_RK(F, REG(0), SC(1));           \
+      break;                                \
+  }                                         \
   break;
 
 #define TERNARY(F)                                                                \
@@ -66,9 +149,12 @@ static float __attribute__((noinline)) eval_scalars(const charshader_t *s, const
   }                                                                               \
   break;
 
+// smooth(e0, e1, x) as cs_smooth computes it, given 1 / (e1 - e0).
+static inline float smooth_scaled(float x, float e0, float inv) { return cs_smooth_k((x - e0) * inv); }
+
 // The rarer operations and operand forms, out of the main loop's way (its
 // code stays compact in the XIP cache): one loop each, a scalar operand
-// broadcast to a strip.
+// broadcast to a strip. Comparisons are here too: a program has a few.
 static void __attribute__((noinline)) exec_rare(charshader_t *s, const cs_ins_t *in, float *d,
                                                 int n) {
   const int na = nargs_of(in->op);
@@ -88,6 +174,18 @@ static void __attribute__((noinline)) exec_rare(charshader_t *s, const cs_ins_t 
       break;
     case CS_OP_POW:
       for (int j = 0; j < n; j++) d[j] = cs_pow(a[j], b[j]);
+      break;
+    case CS_OP_LT:
+      for (int j = 0; j < n; j++) d[j] = cs_lt(a[j], b[j]);
+      break;
+    case CS_OP_LE:
+      for (int j = 0; j < n; j++) d[j] = cs_le(a[j], b[j]);
+      break;
+    case CS_OP_EQ:
+      for (int j = 0; j < n; j++) d[j] = cs_eq(a[j], b[j]);
+      break;
+    case CS_OP_NE:
+      for (int j = 0; j < n; j++) d[j] = cs_ne(a[j], b[j]);
       break;
     case CS_OP_AND:
       for (int j = 0; j < n; j++) d[j] = cs_and(a[j], b[j]);
@@ -123,22 +221,18 @@ static void __attribute__((noinline)) exec_rare(charshader_t *s, const cs_ins_t 
 
 static void mad(charshader_t *s, const cs_ins_t *in, float *d, int n) {
   switch (in->scal & 7u) {
-    case 0: {
-      const float *a = REG(0), *b = REG(1), *c = REG(2);
-      for (int j = 0; j < n; j++) d[j] = cs_mad(a[j], b[j], c[j]);
-    } return;
-    case 2: {
-      const float *a = REG(0), kb = SC(1), *c = REG(2);
-      for (int j = 0; j < n; j++) d[j] = cs_mad(a[j], kb, c[j]);
-    } return;
-    case 4: {
-      const float *a = REG(0), *b = REG(1), kc = SC(2);
-      for (int j = 0; j < n; j++) d[j] = cs_mad(a[j], b[j], kc);
-    } return;
-    case 6: {
-      const float *a = REG(0), kb = SC(1), kc = SC(2);
-      for (int j = 0; j < n; j++) d[j] = cs_mad(a[j], kb, kc);
-    } return;
+    case 0:
+      LANES_RRR(cs_mad, REG(0), REG(1), REG(2));
+      return;
+    case 2:
+      LANES_RKR(cs_mad, REG(0), SC(1), REG(2));
+      return;
+    case 4:
+      LANES_RRK(cs_mad, REG(0), REG(1), SC(2));
+      return;
+    case 6:
+      LANES_RKK(cs_mad, REG(0), SC(1), SC(2));
+      return;
     default: {
       const float *a = strip_of(s, in, 0, n), *b = strip_of(s, in, 1, n);
       const float *c = strip_of(s, in, 2, n);
@@ -281,8 +375,16 @@ static void exec(charshader_t *s, const chargrid_t *g, chargrid_t *const *lay, i
           d[j] = arr[i < 0 ? 0 : i >= len ? len - 1 : i];
         }
       } break;
-      case CS_OP_SIN: UNARY(cs_sin)
-      case CS_OP_COS: UNARY(cs_cos)
+      case CS_OP_SIN:
+      case CS_OP_COS: {  // one loop: cs_sin's turns, or cs_cos's plus a quarter
+        const float *a = REG(0);
+        const bool is_cos = in->op == CS_OP_COS;
+        for (int j = 0; j < n; j++) {
+          float t = a[j] * CS_INV_TAU;
+          if (is_cos) t = t + 0.25f;
+          d[j] = cs_sin_turns(t);
+        }
+      } break;
       case CS_OP_ABS: UNARY(cs_abs)
       case CS_OP_FLOOR: UNARY(cs_floor)
       case CS_OP_CEIL: UNARY(cs_ceil)
@@ -294,32 +396,26 @@ static void exec(charshader_t *s, const chargrid_t *g, chargrid_t *const *lay, i
       case CS_OP_MUL: BINARY(cs_mul)
       case CS_OP_MIN: BINARY(cs_min)
       case CS_OP_MAX: BINARY(cs_max)
-      case CS_OP_LT: BINARY(cs_lt)
-      case CS_OP_LE: BINARY(cs_le)
-      case CS_OP_EQ: BINARY(cs_eq)
-      case CS_OP_NE: BINARY(cs_ne)
       case CS_OP_MAD:
         mad(s, in, d, n);
         break;
       case CS_OP_CLAMP:
         if ((in->scal & 7u) == 6u) {  // clamp(x, lo, hi) with scalar bounds
-          const float *a = REG(0), lo = SC(1), hi = SC(2);
-          for (int j = 0; j < n; j++) d[j] = cs_clamp(a[j], lo, hi);
+          LANES_RKK(cs_clamp, REG(0), SC(1), SC(2));
         } else {
           exec_rare(s, in, d, n);
         }
         break;
       case CS_OP_MIX:
         if ((in->scal & 7u) == 4u) {  // mix(a, b, t) with a scalar t
-          const float *a = REG(0), *b = REG(1), t = SC(2);
-          for (int j = 0; j < n; j++) d[j] = cs_mix(a[j], b[j], t);
+          LANES_RRK(cs_mix, REG(0), REG(1), SC(2));
           break;
         }
         TERNARY(cs_mix)
       case CS_OP_SMOOTH:
         if ((in->scal & 7u) == 3u) {  // scalar edges: one reciprocal per instruction
-          const float e0 = SC(0), inv = 1.0f / (SC(1) - e0), *a = REG(2);
-          for (int j = 0; j < n; j++) d[j] = cs_smooth_k((a[j] - e0) * inv);
+          const float e0 = SC(0), inv = 1.0f / (SC(1) - e0);
+          LANES_RKK(smooth_scaled, REG(2), e0, inv);
         } else {
           exec_rare(s, in, d, n);
         }
