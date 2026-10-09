@@ -355,3 +355,9 @@ picodeck_unit_test(test_small_alloc SOURCES ${SRC}/os/small_alloc.c)
 if(PICODECK_FUZZ)
     add_subdirectory(${PICODECK_ROOT}/tests/fuzz ${CMAKE_CURRENT_BINARY_DIR}/fuzz)
 endif()
+
+# The chargrid shader: compiler (Task 4), VM and outputs (Tasks 5-6).
+picodeck_unit_test(test_charshader SOURCES ${SRC}/os/charshader_compile.c
+                   DEFINES CG_MALLOC=malloc CG_FREE=free)
+target_compile_options(test_charshader PRIVATE -ffp-contract=off -Wdouble-promotion)
+target_link_libraries(test_charshader PRIVATE m)
