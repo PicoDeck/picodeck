@@ -52,7 +52,7 @@ A grid's cell size comes from its font (`max width × height`), or is given expl
 | `/system/lib/fonts/spleen-5x8.pfn` via `picocalc.display.loadFont` | 5×8 | 64×40 |
 | No font, 4×4 cells | 4×4 | 80×80 (shapes and defined glyphs only) |
 
-Spleen 5×8 (BSD 2-Clause, Frederic Cambus; source and licence in the repo's `sdk/fonts/spleen/`) gives 64-column grids. Release packaging does not install `/system/lib` (see [API System and Config](API-System-and-Config.md)): copy `system/lib/fonts/spleen-5x8.pfn` to the SD card, or ship a copy in your app directory and load it from `APP_DIR`.
+Spleen 5×8 (BSD 2-Clause, Frederic Cambus; source and licence in the repo's `sdk/fonts/spleen/`) gives 64-column grids. Release packaging does not install `/system/lib` (see [API System and Config](API-System-and-Config.md)): copy `system/lib/fonts/spleen-5x8.pfn` to the SD card, or ship a copy in your app directory and load it from `APP_DIR`. The font is BSD 2-Clause: copies distributed on SD cards or in app directories must ship `sdk/fonts/spleen/LICENSE` alongside the `.pfn`.
 
 ```lua
 local id = picocalc.display.loadFont("/system/lib/fonts/spleen-5x8.pfn")
@@ -69,9 +69,10 @@ Measured on the device (`-O2`, one call), a full-window draw takes:
 |---|---|
 | 53×40 at 6×8 | ~3.1 ms |
 | 40×26 at 8×12 | ~2.5 ms |
+| 64×40 at 5×8 (odd width, per-pixel) | ~9.7 ms |
 | 80×80 at 4×4 | ~5 ms |
 
-Cells with an even width at an even x take a two-pixels-per-store fast path; odd widths and odd positions draw pixel by pixel and cost more.
+Cells with an even width take a two-pixels-per-store fast path at any x (pair stores may be unaligned: 53×40 at 6×8 drawn at x = 1 takes ~3.3 ms against ~3.1 ms at x = 0). Odd widths draw pixel by pixel and cost about 3× as much.
 
 For per-cell maths in Lua, compute a row of levels into a reused table and hand it to `grid:shadeRow()`, one call per row (about 0.9 µs per cell).
 
@@ -123,7 +124,7 @@ Sets or returns one palette entry (`index` 0-255).
 Sets the ramp `shadeRow` maps levels through: a UTF-8 string (`" .:-=+*#%@"`, `"·•●"`, or raw codes such as `"\0\1\2\3\4"`) or a table of codes, 1-256 entries. With `dither`, a 4×4 ordered dither spreads levels between entries.
 
 #### `grid:setColorRamp(indices [, dither])`
-Sets the colour ramp `shadeRow` maps tones (or levels) through: a table of 1-256 palette indices.
+Sets the colour ramp `shadeRow` maps tones (or levels) through: a table of 1-256 palette indices. With `dither`, the same 4×4 ordered dither spreads tones between colour-ramp entries.
 
 #### `grid:clear([glyph [, fg [, bg]]])`
 Fills every cell; defaults glyph 0, fg 15, bg 0.
@@ -151,7 +152,7 @@ Like `setRow` for a rectangle: sequences hold `w * h` entries, row by row.
 #### `grid:shadeRow(y, levels [, tones [, x]])`
 Shades cells from `x` (default 0) along row `y`.
 
-- `levels` (table of numbers 0-1, or nil) pick glyphs through the ramp.
+- `levels` (table of numbers 0-1, or nil) pick glyphs through the ramp. Non-number entries and holes count as 0.
 - `tones` (table, or nil) pick foreground colours through the colour ramp.
 - Without tones, levels pick the colours too (when a colour ramp is set).
 - Out-of-range values clamp, and NaN is 0.
@@ -187,7 +188,7 @@ Copies a rectangle of cells (all three planes) from grid `src`, which may be thi
 Shifts the contents and fills the cells that come into view (defaults glyph 0, fg 15, bg 0).
 
 #### `grid:draw(px, py [, sx, sy, w, h])`
-Draws cells `sx..sx+w-1` × `sy..sy+h-1` (default: the whole grid) with cell `(sx, sy)` at pixel `(px, py)`, inside the display clip rect.
+Draws cells `sx..sx+w-1` × `sy..sy+h-1` (`w` and `h` default to the grid's `cols` and `rows`, i.e. to the end of the grid from `sx`, `sy`; cells past the edge are clipped) with cell `(sx, sy)` at pixel `(px, py)`, inside the display clip rect.
 
 #### `grid:isDirty()`
 - **Returns:** (boolean) whether any write happened since the last `draw`
