@@ -707,10 +707,8 @@ int sdcard_list_dir(const char* path,
             sdc_entry.ftime = 0;
         }
         
-        printf("[SDCARD] Found: %s (is_dir=%d)\n", sdc_entry.name, sdc_entry.is_dir);
-        fflush(stdout);
-        
-        // Call the callback
+        // Call the callback (no line per entry: the launcher scan lists every
+        // app's directory, and they buried the rest of the log)
         if (callback) {
             callback(&sdc_entry, user);
         }

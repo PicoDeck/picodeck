@@ -44,8 +44,21 @@ def hid(sim_factory, test_sd_card):
     (app / "app.json").write_text(json.dumps(
         {"id": "com.dev.hid_dev", "name": "Hidden Dev"}))
     (app / "main.lua").write_text('picocalc.sys.log("HID:DEV_RAN " .. APP_DIR)\n')
-    sim = sim_factory(sd)
+    sim = _booted(sim_factory, sd)
     return sim, SimTarget(sim), sd
+
+
+def _booted(sim_factory, sd):
+    """A simulator whose launcher has finished its boot scan. The tests here
+    stage apps under /apps after boot and expect that scan not to have seen
+    them, but the simulator answers RPCs while it may still be reading /apps
+    (its listing calls back mid-readdir): an app staged then could be listed
+    (and launched from its old path after an `mv`), or push a full card over
+    the cap. A dev command is served by the launcher loop, which starts after
+    the scan, so its reply means the scan is over."""
+    sim = sim_factory(sd)
+    SimTarget(sim).command("ping", timeout=30.0)
+    return sim
 
 
 def _launch(sim, name, timeout=15.0):
@@ -210,7 +223,7 @@ def test_hidden_apps_launch_with_a_full_launcher(sim_factory, test_sd_card):
     have = sum(1 for a in (sd / "apps").iterdir() if a.is_dir())
     for i in range(cap - have):
         stage_lua_app(sd, f"full_{i:03d}", "return\n", hidden=False)
-    sim = sim_factory(sd)
+    sim = _booted(sim_factory, sd)
     stage_lua_app(sd, "after_boot", 'picocalc.sys.log("HID:AFTER_BOOT")\n')
     stage_lua_app(sd, "after_boot_2", 'picocalc.sys.log("HID:AFTER_BOOT_2")\n')
     # One listed app past the cap is dropped: only a hidden one is reachable.
