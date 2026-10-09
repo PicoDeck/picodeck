@@ -57,6 +57,7 @@ typedef struct {
   bool dirty;                  // written since the last render
   uint8_t defined[32];         // one bit per code set by chargrid_define_glyph
   uint8_t *nearest;            // NULL until chargrid_nearest: the index table, then its filled bitmap
+  bool nearest_failed;         // allocating nearest failed: not retried until the palette changes
 } chargrid_t;
 
 // A render target. The clip rect is inclusive and must lie inside the buffer.
@@ -139,8 +140,9 @@ void chargrid_scroll(chargrid_t *g, int dx, int dy, int glyph, int fg, int bg);
 // is 0), by weighted RGB distance (0.3, 0.5, 0.2), the lowest index on a
 // tie. Colours are bucketed at CG_NEAREST_BITS per channel, and each
 // bucket's answer (for its centre) is cached on the grid: the cache is
-// allocated on first use (a full search each time if that fails) and
-// forgotten by chargrid_palette_changed.
+// allocated on first use and forgotten by chargrid_palette_changed. If the
+// allocation fails, each call searches in full, and the allocation is next
+// tried after chargrid_palette_changed (not once per cell).
 uint8_t chargrid_nearest(chargrid_t *g, float r, float gr, float b);
 // Call after writing g->palette: forgets the cached nearest colours and
 // marks the grid dirty.

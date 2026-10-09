@@ -12,6 +12,15 @@
 
 static char s_err[160];
 
+// The code under test allocates here (cg_test_alloc.h): malloc, counted,
+// refused while s_refuse_alloc is set.
+static int s_allocs;
+static bool s_refuse_alloc;
+void *cg_test_malloc(size_t n) {
+  s_allocs++;
+  return s_refuse_alloc ? NULL : malloc(n);
+}
+
 static charshader_t *compile(const char *src) {
   return charshader_compile(src, strlen(src), s_err, sizeof s_err);
 }
@@ -135,6 +144,16 @@ static void test_limits(void) {
   CHECK(info_of(repeat("level = x", " + %d.5%.0d", 237, "")).scalars == CS_SC_CONST0 + 237);
   CHECK(compile(repeat("level = x", " + %d.5%.0d", 240, "")) == NULL);
   CHECK_STR(s_err, "program has more than 237 distinct constants");
+  // 119 names of the program's own (variables, outputs, uniforms, arrays,
+  // layers; x, y, u, v, cols, rows, glyph, fg and bg are not counted).
+  CHECK(info_of(repeat("", "a%d = 1\n", 118, "level = x")).instructions == 1);
+  CHECK(compile(repeat("", "a%d = 1\n", 119, "level = x")) == NULL);
+  CHECK(strstr(s_err, ": more than 119 names") != NULL);
+  // 512 operations as parsed, before unused ones are dropped: x and 511
+  // multiplies compile (to nothing); one more is too long.
+  CHECK(info_of(repeat("", "t=x*x;", 511, "level=1")).instructions == 0);
+  CHECK(compile(repeat("", "t=x*x;", 512, "level=1")) == NULL);
+  CHECK(strstr(s_err, ": program is too long") != NULL);
 }
 
 static void test_folding(void) {
@@ -647,6 +666,39 @@ static void test_nearest(void) {
   chargrid_free(g);
 }
 
+// The nearest table cannot be allocated: every cell searches in full, and
+// the allocation is tried once, not once per cell, until the palette
+// changes.
+static void test_nearest_alloc_failed(void) {
+  chargrid_t *g = chargrid_create(4, 1, 4, 4);
+  for (int i = 0; i < 256; i++) g->palette[i] = 0x0000;
+  g->palette[7] = 0xF800;
+  g->palette[9] = 0x07E0;
+  g->palette[200] = 0x001F;
+  chargrid_palette_changed(g);
+  charshader_t *s = compile("r = x == 1\ng = x == 2\nb = x == 3");
+  CHECK(s != NULL);
+  s_refuse_alloc = true;
+  const int before = s_allocs;
+  CHECK_EQ_INT(charshader_run(s, g, 0, 0, 4, 1, NULL, 0), 4);
+  check_row(g->fg, (const uint8_t[]){0, 7, 9, 200}, 4, "fg");
+  CHECK(g->nearest == NULL);
+  CHECK_EQ_INT(s_allocs - before, 1);
+  memset(g->fg, 0, 4);
+  charshader_run(s, g, 0, 0, 4, 1, NULL, 0);  // not tried again
+  check_row(g->fg, (const uint8_t[]){0, 7, 9, 200}, 4, "fg");
+  CHECK_EQ_INT(s_allocs - before, 1);
+  s_refuse_alloc = false;
+  chargrid_palette_changed(g);  // tried again, and now it works
+  memset(g->fg, 0, 4);
+  charshader_run(s, g, 0, 0, 4, 1, NULL, 0);
+  check_row(g->fg, (const uint8_t[]){0, 7, 9, 200}, 4, "fg");
+  CHECK_EQ_INT(s_allocs - before, 2);
+  CHECK(g->nearest != NULL);
+  charshader_free(s);
+  chargrid_free(g);
+}
+
 static void test_nearest_invalidated(void) {
   chargrid_t *g = chargrid_create(1, 1, 4, 4);
   for (int i = 0; i < 256; i++) g->palette[i] = 0x0000;
@@ -711,6 +763,7 @@ int main(void) {
   test_outputs_nonfinite();
   test_outputs_constant();
   test_nearest();
+  test_nearest_alloc_failed();
   test_nearest_invalidated();
   test_run_rect_clip();
   return check_report("test_charshader");

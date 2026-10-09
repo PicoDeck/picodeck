@@ -308,9 +308,12 @@ static uint8_t nearest_search(const chargrid_t *g, float r, float gr, float b) {
 uint8_t chargrid_nearest(chargrid_t *g, float r, float gr, float b) {
   const int qr = near_level(r), qg = near_level(gr), qb = near_level(b);
   const int key = (qr << (2 * CG_NEAREST_BITS)) | (qg << CG_NEAREST_BITS) | qb;
-  if (!g->nearest) {
+  if (!g->nearest && !g->nearest_failed) {
     g->nearest = (uint8_t *)CG_MALLOC(NEAR_N + NEAR_N / 8);
-    if (g->nearest) memset(g->nearest + NEAR_N, 0, NEAR_N / 8);
+    if (g->nearest)
+      memset(g->nearest + NEAR_N, 0, NEAR_N / 8);
+    else
+      g->nearest_failed = true;  // full searches, without a CG_MALLOC per cell
   }
   uint8_t *t = g->nearest;
   const uint8_t bit = (uint8_t)(1u << (key & 7));
@@ -327,5 +330,6 @@ uint8_t chargrid_nearest(chargrid_t *g, float r, float gr, float b) {
 
 void chargrid_palette_changed(chargrid_t *g) {
   if (g->nearest) memset(g->nearest + NEAR_N, 0, NEAR_N / 8);
+  g->nearest_failed = false;  // the next chargrid_nearest tries to allocate again
   g->dirty = true;
 }

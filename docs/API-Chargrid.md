@@ -281,12 +281,15 @@ The maths functions are fast polynomial approximations: sin and cos within 4e-6 
 
 **Limits:**
 - source: 4096 bytes;
+- 512 operations as written, counted before unused statements are dropped and `a * b + c` is fused (constant expressions are folded and do not count): beyond that, "program is too long";
 - 255 instructions after optimisation, and 32 values live at once;
+- 237 distinct constants after optimisation;
+- 119 names of the program's own (variables, assigned outputs, uniforms, arrays and layers; the inputs do not count), each at most 31 characters;
 - 16 uniforms, 8 arrays of 1024 entries, 4 layers.
 
 Constant expressions are computed once at compile time, unused statements cost nothing, and `a * b + c` is one instruction. Division by a constant is a multiplication by its reciprocal.
 
-**The nearest colour** for `r, g, b`: colours are bucketed 16 levels per channel, and each bucket's answer is cached on the grid (4.5 KB, allocated on the first such run). `setPalette` and `setColor` reset the cache. To keep a scene to its own colours, fill all 256 palette entries with them; the lowest index wins a tie.
+**The nearest colour** for `r, g, b`: colours are bucketed 16 levels per channel, and each bucket's answer is cached on the grid (4.5 KB, allocated on the first such run). `setPalette` and `setColor` reset the cache. If there is no memory for it, each cell searches the palette (slower but the same colours), and the next `setPalette` or `setColor` lets a run try again. To keep a scene to its own colours, fill all 256 palette entries with them; the lowest index wins a tie.
 
 ### Shader functions
 

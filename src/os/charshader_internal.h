@@ -32,6 +32,10 @@
 #define CS_SC_UNIFORM0 2
 #define CS_SC_CONST0 (CS_SC_UNIFORM0 + CS_MAX_UNIFORMS)
 
+// Grouped by operand count, in this order: charshader_vm.c's nargs_of and
+// its folding test (op >= CS_OP_SIN) read the count from the group
+// boundaries, which _Static_asserts there pin. A new opcode goes inside
+// its group.
 enum {
   // Loads: no operands.
   CS_OP_X, CS_OP_Y, CS_OP_U, CS_OP_V,

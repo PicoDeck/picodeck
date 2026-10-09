@@ -14,8 +14,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CS_MAX_NODES 512
+#define CS_MAX_NODES 512  // operations as parsed: before dead code goes and a * b + c fuses
 #define CS_MAX_NAMES 128
+#define CS_BUILTIN_NAMES 9  // x y u v cols rows glyph fg bg (build), in names[] too
+#define CS_MAX_USER_NAMES (CS_MAX_NAMES - CS_BUILTIN_NAMES)
 #define CS_MAX_NEST 16
 
 _Static_assert(CS_MAX_SCALARS - CS_SC_CONST0 == 237, "the constants message says 237");
@@ -265,7 +267,7 @@ static const func_t *find_func(const char *w) {
 }
 
 static name_t *add_name(comp_t *c, const char *w, int kind, int slot) {
-  if (c->nnames == CS_MAX_NAMES) FAIL("more than %d names", CS_MAX_NAMES);
+  if (c->nnames == CS_MAX_NAMES) FAIL("more than %d names", CS_MAX_USER_NAMES);
   name_t *n = &c->names[c->nnames++];
   memset(n, 0, sizeof *n);
   snprintf(n->name, sizeof n->name, "%s", w);
@@ -666,6 +668,9 @@ static charshader_t *build(comp_t *c) {
   for (int i = 0; i < 6; i++) add_name(c, inputs[i], NK_INPUT, i);
   static const char *const planes[] = {"glyph", "fg", "bg"};
   for (int p = 0; p < 3; p++) add_name(c, planes[p], NK_VAR, 0)->plane = (int8_t)p;
+  _Static_assert(sizeof inputs / sizeof inputs[0] + sizeof planes / sizeof planes[0] ==
+                     CS_BUILTIN_NAMES,
+                 "the names message counts the program's own names");
   program(c);
   val_t out[CS_OUT_COUNT];
   uint16_t used = 0;

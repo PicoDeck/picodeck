@@ -356,11 +356,12 @@ if(PICODECK_FUZZ)
     add_subdirectory(${PICODECK_ROOT}/tests/fuzz ${CMAKE_CURRENT_BINARY_DIR}/fuzz)
 endif()
 
-# The chargrid shader: compiler (Task 4), VM and outputs (Tasks 5-6).
+# The chargrid shader: compiler (Task 4), VM and outputs (Tasks 5-6). Its
+# allocations go through cg_test_alloc.h, so a test can refuse them.
 picodeck_unit_test(test_charshader SOURCES ${SRC}/os/charshader_compile.c ${SRC}/os/charshader_vm.c
-                   ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c
-                   DEFINES CG_MALLOC=malloc CG_FREE=free)
-target_compile_options(test_charshader PRIVATE -ffp-contract=off -Wdouble-promotion)
+                   ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c)
+target_compile_options(test_charshader PRIVATE -ffp-contract=off -Wdouble-promotion
+                       -include ${CMAKE_CURRENT_SOURCE_DIR}/cg_test_alloc.h)
 target_link_libraries(test_charshader PRIVATE m)
 
 # The shader's device-only paths (ARMv8 floors, the VM's VLDM/VSTM lanes)

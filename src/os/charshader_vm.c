@@ -111,7 +111,13 @@ static const float *strip_of(charshader_t *s, const cs_ins_t *in, int i, int n) 
   return t;
 }
 
-// The opcodes come grouped by operand count (charshader_internal.h).
+// The opcodes come grouped by operand count (charshader_internal.h): loads,
+// CS_OP_ARRAY and the other one-operand operations, then two, three, four.
+_Static_assert(CS_OP_X == 0 && CS_OP_LAYER + 1 == CS_OP_ARRAY, "loads, then one operand");
+_Static_assert(CS_OP_ARRAY + 1 == CS_OP_SIN, "CS_OP_SIN starts the operations to fold");
+_Static_assert(CS_OP_LOG + 1 == CS_OP_ADD, "one operand, then two");
+_Static_assert(CS_OP_ATAN2 + 1 == CS_OP_MAD, "two operands, then three");
+_Static_assert(CS_OP_FBM + 1 == CS_OP_DIST && CS_OP_DIST + 1 == CS_OP_COUNT, "three, then four");
 static inline int nargs_of(int op) {
   return op >= CS_OP_DIST ? 4 : op >= CS_OP_MAD ? 3 : op >= CS_OP_ADD ? 2 : op >= CS_OP_ARRAY ? 1 : 0;
 }
