@@ -330,7 +330,19 @@ static void show_boot_splash(void) {
 // One Core 1 tick, with no sleep. core1_thread repeats it every 5 ms; the web
 // build has no threads, so its web_core1_tick() paces it instead (see
 // hal/web_platform.h). A new Core 1 duty goes here, so it runs in both.
+// stubs/driver_stubs.c. The launcher pauses Core 1 around a clock change
+// (launcher_apply_clock) and waits for the ack, which firmware Core 1 gives
+// before it stops (src/main.c); a paused tick here acks and does nothing.
+extern volatile bool g_core1_pause;
+extern volatile bool g_core1_paused;
+
 void sim_core1_service(void) {
+    if (g_core1_pause) {
+        g_core1_paused = true;
+        return;
+    }
+    g_core1_paused = false;
+
     // Update audio
     hal_audio_update();
 

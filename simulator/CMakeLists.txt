@@ -493,6 +493,9 @@ else()
     )
 endif()
 
+# PicoDeck/web-sim recognises a PicoDeck whose web build seam has native
+# apps by the name sim_native_api.c appearing in this file (its
+# scripts/picodeck-ref.mjs and Makefile): keep it listed here, by name.
 add_executable(picodeck_simulator
     main.c
     sim_native_api.c

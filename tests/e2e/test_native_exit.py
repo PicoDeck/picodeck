@@ -2,6 +2,7 @@
 a native app's shouldExit(), and does not outlive the app it was meant for.
 Shared by the Unicorn trampolines and the web build's compiled-in apps
 (PicoDeck/web-sim's platform/web_native.c)."""
+import json
 import shutil
 import time
 from pathlib import Path
@@ -45,3 +46,24 @@ def test_exit_request_does_not_outlive_the_app(simulator):
     assert simulator.call("get_running_app").get("running"), \
         "the relaunched app saw the old exit request and quit at once"
     _exit(simulator, seq)
+
+
+def test_clock_change_gets_core1_s_pause_ack(simulator):
+    # An app with system_clock_khz makes the launcher change the clock at
+    # launch and exit, first pausing Core 1 and waiting for its ack
+    # (launcher_apply_clock in src/os/launcher.c). The simulator's Core 1
+    # (sim_core1_service, which the web build's Core 1 runs too) must ack it,
+    # not leave the launcher to wait out its timeout.
+    dst = Path(simulator.sd_card_path) / "apps" / "native_exit_probe_clk"
+    shutil.copytree(EXIT_PROBE, dst, dirs_exist_ok=True)
+    app = json.loads((dst / "app.json").read_text())
+    app["id"] = "com.test.native_exit_probe_clk"
+    app["system_clock_khz"] = 300000
+    (dst / "app.json").write_text(json.dumps(app))
+    seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+    simulator.launch_app("native_exit_probe_clk")
+    simulator.wait_for_log(r"EXITREADY", timeout=10, since_seq=seq)
+    _exit(simulator, seq)
+    out = simulator.get_output()["stdout"]
+    assert "[LAUNCHER] Changing clock" in out
+    assert "Core 1 pause timeout" not in out, out[-2000:]

@@ -34,8 +34,9 @@ extern "C" {
 // ── The core provides ────────────────────────────────────────────────────────
 
 // Run one Core 1 tick (audio, MOD player, a native app's audio callback,
-// network poll, HTTP callbacks) and return; no sleep. The desktop build's
-// Core 1 thread runs it every 5 ms.
+// network poll, HTTP callbacks) and return; no sleep. While the launcher has
+// Core 1 paused (g_core1_pause) a tick only acks it (g_core1_paused). The
+// desktop build's Core 1 thread runs it every 5 ms.
 void sim_core1_service(void);
 
 // ── The web sources define ───────────────────────────────────────────────────
