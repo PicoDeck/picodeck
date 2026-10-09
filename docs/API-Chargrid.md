@@ -214,6 +214,117 @@ local function frame(px, py, message)
 end
 ```
 
+## Shaders
+
+A shader is a short program that runs once per cell, in C, over a rectangle of a grid. It is how to animate a whole scene (sky, water, fire, lighting) without a Lua loop over cells. Lua does the per-frame work that grows with columns, rows and objects: a curtain's edge per column, the player's position. The shader does the per-cell maths.
+
+```lua
+local sh, err = picocalc.chargrid.shader([[
+  uniform t
+  level = noise(x * 0.1 + t, y * 0.2)    -- through the grid's ramp
+  tone  = level                          -- through the colour ramp
+]])
+assert(sh, err)
+function frame(t)
+  sh:set("t", t)
+  sh:run(grid)
+  grid:draw(0, 0)
+end
+```
+
+### The language
+
+- **Statements:** one per line, or separated by `;`. A statement is `name = expression`, or a declaration: `uniform a, b`, `array a, b`, `layer a, b`. `--` starts a comment, and brackets may span lines.
+- **No control flow:** every statement runs for every cell, in order. Use `select(c, a, b)` and the comparisons instead of `if`.
+- **Names** must be declared or assigned before they are read, so a typo is a compile error, not a silent zero.
+- **Numbers:** `12`, `0.5`, `.5`, `1e-3`, `0x1F`. Arithmetic is single precision.
+- **Operators**, loosest first:
+  - `or`;
+  - `and`;
+  - `< <= > >= == ~=`;
+  - `+ -`;
+  - `* / %`;
+  - unary `-` and `not`;
+  - `^`, right-associative, so `-x^2` is `-(x^2)`.
+
+  Comparisons, `and`, `or` and `not` give 1 or 0, and a value is true when it is not 0. `%` is Lua's floored modulo.
+- Expressions nest at most 16 deep.
+
+**Inputs:**
+
+| Name | Value |
+|---|---|
+| `x`, `y` | The cell's column and row in the grid |
+| `u`, `v` | `x / cols`, `y / rows` |
+| `cols`, `rows` | The grid's size |
+| `glyph`, `fg`, `bg` | The cell's glyph code and palette indices before this run changes them. Assigning one makes later reads see the new value |
+| uniforms | `uniform t`: one number for every cell, set with `sh:set("t", value)` (0 until set) |
+| arrays | `array edge`: `edge[i]` reads entry `floor(i)`, clamped to the array (0 if it was never set). Set with `sh:setArray` |
+| layers | `layer land`: `land.glyph`, `land.fg`, `land.bg` read another grid at the same `(x, y)`, and 0 outside it. Pass the grids to `sh:run` in declaration order |
+
+`x`, `y`, `u`, `v`, `cols`, `rows`, uniforms, arrays and layers are read-only.
+
+**Outputs:** assign these names, and the run writes each cell in this order:
+1. `keep`: if ≥ 0.5, the cell is left untouched.
+2. **Glyph:** `glyph`, a code rounded and clamped to 0-255. Otherwise `level` (0..1) through the grid's ramp (`grid:setRamp`, dithered if set). Otherwise unchanged.
+3. **fg:** `fg`, an index. Otherwise `r`, `g`, `b` (each 0..1; any unassigned one is 0), matched to the nearest of the grid's 256 palette colours. Otherwise `tone` through the colour ramp. Otherwise `level` through the colour ramp. Otherwise unchanged.
+4. **bg:** `bg`, an index. Otherwise `bgtone` through the colour ramp. Otherwise unchanged.
+
+NaN, infinities and out-of-range values never reach the grid: an index output that is NaN gives 0, and the ramps treat NaN as 0.
+
+**Built-ins:**
+- `sin cos abs floor ceil fract sqrt exp log pow min max`;
+- `clamp(x, lo, hi)`, `mix(a, b, t)`, `smooth(e0, e1, x)` (smoothstep), `step(edge, x)`, `select(c, a, b)`, `dist(x0, y0, x1, y1)`, `atan2(y, x)`;
+- `hash(x, y [, seed])`, `noise(x, y [, seed])` and `fbm(x, y, octaves [, seed])`, with exactly the results of `picocalc.noise`. `octaves` must be a constant 1-8.
+
+The maths functions are fast polynomial approximations: sin and cos within 4e-6 for |x| ≤ 10, exp within 1e-6 relative. They give the same results in the simulator and on the device.
+
+**Limits:**
+- source: 4096 bytes;
+- 255 instructions after optimisation, and 32 values live at once;
+- 16 uniforms, 8 arrays of 1024 entries, 4 layers.
+
+Constant expressions are computed once at compile time, unused statements cost nothing, and `a * b + c` is one instruction. Division by a constant is a multiplication by its reciprocal.
+
+**The nearest colour** for `r, g, b`: colours are bucketed 16 levels per channel, and each bucket's answer is cached on the grid (4.5 KB, allocated on the first such run). `setPalette` and `setColor` reset the cache. To keep a scene to its own colours, fill all 256 palette entries with them; the lowest index wins a tie.
+
+### Shader functions
+
+#### `picocalc.chargrid.shader(source)`
+Compiles a shader. Returns it, or `nil` and an error message such as `"line 3:12: unknown name 'hme'"`. It never raises for a bad program.
+
+#### `shader:set(name, value)`
+Sets a declared uniform to a finite number. Raises for an unknown name.
+
+#### `shader:setArray(name, values [, n])`
+Copies `values[1..n]` (default `#values`, at most 1024) into a declared array. Shader index 0 is `values[1]`, and entries past the end of the table read 0. Raises for an unknown name.
+
+#### `shader:run(grid [, x, y, w, h] [, layer1, ...])`
+Runs over the cell rect (default: the whole grid), clipped to the grid, and marks the grid dirty. The layers follow in declaration order, and their count must match. `shader:run(grid, land)` runs over the whole grid with one layer.
+
+#### `shader:getStats()`
+Returns `{ cells, us, instructions, registers }`: the last run's cells and time, and the compiled program's size.
+
+### Performance
+
+A run costs roughly a fixed time per cell per instruction, plus each built-in's own time (`fbm` costs as much as its octaves of `noise`). `shader:getStats()` shows both. Keep work that is the same for a whole column or row in Lua (an `array`), and work that is the same for every cell in a `uniform`.
+
+### Example: a torch-lit map window
+
+```lua
+local view = CG.new(53, 40, 0)
+view:setColorRamp({ 236, 238, 240, 242, 244, 246, 248, 250 })  -- dim greys
+local torch = CG.shader([[
+  uniform px, py
+  d = dist(x, y, px, py)
+  keep = d < 4                          -- full colour near the player
+  tone = clamp(1 - (d - 4) / 9, 0, 1)   -- fading to dark grey beyond
+]])
+-- each frame: blit the map window, then
+torch:set("px", px - camX); torch:set("py", py - camY)
+torch:run(view, 0, 0, 53, 33)
+```
+
 ## picocalc.noise
 
 Deterministic 2-D noise for scenes and procedural maps: the same inputs give the same results in the simulator and on the device. The hash is the one [ascii.rest](https://ascii.rest) pieces use, so with seed 0 a ported piece looks the same; a seed gives independent noise, and the same seed always gives the same map. Every result is in [0, 1). Coordinates are computed in single precision (about 7 significant digits).

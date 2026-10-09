@@ -3523,6 +3523,21 @@ function PicoDeckCharGrid:isDirty() end
 ---@return {cells: integer, us: integer}
 function PicoDeckCharGrid:getStats() end
 
+---@class PicoDeckCharShader : userdata
+local PicoDeckCharShader = {}
+---@param name string a declared uniform
+---@param value number
+function PicoDeckCharShader:set(name, value) end
+---@param name string a declared array
+---@param values number[] shader index 0 is values[1]
+---@param n? integer default #values, at most 1024
+function PicoDeckCharShader:setArray(name, values, n) end
+---@param grid PicoDeckCharGrid
+---@param ... number|PicoDeckCharGrid optional x, y, w, h, then the declared layers in order
+function PicoDeckCharShader:run(grid, ...) end
+---@return {cells: integer, us: integer, instructions: integer, registers: integer}
+function PicoDeckCharShader:getStats() end
+
 ---@class picocalc.chargrid
 ---@field EMPTY integer
 ---@field DOT1 integer
@@ -3563,6 +3578,10 @@ picocalc.chargrid = {}
 ---@param cellH? number
 ---@return PicoDeckCharGrid
 function picocalc.chargrid.new(cols, rows, fontId, cellW, cellH) end
+---@param source string
+---@return PicoDeckCharShader|nil shader
+---@return string? err "line L:C: message"
+function picocalc.chargrid.shader(source) end
 
 -- =============================================================================
 -- picocalc.noise

@@ -302,4 +302,106 @@ T.case("noise", function()
     T.raises(function() N.hash("a", 0) end, "number expected")
 end)
 
+T.case("shader_compile", function()
+    local sh, err = CG.shader("level = hme")
+    T.eq(sh, nil); T.eq(err, "line 1:9: unknown name 'hme'")
+    sh, err = CG.shader("a = 1\nlevel = a +\n")
+    T.eq(sh, nil); T.eq(err, "line 2:12: expected an expression")
+    sh, err = CG.shader(string.rep(" ", 4097))
+    T.eq(sh, nil); T.eq(err, "source is longer than 4096 bytes")
+    T.raises(function() CG.shader({}) end, "string expected")
+    T.ok(CG.shader("level = 1") ~= nil, "a minimal shader")
+    T.ok(CG.shader("") ~= nil, "an empty shader compiles (it writes nothing)")
+end)
+
+T.case("shader_level_and_ramps", function()
+    local g = CG.new(4, 1, nil, 4, 4)
+    g:setRamp("\0\1\2\3\4")
+    CG.shader("level = x / 3"):run(g)
+    T.eq((g:getRow(0)), "\0\1\3\4")
+    T.ok(g:isDirty(), "a run marks the grid dirty")
+end)
+
+T.case("shader_outputs", function()
+    local g = CG.new(3, 1, nil, 4, 4)
+    CG.shader("glyph = 65 + x\nfg = 300\nbg = x - 1"):run(g)
+    local gl, fg, bg = g:getRow(0)
+    T.eq(gl, "ABC"); T.eq(fg, "\255\255\255"); T.eq(bg, "\0\0\1")
+    CG.shader("keep = x == 1\nglyph = 46"):run(g)
+    T.eq((g:getRow(0)), ".B.")
+    -- r, g, b pick the nearest palette entry; a palette change is seen at once.
+    local p = {}
+    for i = 1, 256 do p[i] = 0 end
+    p[8] = 0xF800  -- index 7: red
+    g:setPalette(p)
+    local red = CG.shader("r = 1")
+    red:run(g)
+    local _, f = g:get(0, 0)
+    T.eq(f, 7)
+    g:setColor(7, 0); g:setColor(50, 0xF800)
+    red:run(g)
+    _, f = g:get(0, 0)
+    T.eq(f, 50)
+end)
+
+T.case("shader_uniforms_arrays", function()
+    local g = CG.new(4, 1, nil, 4, 4)
+    local sh = CG.shader("uniform t\narray a\nglyph = a[x] + t")
+    sh:set("t", 10)
+    sh:setArray("a", { 1, 2, 3 })
+    sh:run(g)
+    T.eq((g:getRow(0)), "\11\12\13\13")  -- the index clamps to the last entry
+    sh:setArray("a", { 5, 6, 7 }, 1)
+    sh:run(g)
+    T.eq((g:getRow(0)), "\15\15\15\15")
+    sh:setArray("a", { 5 }, 3)  -- entries past the end of the table read 0
+    sh:run(g)
+    T.eq((g:getRow(0)), "\15\10\10\10")
+    T.raises(function() sh:set("nope", 1) end, "no uniform 'nope'")
+    T.raises(function() sh:set("t", 0 / 0) end, "NaN")
+    T.raises(function() sh:setArray("nope", {}) end, "no array 'nope'")
+    T.raises(function() sh:setArray("a", {}, 1025) end, "0%-1024")
+    T.raises(function() sh:setArray("a", 5) end, "table expected")
+end)
+
+T.case("shader_rect_and_layers", function()
+    local g = CG.new(6, 3, nil, 4, 4)
+    local inc = CG.shader("glyph = glyph + 1")
+    inc:run(g, -2, -1, 4, 3)  -- clipped to x 0-1, y 0-1
+    T.eq((g:getRow(0)), "\1\1\0\0\0\0"); T.eq((g:getRow(2)), "\0\0\0\0\0\0")
+    T.eq(inc:getStats().cells, 4)
+    inc:run(g, 5.6, 0, 100, 1)  -- quantities round: x 6 is off the grid
+    T.eq(inc:getStats().cells, 0)
+    local small = CG.new(2, 1, nil, 4, 4)
+    small:set(0, 0, 9); small:set(1, 0, 8)
+    local sh = CG.shader("layer m\nglyph = m.glyph")
+    sh:run(g, small)  -- the whole grid; the layer reads 0 outside itself
+    T.eq((g:getRow(0)), "\9\8\0\0\0\0"); T.eq((g:getRow(1)), "\0\0\0\0\0\0")
+    sh:run(g, 0, 0, 6, 1, g)  -- the target as its own layer
+    T.eq((g:getRow(0)), "\9\8\0\0\0\0")
+    T.raises(function() sh:run(g) end, "expects 1 layer, got 0")
+    T.raises(function() sh:run(g, small, small) end, "expects 1 layer, got 2")
+    T.raises(function() sh:run(g, 0, 0, 6, 1, "x") end, "chargrid")
+    T.raises(function() sh:run({}) end, "chargrid")
+end)
+
+T.case("shader_stats", function()
+    local g = CG.new(5, 2, nil, 4, 4)
+    local sh = CG.shader("level = x * 0.5 + 0.25")
+    sh:run(g)
+    local st = sh:getStats()
+    T.eq(st.cells, 10); T.eq(st.instructions, 2); T.eq(st.registers, 1)
+    T.ok(st.us >= 0, "us")
+end)
+
+T.case("freed_shader_raises", function()
+    local box = setmetatable({}, { __gc = function(o) DEAD_SHADER = o.s end })
+    box.s = CG.shader("level = 1")  -- created after box, so finalised before it
+    box = nil
+    collectgarbage(); collectgarbage()
+    T.ok(DEAD_SHADER ~= nil, "the shader came back through box's finaliser")
+    T.raises(function() DEAD_SHADER:run(CG.new(1, 1, nil, 4, 4)) end, "freed chargrid shader")
+    DEAD_SHADER = nil
+end)
+
 T.done()

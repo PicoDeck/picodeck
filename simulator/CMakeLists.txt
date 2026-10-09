@@ -402,6 +402,8 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/chargrid_text.c
     ${PICODECK_ROOT}/src/os/chargrid_render.c
     ${PICODECK_ROOT}/src/os/chargrid_display.c
+    ${PICODECK_ROOT}/src/os/charshader_compile.c
+    ${PICODECK_ROOT}/src/os/charshader_vm.c
     ${PICODECK_ROOT}/src/os/lua_bridge_chargrid.c
     ${PICODECK_ROOT}/src/os/module_path.c
     ${PICODECK_ROOT}/src/os/lua_bridge_require.c
@@ -516,7 +518,9 @@ set_source_files_properties(${PICODECK_ROOT}/src/os/gfx3d.c PROPERTIES
 set_source_files_properties(${PICODECK_ROOT}/src/os/chargrid.c
     ${PICODECK_ROOT}/src/os/chargrid_shapes.c
     ${PICODECK_ROOT}/src/os/chargrid_text.c
-    ${PICODECK_ROOT}/src/os/chargrid_render.c PROPERTIES
+    ${PICODECK_ROOT}/src/os/chargrid_render.c
+    ${PICODECK_ROOT}/src/os/charshader_compile.c
+    ${PICODECK_ROOT}/src/os/charshader_vm.c PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 # The bridge inlines noise.h: no FMA contraction, so noise matches the device.
 set_source_files_properties(${PICODECK_ROOT}/src/os/lua_bridge_chargrid.c PROPERTIES
