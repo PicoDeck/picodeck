@@ -156,6 +156,10 @@ picodeck_unit_test(test_chargrid_render
 picodeck_unit_test(test_noise)
 target_compile_options(test_noise PRIVATE -ffp-contract=off -Wdouble-promotion)
 target_link_libraries(test_noise PRIVATE m)
+# The shader's polynomial maths (src/os/charshader_math.h, header-only) vs libm.
+picodeck_unit_test(test_charshader_math)
+target_compile_options(test_charshader_math PRIVATE -ffp-contract=off -Wdouble-promotion)
+target_link_libraries(test_charshader_math PRIVATE m)
 # Lua float formatting vs glibc (built without PICODECK_LUA_SPRINTF: no luaconf).
 picodeck_unit_test(test_numfmt SOURCES ${SRC}/os/lua_numfmt.c)
 target_link_libraries(test_numfmt PRIVATE m)
