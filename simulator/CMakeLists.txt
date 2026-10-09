@@ -518,6 +518,9 @@ set_source_files_properties(${PICODECK_ROOT}/src/os/chargrid.c
     ${PICODECK_ROOT}/src/os/chargrid_text.c
     ${PICODECK_ROOT}/src/os/chargrid_render.c PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
+# The bridge inlines noise.h: no FMA contraction, so noise matches the device.
+set_source_files_properties(${PICODECK_ROOT}/src/os/lua_bridge_chargrid.c PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
 
 target_include_directories(picodeck_simulator PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

@@ -469,6 +469,9 @@ set_source_files_properties(src/os/gfx3d.c PROPERTIES
 # registers (specs/2026-10-09-chargrid-p0-findings.md).
 set_source_files_properties(src/os/chargrid.c src/os/chargrid_shapes.c src/os/chargrid_text.c src/os/chargrid_render.c PROPERTIES
     COMPILE_OPTIONS "-O2;-ffp-contract=off;-Wdouble-promotion")
+# The bridge inlines noise.h: no FMA contraction, so noise matches the simulator.
+set_source_files_properties(src/os/lua_bridge_chargrid.c PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
 
 # ── PIO PSRAM Bulk Transfer (improved driver with 16-bit counters) ─────────────
 # Supports up to 8187 bytes per transaction (vs 27 bytes in polpo library).

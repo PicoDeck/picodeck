@@ -43,8 +43,11 @@ static inline float noise_hash(int32_t x, int32_t y, int32_t seed) {
 static inline float noise_value_at(float x, float y, uint32_t seed_term) {
   const int32_t xi = noise_lattice(x), yi = noise_lattice(y);
   float fx = x - (float)xi, fy = y - (float)yi;
-  if (!(fx >= 0.0f && fx < 1.0f)) fx = 0.0f;  // huge, infinite or NaN coordinates
-  if (!(fy >= 0.0f && fy < 1.0f)) fy = 0.0f;
+  // A tiny negative x rounds x - floor(x) up to exactly 1.0f: keep it just
+  // below 1 so the blend stays at the next cell's corner. Huge, infinite or
+  // NaN coordinates give 0.
+  if (!(fx >= 0.0f && fx < 1.0f)) fx = (fx >= 1.0f && fx < 2.0f) ? NOISE_ONE_BELOW : 0.0f;
+  if (!(fy >= 0.0f && fy < 1.0f)) fy = (fy >= 1.0f && fy < 2.0f) ? NOISE_ONE_BELOW : 0.0f;
   const float u = fx * fx * (3.0f - 2.0f * fx), v = fy * fy * (3.0f - 2.0f * fy);
   const uint32_t h = (uint32_t)xi * NOISE_K_X + (uint32_t)yi * NOISE_K_Y + seed_term;
   const float a = noise_finish(h), b = noise_finish(h + NOISE_K_X);

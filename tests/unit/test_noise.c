@@ -58,6 +58,9 @@ static void test_value_and_fbm_golden(void) {
   // At lattice points value noise is the hash; one octave of fbm is value noise.
   CHECK(noise_value(3.0f, -4.0f, 9) == noise_hash(3, -4, 9));
   CHECK(noise_fbm(1.7f, 2.3f, 1, 5) == noise_value(1.7f, 2.3f, 5));
+  // A tiny negative coordinate stays in cell 0's blend (x - floor(x) rounds to 1.0f).
+  CHECK(fabsf(noise_value(-1e-9f, 0.0f, 0) - noise_value(0.0f, 0.0f, 0)) < 1e-6f);
+  CHECK(fabsf(noise_value(0.0f, -1e-9f, 0) - noise_value(0.0f, 0.0f, 0)) < 1e-6f);
   // Octaves clamp to 1-8.
   CHECK(noise_fbm(1.7f, 2.3f, 0, 5) == noise_fbm(1.7f, 2.3f, 1, 5));
   CHECK(noise_fbm(1.7f, 2.3f, 99, 5) == noise_fbm(1.7f, 2.3f, 8, 5));
