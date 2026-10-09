@@ -463,6 +463,166 @@ static void test_layers(void) {
   chargrid_free(g);
 }
 
+// ── Task 6: outputs ──────────────────────────────────────────────────────────
+static int s_run_cells;
+
+static void run_src(const char *src, chargrid_t *g) {
+  charshader_t *s = compile(src);
+  if (!s) printf("compile failed: %s\n  %s\n", s_err, src);
+  CHECK(s != NULL);
+  s_run_cells = s ? charshader_run(s, g, 0, 0, g->cols, g->rows, NULL, 0) : -1;
+  charshader_free(s);
+}
+
+static void check_row(const uint8_t *plane, const uint8_t *want, int n, const char *what) {
+  for (int i = 0; i < n; i++)
+    if (plane[i] != want[i]) {
+      printf("  %s[%d] = %d, want %d\n", what, i, plane[i], want[i]);
+      CHECK(plane[i] == want[i]);
+      return;
+    }
+}
+
+static void test_outputs_direct(void) {
+  chargrid_t *g = chargrid_create(6, 1, 4, 4);
+  g->dirty = false;
+  run_src("glyph = x * 50.4\nfg = x - 2.5\nbg = 300", g);
+  CHECK_EQ_INT(s_run_cells, 6);
+  check_row(g->glyph, (const uint8_t[]){0, 50, 101, 151, 202, 252}, 6, "glyph");  // rounded
+  check_row(g->fg, (const uint8_t[]){0, 0, 0, 1, 2, 3}, 6, "fg");               // clamped at 0
+  check_row(g->bg, (const uint8_t[]){255, 255, 255, 255, 255, 255}, 6, "bg");   // clamped at 255
+  CHECK(g->dirty);
+  // keep (>= 0.5) leaves cells alone; unassigned planes stay.
+  run_src("keep = x < 3\nglyph = 9", g);
+  check_row(g->glyph, (const uint8_t[]){0, 50, 101, 9, 9, 9}, 6, "glyph");
+  check_row(g->fg, (const uint8_t[]){0, 0, 0, 1, 2, 3}, 6, "fg");
+  chargrid_free(g);
+}
+
+static void test_outputs_ramps(void) {
+  chargrid_t *g = chargrid_create(6, 1, 4, 4);
+  chargrid_set_ramp(g, (const uint8_t[]){0, 1, 2, 3, 4}, 5, false);
+  chargrid_set_color_ramp(g, (const uint8_t[]){10, 20}, 2, false);
+  run_src("level = x / 5", g);  // level drives glyph and, with no tone, fg
+  check_row(g->glyph, (const uint8_t[]){0, 1, 2, 2, 3, 4}, 6, "glyph");
+  check_row(g->fg, (const uint8_t[]){10, 10, 10, 20, 20, 20}, 6, "fg");
+  run_src("level = x / 5\ntone = 1 - x / 5", g);  // tone beats level for fg
+  check_row(g->fg, (const uint8_t[]){20, 20, 20, 10, 10, 10}, 6, "fg");
+  run_src("tone = 1\nfg = 7", g);  // fg beats tone
+  check_row(g->fg, (const uint8_t[]){7, 7, 7, 7, 7, 7}, 6, "fg");
+  run_src("bgtone = x / 5", g);
+  check_row(g->bg, (const uint8_t[]){10, 10, 10, 20, 20, 20}, 6, "bg");
+  // Dithered ramps step per cell exactly as chargrid_ramp_step does.
+  chargrid_t *d = chargrid_create(16, 4, 4, 4);
+  chargrid_set_ramp(d, (const uint8_t[]){0, 1, 2, 3, 4}, 5, true);
+  run_src("level = 0.37", d);
+  int bad = 0;
+  for (int y = 0; y < 4; y++)
+    for (int x = 0; x < 16; x++)
+      if (d->glyph[y * 16 + x] != chargrid_ramp_step(0.37f, 5, true, x, y)) bad++;
+  CHECK_EQ_INT(bad, 0);
+  // No ramp set: level and tone leave the planes alone.
+  chargrid_t *e = chargrid_create(2, 1, 4, 4);
+  run_src("level = 1\ntone = 1", e);
+  CHECK(e->glyph[0] == 0 && e->fg[0] == CG_DEFAULT_FG);
+  chargrid_free(e);
+  chargrid_free(d);
+  chargrid_free(g);
+}
+
+static void test_outputs_nonfinite(void) {
+  chargrid_t *g = chargrid_create(6, 1, 4, 4);
+  chargrid_set_ramp(g, (const uint8_t[]){5, 6, 7}, 3, false);
+  run_src("glyph = 0 / 0\nfg = 1 / 0\nbg = -1 / 0", g);
+  check_row(g->glyph, (const uint8_t[]){0, 0, 0, 0, 0, 0}, 6, "glyph");
+  check_row(g->fg, (const uint8_t[]){255, 255, 255, 255, 255, 255}, 6, "fg");
+  check_row(g->bg, (const uint8_t[]){0, 0, 0, 0, 0, 0}, 6, "bg");
+  run_src("glyph = (x - x) / (x - x)\nfg = log(x - 3)\nbg = exp(x * 100)", g);
+  check_row(g->glyph, (const uint8_t[]){0, 0, 0, 0, 0, 0}, 6, "glyph");
+  check_row(g->fg, (const uint8_t[]){0, 0, 0, 0, 0, 1}, 6, "fg");  // NaN, -inf, 0, 0.69
+  check_row(g->bg, (const uint8_t[]){1, 255, 255, 255, 255, 255}, 6, "bg");
+  run_src("level = sqrt(x - 3)\nr = 0 / 0\ng = 1 / 0\nb = -1 / 0", g);  // NaN level: ramp entry 0
+  check_row(g->glyph, (const uint8_t[]){5, 5, 5, 5, 7, 7}, 6, "glyph");
+  chargrid_free(g);
+}
+
+static void test_outputs_constant(void) {
+  chargrid_t *g = chargrid_create(4, 2, 4, 4);
+  run_src("fg = 300", g);
+  CHECK(g->fg[0] == 255 && g->fg[7] == 255);
+  g->dirty = false;
+  run_src("a = 1", g);  // no outputs: nothing written, not dirty
+  CHECK_EQ_INT(s_run_cells, 8);
+  CHECK(!g->dirty);
+  run_src("keep = 1\nglyph = 5", g);  // everything kept
+  CHECK(g->glyph[0] == 0 && g->glyph[7] == 0);
+  chargrid_free(g);
+}
+
+static void test_nearest(void) {
+  chargrid_t *g = chargrid_create(4, 1, 4, 4);
+  for (int i = 0; i < 256; i++) g->palette[i] = 0x0000;
+  g->palette[7] = 0xF800;    // red
+  g->palette[9] = 0x07E0;    // green
+  g->palette[200] = 0x001F;  // blue
+  chargrid_palette_changed(g);
+  run_src("r = x == 1\ng = x == 2\nb = x == 3", g);
+  check_row(g->fg, (const uint8_t[]){0, 7, 9, 200}, 4, "fg");  // black: the lowest index
+  CHECK(g->nearest != NULL);
+  CHECK_EQ_INT(chargrid_nearest(g, 1.0f, 0.0f, 0.0f), 7);
+  CHECK_EQ_INT(chargrid_nearest(g, NAN, 2.0f, -1.0f), 9);  // NaN 0, clamped to 1 and 0
+  run_src("r = 1", g);  // g and b unassigned: 0
+  check_row(g->fg, (const uint8_t[]){7, 7, 7, 7}, 4, "fg");
+  chargrid_free(g);
+}
+
+static void test_nearest_invalidated(void) {
+  chargrid_t *g = chargrid_create(1, 1, 4, 4);
+  for (int i = 0; i < 256; i++) g->palette[i] = 0x0000;
+  g->palette[7] = 0xF800;
+  chargrid_palette_changed(g);
+  run_src("r = 1", g);
+  CHECK_EQ_INT(g->fg[0], 7);
+  g->palette[7] = 0x0000;
+  g->palette[50] = 0xF800;
+  // The cache still answers 7 until the change is reported...
+  CHECK_EQ_INT(chargrid_nearest(g, 1.0f, 0.0f, 0.0f), 7);
+  g->dirty = false;
+  chargrid_palette_changed(g);
+  CHECK(g->dirty);
+  // ...then it is rebuilt.
+  run_src("r = 1", g);
+  CHECK_EQ_INT(g->fg[0], 50);
+  chargrid_free(g);
+}
+
+static void test_run_rect_clip(void) {
+  chargrid_t *g = chargrid_create(10, 4, 4, 4);
+  charshader_t *s = compile("glyph = glyph + 1");
+  CHECK_EQ_INT(charshader_run(s, g, -3, -2, 6, 4, NULL, 0), 3 * 2);
+  CHECK_EQ_INT(charshader_run(s, g, 8, 3, INT32_MAX, INT32_MAX, NULL, 0), 2);
+  CHECK_EQ_INT(charshader_run(s, g, 0, 0, -1, 5, NULL, 0), 0);
+  CHECK_EQ_INT(charshader_run(s, g, 10, 0, 5, 5, NULL, 0), 0);
+  CHECK_EQ_INT(charshader_run(s, g, INT32_MIN, INT32_MIN, INT32_MAX, INT32_MAX, NULL, 0), 0);
+  int ones = 0, total = 0;
+  for (int i = 0; i < 40; i++) {
+    ones += g->glyph[i] == 1;
+    total += g->glyph[i];
+  }
+  CHECK_EQ_INT(ones, 8);
+  CHECK_EQ_INT(total, 8);
+  // The target as its own layer: each cell reads itself before it is written.
+  charshader_t *t = compile("layer m\nglyph = m.glyph + 2");
+  chargrid_t *self[1] = {g};
+  charshader_run(t, g, 0, 0, 10, 4, self, 1);
+  CHECK_EQ_INT(g->glyph[0], 3);   // run once before, then +2
+  CHECK_EQ_INT(g->glyph[5], 2);   // never run before
+  CHECK_EQ_INT(g->glyph[39], 3);
+  charshader_free(t);
+  charshader_free(s);
+  chargrid_free(g);
+}
+
 int main(void) {
   test_compile_errors();
   test_limits();
@@ -474,5 +634,12 @@ int main(void) {
   test_strips();
   test_uniforms_and_arrays();
   test_layers();
+  test_outputs_direct();
+  test_outputs_ramps();
+  test_outputs_nonfinite();
+  test_outputs_constant();
+  test_nearest();
+  test_nearest_invalidated();
+  test_run_rect_clip();
   return check_report("test_charshader");
 }

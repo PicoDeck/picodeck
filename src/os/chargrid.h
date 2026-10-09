@@ -20,6 +20,9 @@
 #define CG_KEEP (-1)        // as a glyph or colour argument: leave that plane alone
 #define CG_DEFAULT_FG 15    // xterm-256 white
 #define CG_DEFAULT_BG 0     // black
+#ifndef CG_NEAREST_BITS
+#define CG_NEAREST_BITS 4   // per channel: the nearest-palette table has 2^(3*bits) entries (4 KB)
+#endif
 
 enum { CG_PLANE_GLYPH = 0, CG_PLANE_FG = 1, CG_PLANE_BG = 2 };
 
@@ -53,6 +56,7 @@ typedef struct {
   bool ramp_dither, cramp_dither;
   bool dirty;                  // written since the last render
   uint8_t defined[32];         // one bit per code set by chargrid_define_glyph
+  uint8_t *nearest;            // NULL until chargrid_nearest: the index table, then its filled bitmap
 } chargrid_t;
 
 // A render target. The clip rect is inclusive and must lie inside the buffer.
@@ -115,6 +119,16 @@ void chargrid_blit(chargrid_t *dst, const chargrid_t *src, int sx, int sy, int w
                    int dx, int dy, int transparent);
 // Shifts the contents by (dx, dy) and fills the exposed cells.
 void chargrid_scroll(chargrid_t *g, int dx, int dy, int glyph, int fg, int bg);
+// The palette index nearest to colour (r, g, b), each 0..1 (clamped; NaN
+// is 0), by weighted RGB distance (0.3, 0.5, 0.2), the lowest index on a
+// tie. Colours are bucketed at CG_NEAREST_BITS per channel, and each
+// bucket's answer (for its centre) is cached on the grid: the cache is
+// allocated on first use (a full search each time if that fails) and
+// forgotten by chargrid_palette_changed.
+uint8_t chargrid_nearest(chargrid_t *g, float r, float gr, float b);
+// Call after writing g->palette: forgets the cached nearest colours and
+// marks the grid dirty.
+void chargrid_palette_changed(chargrid_t *g);
 
 // ── chargrid_shapes.c ────────────────────────────────────────────────────────
 

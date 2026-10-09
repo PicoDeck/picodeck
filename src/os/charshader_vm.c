@@ -218,10 +218,61 @@ static const float *output(charshader_t *s, int k, int n) {
   return t;
 }
 
-// The rect clipped to g, in strips; output `out` into values. Task 6 adds the
-// path that writes the grid.
+// A glyph, fg or bg value as an index: rounded to nearest, clamped to
+// 0-255; NaN is 0.
+static inline uint8_t cs_index(float v) {
+  if (!(v > 0.0f)) return 0;
+  if (v >= 255.0f) return 255;
+  return (uint8_t)(int)(v + 0.5f);
+}
+
+#define HAS(k) ((s->out_used >> (k)) & 1u)
+
+// The output rules (spec, "Lua API: shader"): keep; glyph, else level
+// through the ramp; fg, else r,g,b through the nearest palette entry, else
+// tone, else level, through the colour ramp; bg, else bgtone through the
+// colour ramp. A plane with none of these stays as it is.
+static void apply(charshader_t *s, chargrid_t *g, int x0, int y, int n) {
+  const float *keep = HAS(CS_OUT_KEEP) ? output(s, CS_OUT_KEEP, n) : NULL;
+  const float *glyph = HAS(CS_OUT_GLYPH) ? output(s, CS_OUT_GLYPH, n) : NULL;
+  const float *level = HAS(CS_OUT_LEVEL) ? output(s, CS_OUT_LEVEL, n) : NULL;
+  const float *fg = HAS(CS_OUT_FG) ? output(s, CS_OUT_FG, n) : NULL;
+  const float *r = HAS(CS_OUT_R) ? output(s, CS_OUT_R, n) : NULL;
+  const float *gr = HAS(CS_OUT_G) ? output(s, CS_OUT_G, n) : NULL;
+  const float *b = HAS(CS_OUT_B) ? output(s, CS_OUT_B, n) : NULL;
+  const float *tone = HAS(CS_OUT_TONE) ? output(s, CS_OUT_TONE, n) : NULL;
+  const float *bg = HAS(CS_OUT_BG) ? output(s, CS_OUT_BG, n) : NULL;
+  const float *bgtone = HAS(CS_OUT_BGTONE) ? output(s, CS_OUT_BGTONE, n) : NULL;
+  const bool rgb = r || gr || b;
+  const int rn = g->ramp_n, cn = g->cramp_n;
+  const size_t base = (size_t)y * (size_t)g->cols + (size_t)x0;
+  for (int j = 0; j < n; j++) {
+    if (keep && keep[j] >= 0.5f) continue;
+    const int cx = x0 + j;
+    const size_t i = base + (size_t)j;
+    if (glyph)
+      g->glyph[i] = cs_index(glyph[j]);
+    else if (level && rn)
+      g->glyph[i] = g->ramp[chargrid_ramp_step(level[j], rn, g->ramp_dither, cx, y)];
+    if (fg)
+      g->fg[i] = cs_index(fg[j]);
+    else if (rgb)
+      g->fg[i] = chargrid_nearest(g, r ? r[j] : 0.0f, gr ? gr[j] : 0.0f, b ? b[j] : 0.0f);
+    else if (tone && cn)
+      g->fg[i] = g->cramp[chargrid_ramp_step(tone[j], cn, g->cramp_dither, cx, y)];
+    else if (level && cn)
+      g->fg[i] = g->cramp[chargrid_ramp_step(level[j], cn, g->cramp_dither, cx, y)];
+    if (bg)
+      g->bg[i] = cs_index(bg[j]);
+    else if (bgtone && cn)
+      g->bg[i] = g->cramp[chargrid_ramp_step(bgtone[j], cn, g->cramp_dither, cx, y)];
+  }
+}
+
+// The rect clipped to g, in strips: the outputs to the grid, or output `out` into values.
 static int run(charshader_t *s, chargrid_t *g, int x, int y, int w, int h,
                chargrid_t *const *layers, int nlayers, int out, float *values) {
+  const bool to_grid = values == NULL;
   if (w <= 0 || h <= 0) return 0;
   int64_t x0 = x, y0 = y, x1 = (int64_t)x + w, y1 = (int64_t)y + h;
   if (x0 < 0) x0 = 0;
@@ -238,9 +289,14 @@ static int run(charshader_t *s, chargrid_t *g, int x, int y, int w, int h,
     for (int cx = (int)x0; cx < (int)x1; cx += CS_STRIP) {
       const int n = (int)x1 - cx < CS_STRIP ? (int)x1 - cx : CS_STRIP;
       exec(s, g, lay, cx, cy, n, inv_cols, inv_rows);
-      memcpy(values, output(s, out, n), (size_t)n * sizeof(float));
-      values += n;
+      if (values) {
+        memcpy(values, output(s, out, n), (size_t)n * sizeof(float));
+        values += n;
+      } else {
+        apply(s, g, cx, cy, n);
+      }
     }
+  if (to_grid && s->out_used) g->dirty = true;
   return (int)((x1 - x0) * (y1 - y0));
 }
 
@@ -248,6 +304,11 @@ int charshader_run_values(charshader_t *s, chargrid_t *g, int x, int y, int w, i
                           chargrid_t *const *layers, int nlayers, int out, float *values) {
   if (out < 0 || out >= CS_OUT_COUNT || !((s->out_used >> out) & 1u)) return -1;
   return run(s, g, x, y, w, h, layers, nlayers, out, values);
+}
+
+int charshader_run(charshader_t *s, chargrid_t *g, int x, int y, int w, int h,
+                   chargrid_t *const *layers, int nlayers) {
+  return run(s, g, x, y, w, h, layers, nlayers, -1, NULL);
 }
 
 bool charshader_set_uniform(charshader_t *s, const char *name, float v) {
