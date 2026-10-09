@@ -17,10 +17,11 @@ pytestmark = [pytest.mark.hardware, pytest.mark.timeout(600)]
 BENCH, BENCH_ID = "chargrid_bench", "com.test.chargrid_bench"
 SCENE_DIR = GOLDEN_DIR / "chargrid_scene"
 # P0 (specs/2026-10-09-chargrid-p0-findings.md): the register-only spike blit
-# took 3.05 ms at 6x8 and 5.16 ms at 80x80@4x4. Regression guards on the
-# median; the P1 target for 80x80@4x4 (<= 4 ms, the spec's damage-tracking
-# threshold) is reported, not asserted.
-MAX_US = {"53x40@6x8": 3500, "80x80@4x4": 5500}
+# took 3.05 ms at 6x8 and 5.16 ms at 80x80@4x4. P1 measured 64x40@5x8 at
+# 9.7 ms on the per-pixel path; P2 puts odd widths on the pair path (~3.7 ms
+# expected). Regression guards on the median; the P1 target for 80x80@4x4
+# (<= 4 ms, the spec's damage-tracking threshold) is reported, not asserted.
+MAX_US = {"53x40@6x8": 3500, "80x80@4x4": 5500, "64x40@5x8": 4500}
 TARGET_US_80X80 = 4000
 
 

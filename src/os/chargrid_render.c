@@ -4,7 +4,7 @@
 // (specs/2026-10-09-chargrid-p0-findings.md). Built at -O2.
 // Pair stores are plain 32-bit STRs that may be unaligned (2-byte aligned):
 // legal on the Cortex-M33 and on hosts, so the framebuffer's alignment and
-// the cell's x parity do not matter.
+// the cell's x parity do not matter. Odd widths store their last column as one halfword.
 #include "chargrid.h"
 
 typedef uint32_t __attribute__((aligned(2), may_alias)) cg_word_t;
@@ -23,6 +23,9 @@ static inline int64_t floordiv(int64_t a, int64_t b) {  // b > 0
 }
 
 #define PAIR(p) (bb ^ (xr & k_pairmask[(bits >> (2 * (p))) & 3u]))
+// One pixel, column k: the low half of a pair word (bb's low half is the bg,
+// xr's the fg ^ bg), selected by mask bit k. Odd widths end with one of these.
+#define LAST(k) ((uint16_t)(bb ^ (xr & (0u - ((bits >> (k)) & 1u)))))
 
 // Cells c0..c1 of the row whose first plane index is `base`, all wholly
 // inside the clip, starting at pixel dst (pair stores are 2-byte aligned).
@@ -45,12 +48,15 @@ static inline int64_t floordiv(int64_t a, int64_t b) {  // b > 0
   }
 
 DEFINE_FAST_ROW(row_w4, 4, d[0] = PAIR(0); d[1] = PAIR(1);)
+DEFINE_FAST_ROW(row_w5, 5, d[0] = PAIR(0); d[1] = PAIR(1); row[4] = LAST(4);)
 DEFINE_FAST_ROW(row_w6, 6, d[0] = PAIR(0); d[1] = PAIR(1); d[2] = PAIR(2);)
+DEFINE_FAST_ROW(row_w7, 7, d[0] = PAIR(0); d[1] = PAIR(1); d[2] = PAIR(2); row[6] = LAST(6);)
 DEFINE_FAST_ROW(row_w8, 8, d[0] = PAIR(0); d[1] = PAIR(1); d[2] = PAIR(2); d[3] = PAIR(3);)
 
-static void row_even(const chargrid_t *g, size_t base, int c0, int c1, uint16_t *dst, int stride,
-                     bool swap) {
-  const int cw = g->cell_w, ch = g->cell_h, pairs = cw / 2;
+// Any width: cw / 2 pair stores, then the last column alone when cw is odd.
+static void row_any(const chargrid_t *g, size_t base, int c0, int c1, uint16_t *dst, int stride,
+                    bool swap) {
+  const int cw = g->cell_w, ch = g->cell_h, pairs = cw / 2, odd = cw & 1;
   for (int c = c0; c <= c1; c++, dst += cw) {
     const size_t i = base + (size_t)c;
     const uint32_t f = cg_color(g, g->fg[i], swap), b = cg_color(g, g->bg[i], swap);
@@ -61,13 +67,14 @@ static void row_even(const chargrid_t *g, size_t base, int c0, int c1, uint16_t 
       cg_word_t *d = (cg_word_t *)row;
       const uint32_t bits = m[r];
       for (int p = 0; p < pairs; p++) d[p] = PAIR(p);
+      if (odd) row[cw - 1] = LAST(cw - 1);
     }
   }
 }
 
 typedef void (*fast_row_fn)(const chargrid_t *, size_t, int, int, uint16_t *, int, bool);
 
-// One cell pixel by pixel, clipped: edge cells and odd widths (even widths take the pair path at any x).
+// One cell pixel by pixel, clipped: the cells cut by the clip rect.
 static void cell_slow(const chargrid_t *g, size_t i, const chargrid_target_t *t, int64_t x,
                       int64_t y) {
   const int cw = g->cell_w, ch = g->cell_h;
@@ -103,13 +110,14 @@ int chargrid_render(chargrid_t *g, const chargrid_target_t *t, int px, int py, i
   if (r0 < kr0) r0 = kr0;
   if (r1 > kr1) r1 = kr1;
   if (c1 < c0 || r1 < r0) return 0;
-  // Cells wholly inside the clip horizontally take the pair path when the
-  // width is even.
+  // Cells wholly inside the clip horizontally take the fast path, at any
+  // width and any x.
   int64_t f0 = floordiv(t->clip_x0 - ox + cw - 1, cw), f1 = floordiv(t->clip_x1 - ox + 1, cw) - 1;
   if (f0 < c0) f0 = c0;
   if (f1 > c1) f1 = c1;
-  const bool pairs = (cw & 1) == 0 && f0 <= f1;
-  const fast_row_fn fast = cw == 4 ? row_w4 : cw == 6 ? row_w6 : cw == 8 ? row_w8 : row_even;
+  const bool pairs = f0 <= f1;
+  const fast_row_fn fast = cw == 4 ? row_w4 : cw == 5 ? row_w5 : cw == 6 ? row_w6
+                           : cw == 7 ? row_w7 : cw == 8 ? row_w8 : row_any;
   for (int64_t r = r0; r <= r1; r++) {
     const int64_t y = oy + r * ch;
     const size_t base = (size_t)r * (size_t)g->cols;

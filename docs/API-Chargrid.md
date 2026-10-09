@@ -69,10 +69,10 @@ Measured on the device (`-O2`, one call), a full-window draw takes:
 |---|---|
 | 53×40 at 6×8 | ~3.1 ms |
 | 40×26 at 8×12 | ~2.5 ms |
-| 64×40 at 5×8 (odd width, per-pixel) | ~9.7 ms |
+| 64×40 at 5×8 | ~3.7 ms (P2 estimate; Task 9 replaces it with the measured median) |
 | 80×80 at 4×4 | ~5 ms |
 
-Cells with an even width take a two-pixels-per-store fast path at any x (pair stores may be unaligned: 53×40 at 6×8 drawn at x = 1 takes ~3.3 ms against ~3.1 ms at x = 0). Odd widths draw pixel by pixel and cost about 3× as much.
+Cells of every width take a two-pixels-per-store fast path at any x (odd widths store their last column on its own; pair stores may be unaligned: 53×40 at 6×8 drawn at x = 1 takes ~3.3 ms against ~3.1 ms at x = 0). Only cells cut by the clip rect draw pixel by pixel.
 
 For per-cell maths in Lua, compute a row of levels into a reused table and hand it to `grid:shadeRow()`, one call per row (about 0.9 µs per cell).
 
