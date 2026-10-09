@@ -20,6 +20,9 @@
 #define CG_KEEP (-1)        // as a glyph or colour argument: leave that plane alone
 #define CG_DEFAULT_FG 15    // xterm-256 white
 #define CG_DEFAULT_BG 0     // black
+#ifndef CG_NEAREST_BITS
+#define CG_NEAREST_BITS 4   // per channel: the nearest-palette table has 2^(3*bits) entries (4 KB)
+#endif
 
 enum { CG_PLANE_GLYPH = 0, CG_PLANE_FG = 1, CG_PLANE_BG = 2 };
 
@@ -53,6 +56,8 @@ typedef struct {
   bool ramp_dither, cramp_dither;
   bool dirty;                  // written since the last render
   uint8_t defined[32];         // one bit per code set by chargrid_define_glyph
+  uint8_t *nearest;            // NULL until chargrid_nearest: the index table, then its filled bitmap
+  bool nearest_failed;         // allocating nearest failed: not retried until the palette changes
 } chargrid_t;
 
 // A render target. The clip rect is inclusive and must lie inside the buffer.
@@ -103,6 +108,22 @@ void chargrid_set_color_ramp(chargrid_t *g, const uint8_t *indices, int n, bool 
 // v clamped to 0..1 (NaN is 0), plus the 4x4 Bayer offset at (x, y) when
 // dither; always 0..n-1.
 int chargrid_ramp_step(float v, int n, bool dither, int x, int y);
+// The 4x4 Bayer matrix as offsets in [-0.47, 0.47] (ascii.rest's dither):
+// cell (x, y) dithers by entry (y & 3) * 4 + (x & 3).
+extern const float chargrid_bayer_off[16];
+// chargrid_ramp_step for n = last + 1 >= 2 (top is (float)last), given the
+// cell's dither offset (0.0f when not dithering: adding it changes
+// nothing). Inline for the shader's loops.
+static inline int chargrid_ramp_index(float v, float top, int last, float off) {
+  if (!(v >= 0.0f)) v = 0.0f;  // NaN too
+  if (v > 1.0f) v = 1.0f;
+  float s = v * top + 0.5f;
+  s += off;
+  int step = (int)s;  // s >= 0.03, so truncation is floor
+  if (step < 0) step = 0;
+  if (step > last) step = last;
+  return step;
+}
 // One cell: level -> glyph through the ramp, tone -> fg through the colour
 // ramp. A plane is left alone when its flag is false or its ramp is unset.
 void chargrid_shade(chargrid_t *g, int x, int y, float level, bool has_level,
@@ -115,6 +136,17 @@ void chargrid_blit(chargrid_t *dst, const chargrid_t *src, int sx, int sy, int w
                    int dx, int dy, int transparent);
 // Shifts the contents by (dx, dy) and fills the exposed cells.
 void chargrid_scroll(chargrid_t *g, int dx, int dy, int glyph, int fg, int bg);
+// The palette index nearest to colour (r, g, b), each 0..1 (clamped; NaN
+// is 0), by weighted RGB distance (0.3, 0.5, 0.2), the lowest index on a
+// tie. Colours are bucketed at CG_NEAREST_BITS per channel, and each
+// bucket's answer (for its centre) is cached on the grid: the cache is
+// allocated on first use and forgotten by chargrid_palette_changed. If the
+// allocation fails, each call searches in full, and the allocation is next
+// tried after chargrid_palette_changed (not once per cell).
+uint8_t chargrid_nearest(chargrid_t *g, float r, float gr, float b);
+// Call after writing g->palette: forgets the cached nearest colours and
+// marks the grid dirty.
+void chargrid_palette_changed(chargrid_t *g);
 
 // ── chargrid_shapes.c ────────────────────────────────────────────────────────
 

@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [elf_plan, app_manifest, wav, qoa, hid_pad, chargrid_text]
+        target: [elf_plan, app_manifest, wav, qoa, hid_pad, chargrid_text, charshader]
     steps:
       - uses: actions/checkout@v4
 

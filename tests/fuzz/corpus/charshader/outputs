@@ -1,0 +1,9 @@
+uniform t
+array a
+layer m, n
+glyph = a[x + t] + m.fg * n.bg
+bg = select(x > 3, 300, -1)
+fg = 0 / 0
+r = x / cols; g = y / rows; b = u * v
+bgtone = fract(x * 0.37)
+keep = (x % 3) == 0

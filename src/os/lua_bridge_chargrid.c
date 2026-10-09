@@ -1,13 +1,17 @@
 // picocalc.chargrid: character-cell grids over src/os/chargrid.h, drawn by
-// one C call (specs/2026-10-09-chargrid-design.md). Cell positions, pixel
-// positions and sizes are quantities (lb_checkint: floats round); glyph
-// codes, palette indices, colours, styles and font ids are exact integers.
-// A grid owns one umm block; nothing in it points at another object (fonts
-// are copied into the glyph cache, blits copy at once).
+// one C call, and shaders that compute cells in C (charshader.h); and
+// picocalc.noise (noise.h). The design: specs/2026-10-09-chargrid-design.md.
+// Cell positions, pixel positions and sizes are quantities (lb_checkint:
+// floats round); glyph codes, palette indices, colours, styles and font ids
+// are exact integers. A grid owns one umm block; nothing in it points at
+// another object (fonts are copied into the glyph cache, blits copy at
+// once).
 #include "lua_bridge_internal.h"
 
 #include "../fonts/font_registry.h"
 #include "chargrid.h"
+#include "charshader.h"
+#include "noise.h"
 #include "lauxlib.h"
 #include "pico/time.h"
 
@@ -263,7 +267,7 @@ static int l_grid_setPalette(lua_State *L) {
     g->palette[(size_t)first + k] = (uint16_t)lua_tointeger(L, -1);
     lua_pop(L, 1);
   }
-  g->dirty = true;
+  chargrid_palette_changed(g);  // also forgets the shader's nearest-colour cache
   return 0;
 }
 
@@ -271,7 +275,7 @@ static int l_grid_setColor(lua_State *L) {
   chargrid_t *g = check_grid(L, 1);
   const int i = check_range(L, 2, 0, 255, "index");
   g->palette[i] = (uint16_t)check_range(L, 3, 0, 0xFFFF, "colour");
-  g->dirty = true;
+  chargrid_palette_changed(g);  // also forgets the shader's nearest-colour cache
   return 0;
 }
 
@@ -508,6 +512,154 @@ static int l_grid_getStats(lua_State *L) {
   return 1;
 }
 
+// ── shaders ──────────────────────────────────────────────────────────────────
+// A shader owns one umm block and points at no grid: run() takes its target
+// and layers per call, so nothing needs anchoring.
+#define SHADER_MT "picocalc.chargrid.shader"
+
+typedef struct {
+  charshader_t *s;  // NULL once collected
+  int last_cells;
+  uint32_t last_us;
+} shader_ud_t;
+
+static shader_ud_t *check_sud(lua_State *L, int idx) {
+  shader_ud_t *u = (shader_ud_t *)lb_checkudata(L, idx, SHADER_MT);
+  if (!u->s) luaL_error(L, "attempt to use a freed chargrid shader");
+  return u;
+}
+
+// shader(source) -> shader | nil, "line L:C: message". Never raises for a bad program.
+static int l_chargrid_shader(lua_State *L) {
+  size_t len;
+  const char *src = luaL_checklstring(L, 1, &len);
+  shader_ud_t *u = (shader_ud_t *)lua_newuserdatauv(L, sizeof(shader_ud_t), 0);
+  u->s = NULL;
+  u->last_cells = 0;
+  u->last_us = 0;
+  luaL_setmetatable(L, SHADER_MT);
+  char err[128];
+  u->s = charshader_compile(src, len, err, sizeof err);
+  if (!u->s) {
+    lua_pushnil(L);
+    lua_pushstring(L, err);
+    return 2;
+  }
+  return 1;
+}
+
+static int l_shader_gc(lua_State *L) {
+  shader_ud_t *u = (shader_ud_t *)lb_checkudata(L, 1, SHADER_MT);
+  if (u->s) {
+    charshader_free(u->s);
+    u->s = NULL;
+  }
+  return 0;
+}
+
+static int l_shader_set(lua_State *L) {
+  charshader_t *s = check_sud(L, 1)->s;
+  const char *name = luaL_checkstring(L, 2);
+  const float v = lb_checkfloat(L, 3);
+  if (!charshader_set_uniform(s, name, v)) return luaL_error(L, "shader has no uniform '%s'", name);
+  return 0;
+}
+
+// setArray(name, values [, n]): values[1..n] (default #values); entries past
+// the end of the table read 0.
+static int l_shader_setArray(lua_State *L) {
+  charshader_t *s = check_sud(L, 1)->s;
+  const char *name = luaL_checkstring(L, 2);
+  luaL_checktype(L, 3, LUA_TTABLE);
+  const bool given = !lua_isnoneornil(L, 4);
+  const lua_Integer n = given ? lb_checkint(L, 4) : (lua_Integer)lua_rawlen(L, 3);
+  if (n < 0 || n > CS_MAX_ARRAY_LEN)
+    return luaL_argerror(L, given ? 4 : 3, "an array holds 0-1024 values");
+  float *a = charshader_array(s, name, (int)n);
+  if (!a) return luaL_error(L, "shader has no array '%s'", name);
+  lb_array_t t;
+  lb_array_begin(L, 3, &t);
+  for (lua_Integer i = 0; i < n; i++) a[i] = lb_array_number(&t, i + 1);
+  return 0;
+}
+
+// run(grid [, x, y, w, h] [, layer...]): the rect defaults to the whole grid;
+// the layers must match the shader's declarations in number.
+static int l_shader_run(lua_State *L) {
+  shader_ud_t *u = check_sud(L, 1);
+  chargrid_t *g = check_grid(L, 2);
+  int x = 0, y = 0, w = g->cols, h = g->rows, first = 3;
+  if (!lua_isnoneornil(L, 3) && lua_type(L, 3) != LUA_TUSERDATA) {
+    x = qint(L, 3);
+    y = qint(L, 4);
+    w = qint(L, 5);
+    h = qint(L, 6);
+    first = 7;
+  }
+  const int want = charshader_layer_count(u->s);
+  const int got = lua_gettop(L) >= first ? lua_gettop(L) - first + 1 : 0;
+  if (got != want)
+    return luaL_error(L, "shader expects %d layer%s, got %d", want, want == 1 ? "" : "s", got);
+  chargrid_t *layers[CS_MAX_LAYERS] = {NULL, NULL, NULL, NULL};
+  for (int i = 0; i < want; i++) layers[i] = check_grid(L, first + i);
+  const uint32_t t0 = (uint32_t)to_us_since_boot(get_absolute_time());
+  u->last_cells = charshader_run(u->s, g, x, y, w, h, layers, want);
+  u->last_us = (uint32_t)to_us_since_boot(get_absolute_time()) - t0;
+  return 0;
+}
+
+static int l_shader_getStats(lua_State *L) {
+  const shader_ud_t *u = check_sud(L, 1);
+  charshader_info_t info;
+  charshader_info(u->s, &info);
+  lua_createtable(L, 0, 4);
+  lua_pushinteger(L, u->last_cells);
+  lua_setfield(L, -2, "cells");
+  lua_pushinteger(L, (lua_Integer)u->last_us);
+  lua_setfield(L, -2, "us");
+  lua_pushinteger(L, info.instructions);
+  lua_setfield(L, -2, "instructions");
+  lua_pushinteger(L, info.registers);
+  lua_setfield(L, -2, "registers");
+  return 1;
+}
+
+static const luaL_Reg l_shader_methods[] = {{"set", l_shader_set},
+                                            {"setArray", l_shader_setArray},
+                                            {"run", l_shader_run},
+                                            {"getStats", l_shader_getStats},
+                                            {NULL, NULL}};
+static const luaL_Reg l_shader_meta[] = {{"__gc", l_shader_gc}, {NULL, NULL}};
+
+// ── picocalc.noise ───────────────────────────────────────────────────────────
+// Coordinates are finite floats; seeds are exact integers (wrapped to 32
+// bits); octaves an exact integer 1-8.
+static int32_t opt_seed(lua_State *L, int idx) {
+  return (int32_t)(uint32_t)luaL_optinteger(L, idx, 0);
+}
+
+static int l_noise_hash(lua_State *L) {
+  const float x = lb_checkfloat(L, 1), y = lb_checkfloat(L, 2);
+  lua_pushnumber(L, noise_hash(noise_lattice(x), noise_lattice(y), opt_seed(L, 3)));
+  return 1;
+}
+
+static int l_noise_value(lua_State *L) {
+  const float x = lb_checkfloat(L, 1), y = lb_checkfloat(L, 2);
+  lua_pushnumber(L, noise_value(x, y, opt_seed(L, 3)));
+  return 1;
+}
+
+static int l_noise_fbm(lua_State *L) {
+  const float x = lb_checkfloat(L, 1), y = lb_checkfloat(L, 2);
+  const int octaves = check_range(L, 3, 1, NOISE_MAX_OCTAVES, "octaves");
+  lua_pushnumber(L, noise_fbm(x, y, octaves, opt_seed(L, 4)));
+  return 1;
+}
+
+static const luaL_Reg l_noise_lib[] = {
+    {"hash", l_noise_hash}, {"value", l_noise_value}, {"fbm", l_noise_fbm}, {NULL, NULL}};
+
 static const luaL_Reg l_grid_methods[] = {
     {"getSize", l_grid_getSize},           {"getCellSize", l_grid_getCellSize},
     {"setFont", l_grid_setFont},           {"defineGlyph", l_grid_defineGlyph},
@@ -524,7 +676,8 @@ static const luaL_Reg l_grid_methods[] = {
     {"isDirty", l_grid_isDirty},           {"getStats", l_grid_getStats},
     {NULL, NULL}};
 static const luaL_Reg l_grid_meta[] = {{"__gc", l_grid_gc}, {NULL, NULL}};
-static const luaL_Reg l_chargrid_lib[] = {{"new", l_chargrid_new}, {NULL, NULL}};
+static const luaL_Reg l_chargrid_lib[] = {
+    {"new", l_chargrid_new}, {"shader", l_chargrid_shader}, {NULL, NULL}};
 
 static const struct {
   const char *name;
@@ -545,6 +698,7 @@ static const struct {
 
 void lua_bridge_chargrid_init(lua_State *L) {
   lb_register_type(L, GRID_MT, l_grid_methods, l_grid_meta);
+  lb_register_type(L, SHADER_MT, l_shader_methods, l_shader_meta);
   register_subtable(L, "chargrid", l_chargrid_lib);
   lua_getfield(L, -1, "chargrid");
   for (size_t i = 0; i < sizeof k_consts / sizeof k_consts[0]; i++) {
@@ -552,4 +706,5 @@ void lua_bridge_chargrid_init(lua_State *L) {
     lua_setfield(L, -2, k_consts[i].name);
   }
   lua_pop(L, 1);
+  register_subtable(L, "noise", l_noise_lib);
 }

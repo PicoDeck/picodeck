@@ -67,7 +67,8 @@ static int check_case(int cw, int ch, int cols, int rows, uint16_t *fb, bool swa
 static uint16_t *aligned(void) { return (uint16_t *)s_words; }
 
 static void test_render_sizes(void) {
-  static const int sizes[][2] = {{4, 4}, {5, 8}, {6, 8}, {8, 12}, {16, 3}, {1, 1}, {2, 2}, {10, 5}};
+  static const int sizes[][2] = {{4, 4}, {5, 8}, {6, 8}, {8, 12}, {16, 3}, {1, 1}, {2, 2}, {10, 5},
+                                 {3, 5}, {7, 9}, {9, 4}, {11, 7}, {13, 2}, {15, 6}, {1, 3}};
   for (size_t s = 0; s < sizeof sizes / sizeof sizes[0]; s++) {
     const int cw = sizes[s][0], ch = sizes[s][1];
     const int cols = BW / cw + 1, rows = BH / ch + 1;
@@ -80,7 +81,7 @@ static void test_render_sizes(void) {
 }
 
 static void test_render_clip(void) {
-  for (int cw = 4; cw <= 8; cw++) {  // cells cut on every side by the clip rect
+  for (int cw = 1; cw <= 9; cw++) {  // cells cut on every side by the clip rect
     check_case(cw, 8, 20, 10, aligned(), true, 5, 3, 40, 30, 2, 1, 0, 0, 20, 10);
     check_case(cw, 8, 20, 10, aligned(), false, 7, 9, 7, 9, 0, 0, 0, 0, 20, 10);  // one pixel
   }
@@ -105,6 +106,9 @@ static void test_render_misaligned(void) {  // a 2-byte aligned buffer: unaligne
   check_case(6, 8, 12, 7, odd, false, 0, 0, BW - 1, BH - 2, 0, 0, 0, 0, 12, 7);
   check_case(4, 4, 16, 12, odd, true, 0, 0, BW - 1, BH - 2, 2, 2, 0, 0, 16, 12);
   check_case(6, 8, 12, 5, aligned(), false, 0, 0, BW - 1, BH - 1, 1, 1, 0, 0, 12, 5);  // odd x
+  check_case(5, 8, 12, 5, odd, false, 0, 0, BW - 1, BH - 2, 0, 0, 0, 0, 12, 5);
+  check_case(7, 3, 9, 15, odd, true, 0, 0, BW - 1, BH - 2, 1, 2, 0, 0, 9, 15);
+  check_case(5, 8, 12, 5, aligned(), false, 0, 0, BW - 1, BH - 1, 1, 1, 0, 0, 12, 5);  // odd x
 }
 
 static void test_render_odd_stride(void) {  // an odd row stride: rows start on odd halfwords
@@ -112,6 +116,8 @@ static void test_render_odd_stride(void) {  // an odd row stride: rows start on 
   check_case(6, 8, 10, 5, aligned(), false, 0, 0, BW - 1, BH - 1, 0, 0, 0, 0, 10, 5);
   check_case(4, 4, 16, 12, aligned(), true, 0, 0, BW - 1, BH - 1, 2, 1, 0, 0, 16, 12);
   check_case(8, 12, 8, 4, (uint16_t *)s_words + 1, false, 0, 0, BW - 1, BH - 1, 1, 0, 0, 0, 8, 4);
+  check_case(5, 8, 12, 5, aligned(), false, 0, 0, BW - 1, BH - 1, 0, 0, 0, 0, 12, 5);
+  check_case(3, 4, 20, 12, (uint16_t *)s_words + 1, true, 0, 0, BW - 1, BH - 1, 2, 1, 0, 0, 20, 12);
   s_stride = BW;
 }
 

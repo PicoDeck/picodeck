@@ -65,7 +65,9 @@ chargrid_t *chargrid_create(int cols, int rows, int cell_w, int cell_h) {
 }
 
 void chargrid_free(chargrid_t *g) {
-  if (g) CG_FREE(g);
+  if (!g) return;
+  if (g->nearest) CG_FREE(g->nearest);
+  CG_FREE(g);
 }
 
 static inline bool in_grid(const chargrid_t *g, int x, int y) {
@@ -183,8 +185,7 @@ void chargrid_define_glyph(chargrid_t *g, int code, const uint16_t *rows) {
   g->dirty = true;
 }
 
-// The 4x4 Bayer matrix as offsets in [-0.47, 0.47] (ascii.rest's dither).
-static const float k_bayer_off[16] = {
+const float chargrid_bayer_off[16] = {
     0 / 16.0f - 0.47f,  8 / 16.0f - 0.47f,  2 / 16.0f - 0.47f,  10 / 16.0f - 0.47f,
     12 / 16.0f - 0.47f, 4 / 16.0f - 0.47f,  14 / 16.0f - 0.47f, 6 / 16.0f - 0.47f,
     3 / 16.0f - 0.47f,  11 / 16.0f - 0.47f, 1 / 16.0f - 0.47f,  9 / 16.0f - 0.47f,
@@ -209,14 +210,9 @@ void chargrid_set_color_ramp(chargrid_t *g, const uint8_t *indices, int n, bool 
 
 int chargrid_ramp_step(float v, int n, bool dither, int x, int y) {
   if (n <= 1) return 0;
-  if (!(v >= 0.0f)) v = 0.0f;  // NaN too
-  if (v > 1.0f) v = 1.0f;
-  float s = v * (float)(n - 1) + 0.5f;
-  if (dither) s += k_bayer_off[((unsigned)y & 3u) * 4u + ((unsigned)x & 3u)];
-  int step = (int)s;  // s >= 0.03, so truncation is floor
-  if (step < 0) step = 0;
-  if (step > n - 1) step = n - 1;
-  return step;
+  return chargrid_ramp_index(
+      v, (float)(n - 1), n - 1,
+      dither ? chargrid_bayer_off[((unsigned)y & 3u) * 4u + ((unsigned)x & 3u)] : 0.0f);
 }
 
 void chargrid_shade(chargrid_t *g, int x, int y, float level, bool has_level, float tone,
@@ -279,5 +275,61 @@ void chargrid_scroll(chargrid_t *g, int dx, int dy, int glyph, int fg, int bg) {
   if (dx < 0) chargrid_fill(g, g->cols + dx, 0, -dx, g->rows, glyph, fg, bg);
   if (dy > 0) chargrid_fill(g, 0, 0, g->cols, dy, glyph, fg, bg);
   if (dy < 0) chargrid_fill(g, 0, g->rows + dy, g->cols, -dy, glyph, fg, bg);
+  g->dirty = true;
+}
+
+// ── nearest palette entry ────────────────────────────────────────────────────
+#define NEAR_LEVELS (1 << CG_NEAREST_BITS)
+#define NEAR_N (NEAR_LEVELS * NEAR_LEVELS * NEAR_LEVELS)
+
+static int near_level(float v) {
+  if (!(v > 0.0f)) return 0;  // NaN too
+  if (v >= 1.0f) return NEAR_LEVELS - 1;
+  return (int)(v * (float)NEAR_LEVELS);
+}
+
+static uint8_t nearest_search(const chargrid_t *g, float r, float gr, float b) {
+  int best = 0;
+  float bd = 0.0f;
+  for (int i = 0; i < 256; i++) {
+    const uint16_t c = g->palette[i];
+    const float dr = (float)(c >> 11) * (1.0f / 31.0f) - r;
+    const float dg = (float)((c >> 5) & 63u) * (1.0f / 63.0f) - gr;
+    const float db = (float)(c & 31u) * (1.0f / 31.0f) - b;
+    const float d = 0.3f * dr * dr + 0.5f * dg * dg + 0.2f * db * db;
+    if (i == 0 || d < bd) {
+      bd = d;
+      best = i;
+    }
+  }
+  return (uint8_t)best;
+}
+
+uint8_t chargrid_nearest(chargrid_t *g, float r, float gr, float b) {
+  const int qr = near_level(r), qg = near_level(gr), qb = near_level(b);
+  const int key = (qr << (2 * CG_NEAREST_BITS)) | (qg << CG_NEAREST_BITS) | qb;
+  if (!g->nearest && !g->nearest_failed) {
+    g->nearest = (uint8_t *)CG_MALLOC(NEAR_N + NEAR_N / 8);
+    if (g->nearest)
+      memset(g->nearest + NEAR_N, 0, NEAR_N / 8);
+    else
+      g->nearest_failed = true;  // full searches, without a CG_MALLOC per cell
+  }
+  uint8_t *t = g->nearest;
+  const uint8_t bit = (uint8_t)(1u << (key & 7));
+  if (t && (t[NEAR_N + (key >> 3)] & bit)) return t[key];
+  const float inv = 1.0f / (float)NEAR_LEVELS;  // search for the bucket's centre
+  const uint8_t idx = nearest_search(g, ((float)qr + 0.5f) * inv, ((float)qg + 0.5f) * inv,
+                                     ((float)qb + 0.5f) * inv);
+  if (t) {
+    t[key] = idx;
+    t[NEAR_N + (key >> 3)] |= bit;
+  }
+  return idx;
+}
+
+void chargrid_palette_changed(chargrid_t *g) {
+  if (g->nearest) memset(g->nearest + NEAR_N, 0, NEAR_N / 8);
+  g->nearest_failed = false;  // the next chargrid_nearest tries to allocate again
   g->dirty = true;
 }

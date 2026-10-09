@@ -50,6 +50,7 @@ var docFileMapping = map[string]string{
 	"graphics":  "API-Display-and-Graphics.md",
 	"gfx3d":     "API-3D.md",
 	"chargrid":  "API-Chargrid.md",
+	"noise":     "API-Chargrid.md",
 	"video":     "API-Video.md",
 	"repl":      "API-Repl.md",
 	"terminal":  "API-Terminal.md",

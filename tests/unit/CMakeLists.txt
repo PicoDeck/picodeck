@@ -152,6 +152,14 @@ target_compile_options(test_chargrid PRIVATE -ffp-contract=off -Wdouble-promotio
 picodeck_unit_test(test_chargrid_render
                    SOURCES ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c ${SRC}/os/chargrid_render.c
                    DEFINES CG_MALLOC=malloc CG_FREE=free)
+# Lattice hash, value noise and fBm (src/os/noise.h, header-only).
+picodeck_unit_test(test_noise)
+target_compile_options(test_noise PRIVATE -ffp-contract=off -Wdouble-promotion)
+target_link_libraries(test_noise PRIVATE m)
+# The shader's polynomial maths (src/os/charshader_math.h, header-only) vs libm.
+picodeck_unit_test(test_charshader_math)
+target_compile_options(test_charshader_math PRIVATE -ffp-contract=off -Wdouble-promotion)
+target_link_libraries(test_charshader_math PRIVATE m)
 # Lua float formatting vs glibc (built without PICODECK_LUA_SPRINTF: no luaconf).
 picodeck_unit_test(test_numfmt SOURCES ${SRC}/os/lua_numfmt.c)
 target_link_libraries(test_numfmt PRIVATE m)
@@ -346,4 +354,72 @@ picodeck_unit_test(test_small_alloc SOURCES ${SRC}/os/small_alloc.c)
 
 if(PICODECK_FUZZ)
     add_subdirectory(${PICODECK_ROOT}/tests/fuzz ${CMAKE_CURRENT_BINARY_DIR}/fuzz)
+endif()
+
+# The chargrid shader: compiler (Task 4), VM and outputs (Tasks 5-6). Its
+# allocations go through cg_test_alloc.h, so a test can refuse them.
+picodeck_unit_test(test_charshader SOURCES ${SRC}/os/charshader_compile.c ${SRC}/os/charshader_vm.c
+                   ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c)
+target_compile_options(test_charshader PRIVATE -ffp-contract=off -Wdouble-promotion
+                       -include ${CMAKE_CURRENT_SOURCE_DIR}/cg_test_alloc.h)
+target_link_libraries(test_charshader PRIVATE m)
+
+# The shader's device-only paths (ARMv8 floors, the VM's VLDM/VSTM lanes)
+# against the host's C, bit for bit: charshader_xcheck.c built for the host
+# and for the Cortex-M33 with the firmware's flags, at -O2 (the shader's
+# flag) and -Os (the firmware's default), run under qemu-arm
+# (charshader_xcheck.cmake). Reported as skipped, not failed, without
+# arm-none-eabi-gcc (with newlib's rdimon) or qemu-arm.
+set(XCHECK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/charshader_xcheck.c
+    ${SRC}/os/charshader_compile.c ${SRC}/os/charshader_vm.c
+    ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c)
+add_executable(charshader_xcheck ${XCHECK_SOURCES})
+target_include_directories(charshader_xcheck PRIVATE ${SRC}/os)
+target_compile_definitions(charshader_xcheck PRIVATE CG_MALLOC=malloc CG_FREE=free)
+target_compile_options(charshader_xcheck PRIVATE -ffp-contract=off -Wdouble-promotion
+                       ${PICODECK_UNIT_SAN_FLAGS})
+target_link_options(charshader_xcheck PRIVATE ${PICODECK_UNIT_SAN_FLAGS})
+target_link_libraries(charshader_xcheck PRIVATE m)
+
+find_program(PICODECK_ARM_GCC arm-none-eabi-gcc)
+find_program(PICODECK_QEMU_ARM qemu-arm)
+set(M33_FLAGS -mcpu=cortex-m33 -mthumb -march=armv8-m.main+fp+dsp -mfloat-abi=softfp)
+set(XCHECK_SKIP "")
+if(NOT PICODECK_ARM_GCC)
+    set(XCHECK_SKIP "arm-none-eabi-gcc not found")
+elseif(NOT PICODECK_QEMU_ARM)
+    set(XCHECK_SKIP "qemu-arm not found")
+else()
+    execute_process(COMMAND ${PICODECK_ARM_GCC} ${M33_FLAGS} -print-file-name=librdimon.a
+                    OUTPUT_VARIABLE XCHECK_RDIMON OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT IS_ABSOLUTE "${XCHECK_RDIMON}")
+        set(XCHECK_SKIP "arm-none-eabi-gcc has no newlib rdimon (semihosting)")
+    endif()
+endif()
+if(XCHECK_SKIP)
+    add_test(NAME test_charshader_m33 COMMAND ${CMAKE_COMMAND} -E echo "SKIPPED: ${XCHECK_SKIP}")
+    set_tests_properties(test_charshader_m33 PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+else()
+    file(GLOB XCHECK_HEADERS ${SRC}/os/charshader*.h ${SRC}/os/chargrid.h ${SRC}/os/noise.h
+         ${SRC}/fonts/font.h)
+    set(XCHECK_ELFS "")
+    foreach(opt O2 Os)
+        set(elf ${CMAKE_CURRENT_BINARY_DIR}/charshader_xcheck_m33_${opt}.elf)
+        add_custom_command(OUTPUT ${elf}
+            COMMAND ${PICODECK_ARM_GCC} ${M33_FLAGS} -${opt} -std=gnu11 -ffp-contract=off
+                    -Wall -Wextra -Wdouble-promotion -I${SRC}/os -DCG_MALLOC=malloc
+                    -DCG_FREE=free --specs=rdimon.specs ${XCHECK_SOURCES} -lm -o ${elf}
+            DEPENDS ${XCHECK_SOURCES} ${XCHECK_HEADERS}
+            COMMENT "Building the shader cross-check for the Cortex-M33 (-${opt})"
+            VERBATIM)
+        list(APPEND XCHECK_ELFS ${elf})
+    endforeach()
+    add_custom_target(charshader_xcheck_m33 ALL DEPENDS ${XCHECK_ELFS})
+    add_test(NAME test_charshader_m33
+             COMMAND ${CMAKE_COMMAND} -DHOST=$<TARGET_FILE:charshader_xcheck>
+                     -DQEMU=${PICODECK_QEMU_ARM}
+                     -DM33=${CMAKE_CURRENT_BINARY_DIR}/charshader_xcheck_m33_
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/charshader_xcheck.cmake)
+    set_tests_properties(test_charshader_m33 PROPERTIES
+        ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:abort_on_error=0;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
 endif()
