@@ -357,7 +357,8 @@ if(PICODECK_FUZZ)
 endif()
 
 # The chargrid shader: compiler (Task 4), VM and outputs (Tasks 5-6).
-picodeck_unit_test(test_charshader SOURCES ${SRC}/os/charshader_compile.c
+picodeck_unit_test(test_charshader SOURCES ${SRC}/os/charshader_compile.c ${SRC}/os/charshader_vm.c
+                   ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c
                    DEFINES CG_MALLOC=malloc CG_FREE=free)
 target_compile_options(test_charshader PRIVATE -ffp-contract=off -Wdouble-promotion)
 target_link_libraries(test_charshader PRIVATE m)
