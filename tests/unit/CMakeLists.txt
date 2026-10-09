@@ -364,6 +364,14 @@ target_compile_options(test_charshader PRIVATE -ffp-contract=off -Wdouble-promot
                        -include ${CMAKE_CURRENT_SOURCE_DIR}/cg_test_alloc.h)
 target_link_libraries(test_charshader PRIVATE m)
 
+# The boot splash's frames (src/os/splash_render.c): the chargrid shader's
+# maths, so no FMA contraction (the device and the simulator agree).
+picodeck_unit_test(test_splash_render SOURCES ${SRC}/os/splash_render.c
+                   ${SRC}/os/splash_logo_cells.c ${SRC}/fonts/font.c ${SRC}/fonts/font_6x8.c
+                   INCLUDES ${SRC}/fonts)
+target_compile_options(test_splash_render PRIVATE -ffp-contract=off -Wdouble-promotion)
+target_link_libraries(test_splash_render PRIVATE m)
+
 # The shader's device-only paths (ARMv8 floors, the VM's VLDM/VSTM lanes)
 # against the host's C, bit for bit: charshader_xcheck.c built for the host
 # and for the Cortex-M33 with the firmware's flags, at -O2 (the shader's
