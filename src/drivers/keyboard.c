@@ -91,6 +91,8 @@ static kbd_padmap_t s_padmap = KBD_PAD_DEFAULT_MAP;
 // bus engine is paused around it (kbd_i2c_recover). Safe during kbd_init().
 void kbd_recover_i2c_bus(void) { kbd_i2c_recover(); }
 
+#define KBD_STM32_READY_MS 2600u  // uptime from which the STM32 scans its keys
+
 bool kbd_init(void) {
   // ── Step 1: Unconditional bus clear ───────────────────────────────────────
   // Sample SDA before recovery so we can log whether the bus was already stuck.
@@ -110,13 +112,16 @@ bool kbd_init(void) {
   // The STM32's I2C peripheral starts ~100ms after power-on, but its keyboard
   // FIFO scanning doesn't start until ~2.5s from power-on. If we poll before
   // scanning is active, I2C ACKs but the FIFO is always empty (keys don't
-  // work). From observation, 2.5s from RP2350 boot is reliable.
+  // work). From observation, 2.5s from RP2350 boot is reliable; the first
+  // poll has always gone at 2.6 s or later (the loop below used to sleep
+  // 100 ms before it), so that is the mark. main() brings the keyboard up at
+  // the end of the boot, which is usually past it: no wait then.
   {
     uint32_t boot_ms = to_ms_since_boot(get_absolute_time());
-    if (boot_ms < 2500) {
+    if (boot_ms < KBD_STM32_READY_MS) {
       printf("[KBD] boot=%lums — waiting %lums for STM32 keyboard scanning\n",
-             (unsigned long)boot_ms, (unsigned long)(2500 - boot_ms));
-      sleep_ms(2500 - boot_ms);
+             (unsigned long)boot_ms, (unsigned long)(KBD_STM32_READY_MS - boot_ms));
+      sleep_ms(KBD_STM32_READY_MS - boot_ms);
     }
   }
 
@@ -129,7 +134,9 @@ bool kbd_init(void) {
   uint8_t ver = 0;
 
   for (int poll = 0; poll < 50; poll++) {
-    sleep_ms(100);
+    // The first try goes at once (Step 3 waited); a NACK costs a retry.
+    if (poll > 0)
+      sleep_ms(100);
 
     uint8_t reg = 0x01;
     int wret = i2c_write_timeout_us(KBD_I2C_PORT, KBD_I2C_ADDR, &reg, 1, false,

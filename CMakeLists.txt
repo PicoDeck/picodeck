@@ -152,6 +152,12 @@ set(GIF_DIR ${CMAKE_SOURCE_DIR}/third_party/AnimatedGIF)
 include(${CMAKE_SOURCE_DIR}/cmake/picodeck_pngdec.cmake)
 picodeck_pngdec_sources(PICODECK_PNGDEC_SOURCES ${PNGDEC_DIR}/src)
 
+# umm_malloc with its heap-init clear made optional: the firmware zeroes the
+# PSRAM heap itself, by DMA, before the boot splash (issue #73). Patched copy
+# in the build tree; the submodule stays pristine. See the module.
+include(${CMAKE_SOURCE_DIR}/cmake/picodeck_umm.cmake)
+picodeck_umm_source(PICODECK_UMM_SOURCE ${CMAKE_SOURCE_DIR}/third_party/umm_malloc/src)
+
 # JPEGDEC as separate lib with -O2 for faster decode loops (IDCT, Huffman VLC,
 # pixel conversion).  Code grows from ~17KB (-Os) to ~24KB (-O2), but it already
 # exceeded the 16KB XIP cache at -Os, so the extra size doesn't meaningfully
@@ -390,7 +396,7 @@ add_executable(picodeck
     src/drivers/pio_psram_bulk.c
     src/drivers/pio_psram_qpi.c
     third_party/mongoose/mongoose.c
-    third_party/umm_malloc/src/umm_malloc.c
+    ${PICODECK_UMM_SOURCE}
     third_party/miniz/miniz.c
     third_party/miniz/miniz_tinfl.c
     third_party/miniz/miniz_tdef.c

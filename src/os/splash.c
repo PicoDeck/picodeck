@@ -140,15 +140,6 @@ void splash_start(bool animate) {
 
 bool splash_running(void) { return s_running; }
 
-void splash_wait_still(void) {
-  if (!s_running) return;
-  const uint64_t until = s_t0_us + END_US + FINISH_MARGIN_US;
-  while (!s_final && time_us_64() < until) {
-    watchdog_update();
-    busy_wait_us_32(1000);
-  }
-}
-
 // Whether Core 1 has shown a final frame with the latest status.
 static bool latest_shown(void) {
   const uint32_t irq = spin_lock_blocking(s_lock);
@@ -242,7 +233,6 @@ void splash_start(bool animate) {
   splash_draw_static(NULL, NULL);
 }
 bool splash_running(void) { return false; }
-void splash_wait_still(void) {}
 void splash_set_status(const char *status, const char *subtext) {
   (void)status;
   (void)subtext;
