@@ -213,3 +213,28 @@ local function frame(px, py, message)
     picocalc.display.flush()
 end
 ```
+
+## picocalc.noise
+
+Deterministic 2-D noise for scenes and procedural maps: the same inputs give the same results in the simulator and on the device. The hash is the one [ascii.rest](https://ascii.rest) pieces use, so with seed 0 a ported piece looks the same; a seed gives independent noise, and the same seed always gives the same map. Every result is in [0, 1). Coordinates are computed in single precision (about 7 significant digits).
+
+#### `picocalc.noise.hash(x, y [, seed])`
+The lattice hash of the integer point (`floor(x)`, `floor(y)`): `h = x·374761393 + y·668265263 + seed·1442695041` (32-bit wrapping), `h = (h ⊕ (h >> 13)) · 1274126177`, `h = h ⊕ (h >> 16)`, result `(h >> 8) / 2²⁴`. `seed` is an integer (default 0, wrapped to 32 bits).
+
+#### `picocalc.noise.value(x, y [, seed])`
+Value noise: the hashes of the four surrounding lattice points, blended with smoothstep weights. Equal to `hash` at lattice points.
+
+#### `picocalc.noise.fbm(x, y, octaves [, seed])`
+Fractal noise: `octaves` (an integer 1-8) layers of `value` at doubling frequency (lacunarity 2) and halving weight (gain 0.5), divided by the sum of the weights. Every octave uses the same seed, as ascii.rest does.
+
+```lua
+local N = picocalc.noise
+-- A reproducible cave: wall where 2-octave noise is high.
+for y = 0, 39 do
+    for x = 0, 52 do
+        if N.fbm(x * 0.15, y * 0.15, 2, worldSeed) > 0.55 then map:set(x, y, "#", 244) end
+    end
+end
+```
+
+The chargrid shader has the same three as built-ins (`hash`, `noise`, `fbm`), with identical results.

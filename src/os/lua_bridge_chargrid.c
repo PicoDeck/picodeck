@@ -1,4 +1,4 @@
-// picocalc.chargrid: character-cell grids over src/os/chargrid.h, drawn by
+// picocalc.chargrid: character-cell grids over src/os/chargrid.h, and picocalc.noise (noise.h). Grids are drawn by
 // one C call (specs/2026-10-09-chargrid-design.md). Cell positions, pixel
 // positions and sizes are quantities (lb_checkint: floats round); glyph
 // codes, palette indices, colours, styles and font ids are exact integers.
@@ -8,6 +8,7 @@
 
 #include "../fonts/font_registry.h"
 #include "chargrid.h"
+#include "noise.h"
 #include "lauxlib.h"
 #include "pico/time.h"
 
@@ -508,6 +509,35 @@ static int l_grid_getStats(lua_State *L) {
   return 1;
 }
 
+// ── picocalc.noise ───────────────────────────────────────────────────────────
+// Coordinates are finite floats; seeds are exact integers (wrapped to 32
+// bits); octaves an exact integer 1-8.
+static int32_t opt_seed(lua_State *L, int idx) {
+  return (int32_t)(uint32_t)luaL_optinteger(L, idx, 0);
+}
+
+static int l_noise_hash(lua_State *L) {
+  const float x = lb_checkfloat(L, 1), y = lb_checkfloat(L, 2);
+  lua_pushnumber(L, noise_hash(noise_lattice(x), noise_lattice(y), opt_seed(L, 3)));
+  return 1;
+}
+
+static int l_noise_value(lua_State *L) {
+  const float x = lb_checkfloat(L, 1), y = lb_checkfloat(L, 2);
+  lua_pushnumber(L, noise_value(x, y, opt_seed(L, 3)));
+  return 1;
+}
+
+static int l_noise_fbm(lua_State *L) {
+  const float x = lb_checkfloat(L, 1), y = lb_checkfloat(L, 2);
+  const int octaves = check_range(L, 3, 1, NOISE_MAX_OCTAVES, "octaves");
+  lua_pushnumber(L, noise_fbm(x, y, octaves, opt_seed(L, 4)));
+  return 1;
+}
+
+static const luaL_Reg l_noise_lib[] = {
+    {"hash", l_noise_hash}, {"value", l_noise_value}, {"fbm", l_noise_fbm}, {NULL, NULL}};
+
 static const luaL_Reg l_grid_methods[] = {
     {"getSize", l_grid_getSize},           {"getCellSize", l_grid_getCellSize},
     {"setFont", l_grid_setFont},           {"defineGlyph", l_grid_defineGlyph},
@@ -552,4 +582,5 @@ void lua_bridge_chargrid_init(lua_State *L) {
     lua_setfield(L, -2, k_consts[i].name);
   }
   lua_pop(L, 1);
+  register_subtable(L, "noise", l_noise_lib);
 }

@@ -281,4 +281,25 @@ T.case("freed_grid_raises", function()
     DEAD_GRID = nil
 end)
 
+T.case("noise", function()
+    local N = picocalc.noise
+    local function near(a, b) return math.abs(a - b) < 1e-6 end
+    T.eq(N.hash(0, 0), 0)
+    T.ok(near(N.hash(1, 0), 0.5081244111061096), "hash(1, 0)")
+    T.ok(near(N.hash(1.9, 0.2), N.hash(1, 0)), "hash floors its coordinates")
+    T.ok(near(N.hash(7, 7, 3), 0.2610531449317932), "hash with a seed")
+    T.ok(near(N.value(0.5, 0.5), 0.48506250977516174), "value")
+    T.ok(near(N.fbm(0.3, 0.7, 3), 0.6193975806236267), "fbm")
+    T.ok(N.value(3, -4, 9) == N.hash(3, -4, 9), "value at a lattice point is the hash")
+    for _, v in ipairs({ N.value(1e30, -1e30), N.fbm(-5e9, 2, 8, -1), N.hash(1e12, 0, 5) }) do
+        T.ok(v >= 0 and v < 1, "in [0, 1)")
+    end
+    T.raises(function() N.fbm(0, 0, 0) end, "octaves must be 1%-8")
+    T.raises(function() N.fbm(0, 0, 9) end, "octaves must be 1%-8")
+    T.raises(function() N.fbm(0, 0, 2.5) end, "integer")
+    T.raises(function() N.value(0, 0, 1.5) end, "integer")
+    T.raises(function() N.value(0 / 0, 0) end, "NaN")
+    T.raises(function() N.hash("a", 0) end, "number expected")
+end)
+
 T.done()

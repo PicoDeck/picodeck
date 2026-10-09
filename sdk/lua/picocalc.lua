@@ -3563,3 +3563,26 @@ picocalc.chargrid = {}
 ---@param cellH? number
 ---@return PicoDeckCharGrid
 function picocalc.chargrid.new(cols, rows, fontId, cellW, cellH) end
+
+-- =============================================================================
+-- picocalc.noise
+-- =============================================================================
+
+---@class picocalc.noise
+picocalc.noise = {}
+---@param x number floored
+---@param y number floored
+---@param seed? integer default 0
+---@return number h in [0, 1)
+function picocalc.noise.hash(x, y, seed) end
+---@param x number
+---@param y number
+---@param seed? integer default 0
+---@return number v in [0, 1)
+function picocalc.noise.value(x, y, seed) end
+---@param x number
+---@param y number
+---@param octaves integer 1-8
+---@param seed? integer default 0
+---@return number v in [0, 1)
+function picocalc.noise.fbm(x, y, octaves, seed) end

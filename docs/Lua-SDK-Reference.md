@@ -9,7 +9,7 @@ This document provides a complete reference for all Lua APIs available to PicoDe
 - [Global Variables and Permissions](Global-Variables-and-Permissions.md)
 - [API 3D](API-3D.md) — Flat-shaded 3D meshes, camera, light, fog, sky and sprites (`picocalc.gfx3d`)
 - [API Audio and Sound](API-Audio-and-Sound.md) — Audio Playback (WAV, MP3) & Tones
-- [API Chargrid](API-Chargrid.md) — Character-cell grids: text, shapes, palettes and ramps drawn in one call (`picocalc.chargrid`)
+- [API Chargrid](API-Chargrid.md) — Character-cell grids: text, shapes, palettes and ramps drawn in one call (`picocalc.chargrid`), and deterministic noise (`picocalc.noise`)
 - [API Crypto](API-Crypto.md) — Cryptographic Primitives
 - [API Display and Graphics](API-Display-and-Graphics.md) — Graphics & Display
 - [API Filesystem](API-Filesystem.md) — Filesystem (SD Card)
