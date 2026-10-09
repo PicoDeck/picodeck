@@ -715,14 +715,17 @@ static charshader_t *build(comp_t *c) {
   charshader_t *s = (charshader_t *)CG_MALLOC(bytes);
   if (!s) fail_plain(c, "out of memory");
   memset(s, 0, bytes);
-  float *f = (float *)(s + 1);
+  // What every strip touches first and together (the XIP cache holds PSRAM
+  // too): the instructions, the registers, the broadcast rows; the arrays,
+  // 4 KB each and read only where indexed, last.
+  s->ins = (cs_ins_t *)(s + 1);
+  _Static_assert(sizeof(cs_ins_t) % sizeof(float) == 0, "the registers follow the instructions");
+  float *f = (float *)(s->ins + ninstr);
   s->regs = f;
   f += (size_t)nregs * CS_STRIP;
   s->scratch = f;
   f += (size_t)CS_OUT_COUNT * CS_STRIP;
   s->arrays = f;
-  f += (size_t)c->narrays * CS_MAX_ARRAY_LEN;
-  s->ins = (cs_ins_t *)f;
   int k = 0;
   for (int i = 0; i < c->nnodes; i++) {
     const node_t *n = &c->nodes[i];
