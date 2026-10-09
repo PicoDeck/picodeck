@@ -1,0 +1,41 @@
+# ctest test_charshader_m33 (tests/unit/CMakeLists.txt): runs the shader
+# cross-check (charshader_xcheck.c) on the host, then its Cortex-M33 builds
+# (-O2 and -Os) under qemu-arm, and fails unless each prints exactly what
+# the host printed. On a mismatch it lists the lines that differ: each names
+# a maths function, a shader operation or a program.
+#   cmake -DHOST=<host exe> -DQEMU=<qemu-arm> -DM33=<elf prefix> -P charshader_xcheck.cmake
+execute_process(COMMAND ${HOST} OUTPUT_VARIABLE want ERROR_VARIABLE err RESULT_VARIABLE rc)
+if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "the host run failed (${rc}):\n${want}${err}")
+endif()
+string(REGEX MATCHALL "[^\n]+" want_lines "${want}")
+list(LENGTH want_lines nlines)
+message("host: ${nlines} lines")
+set(failed "")
+foreach(opt O2 Os)
+    execute_process(COMMAND ${QEMU} -cpu cortex-m33 ${M33}${opt}.elf
+                    OUTPUT_VARIABLE got ERROR_VARIABLE err RESULT_VARIABLE rc)
+    if(rc EQUAL 0 AND got STREQUAL want)
+        message("M33 -${opt}: all ${nlines} lines equal the host's")
+        continue()
+    endif()
+    list(APPEND failed "-${opt}")
+    message("M33 -${opt}: DIFFERS from the host (exit ${rc}) ${err}")
+    string(REGEX MATCHALL "[^\n]+" got_lines "${got}")
+    list(LENGTH got_lines ngot)
+    if(NOT ngot EQUAL nlines)
+        message("  ${ngot} lines, the host printed ${nlines}:\n${got}")
+        continue()
+    endif()
+    math(EXPR last "${nlines} - 1")
+    foreach(i RANGE ${last})
+        list(GET want_lines ${i} w)
+        list(GET got_lines ${i} g)
+        if(NOT w STREQUAL g)
+            message("  host: ${w}\n  M33:  ${g}")
+        endif()
+    endforeach()
+endforeach()
+if(failed)
+    message(FATAL_ERROR "the Cortex-M33 build differs from the host at ${failed}")
+endif()

@@ -463,6 +463,77 @@ static void test_layers(void) {
   chargrid_free(g);
 }
 
+// noise and fbm with a scalar seed run the strip loops' lattice cache
+// (noise_loop: a lattice cell's corners, and y's weight, are reused while
+// they repeat, starting from cell (0, 0)'s corners). Coordinates come from
+// arrays, per cell, in runs of 8: repeats, +-0 alternation, NaN, jumps
+// between cells, small steps across cell edges, cell (0, 0), a constant y,
+// infinities and huge values; and each strip's first lane alternately in
+// cell (0, 0), out of it, and NaN. Over the whole grid and a rect that
+// starts mid-strip, the VM must equal cs_noise3 and cs_fbm3 cell by cell.
+static void test_noise_lattice_cache(void) {
+  enum { C = 75, R = 3, N = C * R };  // strips of 32, 32 and 11 per row
+  static float ax[N], ay[N];
+  const float nan = CS_NAN, inf = CS_INF;
+  for (int i = 0; i < N; i++) {
+    const int k = i % 8, x = i % C;
+    float px, py;
+    switch ((i / 8) % 8) {
+      case 0: px = 3.25f, py = -1.75f; break;
+      case 1: px = (k & 1) ? -0.0f : 0.0f, py = (k & 2) ? -0.0f : 0.0f; break;
+      case 2: px = (k & 1) ? nan : 0.4f, py = k % 3 == 0 ? nan : 0.6f; break;
+      case 3: px = (k & 1) ? 1000.5f : -7.25f, py = (k & 1) ? 0.5f : 12.75f; break;
+      case 4: px = 0.9f + 0.05f * (float)k, py = 1.95f + 0.02f * (float)k; break;
+      case 5: px = 0.1f * (float)k, py = 0.05f * (float)k; break;
+      case 6: px = (float)(k % 3) + 0.5f, py = 2.5f; break;
+      default: px = (k & 1) ? inf : -3e9f, py = (k & 1) ? -inf : 1e38f; break;
+    }
+    if (x == 0 || x == 5 || x == 32 || x == 37 || x == 64 || x == 69) {  // strip starts
+      const int row = i / C;
+      px = row == 0 ? 0.5f : row == 1 ? 5.5f : nan;
+      py = row == 0 ? 0.25f : row == 1 ? 0.25f : nan;
+    }
+    ax[i] = px;
+    ay[i] = py;
+  }
+  chargrid_t *g = chargrid_create(C, R, 4, 4);
+  static const char *const progs[] = {"noise(A[i], B[i], s)", "fbm(A[i], B[i], 1, s)",
+                                      "fbm(A[i], B[i], 3, s)", "fbm(A[i], B[i], 8, s)"};
+  static const int octaves[] = {0, 1, 3, 8};
+  static const float seeds[] = {0.0f, 7.0f, -123.5f};
+  char src[160];
+  int bad = 0, cells = 0;
+  for (int p = 0; p < 4; p++)
+    for (int sd = 0; sd < 3; sd++)
+      for (int rect = 0; rect < 2; rect++) {
+        snprintf(src, sizeof src, "uniform s\narray A, B\ni = x + y * cols\nlevel = %s", progs[p]);
+        charshader_t *s = compile(src);
+        CHECK(s != NULL);
+        if (!s) continue;
+        CHECK(charshader_set_array(s, "A", ax, N));
+        CHECK(charshader_set_array(s, "B", ay, N));
+        CHECK(charshader_set_uniform(s, "s", seeds[sd]));
+        const int x0 = rect ? 5 : 0, w = C - x0;
+        CHECK_EQ_INT(charshader_run_values(s, g, x0, 0, w, R, NULL, 0, CS_OUT_LEVEL, s_vals), w * R);
+        for (int y = 0; y < R; y++)
+          for (int x = x0; x < C; x++) {
+            const int i = y * C + x;
+            const float want = p ? cs_fbm3(ax[i], ay[i], seeds[sd], octaves[p])
+                                 : cs_noise3(ax[i], ay[i], seeds[sd]);
+            const float got = s_vals[y * w + (x - x0)];
+            cells++;
+            if (!same(got, want)) {
+              if (bad < 10) printf("  %s, seed %g, cell %d: %a, want %a\n", progs[p], (double)seeds[sd], i, (double)got, (double)want);
+              bad++;
+            }
+          }
+        charshader_free(s);
+      }
+  CHECK_EQ_INT(bad, 0);
+  CHECK_EQ_INT(cells, 4 * 3 * (C + C - 5) * R);
+  chargrid_free(g);
+}
+
 // ── Task 6: outputs ──────────────────────────────────────────────────────────
 static int s_run_cells;
 
@@ -634,6 +705,7 @@ int main(void) {
   test_strips();
   test_uniforms_and_arrays();
   test_layers();
+  test_noise_lattice_cache();
   test_outputs_direct();
   test_outputs_ramps();
   test_outputs_nonfinite();
