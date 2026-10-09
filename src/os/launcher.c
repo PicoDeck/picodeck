@@ -72,6 +72,24 @@ static int s_app_count = 0;
 
 // app.json is read by app_manifest.c (bounded, escape-aware, host-tested).
 
+// The files of an app directory that the launcher looks for, found by one
+// listing of it. Every path lookup FatFS makes walks /apps from its first
+// entry (~0.45 ms a sector on the SPI card, a sector per ~5 apps), and an
+// app cost five of them (main.lua, main.elf, app.json, then icon.png and
+// icon.bmp, mostly absent): ~1.1 s to scan 40 apps. Now it is the listing,
+// app.json and the icon it has. Names compare as FatFS does, ignoring case.
+enum { AF_LUA = 1, AF_ELF = 2, AF_JSON = 4, AF_PNG = 8, AF_BMP = 16 };
+
+static void on_app_file(const sdcard_entry_t *entry, void *user) {
+  static const char *const k_names[] = {"main.lua", "main.elf", "app.json",
+                                        "icon.png", "icon.bmp"};
+  if (entry->is_dir)
+    return;
+  for (unsigned i = 0; i < sizeof(k_names) / sizeof(k_names[0]); i++)
+    if (strcasecmp(entry->name, k_names[i]) == 0)
+      *(unsigned *)user |= 1u << i;
+}
+
 // Fills *app from <base>/<dir> (base is "/apps", or a hidden root): false
 // when the directory holds neither main.lua nor main.elf. The one place an
 // app_entry_t is built, for the scan and for the dev `launch` of a hidden
@@ -82,10 +100,11 @@ static bool app_entry_load(const char *base, const char *dir, app_entry_t *app,
                            bool with_icon, bool quiet) {
   // Detect available runtimes
   char path[160];
-  snprintf(path, sizeof(path), "%s/%s/main.lua", base, dir);
-  bool has_lua = sdcard_fexists(path);
-  snprintf(path, sizeof(path), "%s/%s/main.elf", base, dir);
-  bool has_elf = sdcard_fexists(path);
+  unsigned files = 0;
+  snprintf(path, sizeof(path), "%s/%s", base, dir);
+  sdcard_list_dir(path, on_app_file, &files);
+  bool has_lua = (files & AF_LUA) != 0;
+  bool has_elf = (files & AF_ELF) != 0;
 
   if (!has_lua && !has_elf)
     return false;
@@ -101,7 +120,7 @@ static bool app_entry_load(const char *base, const char *dir, app_entry_t *app,
   // Try to load app.json for display name / description / id / requirements
   snprintf(path, sizeof(path), "%s/%s/app.json", base, dir);
   int json_len = 0;
-  char *json = sdcard_read_file(path, &json_len);
+  char *json = (files & AF_JSON) ? sdcard_read_file(path, &json_len) : NULL;
   if (json) {
     app_manifest_parse(json, json_len > 0 ? (size_t)json_len : 0, dir, app);
     umm_free(json);
@@ -113,13 +132,13 @@ static bool app_entry_load(const char *base, const char *dir, app_entry_t *app,
 
   // Try to load app icon (PNG first, then BMP)
   app->icon = NULL;
-  if (with_icon) {
+  if (with_icon && (files & AF_PNG)) {
     snprintf(path, sizeof(path), "%s/%s/icon.png", base, dir);
     app->icon = image_load(path);
-    if (!app->icon) {
-      snprintf(path, sizeof(path), "%s/%s/icon.bmp", base, dir);
-      app->icon = image_load(path);
-    }
+  }
+  if (with_icon && !app->icon && (files & AF_BMP)) {
+    snprintf(path, sizeof(path), "%s/%s/icon.bmp", base, dir);
+    app->icon = image_load(path);
   }
   return true;
 }

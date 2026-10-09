@@ -36,7 +36,8 @@ static void *my_file_open(const char *szFilename, int32_t *pFileSize) {
   sdfile_t f = sdcard_fopen(szFilename, "rb");
   if (!f)
     return NULL;
-  int size = sdcard_fsize(szFilename);
+  // From the open file: by path it is another directory walk (FatFS f_stat).
+  int size = sdcard_fsize_handle(f);
   if (size < 0) {
     sdcard_fclose(f);
     return NULL;
