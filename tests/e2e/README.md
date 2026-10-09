@@ -170,6 +170,7 @@ tests/e2e/
 ├── fixtures/fonts/      golden PNGs
 ├── fixtures/native_pad_probe/  the gbc / c64 gamepad adapters (staged by test_gamepad.py)
 ├── fixtures/chargrid_test/     the picocalc.chargrid contract fixture (staged hidden by test_chargrid.py: the default card has no slot to spare)
+├── fixtures/chargrid_scene/    the picocalc.chargrid golden-scene fixture (staged hidden by test_chargrid_scene.py)
 └── skip_allowlist.txt   tests that may skip; any other skip fails the run
 ```
 
