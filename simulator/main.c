@@ -21,6 +21,7 @@
 #include "hal/hal_audio.h"
 #include "hal/hal_threading.h"
 #include "sim_socket.h"
+#include "sim_native_api.h"
 
 // PicoDeck includes (adapted for simulator)
 #include "os.h"
@@ -336,6 +337,13 @@ void sim_core1_service(void) {
     // MOD player: render PCM and push to audio stream
     mod_player_update();
 
+    // A native app's audio callback (sys->setAudioCallback), where firmware
+    // Core 1 runs it (src/main.c). Only the web build's compiled-in apps set
+    // it: Unicorn's setAudioCallback is a stub.
+    void (*audio_cb)(void) = atomic_load(&g_native_audio_callback);
+    if (audio_cb)
+        audio_cb();
+
     // Network polling — drain IPC queue, run curl_multi, poll TCP sockets
     wifi_poll();
     http_fire_c_pending();
@@ -552,6 +560,7 @@ static const picocalc_gamepad_t s_gamepad_impl = {
 
 static void sim_wire_g_api(void) {
     memset(&g_api, 0, sizeof(g_api));
+    sim_native_api_wire(&g_api);  // display, sys, input, perf, fs, audio
     g_api.soundplayer = &s_soundplayer_impl;
     g_api.http        = &s_http_impl;
     g_api.appconfig   = &s_appconfig_impl;

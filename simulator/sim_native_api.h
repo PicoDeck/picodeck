@@ -21,4 +21,11 @@ bool sim_native_should_exit(void);
 void sim_native_app_begin(void);
 void sim_native_app_end(void);
 
+#include "os.h"
+
+// Point api's display, sys, input, perf, fs and audio tables at the
+// simulator's host implementations (sim_native_api.c). The other tables are
+// left as they are.
+void sim_native_api_wire(PicoCalcAPI *api);
+
 #endif

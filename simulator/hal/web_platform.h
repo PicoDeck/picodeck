@@ -12,6 +12,8 @@
 //     hal_display_get_framebuffer() (hal/hal_display.h).
 //   * sim_native_app_begin() and sim_native_app_end() (sim_native_api.h),
 //     around one run of a compiled-in native app; g_api (os.h) is its API.
+//   * sim_launch_request() (sim_test_control.h) and dev_op_exit()
+//     (src/dev_ops.h), which the page's test hooks call.
 //
 // The web sources must define:
 //   * the four web_* functions below, which the core's __EMSCRIPTEN__ hooks
@@ -20,7 +22,8 @@
 //     terminal tracking or Unicorn: sim_socket_notify() and
 //     sim_socket_notify_log_subscribers() (sim_socket.h),
 //     sim_set_active_terminal() and sim_get_active_terminal()
-//     (sim_socket_handler.h), and unicorn_run_app() (unicorn_runner.h).
+//     (sim_socket_handler.h), and unicorn_run_app() (unicorn_runner.h), the
+//     native-app hook: the web build runs an app's main.wasm there.
 
 #include <stdint.h>
 
@@ -30,8 +33,9 @@ extern "C" {
 
 // ── The core provides ────────────────────────────────────────────────────────
 
-// Run one Core 1 tick (audio, MOD player, network poll, HTTP callbacks) and
-// return; no sleep. The desktop build's Core 1 thread runs it every 5 ms.
+// Run one Core 1 tick (audio, MOD player, a native app's audio callback,
+// network poll, HTTP callbacks) and return; no sleep. The desktop build's
+// Core 1 thread runs it every 5 ms.
 void sim_core1_service(void);
 
 // ── The web sources define ───────────────────────────────────────────────────
