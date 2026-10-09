@@ -87,6 +87,7 @@ Subsystem notes for the launcher, app runners, Lua bridge, sandbox and OS servic
 
 - `splash_render()` is a pure function of time: 80 × 160 cells of 4×2 px, from `splash_logo_cells.c`, which `tools/make_splash_logo.py` generates. It uses the chargrid shader's libm-free maths, so the host, the simulator and the device draw the same pixels (unit `test_splash_render`, `test_splash_m33`).
 - At boot Core 1 plays it from first light (before the USB wait) until `splash_finish()`. While `splash_running()`, `ui_draw_splash` only passes the status, and Core 0's error screens call `splash_stop()` first. After a failed boot it is skipped.
+- A Core 1 HardFault during the animation keeps its own fault screen and reboot: `splash_stop`/`splash_finish` then hold Core 0 until it reboots.
 - Everywhere else (USB mode, the update screen, `picocalc.ui.splash`) the splash is the still frame (`t = SPLASH_T_END`).
 - Core 0 must not flood the QMI while the animation moves: Core 1 renders from flash, which shares the QMI with the PSRAM, and starves (the ~0.8 s heap clear made one frame take ~0.48 s). The heap clear waits on `splash_wait_still()`; `render_max_at_ms` in the `splash` stats points at a culprit.
 - The `splash` dev command prints its measurements.
