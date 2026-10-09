@@ -3,6 +3,7 @@
 #include "chargrid.h"
 #include "font_6x8.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -407,6 +408,86 @@ static void test_box_stamp(void) {
   chargrid_free(g);
 }
 
+static void test_ramps(void) {
+  CHECK_EQ_INT(chargrid_ramp_step(0.0f, 4, false, 0, 0), 0);
+  CHECK_EQ_INT(chargrid_ramp_step(0.34f, 4, false, 0, 0), 1);
+  CHECK_EQ_INT(chargrid_ramp_step(0.67f, 4, false, 0, 0), 2);
+  CHECK_EQ_INT(chargrid_ramp_step(1.0f, 4, false, 0, 0), 3);
+  CHECK_EQ_INT(chargrid_ramp_step(-3.0f, 4, false, 0, 0), 0);
+  CHECK_EQ_INT(chargrid_ramp_step(7.0f, 4, false, 0, 0), 3);
+  CHECK_EQ_INT(chargrid_ramp_step(NAN, 4, false, 0, 0), 0);
+  CHECK_EQ_INT(chargrid_ramp_step(0.9f, 1, true, 3, 3), 0);
+  int on = 0;  // dither: 0.5 in a 2-entry ramp lights exactly half of a 4x4 block
+  for (int y = 0; y < 4; y++)
+    for (int x = 0; x < 4; x++) on += chargrid_ramp_step(0.5f, 2, true, x, y);
+  CHECK_EQ_INT(on, 8);
+  for (int y = 0; y < 4; y++)  // dither never leaves the ends
+    for (int x = 0; x < 4; x++) {
+      CHECK_EQ_INT(chargrid_ramp_step(0.0f, 4, true, x, y), 0);
+      CHECK_EQ_INT(chargrid_ramp_step(1.0f, 4, true, x, y), 3);
+    }
+  chargrid_t *g = chargrid_create(4, 1, 6, 8);
+  const uint8_t ramp[] = {' ', '.', ':', '#'}, cr[] = {10, 11};
+  chargrid_shade(g, 0, 0, 1.0f, true, 0.0f, false);  // no ramp yet: unchanged
+  CHECK_EQ_INT(g->glyph[0], 0);
+  chargrid_set_ramp(g, ramp, 4, false);
+  chargrid_set_color_ramp(g, cr, 2, false);
+  CHECK_EQ_INT(g->ramp_n, 4);
+  CHECK_EQ_INT(g->cramp_n, 2);
+  chargrid_shade(g, 1, 0, 0.34f, true, 1.0f, true);
+  CHECK_EQ_INT(g->glyph[1], '.');
+  CHECK_EQ_INT(g->fg[1], 11);
+  chargrid_shade(g, 2, 0, 1.0f, true, 0.0f, false);  // tone off: fg kept
+  CHECK_EQ_INT(g->glyph[2], '#');
+  CHECK_EQ_INT(g->fg[2], CG_DEFAULT_FG);
+  chargrid_shade(g, 9, 0, 1.0f, true, 1.0f, true);   // outside: ignored
+  chargrid_set_ramp(g, NULL, 0, false);
+  CHECK_EQ_INT(g->ramp_n, 0);
+  chargrid_free(g);
+}
+
+static void test_blit_scroll(void) {
+  chargrid_t *a = chargrid_create(4, 2, 6, 8), *b = chargrid_create(4, 2, 6, 8);
+  char s[8];
+  chargrid_print(a, 0, 0, "abcd", 4, 1, CG_KEEP);
+  chargrid_print(a, 0, 1, "e f ", 4, CG_KEEP, CG_KEEP);
+  chargrid_fill(b, 0, 0, 4, 2, '.', CG_KEEP, CG_KEEP);
+  chargrid_blit(b, a, 1, 0, 3, 2, 0, 0, ' ');  // spaces transparent
+  row_str(b, 0, s); CHECK_STR(s, "bcd.");
+  row_str(b, 1, s); CHECK_STR(s, ".f..");
+  CHECK_EQ_INT(b->fg[0], 1);
+  CHECK_EQ_INT(b->fg[3], CG_DEFAULT_FG);
+  chargrid_blit(a, a, 0, 0, 3, 1, 1, 0, CG_KEEP);  // overlap to the right
+  row_str(a, 0, s); CHECK_STR(s, "aabc");
+  chargrid_blit(a, a, 1, 0, 3, 1, 0, 0, CG_KEEP);  // overlap to the left
+  row_str(a, 0, s); CHECK_STR(s, "abcc");
+  chargrid_blit(a, a, 0, 0, 4, 1, 0, 1, 'c');      // down, 'c' transparent
+  row_str(a, 1, s); CHECK_STR(s, "abf ");
+  chargrid_blit(b, a, -1, -1, 10, 10, -2, 0, CG_KEEP);  // clipped on both grids
+  row_str(b, 1, s); CHECK_STR(s, "bcc.");
+  chargrid_t *d = chargrid_create(3, 3, 6, 8);     // a diagonal self-overlap
+  chargrid_print(d, 0, 0, "abc\ndef\nghi", 11, CG_KEEP, CG_KEEP);
+  chargrid_blit(d, d, 0, 0, 2, 2, 1, 1, CG_KEEP);
+  row_str(d, 0, s); CHECK_STR(s, "abc");
+  row_str(d, 1, s); CHECK_STR(s, "dab");
+  row_str(d, 2, s); CHECK_STR(s, "gde");
+  chargrid_blit(d, d, 0, 0, 0, 3, 1, 1, CG_KEEP);  // empty: nothing
+  chargrid_scroll(d, 0, -1, '-', CG_KEEP, CG_KEEP);
+  row_str(d, 0, s); CHECK_STR(s, "dab");
+  row_str(d, 1, s); CHECK_STR(s, "gde");
+  row_str(d, 2, s); CHECK_STR(s, "---");
+  chargrid_scroll(d, 2, 0, '#', CG_KEEP, CG_KEEP);
+  row_str(d, 0, s); CHECK_STR(s, "##d");
+  row_str(d, 2, s); CHECK_STR(s, "##-");
+  chargrid_scroll(d, 0, 5, '*', CG_KEEP, CG_KEEP);
+  row_str(d, 1, s); CHECK_STR(s, "***");
+  chargrid_scroll(d, -2000000000, 0, '!', CG_KEEP, CG_KEEP);
+  row_str(d, 2, s); CHECK_STR(s, "!!!");
+  chargrid_free(a);
+  chargrid_free(b);
+  chargrid_free(d);
+}
+
 int main(void) {
   test_sizes();
   test_create_defaults();
@@ -420,5 +501,7 @@ int main(void) {
   test_utf8_invalid();
   test_print_wrap();
   test_box_stamp();
+  test_ramps();
+  test_blit_scroll();
   return check_report("test_chargrid");
 }

@@ -182,3 +182,102 @@ void chargrid_define_glyph(chargrid_t *g, int code, const uint16_t *rows) {
   g->defined[code >> 3] |= (uint8_t)(1u << (code & 7));
   g->dirty = true;
 }
+
+// The 4x4 Bayer matrix as offsets in [-0.47, 0.47] (ascii.rest's dither).
+static const float k_bayer_off[16] = {
+    0 / 16.0f - 0.47f,  8 / 16.0f - 0.47f,  2 / 16.0f - 0.47f,  10 / 16.0f - 0.47f,
+    12 / 16.0f - 0.47f, 4 / 16.0f - 0.47f,  14 / 16.0f - 0.47f, 6 / 16.0f - 0.47f,
+    3 / 16.0f - 0.47f,  11 / 16.0f - 0.47f, 1 / 16.0f - 0.47f,  9 / 16.0f - 0.47f,
+    15 / 16.0f - 0.47f, 7 / 16.0f - 0.47f,  13 / 16.0f - 0.47f, 5 / 16.0f - 0.47f};
+
+static void set_any_ramp(uint8_t *dst, uint16_t *n_out, bool *d_out, const uint8_t *src, int n,
+                         bool dither) {
+  if (n < 0 || !src) n = 0;
+  if (n > CG_RAMP_MAX) n = CG_RAMP_MAX;
+  if (n) memcpy(dst, src, (size_t)n);
+  *n_out = (uint16_t)n;
+  *d_out = dither;
+}
+
+void chargrid_set_ramp(chargrid_t *g, const uint8_t *codes, int n, bool dither) {
+  set_any_ramp(g->ramp, &g->ramp_n, &g->ramp_dither, codes, n, dither);
+}
+
+void chargrid_set_color_ramp(chargrid_t *g, const uint8_t *indices, int n, bool dither) {
+  set_any_ramp(g->cramp, &g->cramp_n, &g->cramp_dither, indices, n, dither);
+}
+
+int chargrid_ramp_step(float v, int n, bool dither, int x, int y) {
+  if (n <= 1) return 0;
+  if (!(v >= 0.0f)) v = 0.0f;  // NaN too
+  if (v > 1.0f) v = 1.0f;
+  float s = v * (float)(n - 1) + 0.5f;
+  if (dither) s += k_bayer_off[((unsigned)y & 3u) * 4u + ((unsigned)x & 3u)];
+  int step = (int)s;  // s >= 0.03, so truncation is floor
+  if (step < 0) step = 0;
+  if (step > n - 1) step = n - 1;
+  return step;
+}
+
+void chargrid_shade(chargrid_t *g, int x, int y, float level, bool has_level, float tone,
+                    bool has_tone) {
+  if (!in_grid(g, x, y)) return;
+  const size_t i = cell_index(g, x, y);
+  if (has_level && g->ramp_n)
+    g->glyph[i] = g->ramp[chargrid_ramp_step(level, g->ramp_n, g->ramp_dither, x, y)];
+  if (has_tone && g->cramp_n)
+    g->fg[i] = g->cramp[chargrid_ramp_step(tone, g->cramp_n, g->cramp_dither, x, y)];
+  g->dirty = true;
+}
+
+void chargrid_blit(chargrid_t *dst, const chargrid_t *src, int sx, int sy, int w, int h,
+                   int dx, int dy, int transparent) {
+  if (w <= 0 || h <= 0) return;
+  int64_t x0 = sx, y0 = sy, x1 = (int64_t)sx + w, y1 = (int64_t)sy + h;  // source, half-open
+  const int64_t ox = (int64_t)dx - sx, oy = (int64_t)dy - sy;            // dst = src + o
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 > src->cols) x1 = src->cols;
+  if (y1 > src->rows) y1 = src->rows;
+  if (x0 + ox < 0) x0 = -ox;
+  if (y0 + oy < 0) y0 = -oy;
+  if (x1 + ox > dst->cols) x1 = dst->cols - ox;
+  if (y1 + oy > dst->rows) y1 = dst->rows - oy;
+  if (x1 <= x0 || y1 <= y0) return;
+  const size_t n = (size_t)(x1 - x0);
+  const bool same = dst == src;
+  const bool bottom_up = same && oy > 0;               // rows not yet read stay intact
+  const bool right_to_left = same && oy == 0 && ox > 0;
+  for (int64_t k = 0; k < y1 - y0; k++) {
+    const int64_t yy = bottom_up ? y1 - 1 - k : y0 + k;
+    const size_t si = (size_t)yy * (size_t)src->cols + (size_t)x0;
+    const size_t di = (size_t)(yy + oy) * (size_t)dst->cols + (size_t)(x0 + ox);
+    if (transparent < 0) {
+      memmove(dst->glyph + di, src->glyph + si, n);
+      memmove(dst->fg + di, src->fg + si, n);
+      memmove(dst->bg + di, src->bg + si, n);
+      continue;
+    }
+    for (size_t j = 0; j < n; j++) {
+      const size_t c = right_to_left ? n - 1 - j : j;
+      if (src->glyph[si + c] == (uint8_t)transparent) continue;
+      dst->glyph[di + c] = src->glyph[si + c];
+      dst->fg[di + c] = src->fg[si + c];
+      dst->bg[di + c] = src->bg[si + c];
+    }
+  }
+  dst->dirty = true;
+}
+
+void chargrid_scroll(chargrid_t *g, int dx, int dy, int glyph, int fg, int bg) {
+  if (dx >= g->cols || dx <= -g->cols || dy >= g->rows || dy <= -g->rows) {
+    chargrid_fill(g, 0, 0, g->cols, g->rows, glyph, fg, bg);
+    return;
+  }
+  chargrid_blit(g, g, 0, 0, g->cols, g->rows, dx, dy, CG_KEEP);
+  if (dx > 0) chargrid_fill(g, 0, 0, dx, g->rows, glyph, fg, bg);
+  if (dx < 0) chargrid_fill(g, g->cols + dx, 0, -dx, g->rows, glyph, fg, bg);
+  if (dy > 0) chargrid_fill(g, 0, 0, g->cols, dy, glyph, fg, bg);
+  if (dy < 0) chargrid_fill(g, 0, g->rows + dy, g->cols, -dy, glyph, fg, bg);
+  g->dirty = true;
+}
