@@ -22,8 +22,11 @@ bool splash_running(void);
 // 53 characters; NULL clears).
 void splash_set_status(const char *status, const char *subtext);
 // Core 0, at the end of boot: waits until Core 1 has shown the final frame
-// with the latest status (at most SPLASH_END_MS + 500 ms after the start),
-// stops and resets Core 1, and logs the [SPLASH] line. The frame stays up.
+// with the latest status, for at most SPLASH_END_MS + 500 ms after the start
+// or 100 ms after this call, whichever is later (normally ~10-25 ms after the
+// call, as the boot outlasts the animation); stops and resets Core 1, and
+// logs the [SPLASH] line: state=done, or state=stale if the latest status was
+// not shown. The frame stays up.
 void splash_finish(void);
 // Core 0, before an error or update screen: stops and resets Core 1 now.
 void splash_stop(void);

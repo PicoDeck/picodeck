@@ -26,6 +26,9 @@ void splash_draw_static(const char *status, const char *subtext) {
 #define STATUS_MAX 54  // 53 characters of the 6x8 font span the screen
 #define END_US ((uint64_t)SPLASH_END_MS * 1000u)
 #define FINISH_MARGIN_US 500000u
+// splash_finish() waits at least this long for the last status: past the end
+// Core 1 is idle and needs one render plus a flush start to show it.
+#define STATUS_GRACE_US 100000u
 #define STOP_ACK_US 100000u
 
 typedef struct {
@@ -33,9 +36,11 @@ typedef struct {
   uint32_t seq;  // bumped by every splash_set_status()
 } text_t;
 
-enum { ST_NONE, ST_SKIPPED, ST_RUNNING, ST_DONE, ST_STOPPED, ST_TIMEOUT };
-static const char *const s_state_names[] = {"none", "skipped", "running",
-                                            "done", "stopped", "timeout"};
+// done: splash_finish() after Core 1 showed the final frame with the latest
+// status; stale: splash_finish() before it did; stopped: splash_stop().
+enum { ST_NONE, ST_SKIPPED, ST_RUNNING, ST_DONE, ST_STALE, ST_STOPPED, ST_TIMEOUT };
+static const char *const s_state_names[] = {"none",  "skipped", "running", "done",
+                                            "stale", "stopped", "timeout"};
 
 static spin_lock_t *s_lock;          // guards s_text
 static text_t s_text;
@@ -129,19 +134,28 @@ void splash_start(bool animate) {
 
 bool splash_running(void) { return s_running; }
 
+// Whether Core 1 has shown a final frame with the latest status.
+static bool latest_shown(void) {
+  const uint32_t irq = spin_lock_blocking(s_lock);
+  const uint32_t seq = s_text.seq;
+  spin_unlock(s_lock, irq);
+  return s_final && s_final_seq == seq;
+}
+
 static void halt(bool wait_for_end) {
   if (!s_running) return;
   const uint64_t a = time_us_64();
   if (wait_for_end) {
-    while (time_us_64() - s_t0_us < END_US + FINISH_MARGIN_US) {
-      const uint32_t irq = spin_lock_blocking(s_lock);
-      const uint32_t seq = s_text.seq;
-      spin_unlock(s_lock, irq);
-      if (s_final && s_final_seq == seq) break;
+    // Until the animation's end plus a margin or, when the boot outlasts
+    // that (as it normally does), a grace from now for the last status.
+    uint64_t until = s_t0_us + END_US + FINISH_MARGIN_US;
+    if (until < a + STATUS_GRACE_US) until = a + STATUS_GRACE_US;
+    while (time_us_64() < until && !latest_shown()) {
       watchdog_update();
       busy_wait_us_32(1000);
     }
   }
+  const bool shown = wait_for_end && latest_shown();
   s_stop_req = true;
   const uint64_t ack = time_us_64();
   while (!s_stopped && !s_core1_faulted && time_us_64() - ack < STOP_ACK_US)
@@ -160,7 +174,8 @@ static void halt(bool wait_for_end) {
   s_running = false;
   s_st.waited_ms = (uint32_t)((time_us_64() - a) / 1000u);
   s_st.handover_ms = now_ms();
-  s_st.state = !acked ? ST_TIMEOUT : (wait_for_end && s_final) ? ST_DONE : ST_STOPPED;
+  s_st.state = !acked ? ST_TIMEOUT : !wait_for_end ? ST_STOPPED
+              : shown ? ST_DONE : ST_STALE;
   char line[224];
   splash_stats_format(line, sizeof line);
   printf("[SPLASH] %s\n", line);
