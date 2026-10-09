@@ -7,15 +7,16 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("numpy")
-pytest.importorskip("scipy")
-
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "tools" / "make_splash_logo.py"
 OS = ROOT / "src" / "os"
 
 
 def test_committed_files_are_current(tmp_path):
+    # Only the generator needs these (CI has numpy, not scipy); the other
+    # tests parse the committed text.
+    pytest.importorskip("numpy")
+    pytest.importorskip("scipy")
     subprocess.run([sys.executable, str(TOOL), str(tmp_path)], check=True)
     for name in ("splash_logo_cells.h", "splash_logo_cells.c"):
         assert (tmp_path / name).read_text() == (OS / name).read_text(), name

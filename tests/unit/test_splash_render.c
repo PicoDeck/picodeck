@@ -136,6 +136,13 @@ static void test_open_flash(void) {
   CHECK_EQ_INT(bad, 0);
 }
 
+static int count_colour(const uint16_t *fb, int y0, int y1, uint16_t c) {
+  int n = 0;
+  for (int y = y0; y < y1; y++)
+    for (int x = 0; x < W; x++) n += fb[y * W + x] == c;
+  return n;
+}
+
 static int row_uniform(const uint16_t *fb, int y) {
   for (int x = 1; x < W; x++)
     if (fb[y * W + x] != fb[y * W]) return 0;
@@ -176,15 +183,30 @@ static void test_glint(void) {
   CHECK(memcmp(fb_a, fb_b, sizeof fb_a) == 0);
 }
 
+// The pixels of the swapped frame at t that are not the byte swap of the
+// unswapped one, which is left in fb_a.
+static int swap_mismatches(float t, const char *status, const char *subtext) {
+  render(fb_a, t, status, subtext);
+  for (int i = 0; i < W * H; i++) fb_b[i] = 0xA5A5;
+  splash_render(fb_b, W, true, t, status, subtext);
+  int bad = 0;
+  for (int i = 0; i < W * H; i++) bad += fb_b[i] != (uint16_t)((fb_a[i] >> 8) | (fb_a[i] << 8));
+  return bad;
+}
+
+// The device's byte order is the whole frame byte-swapped: the cells while
+// the animation moves (no text yet at t = 1.234), and the status text too at
+// the end.
 static void test_deterministic_and_swapped(void) {
   render(fb_a, 1.234f, "Loading...", NULL);
   render(fb_b, 1.234f, "Loading...", NULL);
   CHECK(memcmp(fb_a, fb_b, sizeof fb_a) == 0);
-  for (int i = 0; i < W * H; i++) fb_b[i] = 0xA5A5;
-  splash_render(fb_b, W, true, 1.234f, "Loading...", NULL);
-  int bad = 0;
-  for (int i = 0; i < W * H; i++) bad += fb_b[i] != (uint16_t)((fb_a[i] >> 8) | (fb_a[i] << 8));
-  CHECK_EQ_INT(bad, 0);
+  CHECK_EQ_INT(swap_mismatches(1.234f, "Loading...", NULL), 0);
+  CHECK_EQ_INT(swap_mismatches(SPLASH_T_END, "Loading...", "Please wait"), 0);
+  // That frame does carry the text (palette entry 38) on both lines.
+  const uint16_t tc = splash_palette[38];
+  CHECK(count_colour(fb_a, SPLASH_STATUS_Y, SPLASH_STATUS_Y + 8, tc) > 0);
+  CHECK(count_colour(fb_a, SPLASH_SUBTEXT_Y, SPLASH_SUBTEXT_Y + 8, tc) > 0);
 }
 
 static void test_still_frame(void) {
@@ -192,13 +214,6 @@ static void test_still_frame(void) {
   const uint32_t crc = crc32(fb_a, W * H);
   if (crc != STILL_CRC) printf("still frame crc32 0x%08lx\n", (unsigned long)crc);
   CHECK_EQ_U32(crc, STILL_CRC);
-}
-
-static int count_colour(const uint16_t *fb, int y0, int y1, uint16_t c) {
-  int n = 0;
-  for (int y = y0; y < y1; y++)
-    for (int x = 0; x < W; x++) n += fb[y * W + x] == c;
-  return n;
 }
 
 static void test_status_text(void) {

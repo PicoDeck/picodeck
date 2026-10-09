@@ -4,7 +4,6 @@ picked in the crt-splash prototype, and --show-splash playing the animation
 through."""
 import re
 import shutil
-import time
 from pathlib import Path
 
 import numpy as np
@@ -70,11 +69,23 @@ def test_splash_still_frame_matches_prototype(simulator):
 
 
 def test_show_splash_plays_through(sim_factory, test_sd_card):
-    """--show-splash (screencasts) plays the animation (~170 presented
-    frames on its own), then the status steps, and the simulator carries on
-    to the launcher."""
+    """--show-splash (screencasts): the simulator's stdout has
+    "[Core0] Showing boot splash screen...", then "[Core0] Splash sequence
+    complete", both before "[Socket] TCP port" (so before the launcher, which
+    starts after the socket). simulator/main.c prints the second line only
+    once its animation loop, which presents a frame per step, has reached
+    SPLASH_T_END and the status steps are done. The simulator then answers
+    a ping."""
     sim = sim_factory(test_sd_card, extra_args=["--show-splash"], timeout=30.0)
-    deadline = time.time() + 30
-    while sim.present_count() < 100 and time.time() < deadline:
-        time.sleep(0.2)
-    assert sim.present_count() >= 100, "the splash animation did not play through"
+    out = sim.get_output()["stdout"].splitlines()
+
+    def at(text):
+        hits = [i for i, line in enumerate(out) if text in line]
+        assert hits, f"no {text!r} on the simulator's stdout:\n" + "\n".join(out[-40:])
+        return hits[0]
+
+    start, done, port = (at(t) for t in ("[Core0] Showing boot splash screen...",
+                                         "[Core0] Splash sequence complete",
+                                         "[Socket] TCP port"))
+    assert start < done < port, (start, done, port)
+    assert sim.ping()
