@@ -2068,8 +2068,16 @@ int main(void) {
   }
 #endif
 
+  // Zero the PSRAM heap by DMA while the display initialises: its panel-reset
+  // waits cover most of the ~0.24 s clear (issue #73; lua_psram_alloc.c).
+  lua_psram_alloc_clear_start();
+
   // Initialise display first so we can show progress
   display_init();
+
+  // The clear saturates the QMI, which Core 1 runs the animation from: let
+  // it finish first.
+  lua_psram_alloc_clear_wait();
 
   // The boot splash: Core 1 plays it from here while Core 0 boots, not after
   // a failed boot (keep the recovery path as simple as it was). The QMI
@@ -2207,13 +2215,8 @@ int main(void) {
 
   // Initialize the PSRAM allocator BEFORE anything that uses it
   // (SD card file ops use umm_malloc for FIL/FILINFO structs, config_load,
-  // WiFi, Lua, OTA update, etc.)
-  //
-  // Its init zeroes the 6 MB heap through the XIP cache, which floods the
-  // QMI for ~0.8 s and starves Core 1's flash fetches: let the boot splash
-  // reach its still frame first (it only waits when the serial host
-  // connected early and cut the USB wait short).
-  splash_wait_still();
+  // WiFi, Lua, OTA update, etc.). The heap was zeroed before the splash, so
+  // this only writes umm's block headers.
   lua_psram_alloc_init();
   {
     void *pool = lua_psram_get_core1_pool();

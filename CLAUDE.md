@@ -70,7 +70,9 @@ main()
   set_sys_clock_khz(200000)     // 200 MHz overclock
   stdio_init_all()
   qmi_psram_init()              // QMI PSRAM to quad mode (before Core 1 runs from flash)
-  display_init()                // PIO0 SPI, double-buffered SRAM
+  lua_psram_alloc_clear_start() // zero the 6 MB heap by DMA through the uncached alias...
+  display_init()                // PIO0 SPI, double-buffered SRAM (...under its panel-reset waits)
+  lua_psram_alloc_clear_wait()  // the clear saturates the QMI: done before Core 1 runs from flash
   splash_start()                // Core 1 plays the boot animation (src/os/splash.c)
   USB serial wait (≤ 3 s)
   Wire g_api struct (function pointers)
@@ -78,8 +80,7 @@ main()
   sound_init() → audio_init()
   kbd_init()
   sdcard_init()
-  splash_wait_still()           // the heap clear floods the QMI: wait for the splash's still frame
-  lua_psram_alloc_init()        // umm_malloc heap on QMI PSRAM
+  lua_psram_alloc_init()        // umm_malloc heap on QMI PSRAM (headers only: already zeroed)
   config_load()                 // /system/config.json
   boot_crypto_init()            // on the OS stack: Core 0 CTR_DRBG seed + CA bundle parse
   wifi_init() → http_init() → tcp_init()

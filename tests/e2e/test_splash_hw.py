@@ -13,10 +13,14 @@ FIRST_LIGHT_MS = 400      # the first frame, after QMI PSRAM and display init
 MIN_FPS = 30
 END_MS = 2800             # SPLASH_END_MS
 # Boot to the launcher was ~4.9 s before the splash moved to Core 1 (host
-# timestamps on a dev `reboot` with a computer attached, 2026-10-10).
-HANDOVER_MS = 5200
-# The PSRAM heap clear overlapping the animation stalled one render 482 ms
-# (~15 ms after splash_wait_still).
+# timestamps on a dev `reboot` with a computer attached, 2026-10-10), and the
+# hand-over ~4.99 s with it while the PSRAM heap was cleared through the cache
+# after the animation; ~3.9 s since the heap is cleared by DMA before it
+# (issue #73; WiFi and Bluetooth on).
+HANDOVER_MS = 4300
+# The PSRAM heap clear through the cache overlapping the animation stalled one
+# render 482 ms; with the clear before the animation the slowest is ~21 ms
+# (the CA bundle parse).
 MAX_RENDER_US = 50_000
 
 

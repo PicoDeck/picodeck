@@ -5,6 +5,16 @@
 #define UMM_BLOCK_BODY_SIZE 200
 #define UMM_INLINE_METRICS
 
+// The firmware zeroes the heap before umm_init_heap() (lua_psram_alloc.c: by
+// DMA through the uncached alias, before the boot splash; a static array in
+// .bss on boards without PSRAM), so the init only writes its block headers:
+// the firmware's umm_malloc.c is a copy whose clear honours this
+// (cmake/picodeck_umm.cmake). The simulator's --real-umm includes the
+// original source, which clears whatever this says.
+#ifndef PICODECK_SIMULATOR
+#define UMM_HEAP_PRECLEARED
+#endif
+
 // ── Multi-core safety ─────────────────────────────────────────────────────────
 // umm_malloc is called from both Core 0 (Lua) and Core 1 (Mongoose/WiFi).
 // We use a Pico SDK critical_section_t (hardware spinlock + IRQ save/restore)
