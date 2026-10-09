@@ -25,11 +25,37 @@ static inline float cs_from_bits(uint32_t u) {
 #define CS_INF cs_from_bits(0x7F800000u)
 #define CS_NAN cs_from_bits(0x7FC00000u)
 
-// floor for every float: magnitudes from 2^23 up are integers already.
+// ARMv8 FP (the device's Cortex-M33) floors in one instruction: VRINTM
+// (to a float) or VCVTM (to an int32). The results equal the portable C
+// below for every input (the simulator and the host tests run the C).
+#if defined(__arm__) && defined(__ARM_ARCH) && __ARM_ARCH >= 8 && defined(__ARM_FP) && (__ARM_FP & 4)
+#define CS_ARMV8_FP 1
+#else
+#define CS_ARMV8_FP 0
+#endif
+
+// floor for every float: magnitudes from 2^23 up are integers already; the
+// floor of -0.0f is +0.0f.
 static inline float cs_floor(float x) {
+#if CS_ARMV8_FP
+  float r;
+  __asm__("vrintm.f32 %0, %1" : "=t"(r) : "t"(x));
+  return r + 0.0f;  // -0.0f + 0.0f is +0.0f
+#else
   if (!(x > -8388608.0f && x < 8388608.0f)) return x;  // NaN too
   const float t = (float)(int32_t)x;
   return t > x ? t - 1.0f : t;
+#endif
+}
+// (int32_t)cs_floor(x) for |x| < 2^31.
+static inline int32_t cs_ifloor(float x) {
+#if CS_ARMV8_FP
+  float r;
+  __asm__("vcvtm.s32.f32 %0, %1" : "=t"(r) : "t"(x));
+  return (int32_t)cs_bits(r);
+#else
+  return (int32_t)cs_floor(x);
+#endif
 }
 static inline float cs_ceil(float x) { return -cs_floor(-x); }
 static inline float cs_fract(float x) { return x - cs_floor(x); }
@@ -56,19 +82,21 @@ static inline float cs_cos(float x) { return cs_sin_turns(x * CS_INV_TAU + 0.25f
 // e^x = 2^n * 2^f with f in [-0.5, 0.5]; 2^f is the Taylor series of
 // e^(f ln 2) to f^6.
 static inline float cs_exp(float x) {
-  if (x != x) return x;
-  if (x > 88.72f) return CS_INF;
-  if (x < -86.9f) return 0.0f;  // keeps 2^n normal (n >= -125); true values there are < 2e-38
-  const float z = x * 1.44269504f;     // log2(e)
-  const float n = cs_floor(z + 0.5f);  // -125..128
-  const float f = z - n;
+  if (__builtin_expect(!(cs_abs(x) < 86.9f), 0)) {  // one test for the common case
+    if (x != x) return x;
+    if (x > 88.72f) return CS_INF;
+    if (x < -86.9f) return 0.0f;  // keeps 2^n normal (n >= -125); true values there are < 2e-38
+  }
+  const float z = x * 1.44269504f;         // log2(e)
+  const int32_t ni = cs_ifloor(z + 0.5f);  // -125..128
+  const float n = (float)ni, f = z - n;
   const float p =
       1.0f + f * (0.693147181f +
                   f * (0.240226507f +
                        f * (0.0555041087f +
                             f * (0.00961812911f + f * (0.00133335581f + f * 0.000154035304f)))));
   // 2^(n - 1) * 2: n reaches 128 just below the overflow threshold.
-  return p * cs_from_bits((uint32_t)((int32_t)n + 126) << 23) * 2.0f;
+  return p * cs_from_bits((uint32_t)(ni + 126) << 23) * 2.0f;
 }
 
 // log x = e ln 2 + 2 atanh((m - 1) / (m + 1)) with m in [0.707, 1.414]; the
