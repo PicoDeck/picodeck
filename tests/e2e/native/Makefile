@@ -1,8 +1,9 @@
 # Builds the E2E native fixture apps against the public SDK (sdk/native):
-# native_api_probe (api_probe.c), native_leaky (leaky.c) and
+# native_api_probe (api_probe.c), native_leaky (leaky.c),
 # native_pad_probe (pad_probe.c: the gbc / c64 gamepad adapters),
-# native_nopoll (nopoll.c: no sys->poll() for 4 s) and native_drawfps
-# (drawfps.c: perf->drawFPS under Show FPS).
+# native_nopoll (nopoll.c: no sys->poll() for 4 s), native_drawfps
+# (drawfps.c: perf->drawFPS under Show FPS) and native_exit_probe
+# (exit_probe.c: ends only on shouldExit).
 # The outputs are committed so the E2E job needs no ARM toolchain; rebuild
 # and commit them whenever sdk/native/os.h changes, and the pad probe also
 # whenever apps/gbc/input.[ch] or apps/c64/pad_input.h changes:
@@ -18,6 +19,7 @@ LEAKY   ?= ../apps/native_leaky
 PADPROBE ?= ../fixtures/native_pad_probe
 NOPOLL   ?= ../fixtures/native_nopoll
 DRAWFPS  ?= ../fixtures/native_drawfps
+EXITPROBE ?= ../fixtures/native_exit_probe
 GAMES   ?= ../../../apps
 CC       = arm-none-eabi-gcc
 CFLAGS   = -mcpu=cortex-m33 -mthumb -fpie -fno-plt \
@@ -29,7 +31,7 @@ LDFLAGS  = -T $(SDK)/linker.ld -Wl,--entry=picodeck_main -Wl,-pie \
 
 .PHONY: all clean
 all: $(OUT)/main.elf $(LEAKY)/main.elf $(PADPROBE)/main.elf $(NOPOLL)/main.elf \
-     $(DRAWFPS)/main.elf
+     $(DRAWFPS)/main.elf $(EXITPROBE)/main.elf
 
 $(OUT)/main.elf: api_probe.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker.ld
 	@mkdir -p $(OUT)
@@ -52,6 +54,10 @@ $(DRAWFPS)/main.elf: drawfps.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker.ld
 	@mkdir -p $(DRAWFPS)
 	$(CC) $(CFLAGS) drawfps.c $(LDFLAGS) -o $@
 
+$(EXITPROBE)/main.elf: exit_probe.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker.ld
+	@mkdir -p $(EXITPROBE)
+	$(CC) $(CFLAGS) exit_probe.c $(LDFLAGS) -o $@
+
 clean:
 	rm -f $(OUT)/main.elf $(LEAKY)/main.elf $(PADPROBE)/main.elf $(NOPOLL)/main.elf \
-	      $(DRAWFPS)/main.elf
+	      $(DRAWFPS)/main.elf $(EXITPROBE)/main.elf

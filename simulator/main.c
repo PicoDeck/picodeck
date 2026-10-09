@@ -21,6 +21,7 @@
 #include "hal/hal_audio.h"
 #include "hal/hal_threading.h"
 #include "sim_socket.h"
+#include "sim_native_api.h"
 
 // PicoDeck includes (adapted for simulator)
 #include "os.h"
@@ -329,12 +330,31 @@ static void show_boot_splash(void) {
 // One Core 1 tick, with no sleep. core1_thread repeats it every 5 ms; the web
 // build has no threads, so its web_core1_tick() paces it instead (see
 // hal/web_platform.h). A new Core 1 duty goes here, so it runs in both.
+// stubs/driver_stubs.c. The launcher pauses Core 1 around a clock change
+// (launcher_apply_clock) and waits for the ack, which firmware Core 1 gives
+// before it stops (src/main.c); a paused tick here acks and does nothing.
+extern volatile bool g_core1_pause;
+extern volatile bool g_core1_paused;
+
 void sim_core1_service(void) {
+    if (g_core1_pause) {
+        g_core1_paused = true;
+        return;
+    }
+    g_core1_paused = false;
+
     // Update audio
     hal_audio_update();
 
     // MOD player: render PCM and push to audio stream
     mod_player_update();
+
+    // A native app's audio callback (sys->setAudioCallback), where firmware
+    // Core 1 runs it (src/main.c). Only the web build's compiled-in apps set
+    // it: Unicorn's setAudioCallback is a stub.
+    void (*audio_cb)(void) = atomic_load(&g_native_audio_callback);
+    if (audio_cb)
+        audio_cb();
 
     // Network polling — drain IPC queue, run curl_multi, poll TCP sockets
     wifi_poll();
@@ -552,6 +572,7 @@ static const picocalc_gamepad_t s_gamepad_impl = {
 
 static void sim_wire_g_api(void) {
     memset(&g_api, 0, sizeof(g_api));
+    sim_native_api_wire(&g_api);  // display, sys, input, perf, fs, audio
     g_api.soundplayer = &s_soundplayer_impl;
     g_api.http        = &s_http_impl;
     g_api.appconfig   = &s_appconfig_impl;
