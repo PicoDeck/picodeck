@@ -148,6 +148,10 @@ picodeck_unit_test(test_chargrid SOURCES ${SRC}/os/chargrid.c ${SRC}/os/chargrid
                    INCLUDES ${SRC}/fonts
                    DEFINES CG_MALLOC=malloc CG_FREE=free)
 target_compile_options(test_chargrid PRIVATE -ffp-contract=off -Wdouble-promotion)
+# The chargrid renderer: fast pair stores and the per-pixel path vs a reference.
+picodeck_unit_test(test_chargrid_render
+                   SOURCES ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c ${SRC}/os/chargrid_render.c
+                   DEFINES CG_MALLOC=malloc CG_FREE=free)
 # Lua float formatting vs glibc (built without PICODECK_LUA_SPRINTF: no luaconf).
 picodeck_unit_test(test_numfmt SOURCES ${SRC}/os/lua_numfmt.c)
 target_link_libraries(test_numfmt PRIVATE m)
