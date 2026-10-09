@@ -85,6 +85,35 @@ static void mad(charshader_t *s, const cs_ins_t *in, float *d, int n) {
   }
 }
 
+// noise and fbm with a seed per cell: cs_noise3 and cs_fbm3, out of the hot
+// loops (a seed is nearly always a constant).
+static void __attribute__((noinline)) noise_seeded(const float *a, const float *b, const float *c,
+                                                   int op, int octaves, float *d, int n) {
+  if (op == CS_OP_NOISE)
+    for (int j = 0; j < n; j++) d[j] = cs_noise3(a[j], b[j], c[j]);
+  else
+    for (int j = 0; j < n; j++) d[j] = cs_fbm3(a[j], b[j], c[j], octaves);
+}
+
+// noise(a, b, seed) and fbm(a, b, octaves, seed) over the strip: the same
+// noise.h functions as cs_noise3 and cs_fbm3, with a scalar seed's term,
+// the octave count and the fbm divisor worked out once.
+static void noise_strip(charshader_t *s, const cs_ins_t *in, float *d, int n) {
+  const float *a = strip_of(s, in, 0, n), *b = strip_of(s, in, 1, n);
+  if (!(in->scal & 4u)) {
+    noise_seeded(a, b, REG(2), in->op, in->aux, d, n);
+    return;
+  }
+  const uint32_t st = noise_seed_term(noise_lattice(SC(2)));
+  if (in->op == CS_OP_NOISE) {
+    for (int j = 0; j < n; j++) d[j] = noise_value_at(a[j], b[j], st);
+  } else {
+    const int octaves = noise_fbm_octaves(in->aux);
+    const float norm = noise_fbm_norm(octaves);
+    for (int j = 0; j < n; j++) d[j] = noise_fbm_at(a[j], b[j], octaves, st, norm);
+  }
+}
+
 // A layer field over the strip: 0 where the layer is missing or ends.
 static void load_layer(const chargrid_t *l, int plane, int x0, int y, int n, float *d) {
   int m = 0;
@@ -190,13 +219,10 @@ static void exec(charshader_t *s, const chargrid_t *g, chargrid_t *const *lay, i
         TERNARY(cs_smooth)
       case CS_OP_SELECT: TERNARY(cs_select)
       case CS_OP_HASH: TERNARY(cs_hash3)
-      case CS_OP_NOISE: TERNARY(cs_noise3)
-      case CS_OP_FBM: {
-        const float *a = strip_of(s, in, 0, n), *b = strip_of(s, in, 1, n);
-        const float *c = strip_of(s, in, 2, n);
-        const int octaves = in->aux;
-        for (int j = 0; j < n; j++) d[j] = cs_fbm3(a[j], b[j], c[j], octaves);
-      } break;
+      case CS_OP_NOISE:
+      case CS_OP_FBM:
+        noise_strip(s, in, d, n);
+        break;
       case CS_OP_DIST: {
         const float *a = strip_of(s, in, 0, n), *b = strip_of(s, in, 1, n);
         const float *c = strip_of(s, in, 2, n), *e = strip_of(s, in, 3, n);
