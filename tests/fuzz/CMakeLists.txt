@@ -36,3 +36,7 @@ picodeck_fuzz_target(fuzz_qoa SOURCES ${PICODECK_ROOT}/src/drivers/qoa.c
                      INCLUDES ${PICODECK_ROOT}/src/drivers ${PICODECK_ROOT}/simulator/stubs)
 picodeck_fuzz_target(fuzz_hid_pad SOURCES ${PICODECK_ROOT}/src/drivers/hid_pad.c
                      INCLUDES ${PICODECK_ROOT}/src/drivers)
+picodeck_fuzz_target(fuzz_chargrid_text
+                     SOURCES ${PICODECK_ROOT}/src/os/chargrid.c ${PICODECK_ROOT}/src/os/chargrid_shapes.c
+                             ${PICODECK_ROOT}/src/os/chargrid_text.c ${PICODECK_ROOT}/src/os/text_wrap.c)
+target_compile_definitions(fuzz_chargrid_text PRIVATE CG_MALLOC=malloc CG_FREE=free)

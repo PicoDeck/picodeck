@@ -265,6 +265,148 @@ static void test_define_glyph(void) {
   chargrid_free(g);
 }
 
+static int enc_utf8(uint32_t cp, char *o) {
+  if (cp < 0x80) { o[0] = (char)cp; return 1; }
+  if (cp < 0x800) { o[0] = (char)(0xC0 | (cp >> 6)); o[1] = (char)(0x80 | (cp & 0x3F)); return 2; }
+  if (cp < 0x10000) {
+    o[0] = (char)(0xE0 | (cp >> 12)); o[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    o[2] = (char)(0x80 | (cp & 0x3F)); return 3;
+  }
+  o[0] = (char)(0xF0 | (cp >> 18)); o[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+  o[2] = (char)(0x80 | ((cp >> 6) & 0x3F)); o[3] = (char)(0x80 | (cp & 0x3F)); return 4;
+}
+
+static void test_utf8_map(void) {
+  static const struct { uint32_t cp; int code; } k[] = {
+      {0x00B7, CG_DOT1}, {0x2022, CG_DOT2}, {0x25CF, CG_DOT3}, {0x2B24, CG_DOT4},
+      {0x2591, CG_SHADE1}, {0x2592, CG_SHADE2}, {0x2593, CG_SHADE3}, {0x2588, CG_SHADE4},
+      {0x2580, CG_HALF_TOP}, {0x2584, CG_HALF_BOTTOM}, {0x258C, CG_HALF_LEFT}, {0x2590, CG_HALF_RIGHT},
+      {0x2500, CG_BOX_H}, {0x2501, CG_BOX_H}, {0x2550, CG_BOX_H},
+      {0x2502, CG_BOX_V}, {0x2503, CG_BOX_V}, {0x2551, CG_BOX_V},
+      {0x250C, CG_BOX_TL}, {0x250F, CG_BOX_TL}, {0x2554, CG_BOX_TL}, {0x256D, CG_BOX_TL},
+      {0x2510, CG_BOX_TR}, {0x2513, CG_BOX_TR}, {0x2557, CG_BOX_TR}, {0x256E, CG_BOX_TR},
+      {0x2514, CG_BOX_BL}, {0x2517, CG_BOX_BL}, {0x255A, CG_BOX_BL}, {0x2570, CG_BOX_BL},
+      {0x2518, CG_BOX_BR}, {0x251B, CG_BOX_BR}, {0x255D, CG_BOX_BR}, {0x256F, CG_BOX_BR},
+      {0x251C, CG_BOX_LT}, {0x2523, CG_BOX_LT}, {0x2560, CG_BOX_LT},
+      {0x2524, CG_BOX_RT}, {0x252B, CG_BOX_RT}, {0x2563, CG_BOX_RT},
+      {0x252C, CG_BOX_TT}, {0x2533, CG_BOX_TT}, {0x2566, CG_BOX_TT},
+      {0x2534, CG_BOX_BT}, {0x253B, CG_BOX_BT}, {0x2569, CG_BOX_BT},
+      {0x253C, CG_BOX_X}, {0x254B, CG_BOX_X}, {0x256C, CG_BOX_X},
+      {0x25B2, CG_TRI_UP}, {0x25B6, CG_TRI_RIGHT}, {0x25BC, CG_TRI_DOWN}, {0x25C0, CG_TRI_LEFT},
+      {'A', 'A'}, {'\n', '\n'}, {0x00A0, 0xA0}, {0x00E9, 0xE9}, {0x00FF, 0xFF},
+      {0x0080, '?'}, {0x2603, '?'}, {0x1F600, '?'},
+  };
+  for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) {
+    char buf[4];
+    const int n = enc_utf8(k[i].cp, buf);
+    uint8_t code = 0;
+    CHECK_EQ_INT(chargrid_utf8_code(buf, (size_t)n, &code), n);
+    CHECK_EQ_INT(code, k[i].code);
+  }
+  uint8_t code = 7;
+  CHECK_EQ_INT(chargrid_utf8_code("", 0, &code), 0);
+}
+
+static void test_utf8_invalid(void) {
+  static const struct { const char *s; size_t len; int code; } k[] = {
+      {"\x80", 1, 0x80},                  // a lone continuation byte
+      {"\xC3", 1, 0xC3},                  // truncated
+      {"\xC3\x28", 2, 0xC3},              // bad continuation
+      {"\xC0\xAF", 2, 0xC0},              // overlong '/'
+      {"\xE0\x80\xAF", 3, 0xE0},          // overlong, 3 bytes
+      {"\xED\xA0\x80", 3, 0xED},          // a surrogate
+      {"\xF4\x90\x80\x80", 4, 0xF4},      // above U+10FFFF
+      {"\xF5\x80\x80\x80", 4, 0xF5},      // never a lead byte
+      {"\xE2\x96", 2, 0xE2},              // cut short by len
+  };
+  for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) {
+    uint8_t code = 0;
+    CHECK_EQ_INT(chargrid_utf8_code(k[i].s, k[i].len, &code), 1);
+    CHECK_EQ_INT(code, k[i].code);
+  }
+}
+
+static void row_str(const chargrid_t *g, int y, char *out) {  // 0 shows as '_'
+  for (int x = 0; x < g->cols; x++) {
+    const uint8_t c = g->glyph[(size_t)y * g->cols + x];
+    out[x] = c ? (char)c : '_';
+  }
+  out[g->cols] = 0;
+}
+
+static void test_print_wrap(void) {
+  chargrid_t *g = chargrid_create(10, 6, 6, 8);
+  char s[16];
+  CHECK_EQ_INT(chargrid_print(g, 1, 0, "Hi", 2, 4, CG_KEEP), 3);
+  CHECK_EQ_INT(g->fg[1], 4);
+  CHECK_EQ_INT(g->bg[1], CG_DEFAULT_BG);
+  CHECK_EQ_INT(chargrid_print(g, 0, 1, "a\nbc", 4, CG_KEEP, CG_KEEP), 2);
+  row_str(g, 2, s); CHECK_STR(s, "bc________");
+  CHECK_EQ_INT(chargrid_print(g, 0, 3, "a\tb\x7f" "c", 5, CG_KEEP, CG_KEEP), 3);
+  row_str(g, 3, s); CHECK_STR(s, "abc_______");
+  CHECK_EQ_INT(chargrid_print(g, 8, 4, "xyz", 3, CG_KEEP, CG_KEEP), 11);  // clipped, still advances
+  row_str(g, 4, s); CHECK_STR(s, "________xy");
+  chargrid_fill(g, 0, 0, 10, 6, CG_EMPTY, CG_KEEP, CG_KEEP);
+  const char *t = "hello world again";
+  CHECK_EQ_INT(chargrid_print_wrapped(g, 0, 0, 10, 0, t, strlen(t), CG_KEEP, CG_KEEP), 3);
+  row_str(g, 0, s); CHECK_STR(s, "hello ____");
+  row_str(g, 1, s); CHECK_STR(s, "world ____");
+  row_str(g, 2, s); CHECK_STR(s, "again_____");
+  CHECK_EQ_INT(chargrid_print_wrapped(g, 0, 0, 10, 2, t, strlen(t), CG_KEEP, CG_KEEP), 2);
+  chargrid_fill(g, 0, 0, 10, 6, CG_EMPTY, CG_KEEP, CG_KEEP);
+  CHECK_EQ_INT(chargrid_print_wrapped(g, 0, 0, 4, 0, "ab\n\ncd\n", 7, CG_KEEP, CG_KEEP), 3);
+  row_str(g, 0, s); CHECK_STR(s, "ab________");
+  row_str(g, 1, s); CHECK_STR(s, "__________");
+  row_str(g, 2, s); CHECK_STR(s, "cd________");
+  // multi-byte characters take one cell each
+  chargrid_fill(g, 0, 0, 10, 6, CG_EMPTY, CG_KEEP, CG_KEEP);
+  const char *d = "\xC2\xB7\xC2\xB7\xC2\xB7 \xC2\xB7\xC2\xB7\xC2\xB7";  // "··· ···"
+  CHECK_EQ_INT(chargrid_print_wrapped(g, 0, 0, 4, 0, d, strlen(d), CG_KEEP, CG_KEEP), 2);
+  CHECK_EQ_INT(g->glyph[0], CG_DOT1);
+  CHECK_EQ_INT(g->glyph[3], ' ');
+  CHECK_EQ_INT(g->glyph[10 + 2], CG_DOT1);
+  CHECK_EQ_INT(chargrid_print_wrapped(g, 0, 0, 0, 0, "x", 1, CG_KEEP, CG_KEEP), 0);
+  CHECK_EQ_INT(chargrid_print_wrapped(g, 0, 0, 5, 0, "", 0, CG_KEEP, CG_KEEP), 0);
+  chargrid_free(g);
+}
+
+static void test_box_stamp(void) {
+  chargrid_t *g = chargrid_create(5, 4, 6, 8);
+  char s[8];
+  chargrid_fill(g, 0, 0, 5, 4, 'x', CG_KEEP, CG_KEEP);
+  chargrid_box(g, 0, 0, 4, 3, CG_STYLE_SINGLE, 2, CG_KEEP);
+  CHECK_EQ_INT(g->glyph[0], CG_BOX_TL);
+  CHECK_EQ_INT(g->glyph[1], CG_BOX_H);
+  CHECK_EQ_INT(g->glyph[3], CG_BOX_TR);
+  CHECK_EQ_INT(g->glyph[5], CG_BOX_V);
+  CHECK_EQ_INT(g->glyph[6], 'x');  // inside untouched
+  CHECK_EQ_INT(g->glyph[10], CG_BOX_BL);
+  CHECK_EQ_INT(g->glyph[13], CG_BOX_BR);
+  CHECK_EQ_INT(g->fg[1], 2);
+  chargrid_box(g, 0, 0, 3, 2, CG_STYLE_ASCII, CG_KEEP, CG_KEEP);
+  CHECK_EQ_INT(g->glyph[0], '+');
+  CHECK_EQ_INT(g->glyph[1], '-');
+  CHECK_EQ_INT(g->glyph[2], '+');
+  CHECK_EQ_INT(g->glyph[5], '+');  // a 2-row box: its bottom row is corners and edge too
+  CHECK_EQ_INT(g->glyph[6], '-');
+  chargrid_box(g, 0, 0, 2, 2, CG_STYLE_BLOCK, CG_KEEP, CG_KEEP);
+  CHECK_EQ_INT(g->glyph[0], CG_SHADE4);
+  CHECK_EQ_INT(g->glyph[6], CG_SHADE4);
+  chargrid_box(g, 4, 0, 1, 4, CG_STYLE_SINGLE, CG_KEEP, CG_KEEP);  // too thin: nothing
+  CHECK_EQ_INT(g->glyph[4], 'x');
+  chargrid_box(g, -5, -5, 1 << 24, 1 << 24, CG_STYLE_SINGLE, CG_KEEP, CG_KEEP);  // huge: fast, clipped
+  CHECK_EQ_INT(g->glyph[16], 'x');  // row 3: no box has touched it
+  CHECK_EQ_INT(g->glyph[0], CG_SHADE4);
+  chargrid_fill(g, 0, 0, 5, 4, '.', CG_DEFAULT_FG, CG_KEEP);  // also resets the box's fg=2
+  const char *art = " /\\\n/__\\";
+  chargrid_stamp(g, 0, 0, art, strlen(art), 3, CG_KEEP, ' ');
+  row_str(g, 0, s); CHECK_STR(s, "./\\..");
+  row_str(g, 1, s); CHECK_STR(s, "/__\\.");
+  CHECK_EQ_INT(g->fg[0], CG_DEFAULT_FG);  // transparent cell: nothing written
+  CHECK_EQ_INT(g->fg[1], 3);
+  chargrid_free(g);
+}
+
 int main(void) {
   test_sizes();
   test_create_defaults();
@@ -274,5 +416,9 @@ int main(void) {
   test_shapes();
   test_glyph_cache();
   test_define_glyph();
+  test_utf8_map();
+  test_utf8_invalid();
+  test_print_wrap();
+  test_box_stamp();
   return check_report("test_chargrid");
 }
