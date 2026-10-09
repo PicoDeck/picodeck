@@ -42,7 +42,9 @@ enum { ST_NONE, ST_SKIPPED, ST_RUNNING, ST_DONE, ST_STALE, ST_STOPPED, ST_TIMEOU
 static const char *const s_state_names[] = {"none",  "skipped", "running", "done",
                                             "stale", "stopped", "timeout"};
 
-static spin_lock_t *s_lock;          // guards s_text
+// Guards s_text. Claimed by splash_start(), given back by halt() once Core 1
+// is reset; NULL outside, when splash_set_status() does nothing.
+static spin_lock_t *s_lock;
 static text_t s_text;
 static uint64_t s_t0_us;             // the animation's t = 0
 static volatile bool s_running;      // Core 1 owns the display
@@ -177,11 +179,19 @@ static void halt(bool wait_for_end) {
     // Resetting Core 1 now would cut off its fault screen and its reboot, and
     // the boot would go on to clear the crash record. Its handler reboots
     // after its 3 s screen; the boot watchdog, no longer fed, is the backstop.
+    // Nothing returns from here, so the lock stays claimed.
     printf("[SPLASH] Core 1 faulted: waiting for its fault handler to reboot\n");
     for (;;) tight_loop_contents();
   }
   const bool acked = s_stopped;
   multicore_reset_core1();
+  // Core 1 no longer touches the lock: give it back (only 8 are claimable).
+  // Released first, in case the reset caught Core 1 holding it (a stop that
+  // was not acknowledged).
+  spin_lock_t *const lock = s_lock;
+  s_lock = NULL;
+  spin_unlock_unsafe(lock);
+  spin_lock_unclaim(spin_lock_get_num(lock));
   display_wait_for_flush();
   display_set_owner_core(0);
   s_running = false;

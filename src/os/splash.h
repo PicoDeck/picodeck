@@ -31,10 +31,12 @@ void splash_wait_still(void);
 // with the latest status, for at most SPLASH_END_MS + 500 ms after the start
 // or 100 ms after this call, whichever is later (normally ~10-25 ms after the
 // call, as the boot outlasts the animation); stops and resets Core 1, and
-// logs the [SPLASH] line: state=done, or state=stale if the latest status was
-// not shown. The frame stays up.
+// logs the [SPLASH] line: state=done, state=stale if the latest status was
+// not shown, or state=timeout if Core 1 did not acknowledge the stop. The
+// frame stays up.
 void splash_finish(void);
-// Core 0, before an error or update screen: stops and resets Core 1 now.
+// Core 0, before an error or update screen: stops and resets Core 1 now, and
+// logs the [SPLASH] line: state=stopped, or state=timeout as above.
 void splash_stop(void);
 // From the HardFault handler, first thing; it does nothing unless the splash
 // is running. On Core 0 it resets Core 1 at once (no waits, no printing), so
@@ -43,5 +45,16 @@ void splash_stop(void);
 // unfed watchdog and all, until Core 1's handler reboots after its screen.
 void splash_fault_stop(void);
 // The animation's measurements, "state=… first_light_ms=… …": the [SPLASH]
-// line and the `splash` dev command.
+// line and the `splash` dev command. The states:
+//   none     splash_start() has not run (the simulator always says this)
+//   skipped  a previous boot failed: the still frame, no animation
+//   running  Core 1 is playing it
+//   done     splash_finish() after Core 1 showed the final frame with the
+//            latest status
+//   stale    splash_finish() timed out before Core 1 showed the latest status
+//   stopped  splash_stop() ended it early (an error or update screen)
+//   timeout  Core 1 did not acknowledge the stop within 100 ms; it was reset
+//            anyway
+// first_light_ms is the uptime at Core 1's first frame, which is black: the
+// dot appears 0.15 s later (t = 0.15).
 void splash_stats_format(char *buf, size_t n);

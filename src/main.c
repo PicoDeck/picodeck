@@ -2140,9 +2140,10 @@ int main(void) {
   mod_player_init();
   printf("[BOOT] mod_player done\n"); stdio_flush(); watchdog_update();
 
-  printf("[BOOT] drawing splash...\n"); stdio_flush();
+  // While the animation plays this only hands Core 1 the status; after a
+  // failed boot (no animation) it draws the still frame with it.
   ui_draw_splash("Initialising keyboard...", NULL);
-  printf("[BOOT] splash done\n"); stdio_flush(); watchdog_update();
+  printf("[BOOT] splash status set\n"); stdio_flush(); watchdog_update();
 
   bool kbd_ok = kbd_init();
   watchdog_update();
