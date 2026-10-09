@@ -104,7 +104,7 @@ end
 ---
 
 #### `picocalc.ui.splash([status], [subtext])`
-Draw a splash/loading screen with the PicoDeck logo.
+Draw a splash/loading screen with the PicoDeck logo: the final frame of the boot animation, with `status` and `subtext` centred under the logo.
 
 - **Parameters:**
   - `status` (string, optional): Status text

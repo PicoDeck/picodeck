@@ -455,6 +455,9 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/clock.c
     ${PICODECK_ROOT}/src/os/tz_picker.c
     ${PICODECK_ROOT}/src/os/ui.c
+    ${PICODECK_ROOT}/src/os/splash.c
+    ${PICODECK_ROOT}/src/os/splash_render.c
+    ${PICODECK_ROOT}/src/os/splash_logo_cells.c
     ${PICODECK_ROOT}/src/os/ui_widgets.c
     ${PICODECK_ROOT}/src/os/text_wrap.c
     ${CMAKE_CURRENT_SOURCE_DIR}/stubs/dev_commands_stub.c
@@ -524,6 +527,9 @@ set_source_files_properties(${PICODECK_ROOT}/src/os/chargrid.c
     COMPILE_OPTIONS "-ffp-contract=off")
 # The bridge inlines noise.h: no FMA contraction, so noise matches the device.
 set_source_files_properties(${PICODECK_ROOT}/src/os/lua_bridge_chargrid.c PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+# The boot splash's frames: no FMA contraction, so they match the device.
+set_source_files_properties(${PICODECK_ROOT}/src/os/splash_render.c PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 
 target_include_directories(picodeck_simulator PRIVATE

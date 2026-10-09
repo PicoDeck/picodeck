@@ -1,4 +1,4 @@
-# ctest test_charshader_m33 (tests/unit/CMakeLists.txt): runs the shader
+# ctest test_charshader_m33 and test_splash_m33 (tests/unit/CMakeLists.txt): runs a
 # cross-check (charshader_xcheck.c) on the host, then its Cortex-M33 builds
 # (-O2 and -Os) under qemu-arm, and fails unless each prints exactly what
 # the host printed. On a mismatch it lists the lines that differ: each names

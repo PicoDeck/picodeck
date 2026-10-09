@@ -68,17 +68,23 @@ Dev commands while an app runs (`src/dev_commands.c`, `lua_bridge.c`, native `sy
 ```
 main()
   set_sys_clock_khz(200000)     // 200 MHz overclock
-  Wire g_api struct (function pointers)
+  stdio_init_all()
+  qmi_psram_init()              // QMI PSRAM to quad mode (before Core 1 runs from flash)
   display_init()                // PIO0 SPI, double-buffered SRAM
+  splash_start()                // Core 1 plays the boot animation (src/os/splash.c)
+  USB serial wait (≤ 3 s)
+  Wire g_api struct (function pointers)
   pio_psram_init()              // Mainboard 8MB PIO PSRAM (non-fatal if absent)
   sound_init() → audio_init()
   kbd_init()
   sdcard_init()
+  splash_wait_still()           // the heap clear floods the QMI: wait for the splash's still frame
   lua_psram_alloc_init()        // umm_malloc heap on QMI PSRAM
   config_load()                 // /system/config.json
   boot_crypto_init()            // on the OS stack: Core 0 CTR_DRBG seed + CA bundle parse
   wifi_init() → http_init() → tcp_init()
   bt_pad_init()                 // Bluetooth pads, only if the user turned them on
+  splash_finish()               // wait for the animation's final frame; reset Core 1
   multicore_launch_core1()      // Core 1: wifi_poll, http, mp3, fileplayer
   system_menu_init()
   launcher_run()                // Never returns
@@ -87,6 +93,7 @@ main()
 ### Dual-Core Model
 - **Core 0**: runs the launcher, Lua VM and native apps. Owns the display, keyboard and SD card.
 - **Core 1**: runs the network stack (Mongoose/CYW43) and audio decode (MP3, fileplayer, MOD) on a 1 ms tick. Core 0 talks to it through an IPC ring (`wifi_req_push()`). **Core 0 must never call `mg_*` functions directly.** Core 1 only try-locks shared player/SD state and skips the tick when busy.
+- **During boot** Core 1 first plays the boot splash (`src/os/splash.c`) and owns the display; Core 0 must not draw while `splash_running()` (`ui_draw_splash` hands it the status; error screens call `splash_stop()` first; `display_flush` counts and logs a flush from the wrong core), and must not flood the QMI (large PSRAM writes, flash writes) while the animation moves, as Core 1 renders from flash and starves. `splash_finish()` resets Core 1 before `core1_entry` launches.
 
 ### Central API (`src/os/os.h`)
 `PicoCalcAPI g_api` is a function pointer table wired in `main.c`. Sub-tables, native name → Lua name:
@@ -127,7 +134,7 @@ main()
 - **SRAM heap**: ~4.8 KB (4876 B: `__end__`=0x2007ecf4 to `__HeapLimit`=0x20080000, of which the SDK reserves 2 KB; the 400 KB double framebuffer is BSS), so effectively none: scratch buffers go through `umm_malloc`.
 - **QMI PSRAM (8 MB)**: Lua heap via `umm_malloc` at 0x11200000 (cached alias), 6 MB minus the 128 KB Core 1 pool; ELF app data/BSS. Below it, BTstack's static state is linked at 0x11100000 (`src/drivers/btstack/bt_psram.ld`, NOLOAD, zeroed at Bluetooth's first start); the rest of the low 2 MB is unused (the boot self-test touches 0x3E0-0x4E0). Every umm allocation costs at least one 200-byte block (small Lua objects share slabs; see `src/os/CLAUDE.md`).
 - **PIO PSRAM (8 MB)**: the OS owns everything below `0x48000` (MP3 PCM ring); apps get `0x48000`+, range-checked for Lua and native. Accessed via `pio_psram_read`/`pio_psram_write` and `g_api.psram`.
-- **Main stack (MSP)**: 4 KB in SCRATCH (`__StackBottom`=0x20081000, `__StackTop`=0x20082000), `MSPLIM`-guarded. Boot, the launcher (menus, USB MSC) and every IRQ run here; dev commands and screenshot save move to a short-lived 32 KB PSRAM stack. Measured peak ~2.2-2.5 KB; the `stack` dev command prints it and the running app's stack peak.
+- **Main stack (MSP)**: 4 KB in SCRATCH (`__StackBottom`=0x20081000, `__StackTop`=0x20082000), `MSPLIM`-guarded. Boot, the launcher (menus, USB MSC) and every IRQ run here; dev commands and screenshot save move to a short-lived 32 KB PSRAM stack. Measured peak ~2.2-2.5 KB; the `stack` dev command prints it and the running app's stack peak. Drawing the splash still frame (USB mode, the update screen) takes ~1.2 KB of it (~1.35 KB on the deepest path, `launcher_run` included).
 - **Lua VM stack**: 64 KB `umm_malloc` per launch, on the PSP. PSRAM because no SRAM region that size exists; costs ~10-50% on C-call-heavy Lua code (pure Lua loops unchanged).
 - **Native app stack**: 16 KB SRAM `malloc` if available (in practice never), else 64 KB `umm_malloc`; on the PSP.
 

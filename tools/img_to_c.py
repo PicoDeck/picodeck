@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-img_to_c.py — Convert an image to a PicoDeck splash screen C header.
+img_to_c.py — Convert an image to an RGB565 C header (LOGO_W, LOGO_H, logo_data).
 
 Usage:
-    python tools/img_to_c.py <input_image> [output_header]
+    python tools/img_to_c.py <input_image> <output_header>
 
 Arguments:
     input_image    PNG, JPG, BMP, or any Pillow-supported format
-    output_header  Destination .h file (default: src/splash_logo.h)
+    output_header  Destination .h file (required)
 
 Requirements:
     pip install pillow
@@ -92,12 +92,12 @@ def convert(input_path: str, output_path: str) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 3:
         print(__doc__)
         sys.exit(1)
 
     input_path = sys.argv[1]
-    output_path = sys.argv[2] if len(sys.argv) > 2 else "src/splash_logo.h"
+    output_path = sys.argv[2]
 
     if not Path(input_path).exists():
         print(f"Error: file not found: {input_path}")

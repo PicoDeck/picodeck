@@ -4,7 +4,7 @@
 #include "../drivers/keyboard.h"
 #include "../drivers/pad_source.h"
 #include "../drivers/wifi.h"
-#include "../splash_logo.h"
+#include "splash.h"
 #include "clock.h"
 #include "config.h"
 #include "os.h"    // BTN_* constants
@@ -310,41 +310,12 @@ int ui_draw_tabs(const char **tabs, int count, int active_index, int y) {
 }
 
 void ui_draw_splash(const char *status, const char *subtext) {
-  display_clear(COLOR_BLACK);
-
-#if LOGO_W > 0 && LOGO_H > 0
-  // ── Logo ──────────────────────────────────────────────────────────────────
-  int lx = (FB_WIDTH - LOGO_W) / 2;
-  int ly = (FB_HEIGHT - LOGO_H) / 2 - 16;
-  display_draw_image(lx, ly, LOGO_W, LOGO_H, logo_data);
-
-  // ── Status text below logo ─────────────────────────────────────────────
-  if (status && status[0]) {
-    int sx = (FB_WIDTH - display_text_width(status)) / 2;
-    display_draw_text(sx, ly + LOGO_H + 12, status, COLOR_GRAY, COLOR_BLACK);
+  // While Core 1 plays the boot animation it owns the display: hand it the text.
+  if (splash_running()) {
+    splash_set_status(status, subtext);
+    return;
   }
-  if (subtext && subtext[0]) {
-    int s2x = (FB_WIDTH - display_text_width(subtext)) / 2;
-    display_draw_text(s2x, ly + LOGO_H + 24, subtext, COLOR_GRAY, COLOR_BLACK);
-  }
-#else
-  // ── No logo: centred title + status ───────────────────────────────────────
-  const char *title = "PicoDeck";
-  int tx = (FB_WIDTH - display_text_width(title)) / 2;
-  display_draw_text(tx, FB_HEIGHT / 2 - 14, title, COLOR_WHITE, COLOR_BLACK);
-
-  if (status && status[0]) {
-    int sx = (FB_WIDTH - display_text_width(status)) / 2;
-    display_draw_text(sx, FB_HEIGHT / 2 + 2, status, COLOR_GRAY, COLOR_BLACK);
-  }
-  if (subtext && subtext[0]) {
-    int s2x = (FB_WIDTH - display_text_width(subtext)) / 2;
-    display_draw_text(s2x, FB_HEIGHT / 2 + 14, subtext, COLOR_GRAY,
-                      COLOR_BLACK);
-  }
-#endif
-
-  display_flush();
+  splash_draw_static(status, subtext);
 }
 
 // ── Shared dialog style ───────────────────────────────────────────────────────

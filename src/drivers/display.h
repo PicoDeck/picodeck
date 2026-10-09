@@ -161,6 +161,11 @@ uint16_t display_get_transparent_color(void);
 // Safe for all apps: DMA reads SRAM framebuffers (AHB), CPU fetches from
 // PSRAM (QMI/XIP) — separate buses.  Double buffering prevents conflicts.
 void display_flush(void);
+// The core that owns the display (0, or 1 while the boot splash plays on
+// Core 1: src/os/splash.c). A display_flush() from the other core garbles
+// the screen; it is counted and the first one logged.
+void display_set_owner_core(uint32_t core);
+uint32_t display_foreign_flushes(void);
 extern bool g_display_flush_blocking;
 
 // Flush rows y0..y1 (inclusive) with a buffer swap, like display_flush() but
