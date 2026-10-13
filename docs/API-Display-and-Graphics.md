@@ -2254,7 +2254,7 @@ Resets the collision rectangle to the full sprite size.
 ---
 
 #### `sprite:setClipRect(x, y, w, h)` / `sprite:setClipRect(rect)`
-Sets a clipping rectangle for the sprite, relative to the screen.
+Sets a clipping rectangle for the sprite, relative to the screen. The rectangle is stored but not applied when the sprite is drawn.
 
 - **Parameters:**
   - `x`, `y`, `w`, `h` (number), OR
@@ -2266,6 +2266,26 @@ Sets a clipping rectangle for the sprite, relative to the screen.
 #### `sprite:clearClipRect()`
 Clears the clipping rectangle.
 
+- **Returns:** None
+
+---
+
+#### `picocalc.graphics.sprite.setClipRectsInRange(x, y, w, h, startZ, endZ)` / `picocalc.graphics.sprite.setClipRectsInRange(rect, startZ, endZ)`
+Sets the same clipping rectangle on every sprite whose z-index is between `startZ` and `endZ` (inclusive). Like `sprite:setClipRect()`, the rectangle is stored but not applied when drawing.
+
+- **Parameters:**
+  - `x`, `y`, `w`, `h` (number), OR
+  - `rect` (table): `{x, y, w, h}` (all four fields required)
+  - `startZ`, `endZ` (number): Z-index range, inclusive
+- **Returns:** None
+
+---
+
+#### `picocalc.graphics.sprite.clearClipRectsInRange(startZ, endZ)`
+Clears the clipping rectangle of every sprite whose z-index is between `startZ` and `endZ` (inclusive).
+
+- **Parameters:**
+  - `startZ`, `endZ` (number): Z-index range, inclusive
 - **Returns:** None
 
 ---
@@ -2364,6 +2384,42 @@ Sets a stencil image for the sprite. Accepted but not applied (no effect yet).
 
 ---
 
+#### `sprite:clearStencil()`
+Removes the sprite's stencil image and stencil pattern. Since stencils are not applied when drawing, this has no visible effect.
+
+- **Returns:** None
+
+---
+
+#### `sprite:setImageDrawMode(mode)`
+Accepted for compatibility; has no effect. Arguments are ignored.
+
+- **Returns:** None
+
+---
+
+#### `sprite:setBackgroundDrawingCallback(callback)`
+Accepted for compatibility; has no effect. The callback is ignored and never called.
+
+- **Returns:** None
+
+---
+
+#### `sprite:alphaCollision(other)`
+Pixel-perfect overlap test between two sprites: true only if at least one pixel that is not the transparent color in this sprite lies on a non-transparent pixel of `other`. Each sprite's own transparent color is used, falling back to the display's. Flips are honoured. Falls back to a plain bounding-box overlap test when either sprite has no image, is rotated, or is scaled (other than integer nearest-neighbour scaling) or has a vertical scale other than 1.
+
+- **Parameters:**
+  - `other` (userdata): The other sprite
+- **Returns:** (boolean) True if the sprites overlap
+
+```lua
+if player:alphaCollision(enemy) then
+    print("hit")
+end
+```
+
+---
+
 #### `sprite:setTilemap(tilemap)`
 Assigns a tilemap to this sprite. When set, the sprite renders the tilemap instead of a single image. The sprite's position acts as the tilemap scroll offset. Pass `nil` to clear.
 
@@ -2378,6 +2434,21 @@ local bgSprite = picocalc.graphics.sprite.new()
 bgSprite:setTilemap(tm)
 bgSprite:moveTo(0, 0)
 bgSprite:add()
+```
+
+---
+
+#### `picocalc.graphics.sprite.addEmptyCollisionSprite(x, y, w, h)` / `picocalc.graphics.sprite.addEmptyCollisionSprite(rect)`
+Creates an invisible sprite with no image, positioned at `x, y` with a `w` by `h` collision rectangle, collisions enabled, and adds it to the sprite list. Useful for walls and trigger zones.
+
+- **Parameters:**
+  - `x`, `y`, `w`, `h` (number), OR
+  - `rect` (table): `{x, y, w, h}` (all four fields required)
+- **Returns:** (userdata) The new sprite
+- **Errors:** `"max sprites reached"` if the sprite limit is hit
+
+```lua
+local zone = picocalc.graphics.sprite.addEmptyCollisionSprite(0, 200, 320, 8)
 ```
 
 ---
@@ -2562,6 +2633,86 @@ while true do
     
     ss:drawFrame(frame, 144, 144)
     picocalc.display.flush()
+end
+```
+
+---
+
+## picocalc.graphics.animation.loop
+
+A loop cycles through a list of images at a fixed interval. Call `update()` each frame to advance it, then `draw()` or `image()` to show the current frame.
+
+#### `picocalc.graphics.animation.loop.new([intervalMs [, frames [, looping]]])`
+Creates an animation loop.
+
+- **Parameters:**
+  - `intervalMs` (number, optional): Milliseconds per frame (default 100)
+  - `frames` (table, optional): Array of image objects; at most 32 are used. Entries that are not images (or are freed) become empty frames.
+  - `looping` (boolean, optional): Wrap to the first frame after the last (default `true`)
+- **Returns:** (userdata) Loop object. It is not valid until it has at least one frame.
+
+### Loop Methods
+
+- `loop:update()` advances to the next frame if the interval has elapsed. Does nothing if the loop is not valid. Without looping, it stays on the last frame.
+- `loop:draw(x, y [, flip])` draws the current frame at `x, y`, horizontally flipped if `flip` is true. Does nothing if the loop is not valid.
+- `loop:image()` returns the current frame's image, or nothing if the loop is not valid.
+- `loop:reset()` goes back to frame 0 and restarts the interval timer.
+- `loop:isValid()` returns `true` if the loop has at least one frame.
+- `loop:getFrameIndex()` returns the current frame index, counting from 0.
+- `loop:setImageTable(frames)` replaces the frames with the images in the table (same rules as `new`), resetting to frame 0. Passing a non-table clears the frames, making the loop invalid.
+- `loop:setInterval(ms)` sets the milliseconds per frame.
+- `loop:setLooping(flag)` sets whether the loop wraps after the last frame.
+
+```lua
+local loop = picocalc.graphics.animation.loop.new(80, {img1, img2, img3})
+while true do
+    loop:update()
+    loop:draw(100, 100)
+end
+```
+
+---
+
+## picocalc.graphics.animation.blinker
+
+A blinker alternates between on and off states on a timer. At most 32 blinkers are tracked by `updateAll()` and `stopAll()`; blinkers that are garbage collected leave that list.
+
+#### `picocalc.graphics.animation.blinker.new([onMs [, offMs [, loop [, cycles [, startOff]]]]])`
+Creates a blinker. It does not run until started.
+
+- **Parameters:**
+  - `onMs`, `offMs` (number, optional): Durations of the on and off phases in milliseconds (default 500 each)
+  - `loop` (boolean, optional): Repeat forever (default `true`)
+  - `cycles` (number, optional): With `loop` false, the number of on/off cycles to run before stopping
+  - `startOff` (boolean, optional): Intended to start in the off state; the blinker is reported on at first regardless
+- **Returns:** (userdata) Blinker object
+
+### Blinker Methods
+
+- `blinker:update()` returns the current state (`true` = on). The first call starts the blinker. Returns `false` once a non-looping blinker has finished or been stopped.
+- `blinker:start([onMs [, offMs [, loop [, cycles [, startOff]]]]])` (re)starts the blinker, optionally changing its settings, beginning in the on state.
+- `blinker:startLoop()` starts the blinker as an endless loop, keeping its on/off durations.
+- `blinker:stop()` stops the blinker.
+- `blinker:isRunning()` returns `true` if the blinker is running.
+- `blinker:remove()` stops the blinker and removes it from the `updateAll()`/`stopAll()` list.
+
+#### `picocalc.graphics.animation.blinker.updateAll()`
+Updates the state of every running blinker (and stops finished non-looping ones). Read each blinker's state afterwards with `blinker:update()`.
+
+- **Returns:** None
+
+#### `picocalc.graphics.animation.blinker.stopAll()`
+Stops every blinker.
+
+- **Returns:** None
+
+```lua
+local b = picocalc.graphics.animation.blinker.new(400, 200)
+b:startLoop()
+while true do
+    if b:update() then
+        -- draw the cursor
+    end
 end
 ```
 
