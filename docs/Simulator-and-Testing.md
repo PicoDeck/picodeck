@@ -2,6 +2,16 @@
 title: "Simulator and Testing"
 ---
 
+## Overview
+
+The PC simulator (`make simulator`, binary `build_sim/picodeck_simulator`) runs the firmware's Lua bridge and launcher on your computer with an SDL2 window in place of the LCD, so you can run and debug apps without a device. See `simulator/README.md` for building and running it.
+
+- **Lua apps** run on the same bridge as the device.
+- **Native (ELF) apps** run under the Unicorn CPU emulator, against the same `PicoCalcAPI` table as on the device. They are much slower than on the RP2350's real cores, so judge performance on hardware.
+- **Game controllers** plugged into the computer drive `picocalc.gamepad`; the keyboard drives everything else.
+- **Differences from the device** that matter to app code: `picocalc.crypto` is absent, networking uses the host's network, Bluetooth is a scripted radio, there is far more memory (`--real-umm` uses the firmware's heap allocator for realistic fragmentation), and the display post-effects (`effectInvert` to `effectPosterize`) do nothing in native apps. `simulator/CLAUDE.md` has the complete list.
+- **In the browser**, [picodeck.net/try](https://picodeck.net/try/) runs the same sources compiled to WebAssembly (built by [PicoDeck/web-sim](https://github.com/PicoDeck/web-sim)). It runs Lua apps and native apps compiled into the page, but has no networking and cannot run ELF apps.
+
 ## Simulator control protocol (TCP 127.0.0.1, or the ./picodeck_control UNIX socket)
 
 - `launch_app` → `{queued, busy, launch_id}`; `app.exited` notifications carry
