@@ -117,6 +117,68 @@ class TestCharacterInjection:
             )
 
 
+class TestKeyChars:
+    """Enter's and Backspace's chars ('\\n', '\\b') reach getChar and
+    ui.textInput when typed as chars (inject_char, JSON-escaped on the
+    control channel). An Enter *button* tap stays a down and an up with no
+    char, as on the device (test_hw_device.py's keyboard edges)."""
+
+    def _lines(self, simulator):
+        logs = simulator.get_log_buffer()
+        return [(l if isinstance(l, str) else l.get("text", ""))
+                for l in logs.get("lines", [])]
+
+    def _open_text_box(self, simulator):
+        simulator.clear_log()
+        simulator.launch_app("input_test")
+        simulator.wait_for_log("INPUT_READY", timeout=10)
+        simulator.keypress("#")
+        simulator.wait_for_log("TEXT_PROMPT", timeout=5)
+        # ui.textInput drops input queued before it opens; let it open first.
+        time.sleep(0.3)
+
+    def test_typed_newline_and_backspace_reach_getchar(self, simulator):
+        simulator.clear_log()
+        simulator.launch_app("input_test")
+        simulator.wait_for_log("INPUT_READY", timeout=10)
+
+        simulator.keypress("\n")
+        time.sleep(0.2)
+        simulator.keypress("\b")
+        time.sleep(0.3)
+
+        lines = self._lines(simulator)
+        assert "CHARCODE:10" in lines, f"'\\n' not received. Logs: {lines}"
+        assert "CHARCODE:8" in lines, f"'\\b' not received. Logs: {lines}"
+
+    def test_enter_button_tap_has_no_char(self, simulator):
+        simulator.clear_log()
+        simulator.launch_app("input_test")
+        simulator.wait_for_log("INPUT_READY", timeout=10)
+
+        simulator.keypress("enter")
+        time.sleep(0.3)
+
+        lines = self._lines(simulator)
+        assert "BTN:enter" in lines, f"Enter not received. Logs: {lines}"
+        assert not any(l.startswith("CHARCODE:") for l in lines), (
+            f"a button tap gave a char. Logs: {lines}")
+
+    def test_enter_accepts_text_input(self, simulator):
+        self._open_text_box(simulator)
+        for key in ["h", "i", "\n"]:
+            simulator.keypress(key)
+            time.sleep(0.15)
+        simulator.wait_for_log("TEXT:hi", timeout=5)
+
+    def test_backspace_edits_text_input(self, simulator):
+        self._open_text_box(simulator)
+        for key in ["a", "b", "\b", "c", "\n"]:
+            simulator.keypress(key)
+            time.sleep(0.15)
+        simulator.wait_for_log("TEXT:ac", timeout=5)
+
+
 class TestEscExit:
     """Test that ESC key causes app exit."""
 

@@ -48,7 +48,14 @@ while true do
 
     -- Check for character input
     local ch = input.getChar()
-    if ch and ch ~= "" then
+    if ch == "#" then
+        -- '#' opens a text box: Enter (a '\n' char) accepts, Backspace ('\b') edits
+        log("TEXT_PROMPT")
+        local v = pc.ui.textInput("Text:")
+        log("TEXT:" .. (v or "<cancelled>"))
+    elseif ch and ch ~= "" and ch:byte() < 32 then
+        log("CHARCODE:" .. ch:byte())  -- control chars (Enter, Backspace) by code
+    elseif ch and ch ~= "" then
         log("CHAR:" .. ch)
     end
 

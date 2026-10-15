@@ -144,6 +144,50 @@ static bool sandbox_path(const char *path, char *out_resolved, size_t max) {
 
 // ── JSON helpers ─────────────────────────────────────────────────────────────
 
+// The four hex digits at p as a number, or -1.
+static long json_hex4(const char *p) {
+    long v = 0;
+    for (int k = 0; k < 4; k++) {
+        char c = p[k];
+        int d = (c >= '0' && c <= '9') ? c - '0'
+              : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+              : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+        if (d < 0) return -1;
+        v = v * 16 + d;
+    }
+    return v;
+}
+
+// Code point cp as UTF-8 at out[i]; returns the new length, or i unchanged
+// when it would not fit before out[max - 1] (the value is cut there, as a
+// long string is).
+static size_t json_put_utf8(char *out, size_t i, size_t max, unsigned long cp) {
+    unsigned char b[4];
+    size_t n;
+    if (cp < 0x80) {
+        b[0] = (unsigned char)cp; n = 1;
+    } else if (cp < 0x800) {
+        b[0] = (unsigned char)(0xC0 | (cp >> 6));
+        b[1] = (unsigned char)(0x80 | (cp & 0x3F)); n = 2;
+    } else if (cp < 0x10000) {
+        b[0] = (unsigned char)(0xE0 | (cp >> 12));
+        b[1] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+        b[2] = (unsigned char)(0x80 | (cp & 0x3F)); n = 3;
+    } else {
+        b[0] = (unsigned char)(0xF0 | (cp >> 18));
+        b[1] = (unsigned char)(0x80 | ((cp >> 12) & 0x3F));
+        b[2] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+        b[3] = (unsigned char)(0x80 | (cp & 0x3F)); n = 4;
+    }
+    if (i + n > max - 1) return i;
+    memcpy(out + i, b, n);
+    return i + n;
+}
+
+// A string member, decoded: the escapes JSON allows (\" \\ \/ \b \f \n \r \t
+// \uXXXX, surrogate pairs included) become their chars, so a client's
+// json.dumps round-trips: inject_char {"char": "\n"} types Enter's '\n', and
+// a quote or backslash in a path survives. Cut at max - 1 bytes.
 static bool json_get_str(const char *obj, const char *key, char *out, size_t max) {
     char search[128];
     snprintf(search, sizeof(search), "\"%s\"", key);
@@ -154,7 +198,43 @@ static bool json_get_str(const char *obj, const char *key, char *out, size_t max
     if (*p != '"') return false;
     p++;
     size_t i = 0;
-    while (*p && *p != '"' && i < max - 1) out[i++] = *p++;
+    while (*p && *p != '"' && i < max - 1) {
+        if (*p != '\\') {
+            out[i++] = *p++;
+            continue;
+        }
+        p++;  // the backslash
+        char e = *p;
+        if (!e) break;
+        p++;
+        switch (e) {
+        case 'b': out[i++] = '\b'; break;
+        case 'f': out[i++] = '\f'; break;
+        case 'n': out[i++] = '\n'; break;
+        case 'r': out[i++] = '\r'; break;
+        case 't': out[i++] = '\t'; break;
+        case 'u': {
+            long u = json_hex4(p);
+            if (u < 0) { out[i++] = 'u'; break; }  // malformed: keep it literal
+            p += 4;
+            unsigned long cp = (unsigned long)u;
+            if (u >= 0xD800 && u <= 0xDBFF && p[0] == '\\' && p[1] == 'u') {
+                long lo = json_hex4(p + 2);
+                if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                    cp = 0x10000 + (((unsigned long)u - 0xD800) << 10) +
+                         ((unsigned long)lo - 0xDC00);
+                    p += 6;
+                }
+            }
+            size_t before = i;
+            i = json_put_utf8(out, i, max, cp);
+            if (i == before) goto done;  // no room for the whole char
+            break;
+        }
+        default: out[i++] = e; break;  // \" \\ \/ (and anything else) is itself
+        }
+    }
+done:
     out[i] = '\0';
     return true;
 }
