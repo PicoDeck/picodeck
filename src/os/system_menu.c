@@ -1061,6 +1061,11 @@ static bool menu_loop(lua_State *L, int context) {
   int panel_x = (FB_WIDTH - PANEL_W) / 2;
   int panel_y = (FB_HEIGHT - panel_h) / 2;
 
+  // The menu is laid out for the built-in font whatever the app selected;
+  // the app's font comes back before its item callback runs.
+  int menu_saved_font = display_get_font();
+  display_set_font(0);
+
   int bat = kbd_get_battery_percent();
 
   // Keep the app's screen to give back on close: both framebuffers, in their
@@ -1369,6 +1374,7 @@ static bool menu_loop(lua_State *L, int context) {
   save_brightness_if_changed(entry_brightness);
   display_set_clip_rect(saved_clip_x, saved_clip_y, saved_clip_w, saved_clip_h);
   os_overlay_reload();  // the Show FPS setting; the menu drew over the overlays
+  display_set_font(menu_saved_font);
   // An app item's callback runs last, once the menu is gone: against the
   // app's own screen and clip rect, from a clean keyboard, and free to leave
   // by longjmp (a Lua error, sys.exit()) with nothing of the menu's left

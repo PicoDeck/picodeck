@@ -467,7 +467,7 @@ end
 ---
 
 #### `picocalc.display.setFont(fontId)`
-Set the active bitmap font for `drawText` and `textWidth`.
+Set the active bitmap font for `drawText` and `textWidth`. System UI (the system menu, toasts, `ui.textInput` / `ui.confirm` dialogs and the status area of `ui.drawHeader`) always draws in the built-in 6x8 font whatever font is active, and leaves your selection as it was; the title of `ui.drawHeader` uses the active font.
 
 - **Parameters:**
   - `fontId` (number): One of the `FONT_*` constants, or an id returned by `loadFont`. An id that is not currently loaded (unknown, unloaded, or never loaded) is ignored and the active font is left unchanged.

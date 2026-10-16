@@ -9,7 +9,7 @@ Standard UI components for consistent app appearance. These draw directly to the
 ### Functions
 
 #### `picocalc.ui.drawHeader(title)`
-Draws the standard header bar at the top of the screen: a 20px bar and a 1px border line below it. The title is on the left (in the current font); on the right are the clock (once it is set), a WiFi icon and a battery icon.
+Draws the standard header bar at the top of the screen: a 20px bar and a 1px border line below it. The title is on the left (in the current font); on the right are the clock (once it is set), a WiFi icon and a battery icon. The status on the right always uses the built-in 6x8 font, whatever font your app has selected.
 
 - WiFi icon: bright when online; dimmed while connecting or before internet access is confirmed; dimmed with a red slash when the connection failed; absent when WiFi is disconnected or the device has no WiFi.
 - Battery icon: shows the charge as a fill bar, or as a number inside the icon when the **Battery %** setting is on (system menu → Settings; the `battery_pct` key in [API Sysconfig](API-Sysconfig.md)). It turns red at 15% or below, and a lightning bolt appears beside it while charging.
@@ -70,7 +70,7 @@ end
 ### Dialogs
 
 #### `picocalc.ui.confirm(message)`
-Show a yes/no confirmation dialog. Blocks until user responds. The system menu key is ignored while it is up (the dialog stays), so it never answers No for you.
+Show a yes/no confirmation dialog. Blocks until user responds. The dialog is system UI: it draws in the built-in 6x8 font whatever font your app has selected, and your font is selected again when it returns. The system menu key is ignored while it is up (the dialog stays), so it never answers No for you.
 
 - **Parameters:**
   - `message` (string): Question text
@@ -85,7 +85,7 @@ end
 ---
 
 #### `picocalc.ui.textInput([prompt], [default])`
-Show a modal text input dialog. Blocks until user submits or cancels (Esc, or the system menu key).
+Show a modal text input dialog. Blocks until user submits or cancels (Esc, or the system menu key). The dialog is system UI: it draws in the built-in 6x8 font whatever font your app has selected, and your font is selected again when it returns.
 
 - **Parameters:**
   - `prompt` (string, optional): Prompt text
@@ -319,7 +319,7 @@ picocalc.ui.drawToast(280, "File saved!")
 ---
 
 #### `picocalc.ui.toast(text, [style])`
-Push a system toast notification that auto-displays and auto-dismisses. The OS draws the toast over your frame (centred at y 280, in the built-in font) at every present — `flush()`, `flushRows()` or `flushRegion()` — for about 3 s. With a partial flush that does not send its rows, the OS puts it on the panel directly and leaves your draw buffer as it was; when it expires, the OS pushes your buffer's pixels back over it.
+Push a system toast notification that auto-displays and auto-dismisses. The OS draws the toast over your frame (centred at y 280, always in the built-in 6x8 font, whatever font your app has selected) at every present — `flush()`, `flushRows()` or `flushRegion()` — for about 3 s. With a partial flush that does not send its rows, the OS puts it on the panel directly and leaves your draw buffer as it was; when it expires, the OS pushes your buffer's pixels back over it.
 
 - **Parameters:**
   - `text` (string): Toast message text
