@@ -69,6 +69,8 @@ end
 
 ### Dialogs
 
+> Dialogs are system UI and draw in the built-in 6x8 font. The `draw*` helpers above and below (`drawFooter`, `drawTabs`, `drawPanel`, `splash`, and the other app-positioned widgets) and the `drawHeader` title draw in the app's current font instead.
+
 #### `picocalc.ui.confirm(message)`
 Show a yes/no confirmation dialog. Blocks until user responds. The dialog is system UI: it draws in the built-in 6x8 font whatever font your app has selected, and your font is selected again when it returns. The system menu key is ignored while it is up (the dialog stays), so it never answers No for you.
 

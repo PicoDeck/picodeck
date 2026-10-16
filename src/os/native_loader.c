@@ -79,6 +79,9 @@ static void show_error(const char *line1, const char *line2) {
   crashlog_describe_heap(heap, sizeof(heap));
   crashlog_write("NATIVE ERROR", s_loading_app_name, line1, line2);
 
+  // System screen: built-in 6x8 font whatever the app left selected. The app
+  // is gone (the launcher resets the font to 0 after it), so no restore.
+  display_set_font(0);
   display_clear(C_BG);
   display_draw_text(8, 8, line1, COLOR_RED, C_BG);
   if (line2)

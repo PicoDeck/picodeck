@@ -23,6 +23,7 @@
 void display_clear(uint16_t color);
 int  display_draw_text(int x, int y, const char *text, uint16_t fg, uint16_t bg);
 void display_flush(void);
+void display_set_font(int font_id);
 
 // Forward declarations for launcher functions used in hardfault_c.
 const char* launcher_get_running_app_name(void);
@@ -327,6 +328,7 @@ static void __attribute__((used)) hardfault_c(uint32_t *frame, uint32_t exc_retu
   // LCD is disconnected or PIO is stuck, we won't hang forever.
   // Uses static buffers to avoid touching an already-damaged stack.
   static char ln[56]; // static to avoid stack usage
+  display_set_font(0);   // built-in 6x8 whatever the app selected (an id only: no registry access)
   display_clear(0x0000); // black
 
   snprintf(ln, sizeof(ln), "!!! HARDFAULT !!!");

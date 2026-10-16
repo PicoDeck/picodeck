@@ -49,6 +49,9 @@ static void lua_show_launch_failure(const app_entry_t *app, const char *line1,
   }
 #endif
 
+  // System screen: built-in 6x8 font whatever the app left selected. The app
+  // is gone (the launcher resets the font to 0 after it), so no restore.
+  display_set_font(0);
   display_clear(C_BG);
   display_draw_text(8, 8, line1, COLOR_RED, C_BG);
   if (line2) display_draw_text(8, 20, line2, COLOR_WHITE, C_BG);

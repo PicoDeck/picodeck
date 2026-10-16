@@ -738,6 +738,9 @@ void lua_bridge_show_error(lua_State *L, const char *context) {
   crashlog_write_lua_error(me ? me->name : "unknown", context, buf);
   sim_app_report_error(context, buf);
 
+  // System screen: built-in 6x8 font whatever the app left selected. The app
+  // is gone (the launcher resets the font to 0 after it), so no restore.
+  display_set_font(0);
   display_clear(COLOR_BLACK);
   display_draw_text(4, 4, context, COLOR_RED, COLOR_BLACK);
 
