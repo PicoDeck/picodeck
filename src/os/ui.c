@@ -203,7 +203,11 @@ int ui_draw_header(const char *title) {
   display_draw_text_transparent(HDR_MARGIN, text_y, title ? title : "",
                                 C_HDR_TEXT);
 
-  // Right-side status, laid out right to left.
+  // Right-side status, laid out right to left, in the built-in font: the
+  // title above uses the app's current font, the status area stays fixed.
+  int saved_font = display_get_font();
+  display_set_font(0);
+  const int status_y = (UI_HEADER_H - (display_get_font_height() - 1)) / 2;
   int x = FB_WIDTH - HDR_MARGIN;
 
   int bat = kbd_get_battery_percent();
@@ -238,9 +242,10 @@ int ui_draw_header(const char *title) {
     clock_format(clk_buf, sizeof(clk_buf));
     strncpy(s_last_clock, clk_buf, sizeof(s_last_clock));
     x -= display_text_width(clk_buf);
-    display_draw_text_transparent(x, text_y, clk_buf, C_HDR_CLOCK);
+    display_draw_text_transparent(x, status_y, clk_buf, C_HDR_CLOCK);
   }
 
+  display_set_font(saved_font);
   return UI_HEADER_H + 1;
 }
 
@@ -355,8 +360,8 @@ static int dlg_draw_message(int x, int y, int w, const char *msg, uint16_t bg) {
 
 // ── ui_text_input ─────────────────────────────────────────────────────────────
 
-bool ui_text_input(const char *prompt, const char *default_val,
-                   char *out_buf, int out_len) {
+static bool ui_text_input_run(const char *prompt, const char *default_val,
+                              char *out_buf, int out_len) {
   // Layout
   const int DH = 90;
   const int DY = (FB_HEIGHT - DH) / 2;
@@ -457,7 +462,7 @@ bool ui_text_input(const char *prompt, const char *default_val,
 
 // ── ui_confirm ────────────────────────────────────────────────────────────────
 
-bool ui_confirm(const char *message) {
+static bool ui_confirm_run(const char *message) {
   // Only input typed at THIS dialog may answer it.  Keys queued while the
   // app was not polling (still in the STM32 FIFO, in the keyboard bus
   // engine's ring, or decoded by sys.sleep's background polls) or injected
@@ -522,6 +527,25 @@ bool ui_confirm(const char *message) {
     watchdog_update();
     sleep_ms(20);
   }
+}
+
+// System modals draw in the built-in 6x8 font whatever the app has selected,
+// and give the app's font back on every way out.
+bool ui_text_input(const char *prompt, const char *default_val,
+                   char *out_buf, int out_len) {
+  int saved_font = display_get_font();
+  display_set_font(0);
+  bool ok = ui_text_input_run(prompt, default_val, out_buf, out_len);
+  display_set_font(saved_font);
+  return ok;
+}
+
+bool ui_confirm(const char *message) {
+  int saved_font = display_get_font();
+  display_set_font(0);
+  bool ok = ui_confirm_run(message);
+  display_set_font(saved_font);
+  return ok;
 }
 
 // ── ui_draw_spinner ───────────────────────────────────────────────────────────

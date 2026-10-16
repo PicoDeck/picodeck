@@ -53,6 +53,8 @@
 // ── Progress display ────────────────────────────────────────────────────────
 
 static void ota_show_progress(uint32_t bytes_done, uint32_t bytes_total) {
+    int saved_font = display_get_font();   // system screen: built-in font
+    display_set_font(0);
     int pct = (int)((uint64_t)bytes_done * 100 / bytes_total);
 
     // Progress bar dimensions
@@ -74,15 +76,19 @@ static void ota_show_progress(uint32_t bytes_done, uint32_t bytes_total) {
                       COLOR_WHITE, COLOR_BLACK);
 
     display_flush();
+    display_set_font(saved_font);
 }
 
 static void ota_show_status(const char *line1, const char *line2, uint16_t color) {
+    int saved_font = display_get_font();   // system screen: built-in font
+    display_set_font(0);
     display_clear(COLOR_BLACK);
     display_draw_text(8, 8, "PicoDeck Firmware Update", COLOR_CYAN, COLOR_BLACK);
     display_draw_text(8, 140, line1, color, COLOR_BLACK);
     if (line2)
         display_draw_text(8, 156, line2, COLOR_GRAY, COLOR_BLACK);
     display_flush();
+    display_set_font(saved_font);
 }
 
 // ── Image authentication ────────────────────────────────────────────────────

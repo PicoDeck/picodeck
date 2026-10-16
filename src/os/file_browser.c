@@ -164,8 +164,8 @@ static void draw_browser(const char *path, int sel, int scroll) {
 // ── Public API
 // ────────────────────────────────────────────────────────────────
 
-bool file_browser_show(const char *start_path, const char *root_path,
-                       char *out_path, int out_len) {
+static bool file_browser_run(const char *start_path, const char *root_path,
+                             char *out_path, int out_len) {
   char cur_path[192];
   strncpy(cur_path, start_path, sizeof(cur_path) - 1);
   cur_path[sizeof(cur_path) - 1] = '\0';
@@ -298,4 +298,15 @@ bool file_browser_show(const char *start_path, const char *root_path,
     watchdog_update();
     sleep_ms(16);
   }
+}
+
+// System UI draws in the built-in font whatever the app has selected; the
+// app's font comes back on every way out.
+bool file_browser_show(const char *start_path, const char *root_path,
+                       char *out_path, int out_len) {
+  int saved_font = display_get_font();
+  display_set_font(0);
+  bool ok = file_browser_run(start_path, root_path, out_path, out_len);
+  display_set_font(saved_font);
+  return ok;
 }

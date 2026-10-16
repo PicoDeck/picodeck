@@ -135,7 +135,7 @@ The `api->version` field indicates which additions are present:
 
 - `1` — Phase 1 additions
 - `2` — Phase 2 additions
-- `3` — `api->fs->browse` (modal file-browser overlay for native apps)
+- `3` — `api->fs->browse` (modal file-browser overlay for native apps; system UI, it draws in the built-in 6x8 font and the app's font is restored. The same holds for `api->ui->textInput` / `text_input_show`)
 - `4` — display clip rect (`setClipRect`/`getClipRect`/`clearClipRect`), mode-7 `drawPlane`, and native parity for `fillHLine`/`fillTriangle`/`setScrollArea`/`setScrollOffset`
 - `5` — zip read-in-place handles
 - `6` — fonts (`setFont`/`getFont`/`getFontWidth`/`getFontHeight`/`textWidth`/`loadFont`/`unloadFont`/`drawTextTransparent`)

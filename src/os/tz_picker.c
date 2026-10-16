@@ -107,7 +107,7 @@ static int rebuild_filter(const char *search, int *filtered) {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-bool tz_picker_show(void) {
+static bool tz_picker_run(void) {
     int px = (FB_WIDTH  - TZ_PANEL_W) / 2;
     int py = (FB_HEIGHT - TZ_PANEL_H) / 2;
 
@@ -252,4 +252,13 @@ bool tz_picker_show(void) {
     }
 
     return changed;
+}
+
+// System UI draws in the built-in font whatever the app has selected.
+bool tz_picker_show(void) {
+    int saved_font = display_get_font();
+    display_set_font(0);
+    bool ok = tz_picker_run();
+    display_set_font(saved_font);
+    return ok;
 }

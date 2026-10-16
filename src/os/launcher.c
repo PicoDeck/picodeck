@@ -776,6 +776,7 @@ static void launcher_refuse(const app_entry_t *app, const char *title,
     sim_app_outcome_set(SIM_APP_RESULT_LOAD_FAILED, outcome);
   }
 #endif
+  display_set_font(0);  // the app is gone: built-in font, not its selection
   display_clear(COLOR_BLACK);
   display_draw_text(8, 8, title, COLOR_RED, COLOR_BLACK);
   display_draw_text(8, 20, app->name, COLOR_WHITE, COLOR_BLACK);

@@ -67,6 +67,7 @@ static int l_panic(lua_State *L) {
   // so the next boot does not report the same event a second time.
   crashlog_clear_running();
 
+  display_set_font(0);  // built-in font whatever the app selected; rebooting
   display_clear(COLOR_BLACK);
   display_draw_text(4, 4, "Lua panic (unprotected error):", COLOR_RED, COLOR_BLACK);
   // Word-wrap the message at 52 columns.
