@@ -740,6 +740,11 @@ class PicodeckSimulator:
         Named keys: up, down, left, right, enter, esc, menu, f1-f5,
         backspace, tab, del, shift.
         Character keys: a-z, A-Z, 0-9, space, punctuation — sent via inject_char.
+
+        A named key is a button tap: a down and an up, no char, as on the
+        device. "\\n" and "\\b" are Enter's and Backspace's chars (a tap
+        that also gives getChar '\\n' / '\\b'): what ui.textInput reads to
+        accept and to delete.
         """
         if key.lower() in self._BUTTONS:
             return self.call("inject_button", {"button": key, "action": "click"})
