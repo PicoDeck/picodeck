@@ -83,7 +83,43 @@ static int slot_of(SDL_JoystickID id) {
   return -1;
 }
 
+#ifdef __EMSCRIPTEN__
+// The browser's standard layout: SDL's own default mapping for Emscripten
+// (SDL_gamecontrollerdb.h, "default,Standard Gamepad,...").
+#define HAL_PAD_WEB_STANDARD                                                   \
+  "a:b0,b:b1,back:b8,dpdown:b13,dpleft:b14,dpright:b15,dpup:b12,guide:b16,"    \
+  "leftshoulder:b4,leftstick:b10,lefttrigger:b6,leftx:a0,lefty:a1,"            \
+  "rightshoulder:b5,rightstick:b11,righttrigger:b7,rightx:a2,righty:a3,"       \
+  "start:b9,x:b2,y:b3,"
+
+// Give a browser pad the standard layout under its own GUID before it opens.
+// SDL's Emscripten driver makes the GUID from the pad's name, and SDL reads
+// byte 14 (the name's 11th character) as a driver tag: an 'h' or 'r' there
+// gets a generated HIDAPI or RAWINPUT layout instead of the default
+// (SDL_gamecontroller.c, SDL_PrivateGetControllerMappingForGUID), with the
+// D-pad on a hat the browser does not report. An exact GUID match is looked
+// up first, and a mapping added here outranks a generated one.
+static void web_map_standard(int device_index) {
+  char guid[33], name[64], mapping[512];
+  SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(device_index), guid,
+                            sizeof(guid));
+  const char *n = SDL_JoystickNameForIndex(device_index);
+  snprintf(name, sizeof(name), "%s", n && *n ? n : "Browser gamepad");
+  for (char *p = name; *p; p++)
+    if (*p == ',')
+      *p = ' '; // a mapping's fields are comma-separated
+  snprintf(mapping, sizeof(mapping), "%s,%s,%s", guid, name,
+           HAL_PAD_WEB_STANDARD);
+  if (SDL_GameControllerAddMapping(mapping) < 0)
+    printf("[PAD] Could not map controller %d: %s\n", device_index,
+           SDL_GetError());
+}
+#endif
+
 static void open_pad(int device_index) {
+#ifdef __EMSCRIPTEN__
+  web_map_standard(device_index);
+#endif
   if (!SDL_IsGameController(device_index))
     return;
   SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(device_index);

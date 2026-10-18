@@ -21,10 +21,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Start the SDL game controller subsystem when `enable` (the simulator
-// passes false under --test-mode or --no-gamepad, so a test never sees the
-// host's controllers, and in the web build). Controllers already plugged in
-// arrive as SDL_CONTROLLERDEVICEADDED events.
+// Start the SDL game controller subsystem when `enable` (the desktop
+// simulator passes false under --test-mode or --no-gamepad, so a test never
+// sees the host's controllers; the web build always passes true). Controllers
+// already plugged in arrive as SDL_CONTROLLERDEVICEADDED events.
 void hal_pad_init(bool enable);
 void hal_pad_shutdown(void);
 
