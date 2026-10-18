@@ -6,8 +6,6 @@
 
 #include <stdio.h>
 
-#ifndef __EMSCRIPTEN__
-
 // Controllers open at once (more are ignored until one goes).
 #define HAL_PAD_MAX 4
 // The left stick drives the D-pad past half way.
@@ -168,14 +166,3 @@ bool hal_pad_handle_event(const SDL_Event *event) {
     return false;
   }
 }
-
-#else // __EMSCRIPTEN__: the web demo has no controller support.
-
-void hal_pad_init(bool enable) { (void)enable; }
-void hal_pad_shutdown(void) {}
-bool hal_pad_handle_event(const SDL_Event *event) {
-  (void)event;
-  return false;
-}
-
-#endif
