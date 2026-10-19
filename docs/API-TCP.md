@@ -52,8 +52,9 @@ themselves (trust on first use, as Gemini clients do). Works with and without
 `setInsecure`.
 
 - **Returns:** (string or nil) 64 lowercase hex digits once connected, still
-  there after the server closes; `nil` for a plain socket, before the
-  handshake completes, or when the server sent no certificate.
+  there after the server closes or the connection fails, until the next
+  `connect()`; `nil` for a plain socket, before the handshake completes,
+  after `close()`, or when the server sent no certificate.
 
 ```lua
 local conn = picocalc.tcp.new("example.org", 1965, true)

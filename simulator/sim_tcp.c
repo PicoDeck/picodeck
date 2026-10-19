@@ -431,8 +431,10 @@ void sim_tcp_poll(void) {
             if (res == CURLE_OK && nread > 0) {
                 rx_write(c, buf, (uint32_t)nread);
                 c->pending |= TCP_CB_READ;
-            } else if (res != CURLE_AGAIN && res != CURLE_OK) {
-                // Connection closed or error
+            } else if (res != CURLE_AGAIN) {
+                // CURLE_OK with nothing read: the server closed (a TLS
+                // close_notify, which Gemini servers always send); any other
+                // result but CURLE_AGAIN is an error. Either way it is over.
                 c->state = TCP_STATE_CLOSED;
                 c->pending |= TCP_CB_CLOSED;
                 curl_easy_cleanup((CURL *)c->pcb);

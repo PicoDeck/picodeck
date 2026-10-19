@@ -1421,9 +1421,18 @@ function picocalc.tcp.new(host, port, use_ssl) end
 function PicoDeckTcpConn:connect() end
 
 ---Before `connect()`: TLS without certificate verification or the clock
----check (self-signed development servers only). Default false.
+---check, for self-signed servers: development servers, or servers whose
+---certificate the app pins itself with `peerFingerprint()`. Default false.
 ---@param flag boolean
 function PicoDeckTcpConn:setInsecure(flag) end
+
+---The SHA-256 of the TLS server's certificate as 64 lowercase hex digits, for
+---apps that pin certificates themselves (trust on first use). Still there
+---after the server closes or the connection fails, until the next `connect()`;
+---nil for a plain socket, before the handshake completes, after `close()`, or
+---when the server sent no certificate.
+---@return string?
+function PicoDeckTcpConn:peerFingerprint() end
 
 ---Write data to the connection. Returns bytes written, or -1 on error.
 ---@param data string
