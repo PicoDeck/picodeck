@@ -158,7 +158,10 @@ static uint32_t sink_put(http_conn_t *c, spill_sink_t *sp, const uint8_t *d,
   uint32_t room = sp->cap - sp->len;
   if (n > room)
     n = room;
-  memcpy(rx_buf_uncached(sp->buf) + sp->len, d, n);
+  // Through the cached alias: umm's header shares the buffer's first cache
+  // line, and a write-back of it would overwrite bytes written uncached
+  // (tcp.c's spill lost its first 4 bytes that way on the device).
+  memcpy(sp->buf + sp->len, d, n);
   sp->len += n;
   return n;
 }
@@ -966,7 +969,7 @@ uint32_t http_read(http_conn_t *c, uint8_t *out, uint32_t len) {
     uint32_t m = c->spill_len - c->spill_off;
     if (m > len - n)
       m = len - n;
-    memcpy(out + n, rx_buf_uncached(c->spill) + c->spill_off, m);
+    memcpy(out + n, c->spill + c->spill_off, m);  // cached: see sink_put
     c->spill_off += m;
     n += m;
   }

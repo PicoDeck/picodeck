@@ -262,7 +262,7 @@ int tcp_read(tcp_conn_t *c, void *buf, int len) {
     if (n < (uint32_t)len && c->spill) {
         uint32_t m = c->spill_len - c->spill_off;
         if (m > (uint32_t)len - n) m = (uint32_t)len - n;
-        memcpy((uint8_t *)buf + n, rx_buf_uncached(c->spill) + c->spill_off, m);
+        memcpy((uint8_t *)buf + n, c->spill + c->spill_off, m);  // cached: see MG_EV_CLOSE
         c->spill_off += m;
         n += m;
         if (c->spill_off == c->spill_len) {
@@ -506,7 +506,11 @@ void tcp_ev_fn(struct mg_connection *nc, int ev, void *ev_data) {
         tcp_drain(nc, c);
         uint32_t spill_len = (uint32_t)nc->recv.len;
         uint8_t *spill = spill_len ? umm_malloc(spill_len) : NULL;
-        if (spill) memcpy(rx_buf_uncached(spill), nc->recv.buf, spill_len);
+        // Through the cached alias: umm's header shares the first cache line,
+        // and a write-back of that line would overwrite bytes written through
+        // the uncached alias (seen on the device: spill bytes 0-3). The XIP
+        // cache is shared by both cores, so tcp_read sees these writes.
+        if (spill) memcpy(spill, nc->recv.buf, spill_len);
         uint8_t *old = NULL;
         uint32_t save = spin_lock_blocking(s_lock);
         tcp_conn_state_t st = st_get(c);

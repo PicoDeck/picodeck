@@ -2,11 +2,11 @@
 -- setInsecure connects, the default refuses, and tcp:peerFingerprint() is
 -- the server certificate's SHA-256. The harness writes
 -- /data/<APP_ID>/servers.json: {"tls": port, "plain": port, "closing": port,
--- "fingerprint": hex, "second": hex}.
+-- "fingerprint": hex, "second": hex}, plus "host" on hardware.
 local pc = picocalc
 local T = pc.sys.loadlib("picotest")
 local cfg = pc.json.decode(pc.fs.readFile("/data/" .. APP_ID .. "/servers.json"))
-local HOST = "127.0.0.1"
+local HOST = cfg.host or "127.0.0.1"  -- test_hw_tcp_tls.py passes the host's LAN address
 
 -- Waits until the socket has settled: connected, or failed with an error.
 -- A loaded machine (parallel simulators) can take seconds over a handshake,
