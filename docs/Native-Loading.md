@@ -220,6 +220,8 @@ Anything the app got through the API and did not free — files, images, samples
 - If the app crashes (HardFault), the fault handler displays register state, CFSR flags, and stack pointer info on the LCD. It detects whether the crash was in the app (PSP) or OS (MSP).
 - A stack overflow raises a STKOF UsageFault (CFSR bit 20, 0x00100000) recorded in /system/crashlog.txt with the stack owner (PSP (native app) / PSP (Lua VM) / PSP (OS command) / MSP).
 
+- Native apps also run in the PC simulator, under a CPU emulator against the same API table, which is the quickest way to iterate on logic and to run them under the E2E harness. It is much slower than the device and does not model everything (no `crypto`, a stubbed video player), so test speed and memory use on hardware. See [Simulator and Testing](Simulator-and-Testing.md).
+
 ## See also
 
 - [Lua SDK Reference](Lua-SDK-Reference.md) — Lua API documentation (C API mirrors these modules)

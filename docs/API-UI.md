@@ -287,7 +287,8 @@ picocalc.ui.drawDivider(10, 80, 300)
 ---
 
 #### `picocalc.ui.drawSpinner(cx, cy, [radius], [frame])`
-Draw an animated loading spinner.
+Draw an animated loading spinner — a 2×2 pixel block chasing itself around the
+corners of a small glyph, with a dim trail pixel. `radius` sets the glyph's scale.
 
 - **Parameters:**
   - `cx` (number): Center X position

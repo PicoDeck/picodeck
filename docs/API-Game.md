@@ -339,7 +339,7 @@ Call `draw()` on the current scene. Call once per frame.
 ---
 
 #### `picocalc.game.scene.objectPool(name, factory)`
-Get (or create) the per-scene object pool with the given name.
+Creates an object pool with the given name. Each call creates a new pool, up to 8 per app (further calls raise an error).
 
 - **Parameters:**
   - `name` (string): Pool name
@@ -348,6 +348,44 @@ Get (or create) the per-scene object pool with the given name.
 
 ```lua
 local bullets = picocalc.game.scene.objectPool("bullets", function() return {} end)
+```
+
+---
+
+### Object Pool Methods
+
+A pool holds up to 64 idle objects. Call these with method syntax on the table returned by `objectPool()`.
+
+#### `pool:acquire()`
+Takes an idle object from the pool, or calls the factory to make a new one if the pool is empty.
+
+- **Returns:** (any) The object
+
+#### `pool:release(obj)`
+Returns an object to the pool for reuse. If the pool already holds 64 objects, the object is silently dropped.
+
+- **Parameters:**
+  - `obj` (any): Object to return
+- **Returns:** None
+
+#### `pool:prewarm(count)`
+Calls the factory to fill the pool with idle objects ahead of time, up to the 64-object limit.
+
+- **Parameters:**
+  - `count` (number): Number of objects to create (clamped to 0-64)
+- **Returns:** None
+
+#### `pool:clear()`
+Discards all idle objects in the pool. Objects currently in use are not affected.
+
+- **Returns:** None
+
+```lua
+local bullets = picocalc.game.scene.objectPool("bullets", function() return {x = 0, y = 0} end)
+bullets:prewarm(16)
+local b = bullets:acquire()
+-- ... use b ...
+bullets:release(b)
 ```
 
 ---

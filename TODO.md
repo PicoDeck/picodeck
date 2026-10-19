@@ -1,5 +1,17 @@
 # PicoDeck TODO
 
+## Status (October 2026)
+
+Most of this file is the history of the Lua API's build-out (the sections below are checked off). What is still open:
+
+- **`graphics.animator`** — the line-segment, arc, polygon and multi-part constructors, and the examples for animation loops and animators (see "Sprites" below).
+- **`sound.fileplayer:setBufferSize`** — deferred on purpose (reallocating the shared buffer during streaming is risky).
+- **Lua docs** — `docs_coverage.md` lists the functions and constants still undocumented (about 40 in `graphics`).
+
+Shipped since v0.5.0 and tracked in the docs rather than here: `picocalc.chargrid` and `picocalc.noise`, the Core 1 boot animation and faster boot, Bluetooth gamepads, hidden dev apps, and native apps in the simulator. Subsystem notes live in the nested `CLAUDE.md` files; larger features have a design note and plan in `specs/`.
+
+---
+
 ## Lua API gaps — C exists, not wired to Lua
 
 These are fully implemented in C but missing from `lua_bridge.c`. All are quick wins.
@@ -121,7 +133,7 @@ Hardware: PWM on GP26 (left) and GP27 (right) — defined in `hardware.h`
 - [x] sound.getCurrentTime() - Returns the current time, in seconds, as measured by the audio device
 - [x] sound.resetTime() - Resets the audio output device time counter.
 
-### MP3 Player (using picomp3lib)
+### MP3 Player (using libmad)
 
 - [x] sound.mp3player.new() - Create MP3 player instance
 - [x] sound.mp3player:load(path) - Load MP3 file
