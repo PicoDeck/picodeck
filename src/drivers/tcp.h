@@ -74,6 +74,14 @@ typedef struct {
     uint32_t rx_tail;  // pool lock
     uint32_t rx_count; // pool lock
 
+    // What Mongoose still held when the connection closed and the ring
+    // could not take (umm, written through the uncached alias). Core 1 sets
+    // it once, before the CLOSED store; tcp_read hands it out after the ring
+    // and frees it once read; tcp_connect and tcp_reap free what is left.
+    uint8_t *spill;     // pool lock
+    uint32_t spill_len; // pool lock
+    uint32_t spill_off; // pool lock
+
     void *pcb;  // mongoose mg_connection — Core 1 only
 
     uint32_t connect_timeout_ms;  // default 15000 (pool lock)

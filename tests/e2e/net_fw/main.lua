@@ -616,6 +616,24 @@ case_fw("tcp_ring_refills_after_burst", function()
     s:close()
 end)
 
+-- The server sends 20000 bytes (more than the 8 KiB ring) and closes at once
+-- while the app is not reading: everything must still be readable after the
+-- close. Mongoose frees what it still holds after MG_EV_CLOSE, so tcp.c moves
+-- it into the ring or a spill buffer first.
+case_fw("tcp_data_survives_the_close", function()
+    local s = tcp_open()
+    T.eq(s:write("BURSTCLOSE\n"), 11, "write")
+    spin(500)
+    T.eq(s:isConnected(), false, "the server closed")
+    local d = tcp_read_until(s, 20000, 3000)
+    T.eq(#d, 20000, "bytes readable after the close")
+    local want = {}
+    for i = 0, 19999 do want[#want + 1] = string.char((i * 7) & 0xFF) end
+    T.ok(d == table.concat(want), "bytes differ")
+    T.eq(s:read(), nil, "nothing more")
+    s:close()
+end)
+
 -- setReadTimeout reaches the connection: a connected socket that receives
 -- nothing fails with "read timeout".
 case_fw("tcp_read_timeout", function()
