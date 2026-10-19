@@ -22,6 +22,11 @@ static spin_lock_t *s_lock;  // the pool lock (see tcp.h)
 // Unconsumed bytes in Mongoose past which reading pauses (tcp_drain).
 #define TCP_RECV_PAUSE (16u * 1024u)
 
+// Unconsumed bytes in Mongoose past which the socket fails: the device's
+// TCP stack ignores is_full, so a reader that falls this far behind would
+// run Core 1's Mongoose pool out (as HTTP_RECV_OVERFLOW in http.c).
+#define TCP_RECV_OVERFLOW (32u * 1024u)
+
 // How long tcp_alloc waits for a slot that is being released.
 #define TCP_ALLOC_WAIT_MS 100
 
@@ -123,13 +128,14 @@ void tcp_close(tcp_conn_t *c) { tcp_free(c); }
 void tcp_reap(void) {
     for (int i = 0; i < TCP_MAX_CONNECTIONS; i++) {
         tcp_conn_t *c = &s_conns[i];
-        uint8_t *buf = NULL;
+        uint8_t *buf = NULL, *spill = NULL;
         bool retry = false;
         uint32_t save = spin_lock_blocking(s_lock);
         if (c->in_use) {
             tcp_conn_state_t st = st_get(c);
             if (st == TCP_STATE_RELEASED) {
                 buf = c->rx_buf;
+                spill = c->spill;
                 memset(c, 0, sizeof(*c));  // in_use = false
             } else if (st == TCP_STATE_CLOSING && !c->close_queued) {
                 retry = true;
@@ -137,6 +143,7 @@ void tcp_reap(void) {
         }
         spin_unlock(s_lock, save);
         if (buf) umm_free(buf);
+        if (spill) umm_free(spill);
         if (retry) push_close(c);
     }
 }
@@ -182,14 +189,19 @@ bool tcp_connect(tcp_conn_t *c, const char *host, uint16_t port, bool use_ssl) {
     c->port = port;
     c->use_ssl = use_ssl;
     c->err[0] = '\0';
+    c->fingerprint[0] = '\0';
 
     uint32_t save = spin_lock_blocking(s_lock);
     c->pending = 0;
     c->rx_head = c->rx_tail = c->rx_count = 0;
+    uint8_t *spill = c->spill;  // the last connection's unread end
+    c->spill = NULL;
+    c->spill_len = c->spill_off = 0;
     c->deadline_connect = now_ms() + c->connect_timeout_ms;
     c->deadline_read = 0;
     st_put(c, TCP_STATE_QUEUED);
     spin_unlock(s_lock, save);
+    if (spill) umm_free(spill);
 
     conn_req_t req = {.type = CONN_REQ_TCP_CONNECT, .conn = (http_conn_t *)c};
     if (wifi_req_push(&req)) return true;
@@ -226,34 +238,48 @@ int tcp_write(tcp_conn_t *c, const void *buf, int len) {
 int tcp_read(tcp_conn_t *c, void *buf, int len) {
     if (!c || !buf || len <= 0) return 0;
 
+    uint8_t *done = NULL;
+    uint32_t n = 0;
     uint32_t save = spin_lock_blocking(s_lock);
-    if (c->rx_count == 0) {
-        spin_unlock(s_lock, save);
-        return 0;
-    }
-    uint32_t n = ((uint32_t)len < c->rx_count) ? (uint32_t)len : c->rx_count;
+    if (c->rx_count > 0) {
+        n = ((uint32_t)len < c->rx_count) ? (uint32_t)len : c->rx_count;
 
-    // Read through uncached alias to see Core 1's writes to physical PSRAM
-    const uint8_t *uc = rx_buf_uncached(c->rx_buf);
-    uint32_t till_end = c->rx_cap - c->rx_tail;
-    if (n <= till_end) {
-        memcpy(buf, &uc[c->rx_tail], n);
-        c->rx_tail += n;
-        if (c->rx_tail == c->rx_cap) c->rx_tail = 0;
-    } else {
-        memcpy(buf, &uc[c->rx_tail], till_end);
-        memcpy((uint8_t*)buf + till_end, uc, n - till_end);
-        c->rx_tail = n - till_end;
+        // Read through uncached alias to see Core 1's writes to physical PSRAM
+        const uint8_t *uc = rx_buf_uncached(c->rx_buf);
+        uint32_t till_end = c->rx_cap - c->rx_tail;
+        if (n <= till_end) {
+            memcpy(buf, &uc[c->rx_tail], n);
+            c->rx_tail += n;
+            if (c->rx_tail == c->rx_cap) c->rx_tail = 0;
+        } else {
+            memcpy(buf, &uc[c->rx_tail], till_end);
+            memcpy((uint8_t*)buf + till_end, uc, n - till_end);
+            c->rx_tail = n - till_end;
+        }
+        c->rx_count -= n;
     }
-    c->rx_count -= n;
+    // The ring first, then what the close left behind (it came after).
+    if (n < (uint32_t)len && c->spill) {
+        uint32_t m = c->spill_len - c->spill_off;
+        if (m > (uint32_t)len - n) m = (uint32_t)len - n;
+        memcpy((uint8_t *)buf + n, rx_buf_uncached(c->spill) + c->spill_off, m);
+        c->spill_off += m;
+        n += m;
+        if (c->spill_off == c->spill_len) {
+            done = c->spill;
+            c->spill = NULL;
+            c->spill_len = c->spill_off = 0;
+        }
+    }
     spin_unlock(s_lock, save);
+    if (done) umm_free(done);
     return (int)n;
 }
 
 uint32_t tcp_bytes_available(tcp_conn_t *c) {
     if (!c) return 0;
     uint32_t save = spin_lock_blocking(s_lock);
-    uint32_t n = c->rx_count;
+    uint32_t n = c->rx_count + (c->spill ? c->spill_len - c->spill_off : 0);
     spin_unlock(s_lock, save);
     return n;
 }
@@ -387,7 +413,10 @@ static void tcp_drain(struct mg_connection *nc, tcp_conn_t *c) {
     if (io->len == 0) { nc->is_full = 0; return; }
 
     uint32_t save = spin_lock_blocking(s_lock);
-    if (st_released(st_get(c))) {
+    tcp_conn_state_t st = st_get(c);
+    // QUEUED: the app has asked for its next connection; this data is the
+    // previous one's (see tcp_ev_fn).
+    if (st_released(st) || st == TCP_STATE_QUEUED) {
         spin_unlock(s_lock, save);
         return;
     }
@@ -429,11 +458,26 @@ void tcp_ev_fn(struct mg_connection *nc, int ev, void *ev_data) {
     // happen; belt and braces).
     if (c->pcb != NULL && c->pcb != nc) return;
 
+    // A connection that failed (MG_EV_ERROR keeps pcb until MG_EV_CLOSE)
+    // while the app already asked for the next one: until Core 1 starts that
+    // one (tcp_c1_begin_connect: CONNECTING, then the old one is detached)
+    // every event here is the old connection's. Let it go without touching
+    // the slot, which tcp_connect has reset. tcp_drain and the close handler
+    // check again under the lock, as Core 0 may queue meanwhile.
+    if (st_get(c) == TCP_STATE_QUEUED) {
+        if (ev == MG_EV_CLOSE) c->pcb = NULL;
+        return;
+    }
+
     // A TLS socket is CONNECTED (writable, TCP_CB_CONNECT) only after the
     // handshake and certificate check (MG_EV_TLS_HS); until then the connect
     // timeout keeps running, so a stalled handshake fails like a stalled
     // connect.  Plain TCP is CONNECTED at MG_EV_CONNECT.
     if ((ev == MG_EV_CONNECT && !nc->is_tls) || ev == MG_EV_TLS_HS) {
+        // The peer certificate's fingerprint, before the CONNECTED store
+        // publishes it (lua_bridge_tcp.c reads it only after that store).
+        if (ev == MG_EV_TLS_HS && st_get(c) == TCP_STATE_CONNECTING)
+            wifi_tls_peer_fingerprint(nc, c->fingerprint, sizeof(c->fingerprint));
         uint32_t save = spin_lock_blocking(s_lock);
         if (st_get(c) == TCP_STATE_CONNECTING) {
             c->deadline_connect = 0;
@@ -445,6 +489,8 @@ void tcp_ev_fn(struct mg_connection *nc, int ev, void *ev_data) {
         spin_unlock(s_lock, save);
     } else if (ev == MG_EV_READ || ev == MG_EV_POLL) {
         tcp_drain(nc, c);
+        if (nc->recv.len > TCP_RECV_OVERFLOW)
+            tcp_c1_fail(c, "receive overflow (the app is not reading fast enough)");
     } else if (ev == MG_EV_ERROR) {
         char msg[TCP_ERR_MAX];
         if (!wifi_tls_verify_error(nc, msg, sizeof(msg)))
@@ -453,14 +499,39 @@ void tcp_ev_fn(struct mg_connection *nc, int ev, void *ev_data) {
         // MG_EV_CLOSE so that event still reaches this slot.
         if (c1_fail_locked(c, msg)) printf("[TCP] %s\n", msg);
     } else if (ev == MG_EV_CLOSE) {
+        // Everything received stays readable after the close: Mongoose frees
+        // nc->recv after this event, and the device's TCP stack closes once
+        // the closing handshake is done, read or not. What fits goes into the
+        // ring, the rest into a spill buffer that tcp_read hands out after it.
+        tcp_drain(nc, c);
+        uint32_t spill_len = (uint32_t)nc->recv.len;
+        uint8_t *spill = spill_len ? umm_malloc(spill_len) : NULL;
+        if (spill) memcpy(rx_buf_uncached(spill), nc->recv.buf, spill_len);
+        uint8_t *old = NULL;
         uint32_t save = spin_lock_blocking(s_lock);
         tcp_conn_state_t st = st_get(c);
-        if (!st_released(st)) {
-            if (st != TCP_STATE_FAILED) st_put(c, TCP_STATE_CLOSED);
+        if (!st_released(st) && st != TCP_STATE_QUEUED) {
+            if (spill_len && !spill && st != TCP_STATE_FAILED) {
+                snprintf(c->err, sizeof(c->err), "out of memory keeping the end of the data");
+                st_put(c, TCP_STATE_FAILED);
+                c->pending |= TCP_CB_FAILED;
+            } else if (st != TCP_STATE_FAILED) {
+                st_put(c, TCP_STATE_CLOSED);
+            }
+            if (spill) {
+                old = c->spill;  // never set twice for one connection
+                c->spill = spill;
+                c->spill_len = spill_len;
+                c->spill_off = 0;
+                c->pending |= TCP_CB_READ;
+                spill = NULL;
+            }
             c->pending |= TCP_CB_CLOSED;
             c->deadline_connect = c->deadline_read = 0;
         }
         spin_unlock(s_lock, save);
+        if (spill) umm_free(spill);  // released or re-queued meanwhile
+        if (old) umm_free(old);
         c->pcb = NULL;
     }
 }

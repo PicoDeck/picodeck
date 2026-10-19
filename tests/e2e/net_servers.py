@@ -21,6 +21,7 @@ threads, and records what it saw so a test can assert on the server side too
 - TcpEchoServer: echoes every byte. A line "FLOOD\\n" switches the
   connection to a steady stream (1 KiB every 5 ms) until the peer goes;
   "BURST\\n" sends BURST_BODY (20000 bytes) once, then nothing.
+  "BURSTCLOSE\\n" the same 20000 bytes, then the server closes.
   .open_count() is the number of connections the server still has open.
 - BlackholeServer: a listener whose accept queue is kept full, so a new
   connect() is never answered (SYNs are dropped): a connect timeout target
@@ -297,6 +298,10 @@ class TcpEchoServer:
                 if b"FLOOD\n" in pending:
                     flooding = True
                     continue
+                if b"BURSTCLOSE\n" in pending:
+                    # One burst, then the server closes at once.
+                    conn.sendall(self.BURST_BODY)
+                    break
                 if b"BURST\n" in pending:
                     # One burst, then silence (the connection stays open).
                     conn.sendall(self.BURST_BODY)

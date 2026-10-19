@@ -216,11 +216,31 @@ static int l_tcp_setConnectTimeout(lua_State *L) {
 }
 
 // tcp:setInsecure(bool) — before connect(): TLS without certificate
-// verification or the SNTP clock gate (self-signed dev servers only).
+// verification or the SNTP clock gate, for self-signed servers (development
+// servers, or ones the app pins with peerFingerprint()).
 static int l_tcp_setInsecure(lua_State *L) {
     tcp_ud_t *ud = check_tcp_open(L, 1);
     ud->conn->insecure = lua_toboolean(L, 2);
     return 0;
+}
+
+// tcp:peerFingerprint() — the lowercase hex SHA-256 of the TLS server's
+// certificate (DER), or nil: a plain socket, before the handshake, or no
+// certificate. Core 1 writes it before the CONNECTED store (tcp.h) and only
+// connect() clears it, so it stays once the connection closes or fails (a
+// FAILED socket that never connected still has it empty).
+static int l_tcp_peerFingerprint(lua_State *L) {
+    tcp_ud_t *ud = check_tcp(L, 1);
+    tcp_conn_t *c = ud->conn;
+    tcp_conn_state_t st = c ? tcp_get_state(c) : TCP_STATE_IDLE;
+    if (!c || !c->use_ssl ||
+        (st != TCP_STATE_CONNECTED && st != TCP_STATE_CLOSED && st != TCP_STATE_FAILED) ||
+        c->fingerprint[0] == '\0') {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushstring(L, c->fingerprint);
+    return 1;
 }
 
 // sock:setReadTimeout(seconds) — fail a connected socket that receives
@@ -308,6 +328,7 @@ static const luaL_Reg l_tcp_methods[] = {
     {"isConnected", l_tcp_isConnected},
     {"setConnectTimeout", l_tcp_setConnectTimeout},
     {"setInsecure", l_tcp_setInsecure},
+    {"peerFingerprint", l_tcp_peerFingerprint},
     {"setReadTimeout", l_tcp_setReadTimeout},
     {"setConnectCallback", l_tcp_setConnectCallback},
     {"setReadCallback", l_tcp_setReadCallback},

@@ -166,6 +166,11 @@ bool wifi_tls_init(void);
 struct mg_connection;
 bool wifi_tls_verify_error(struct mg_connection *nc, char *out, size_t n);
 
+// Write the lowercase hex SHA-256 of nc's peer certificate (DER, 64 chars +
+// NUL) to out and return true; "" and false when there is none or n < 65.
+// Core 1, once the handshake is done (MG_EV_TLS_HS).
+bool wifi_tls_peer_fingerprint(struct mg_connection *nc, char *out, size_t n);
+
 // Doorbell number used for Core 0 → Core 1 IPC wake-up.
 // Claimed in wifi_init(); Core 1 registers the ISR in core1_entry().
 #define WIFI_IPC_DOORBELL 0

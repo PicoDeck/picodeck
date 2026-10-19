@@ -40,8 +40,30 @@ Completion: `isConnected()`, `waitConnected()`, the connect callback or
 ---
 
 #### `conn:setInsecure(flag)`
-Before `connect()`: TLS without certificate verification or the clock check
-(self-signed development servers only). Default `false`.
+Before `connect()`: TLS without certificate verification or the clock check,
+for self-signed servers: development servers, or servers whose certificate the
+app pins itself with `peerFingerprint()`. Default `false`.
+
+---
+
+#### `conn:peerFingerprint()`
+The SHA-256 of the TLS server's certificate, for apps that pin certificates
+themselves (trust on first use, as Gemini clients do). Works with and without
+`setInsecure`.
+
+- **Returns:** (string or nil) 64 lowercase hex digits once connected, still
+  there after the server closes or the connection fails, until the next
+  `connect()`; `nil` for a plain socket, before the handshake completes,
+  after `close()`, or when the server sent no certificate.
+
+```lua
+local conn = picocalc.tcp.new("example.org", 1965, true)
+conn:setInsecure(true)      -- self-signed: compare the fingerprint instead
+conn:connect()
+if conn:waitConnected(20) and conn:peerFingerprint() ~= pinned then
+    conn:close()            -- not the certificate seen before
+end
+```
 
 ---
 
@@ -64,6 +86,8 @@ Read available data from the connection.
 - **Parameters:**
   - `max_len` (number, optional): Maximum number of bytes to read
 - **Returns:** (string or nil) Data read, or `nil` if no data is available
+
+Read as data arrives: the device has no TCP flow control, so a connection whose unread data passes 32 KB fails with `receive overflow (the app is not reading fast enough)` (`conn:error()`). Data already received stays readable after the peer closes, however much of it there is.
 
 ```lua
 local chunk = conn:read(1024)
