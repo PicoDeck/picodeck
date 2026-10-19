@@ -413,7 +413,10 @@ static void tcp_drain(struct mg_connection *nc, tcp_conn_t *c) {
     if (io->len == 0) { nc->is_full = 0; return; }
 
     uint32_t save = spin_lock_blocking(s_lock);
-    if (st_released(st_get(c))) {
+    tcp_conn_state_t st = st_get(c);
+    // QUEUED: the app has asked for its next connection; this data is the
+    // previous one's (see tcp_ev_fn).
+    if (st_released(st) || st == TCP_STATE_QUEUED) {
         spin_unlock(s_lock, save);
         return;
     }
@@ -454,6 +457,17 @@ void tcp_ev_fn(struct mg_connection *nc, int ev, void *ev_data) {
     // An older connection of this slot (it was detached, so this should not
     // happen; belt and braces).
     if (c->pcb != NULL && c->pcb != nc) return;
+
+    // A connection that failed (MG_EV_ERROR keeps pcb until MG_EV_CLOSE)
+    // while the app already asked for the next one: until Core 1 starts that
+    // one (tcp_c1_begin_connect: CONNECTING, then the old one is detached)
+    // every event here is the old connection's. Let it go without touching
+    // the slot, which tcp_connect has reset. tcp_drain and the close handler
+    // check again under the lock, as Core 0 may queue meanwhile.
+    if (st_get(c) == TCP_STATE_QUEUED) {
+        if (ev == MG_EV_CLOSE) c->pcb = NULL;
+        return;
+    }
 
     // A TLS socket is CONNECTED (writable, TCP_CB_CONNECT) only after the
     // handshake and certificate check (MG_EV_TLS_HS); until then the connect
@@ -496,7 +510,7 @@ void tcp_ev_fn(struct mg_connection *nc, int ev, void *ev_data) {
         uint8_t *old = NULL;
         uint32_t save = spin_lock_blocking(s_lock);
         tcp_conn_state_t st = st_get(c);
-        if (!st_released(st)) {
+        if (!st_released(st) && st != TCP_STATE_QUEUED) {
             if (spill_len && !spill && st != TCP_STATE_FAILED) {
                 snprintf(c->err, sizeof(c->err), "out of memory keeping the end of the data");
                 st_put(c, TCP_STATE_FAILED);
@@ -516,7 +530,7 @@ void tcp_ev_fn(struct mg_connection *nc, int ev, void *ev_data) {
             c->deadline_connect = c->deadline_read = 0;
         }
         spin_unlock(s_lock, save);
-        if (spill) umm_free(spill);  // the slot was released meanwhile
+        if (spill) umm_free(spill);  // released or re-queued meanwhile
         if (old) umm_free(old);
         c->pcb = NULL;
     }

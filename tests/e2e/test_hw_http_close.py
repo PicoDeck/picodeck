@@ -48,6 +48,7 @@ CLOSE_CASES = [
     "tcp_close_while_receiving",
     "tcp_close_then_reuse_slot",
     "tcp_read_after_close",
+    "tcp_data_survives_the_close",
 ]
 
 
