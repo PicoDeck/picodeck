@@ -75,7 +75,7 @@ typedef struct {
     uint32_t rx_count; // pool lock
 
     // What Mongoose still held when the connection closed and the ring
-    // could not take (umm, written through the uncached alias). Core 1 sets
+    // could not take (umm, through the cached alias: see tcp_ev_fn). Core 1 sets
     // it once, before the CLOSED store; tcp_read hands it out after the ring
     // and frees it once read; tcp_connect and tcp_reap free what is left.
     uint8_t *spill;     // pool lock
