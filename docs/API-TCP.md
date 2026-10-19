@@ -40,8 +40,29 @@ Completion: `isConnected()`, `waitConnected()`, the connect callback or
 ---
 
 #### `conn:setInsecure(flag)`
-Before `connect()`: TLS without certificate verification or the clock check
-(self-signed development servers only). Default `false`.
+Before `connect()`: TLS without certificate verification or the clock check,
+for self-signed servers: development servers, or servers whose certificate the
+app pins itself with `peerFingerprint()`. Default `false`.
+
+---
+
+#### `conn:peerFingerprint()`
+The SHA-256 of the TLS server's certificate, for apps that pin certificates
+themselves (trust on first use, as Gemini clients do). Works with and without
+`setInsecure`.
+
+- **Returns:** (string or nil) 64 lowercase hex digits once connected, still
+  there after the server closes; `nil` for a plain socket, before the
+  handshake completes, or when the server sent no certificate.
+
+```lua
+local conn = picocalc.tcp.new("example.org", 1965, true)
+conn:setInsecure(true)      -- self-signed: compare the fingerprint instead
+conn:connect()
+if conn:waitConnected(20) and conn:peerFingerprint() ~= pinned then
+    conn:close()            -- not the certificate seen before
+end
+```
 
 ---
 

@@ -308,6 +308,7 @@ static bool tls_clock_ready(void) {
 // (Guard: the simulator's SIM_FIRMWARE_NET build runs this file on Mongoose
 // MG_ARCH_UNIX with TLS compiled out, so there is no mbedTLS here; the #else
 // branch below refuses TLS instead.)
+#include "mbedtls/sha256.h"
 
 // The root bundle, parsed ONCE (wifi_tls_init, at boot) into one chain that
 // every connection shares read-only, instead of Mongoose re-parsing ~15 KB
@@ -374,6 +375,18 @@ static bool tls_start(struct mg_connection *nc, const char *host,
   return true;
 }
 
+bool wifi_tls_peer_fingerprint(struct mg_connection *nc, char *out, size_t n) {
+  if (n > 0) out[0] = '\0';
+  if (!nc || !nc->tls || n < 65) return false;
+  struct mg_tls *tls = (struct mg_tls *)nc->tls;
+  const mbedtls_x509_crt *crt = mbedtls_ssl_get_peer_cert(&tls->ssl);
+  if (!crt || !crt->raw.p || crt->raw.len == 0) return false;
+  unsigned char h[32];
+  if (mbedtls_sha256(crt->raw.p, crt->raw.len, h, 0) != 0) return false;
+  for (int i = 0; i < 32; i++) snprintf(out + 2 * i, 3, "%02x", h[i]);
+  return true;
+}
+
 bool wifi_tls_verify_error(struct mg_connection *nc, char *out, size_t n) {
   if (!nc || !nc->tls) return false;
   struct mg_tls *tls = (struct mg_tls *)nc->tls;
@@ -412,6 +425,12 @@ bool wifi_tls_verify_error(struct mg_connection *nc, char *out, size_t n) {
   (void)nc;
   (void)out;
   (void)n;
+  return false;
+}
+
+bool wifi_tls_peer_fingerprint(struct mg_connection *nc, char *out, size_t n) {
+  (void)nc;
+  if (n > 0) out[0] = '\0';
   return false;
 }
 

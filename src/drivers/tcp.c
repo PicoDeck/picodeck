@@ -182,6 +182,7 @@ bool tcp_connect(tcp_conn_t *c, const char *host, uint16_t port, bool use_ssl) {
     c->port = port;
     c->use_ssl = use_ssl;
     c->err[0] = '\0';
+    c->fingerprint[0] = '\0';
 
     uint32_t save = spin_lock_blocking(s_lock);
     c->pending = 0;
@@ -434,6 +435,10 @@ void tcp_ev_fn(struct mg_connection *nc, int ev, void *ev_data) {
     // timeout keeps running, so a stalled handshake fails like a stalled
     // connect.  Plain TCP is CONNECTED at MG_EV_CONNECT.
     if ((ev == MG_EV_CONNECT && !nc->is_tls) || ev == MG_EV_TLS_HS) {
+        // The peer certificate's fingerprint, before the CONNECTED store
+        // publishes it (lua_bridge_tcp.c reads it only after that store).
+        if (ev == MG_EV_TLS_HS && st_get(c) == TCP_STATE_CONNECTING)
+            wifi_tls_peer_fingerprint(nc, c->fingerprint, sizeof(c->fingerprint));
         uint32_t save = spin_lock_blocking(s_lock);
         if (st_get(c) == TCP_STATE_CONNECTING) {
             c->deadline_connect = 0;
