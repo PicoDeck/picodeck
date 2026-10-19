@@ -25,12 +25,12 @@ CASES = ["insecure_tls_reports_the_fingerprint", "verified_tls_refuses_a_self_si
 
 
 class TlsEchoServer:
-    """Accepts TLS connections with `certfile` on 127.0.0.1 and echoes."""
+    """Accepts TLS connections with `certfile` on host (127.0.0.1 by default) and echoes."""
 
-    def __init__(self, certfile: Path):
+    def __init__(self, certfile: Path, host: str = "127.0.0.1"):
         self.ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         self.ctx.load_cert_chain(str(certfile))
-        self.sock = socket.create_server(("127.0.0.1", 0))
+        self.sock = socket.create_server((host, 0))
         self.port = self.sock.getsockname()[1]
 
     def start(self):
@@ -63,13 +63,13 @@ class TlsClosingServer:
     one line, answers it, then ends the connection the way a Gemini server
     must, with a TLS close_notify (unwrap) before the TCP close."""
 
-    def __init__(self, certfiles):
+    def __init__(self, certfiles, host: str = "127.0.0.1"):
         self.ctxs = []
         for certfile in certfiles:
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(str(certfile))
             self.ctxs.append(ctx)
-        self.sock = socket.create_server(("127.0.0.1", 0))
+        self.sock = socket.create_server((host, 0))
         self.port = self.sock.getsockname()[1]
         self.accepted = 0
 

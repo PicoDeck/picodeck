@@ -16732,6 +16732,15 @@ long mg_tls_recv(struct mg_connection *c, void *buf, size_t len) {
     return MG_IO_WAIT;
   }
 #endif
+  // PicoDeck patch: the peer's close_notify ends the stream cleanly (Gemini
+  // servers end every response with one); it used to fail the connection with
+  // "TLS recv error". Close gracefully: MG_EV_CLOSE follows, with what was
+  // received still in c->recv. A transport close without a close_notify
+  // (n == 0) stays an error, so a truncated stream is still reported.
+  if (n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+    c->is_draining = 1;
+    return MG_IO_WAIT;
+  }
   if (n <= 0) return MG_IO_ERR;
   return n;
 }

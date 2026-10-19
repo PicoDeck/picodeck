@@ -87,7 +87,7 @@ Read available data from the connection.
   - `max_len` (number, optional): Maximum number of bytes to read
 - **Returns:** (string or nil) Data read, or `nil` if no data is available
 
-Read as data arrives: the device has no TCP flow control, so a connection whose unread data passes 32 KB fails with `receive overflow (the app is not reading fast enough)` (`conn:error()`). Data already received stays readable after the peer closes, however much of it there is.
+Read as data arrives: the device has no TCP flow control, so a connection whose unread data passes 32 KB fails with `receive overflow (the app is not reading fast enough)` (`conn:error()`). Data already received stays readable after the peer closes, however much of it there is. A TLS server's close_notify ends the connection like a plain close (`isConnected()` false, no error).
 
 ```lua
 local chunk = conn:read(1024)
