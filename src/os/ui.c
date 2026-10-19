@@ -549,19 +549,20 @@ bool ui_confirm(const char *message) {
 }
 
 // ── ui_draw_spinner ───────────────────────────────────────────────────────────
-// Draw a single frame of a rotating line spinner at (cx, cy) with radius r.
-// Call once per frame with an incrementing frame counter for animation.
+// One frame of a pixel-glyph spinner: a 2x2 block chases itself around the
+// corners of a 5x5 glyph (top-left → top-right → bottom-right → bottom-left),
+// with a dim pixel trailing at the corner just vacated. Call once per frame
+// with an incrementing frame counter. r picks the glyph's pixel scale.
 void ui_draw_spinner(int cx, int cy, int r, int frame) {
-  static const int dx8[] = { 0,  1,  1,  1,  0, -1, -1, -1};
-  static const int dy8[] = {-1, -1,  0,  1,  1,  1,  0, -1};
-  int idx = (frame / 2) & 7; // rotate through 8 positions
-  int x1 = cx + dx8[idx] * r;
-  int y1 = cy + dy8[idx] * r;
-  int x2 = cx - dx8[idx] * r;
-  int y2 = cy - dy8[idx] * r;
-  // Draw main line bright, secondary lines dimmer for motion effect
-  display_draw_line(x1, y1, x2, y2, COLOR_WHITE);
-  int prev = (idx + 7) & 7;
-  display_draw_line(cx + dx8[prev] * r, cy + dy8[prev] * r,
-                    cx - dx8[prev] * r, cy - dy8[prev] * r, COLOR_GRAY);
+  static const uint8_t corners[4][2] = { {0, 0}, {3, 0}, {3, 3}, {0, 3} };
+  int px = (2 * r + 4) / 5; // glyph roughly fills the old 2r bounding box
+  if (px < 2) px = 2;
+  int ox = cx - (5 * px) / 2;
+  int oy = cy - (5 * px) / 2;
+  int f = frame & 3;
+  display_fill_rect(ox + corners[f][0] * px, oy + corners[f][1] * px,
+                    2 * px, 2 * px, COLOR_WHITE);
+  int p = (f + 3) & 3;
+  display_fill_rect(ox + corners[p][0] * px, oy + corners[p][1] * px,
+                    px, px, COLOR_GRAY);
 }
