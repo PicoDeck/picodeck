@@ -62,6 +62,10 @@ typedef struct {
     bool     insecure;  // TLS without certificate checks (opt-in, set before connect)
 
     char err[TCP_ERR_MAX];      // written before the FAILED/CLOSED store
+    // Lowercase hex SHA-256 of the TLS peer certificate (DER), "" when none.
+    // Cleared by tcp_connect; written by Core 1 before the CONNECTED store,
+    // so Core 0 reads it once tcp_get_state() returns CONNECTED or later.
+    char fingerprint[65];
     uint32_t pending;  // TCP_CB_* flags (pool lock)
 
     uint8_t *rx_buf;

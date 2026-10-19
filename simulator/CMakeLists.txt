@@ -323,6 +323,8 @@ else()
         sim_http.c
         sim_tcp.c
     )
+    # sim_tcp.c: the TLS peer certificate's SHA-256 (tcp:peerFingerprint).
+    target_link_libraries(sim_network PRIVATE picodeck_host_mbedtls)
 endif()
 target_include_directories(sim_network PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
