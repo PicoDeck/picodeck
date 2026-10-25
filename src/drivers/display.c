@@ -9,6 +9,7 @@
 #include "hardware/timer.h"
 #include "hardware/xip_cache.h"
 #include "lcd_spi.pio.h"
+#include "lcd_spi_rate.h"
 #include "pico/stdlib.h"
 
 #include <stdarg.h>
@@ -54,6 +55,11 @@ static bool s_dma_active = false;
 // DMA channel for LCD transfers
 static int s_dma_chan = -1;
 static uint s_pio_sm = 0;
+// The loaded SPI program (lcd_spi.pio) at s_pio_offset, its PIO cycles a
+// bit (2: lcd_spi, 3: lcd_spi3), and the SPI clock it runs (lcd_spi_retune).
+static uint s_pio_offset;
+static uint8_t s_pio_cycles;
+static uint32_t s_spi_hz;
 
 // Transparent color key (0 = disabled)
 static uint16_t s_transparent_color = 0;
@@ -218,6 +224,45 @@ static void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
 // ST7796S-style 0xF0 manufacturer unlock — the panel responds to the standard
 // ST7789 init sequence. Backlight is controlled by the STM32 keyboard MCU.
 
+// lcd_spi3 replaces lcd_spi in the same instruction memory, so they must
+// line up: the same length, wrap and entry point (their shared first
+// instruction is the `pull` an idle state machine waits at).
+_Static_assert(sizeof(lcd_spi_program_instructions) == sizeof(lcd_spi3_program_instructions) &&
+                   lcd_spi_wrap_target == lcd_spi3_wrap_target && lcd_spi_wrap == lcd_spi3_wrap &&
+                   lcd_spi_offset_entry_point == lcd_spi3_offset_entry_point,
+               "lcd_spi3 swaps in place for lcd_spi");
+
+static const pio_program_t *lcd_spi_program_for(uint8_t cycles) {
+  return cycles == 3 ? &lcd_spi3_program : &lcd_spi_program;
+}
+
+// Puts the LCD's SPI at the fastest clock at or below LCD_SPI_BAUD that
+// clk_sys gives (lcd_spi_rate.h, issue #70): the integer divider, and when
+// the PIO cycles a bit change, the other program in place of the loaded
+// one. The state machine must be idle, waiting at the `pull`.
+static void lcd_spi_retune(void) {
+  const lcd_spi_rate_t r = lcd_spi_rate(clock_get_hz(clk_sys), LCD_SPI_BAUD);
+  const bool changed = r.cycles != s_pio_cycles || r.hz != s_spi_hz;
+  if (r.cycles != s_pio_cycles) {
+    pio_sm_set_enabled(LCD_PIO, s_pio_sm, false);
+    pio_remove_program(LCD_PIO, lcd_spi_program_for(s_pio_cycles), s_pio_offset);
+    pio_add_program_at_offset(LCD_PIO, lcd_spi_program_for(r.cycles), s_pio_offset);
+    pio_sm_restart(LCD_PIO, s_pio_sm);
+    // Back to the entry point, SCK kept high (the idle level).
+    pio_sm_exec(LCD_PIO, s_pio_sm,
+                pio_encode_jmp(s_pio_offset + lcd_spi_offset_entry_point) |
+                    pio_encode_sideset(1, 1));
+    s_pio_cycles = r.cycles;
+    pio_sm_set_enabled(LCD_PIO, s_pio_sm, true);
+  }
+  pio_sm_set_clkdiv(LCD_PIO, s_pio_sm, (float)r.div);
+  s_spi_hz = r.hz;
+  if (changed) {
+    printf("[LCD] SPI %lu kHz (%u PIO cycles a bit, divider %lu)\n",
+           (unsigned long)(r.hz / 1000), r.cycles, (unsigned long)r.div);
+  }
+}
+
 void display_apply_clock(void) {
   // Safety: if a DMA transfer is active, wait for it to finish before
   // changing the clock divider to avoid corrupting the current frame.
@@ -227,31 +272,24 @@ void display_apply_clock(void) {
     lcd_cs_high();
     s_dma_active = false;
   }
-
-  uint32_t clk_hz = clock_get_hz(clk_sys);
-  // Always use integer divider to avoid PIO jitter from fractional dividers.
-  // Round up so SPI clock never exceeds LCD_SPI_BAUD.
-  uint32_t target = LCD_SPI_BAUD * 2;
-  uint32_t int_div = (clk_hz + target - 1) / target;
-  if (int_div < 1) int_div = 1;
-  float clkdiv = (float)int_div;
-
-  pio_sm_set_clkdiv(LCD_PIO, s_pio_sm, clkdiv);
+  lcd_spi_retune();
 }
 
 void display_init(void) {
-  // Initialize PIO for SPI master
-  uint offset = pio_add_program(LCD_PIO, &lcd_spi_program);
+  // Initialize PIO for SPI master: the program and divider for clk_sys
+  // (lcd_spi_retune). Both programs share lcd_spi's default config.
+  const lcd_spi_rate_t rate = lcd_spi_rate(clock_get_hz(clk_sys), LCD_SPI_BAUD);
+  s_pio_cycles = rate.cycles;
+  s_spi_hz = rate.hz;
+  uint offset = pio_add_program(LCD_PIO, lcd_spi_program_for(rate.cycles));
+  s_pio_offset = offset;
   pio_sm_config cfg_pio = lcd_spi_program_get_default_config(offset);
   sm_config_set_out_pins(&cfg_pio, LCD_PIN_MOSI, 1);
   sm_config_set_sideset_pins(&cfg_pio, LCD_PIN_SCK);
   // Disable auto-pull. Manual PULL fetches new word. Shift from MSB.
   sm_config_set_out_shift(&cfg_pio, false, false, 32);
   sm_config_set_fifo_join(&cfg_pio, PIO_FIFO_JOIN_TX);
-  uint32_t init_target = LCD_SPI_BAUD * 2;
-  uint32_t init_div = (clock_get_hz(clk_sys) + init_target - 1) / init_target;
-  if (init_div < 1) init_div = 1;
-  sm_config_set_clkdiv(&cfg_pio, (float)init_div);
+  sm_config_set_clkdiv(&cfg_pio, (float)rate.div);
 
   s_pio_sm = pio_claim_unused_sm(LCD_PIO, true);
   pio_sm_init(LCD_PIO, s_pio_sm, offset, &cfg_pio);
@@ -264,8 +302,8 @@ void display_init(void) {
   pio_gpio_init(LCD_PIO, LCD_PIN_SCK);
 
   pio_sm_set_enabled(LCD_PIO, s_pio_sm, true);
-  printf("[LCD] PIO SPI initialized (req baud: %lu)\n",
-         (unsigned long)LCD_SPI_BAUD);
+  printf("[LCD] PIO SPI initialized: %lu kHz (%u PIO cycles a bit, divider %lu)\n",
+         (unsigned long)(rate.hz / 1000), rate.cycles, (unsigned long)rate.div);
 
   // Control pins as GPIO outputs
   gpio_init(LCD_PIN_CS);

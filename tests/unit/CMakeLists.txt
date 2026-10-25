@@ -133,6 +133,8 @@ picodeck_unit_test(test_fps_counter SOURCES ${SRC}/os/fps_counter.c)
 picodeck_unit_test(test_module_path SOURCES ${SRC}/os/module_path.c ${SRC}/os/fs_path.c)
 # Clip-once rasterisers shared by the firmware display and the simulator.
 picodeck_unit_test(test_display_clip INCLUDES ${SRC}/drivers)
+# The LCD's PIO SPI program and divider per clk_sys (issue #70).
+picodeck_unit_test(test_lcd_spi_rate INCLUDES ${SRC}/drivers)
 target_link_libraries(test_display_clip PRIVATE m)
 target_compile_options(test_display_clip PRIVATE -ffp-contract=off)
 # The 3D pipeline (src/os/gfx3d.c) over host malloc; -ffp-contract=off as on

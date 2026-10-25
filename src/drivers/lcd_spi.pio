@@ -32,3 +32,38 @@ public entry_point:
     out pins, 1     side 0
     nop             side 1
 .wrap
+
+.program lcd_spi3
+.side_set 1
+
+; lcd_spi at 3 PIO cycles a bit (issue #70), for the clocks where 2 cycles
+; need a divider of 2 (lcd_spi_rate.h): 300 MHz / 3 = 100 MHz, 250 MHz / 3 =
+; 83 MHz. The data changes with SCK going low, 1 cycle before the rising
+; edge the panel latches it on, and SCK stays high for 2: the panel needs
+; SCK high (the data held after the edge) for more than 4 ns. The other way
+; round (low 2, high 1: SCK high 3.3 ns at 300 MHz, 4 ns at 250) garbled the
+; display on the device, and at 250 MHz corrupted the panel's settings until
+; a reset; this way (low 3.3 / 4 ns) is clean, as are both at half speed.
+; The same length, wrap and entry point as lcd_spi: display.c swaps one for
+; the other in place (PIO0 has no room for both).
+
+public entry_point:
+.wrap_target
+    pull            side 1
+    out pins, 1     side 0
+    nop             side 1 [1]
+    out pins, 1     side 0
+    nop             side 1 [1]
+    out pins, 1     side 0
+    nop             side 1 [1]
+    out pins, 1     side 0
+    nop             side 1 [1]
+    out pins, 1     side 0
+    nop             side 1 [1]
+    out pins, 1     side 0
+    nop             side 1 [1]
+    out pins, 1     side 0
+    nop             side 1 [1]
+    out pins, 1     side 0
+    nop             side 1 [1]
+.wrap
