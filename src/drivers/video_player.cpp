@@ -109,6 +109,17 @@ typedef struct {
 // and quant tables all get single-cycle SRAM access instead of going through
 // the 16KB XIP cache (which thrashes against 24KB of JPEGDEC flash code).
 static JPEGDEC s_jpeg_sram;
+// Players alive (created, not yet destroyed): while there are none,
+// s_jpeg_sram is lent to chargrid shader runs. JPEGDEC holds only its
+// JPEGIMAGE, which openRAM clears before every frame, so what a run leaves
+// there does no harm. Create, destroy and runs are all on Core 0.
+static int s_players;
+
+extern "C" void *charshader_sram(size_t *bytes) {
+    if (s_players) return NULL;
+    *bytes = sizeof(s_jpeg_sram);
+    return &s_jpeg_sram;
+}
 
 // --- Adaptive quality: 2x nearest-neighbor upscale callback ---
 // When the player falls behind, we decode at half resolution and upscale
@@ -773,6 +784,7 @@ video_player_t *video_player_create(void) {
     priv->osd_backup = (uint16_t *)umm_malloc(OSD_STRIP_H * FB_WIDTH * sizeof(uint16_t));
 
     player->priv = priv;
+    s_players++;
     return player;
 }
 
@@ -799,6 +811,7 @@ void video_player_destroy(video_player_t *player) {
         umm_free(priv);
     }
     umm_free(player);
+    s_players--;
 }
 
 bool video_player_load(video_player_t *player, const char *path) {

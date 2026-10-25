@@ -491,7 +491,7 @@ static void test_layers(void) {
 // cell (0, 0), out of it, and NaN. Over the whole grid and a rect that
 // starts mid-strip, the VM must equal cs_noise3 and cs_fbm3 cell by cell.
 static void test_noise_lattice_cache(void) {
-  enum { C = 75, R = 3, N = C * R };  // strips of 32, 32 and 11 per row
+  enum { C = 75, R = 3, N = C * R };  // strips of 32, 32 and 11 per row (lent SRAM: one of 75)
   static float ax[N], ay[N];
   const float nan = CS_NAN, inf = CS_INF;
   for (int i = 0; i < N; i++) {
@@ -746,6 +746,71 @@ static void test_run_rect_clip(void) {
   chargrid_free(g);
 }
 
+// The lent SRAM (charshader_sram, weak in the VM): this file's definition
+// lends s_lend, s_lend_bytes long (0: none). A run there must equal a run in
+// the shader's own block, whatever the buffer held, on both run paths; a
+// lend too short for the registers and scratch rows is not used; and the
+// shader's own block is used again afterwards.
+static float s_lend[(CS_MAX_REGS + CS_OUT_COUNT) * CS_STRIP];
+static size_t s_lend_bytes;
+void *charshader_sram(size_t *bytes) {
+  if (!s_lend_bytes) return NULL;
+  *bytes = s_lend_bytes;
+  return s_lend;
+}
+
+static void test_sram_lent(void) {
+  static const char *const src =
+      "uniform k0\narray a\nlayer m\n"
+      "p = noise(x * 0.37 + k0, y * 0.61) + fbm(x * 0.13, y * 0.29 + k0, 3)\n"
+      "q = clamp(a[x] + m.fg, k0, y + 2) + select(x < 7, sin(p), exp(-p))\n"
+      "keep = m.glyph == 3\nglyph = p * 40\nfg = q * 9\nbg = 2";
+  enum { W = 53, H = 3, N = W * H };  // 53: a part strip, lent or not
+  chargrid_t *g = chargrid_create(W, H, 4, 4), *m = chargrid_create(W, H, 4, 4);
+  for (int i = 0; i < N; i++) {
+    m->glyph[i] = (uint8_t)(i % 5);
+    m->fg[i] = (uint8_t)(i * 7 % 11);
+  }
+  float a[W];
+  for (int i = 0; i < W; i++) a[i] = (float)i * 0.3f - 4.0f;
+  charshader_t *s = compile(src);
+  CHECK(s != NULL);
+  if (!s) return;
+  charshader_set_uniform(s, "k0", 0.75f);
+  charshader_set_array(s, "a", a, W);
+  chargrid_t *lay[1] = {m};
+  static uint8_t want[3][N], got[3][N];
+  static float want_vals[N];
+  static const struct {
+    size_t bytes;
+    bool used;
+  } k_cases[] = {{0, false}, {sizeof s_lend, true}, {64, false}, {0, false}};
+  for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
+    s_lend_bytes = k_cases[c].bytes;
+    memset(s_lend, 0xFF, sizeof s_lend);  // NaN in every lane
+    memset(g->glyph, 0, N), memset(g->fg, 0, N), memset(g->bg, 0, N);
+    CHECK_EQ_INT(charshader_run(s, g, 0, 0, W, H, lay, 1), N);
+    CHECK_EQ_INT(charshader_run_values(s, g, 0, 0, W, H, lay, 1, CS_OUT_FG, s_vals), N);
+    uint8_t(*planes)[N] = c ? got : want;
+    memcpy(planes[0], g->glyph, N), memcpy(planes[1], g->fg, N), memcpy(planes[2], g->bg, N);
+    if (!c) {
+      memcpy(want_vals, s_vals, sizeof want_vals);
+      continue;
+    }
+    int bad = 0;
+    for (int p = 0; p < 3; p++) bad += memcmp(want[p], got[p], N) != 0;
+    for (int i = 0; i < N; i++) bad += !same(want_vals[i], s_vals[i]);
+    CHECK_EQ_INT(bad, 0);
+    uint32_t first;  // the lend is written only when it is used
+    memcpy(&first, s_lend, sizeof first);
+    CHECK(k_cases[c].used == (first != 0xFFFFFFFFu));
+  }
+  s_lend_bytes = 0;
+  charshader_free(s);
+  chargrid_free(m);
+  chargrid_free(g);
+}
+
 int main(void) {
   test_compile_errors();
   test_limits();
@@ -766,5 +831,9 @@ int main(void) {
   test_nearest_alloc_failed();
   test_nearest_invalidated();
   test_run_rect_clip();
+  test_sram_lent();
+  s_lend_bytes = sizeof s_lend;  // the lattice cache again, in the lent run's longer strips
+  test_noise_lattice_cache();
+  s_lend_bytes = 0;
   return check_report("test_charshader");
 }
