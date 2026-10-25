@@ -22,8 +22,16 @@
 #define CS_MAX_ARRAYS 8
 #define CS_MAX_NAME 31
 #define CS_MAX_SCALARS 255
+// Cells per strip: a register holds CS_STRIP lanes. A run whose registers are
+// in lent SRAM (charshader_sram) goes in strips of CS_STRIP, a whole row of an
+// 80-column grid (on the device 80 beat 64 and 32 there); one whose registers
+// stay in PSRAM goes in strips of CS_STRIP_PSRAM, so they touch as few cache
+// lines as before (Task 9b: 32 beats 16 there).
 #ifndef CS_STRIP
-#define CS_STRIP 32  // cells per strip (Task 9b: 32 beats 16 on the device with compact loops)
+#define CS_STRIP 80
+#endif
+#ifndef CS_STRIP_PSRAM
+#define CS_STRIP_PSRAM 32
 #endif
 
 // Scalar slots: cols, rows, the uniforms, then the constants.

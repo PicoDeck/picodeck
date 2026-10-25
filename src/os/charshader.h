@@ -50,6 +50,11 @@ int charshader_run(charshader_t *s, chargrid_t *g, int x, int y, int w, int h,
 // Returns the cells, or -1 when the program never assigns `out`.
 int charshader_run_values(charshader_t *s, chargrid_t *g, int x, int y, int w, int h,
                           chargrid_t *const *layers, int nlayers, int out, float *values);
+// SRAM a run may borrow for its registers and scratch rows, *bytes long, or
+// NULL: the run keeps them in the shader's block. The default (a weak
+// symbol) lends none; the firmware lends the video decoder's while no video
+// player exists (video_player.cpp). Asked on every run, on the core that runs.
+void *charshader_sram(size_t *bytes);
 
 typedef struct {
   int instructions, registers, scalars, uniforms, arrays, layers;

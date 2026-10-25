@@ -1,7 +1,8 @@
 // Runs compiled chargrid shaders (charshader.h). Each row of the rect goes
-// in strips of CS_STRIP cells, one tight loop per instruction over the strip.
-// Registers live in the shader's block (PSRAM, like the app stack: P0
-// measured only 7-9 % from SRAM). Scalars (constants, uniforms, cols, rows)
+// in strips, one tight loop per instruction over the strip. Registers live
+// in the shader's block (PSRAM), or for the run in SRAM when some is lent
+// (run(): there the fjord sky's cells cost 37 % less, as most of a cell's
+// time was XIP cache stalls). Scalars (constants, uniforms, cols, rows)
 // are read once per instruction; only the rarer operand mixes broadcast a
 // scalar into a scratch row. Built at -O2.
 #include "charshader_internal.h"
@@ -564,7 +565,19 @@ static void apply(charshader_t *s, chargrid_t *g, int x0, int y, int n) {
   }
 }
 
+__attribute__((weak)) void *charshader_sram(size_t *bytes) {
+  (void)bytes;
+  return NULL;
+}
+
 // The rect clipped to g, in strips: the outputs to the grid, or output `out` into values.
+// Every instruction reads and writes the registers on every strip, so a run
+// moves them and the scratch rows into SRAM when some is lent (charshader.h):
+// in the shader's PSRAM block they contend with the VM's code for the XIP
+// cache. There the strips are longer, and each strip's refills of the VM's
+// code are shared by more cells. No cell's result depends on its strip, so
+// the results are the same.
+_Static_assert(CS_STRIP_PSRAM % 4 == 0 && CS_STRIP_PSRAM <= CS_STRIP, "a strip fits a register");
 static int run(charshader_t *s, chargrid_t *g, int x, int y, int w, int h,
                chargrid_t *const *layers, int nlayers, int out, float *values) {
   const bool to_grid = values == NULL;
@@ -579,10 +592,19 @@ static int run(charshader_t *s, chargrid_t *g, int x, int y, int w, int h,
   for (int i = 0; i < s->nlayers && i < nlayers; i++) lay[i] = layers ? layers[i] : NULL;
   s->sc[CS_SC_COLS] = (float)g->cols;
   s->sc[CS_SC_ROWS] = (float)g->rows;
+  float *const regs = s->regs, *const scratch = s->scratch;
+  int strip = CS_STRIP_PSRAM;
+  size_t lent = 0;
+  float *const sram = (float *)charshader_sram(&lent);
+  if (sram && lent >= ((size_t)s->nregs + CS_OUT_COUNT) * CS_STRIP * sizeof(float)) {
+    s->regs = sram;
+    s->scratch = sram + (size_t)s->nregs * CS_STRIP;
+    strip = CS_STRIP;
+  }
   const float inv_cols = 1.0f / (float)g->cols, inv_rows = 1.0f / (float)g->rows;
   for (int cy = (int)y0; cy < (int)y1; cy++)
-    for (int cx = (int)x0; cx < (int)x1; cx += CS_STRIP) {
-      const int n = (int)x1 - cx < CS_STRIP ? (int)x1 - cx : CS_STRIP;
+    for (int cx = (int)x0; cx < (int)x1; cx += strip) {
+      const int n = (int)x1 - cx < strip ? (int)x1 - cx : strip;
       exec(s, g, lay, cx, cy, n, inv_cols, inv_rows);
       if (values) {
         memcpy(values, output(s, out, n), (size_t)n * sizeof(float));
@@ -591,6 +613,8 @@ static int run(charshader_t *s, chargrid_t *g, int x, int y, int w, int h,
         apply(s, g, cx, cy, n);
       }
     }
+  s->regs = regs;
+  s->scratch = scratch;
   if (to_grid && s->out_used) g->dirty = true;
   return (int)((x1 - x0) * (y1 - y0));
 }

@@ -612,3 +612,18 @@ add_custom_command(TARGET picodeck POST_BUILD
     COMMAND arm-none-eabi-size $<TARGET_FILE:picodeck>
     COMMENT "Firmware size:"
 )
+
+# ── Lua apps' hot code at fixed XIP cache sets ────────────────────────────────
+# Lua's runtime, the bridge glue with chargrid, and the shader VM go into
+# .hot_text, each group on an 8 KB boundary, so changes elsewhere no longer
+# move them to other cache sets (src/hot_text.ld). The check fails the build
+# when a group is misaligned or a hot function has left it.
+set(_hot_ld ${CMAKE_SOURCE_DIR}/src/hot_text.ld)
+target_link_options(picodeck PRIVATE "LINKER:-T,${_hot_ld}")
+set_property(TARGET picodeck APPEND PROPERTY LINK_DEPENDS ${_hot_ld})
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_custom_command(TARGET picodeck POST_BUILD
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_hot_text.py
+            --nm ${CMAKE_NM} $<TARGET_FILE:picodeck>
+    COMMENT "Checking .hot_text"
+)
