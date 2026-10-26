@@ -369,6 +369,13 @@ static bool c1_parse_head(struct mg_connection *nc, http_conn_t *c) {
       c->content_length = 0;
     }
     mg_iobuf_del(&nc->recv, 0, (size_t)n);
+    // The response has begun, so the whole request has been sent: give
+    // nc->send's memory back to Core 1's pool. Mongoose keeps an iobuf at
+    // its high-water size, so a chat POST's ~20 KB body held 24 KB for the
+    // whole response, and the pool, fragmented around it, then couldn't
+    // grow another buffer.
+    if (nc->send.len == 0)
+      mg_iobuf_free(&nc->send);
     printf("[HTTP] Headers received, status %d, %s %d\n", status,
            c->chunked ? "chunked" : "Content-Length", (int)c->content_length);
 
