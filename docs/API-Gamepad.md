@@ -29,6 +29,8 @@ Only the primary slots are bound by default.
 | Start | `PAD_START` | F1 |
 | Select | `PAD_SELECT` | Tab |
 
+The browser demo at [picodeck.net/try](https://picodeck.net/try/) also binds Z to A and X to B, with F4 and F5 as their alternate keys, since many laptops reach F4 and F5 only with Fn. A controller works there too, once the browser has seen one of its buttons pressed.
+
 ### Keys that can be bound
 
 Arrows, Enter, Esc, Tab, Backspace, Delete, Space, F1–F5, the letters A–Z, and Ctrl.

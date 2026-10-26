@@ -37,7 +37,9 @@ The PC simulator (`make simulator`, binary `build_sim/picodeck_simulator`) runs 
   (D-pad or left stick, A/B/X/Y, shoulders = L/R, Start, Back = Select, Guide
   opens or closes the system menu), with hotplug. It is read unless
   `--no-gamepad`, and not under `--test-mode` unless `--gamepad` is given, so
-  tests never see the host's controller.
+  tests never see the host's controller. The browser demo
+  ([picodeck.net/try](https://picodeck.net/try/)) reads controllers too, once
+  the browser has seen one of their buttons pressed.
 
 ## Running the tests
 
