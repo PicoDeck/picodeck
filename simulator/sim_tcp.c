@@ -146,7 +146,10 @@ tcp_conn_t *tcp_get_conn(int idx) {
 bool tcp_connect(tcp_conn_t *c, const char *host, uint16_t port, bool use_ssl) {
     if (!c || !wifi_is_available())
         return false;
-    strncpy(c->host, host, sizeof(c->host) - 1);
+    if (host != c->host) {  // Lua passes the slot's own buffer
+        strncpy(c->host, host, sizeof(c->host) - 1);
+        c->host[sizeof(c->host) - 1] = '\0';
+    }
     c->port = port;
     c->use_ssl = use_ssl;
     c->state = TCP_STATE_QUEUED;
