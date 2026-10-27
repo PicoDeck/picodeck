@@ -6,6 +6,7 @@
  */
 #include "app_abi.h"
 #include "os.h"
+#include "pad_input.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -189,7 +190,6 @@ static void input_update(void) {
     const picocalc_input_t *in = s_api->input;
     uint32_t pressed = in->getButtonsPressed();
     uint32_t released = in->getButtonsReleased();
-    uint32_t held = in->getButtons();
 
     // Joystick mode toggle (F9)
     if (pressed & BTN_F9) {
@@ -203,13 +203,14 @@ static void input_update(void) {
     }
 
     if (s_joystick_mode) {
-        // Joystick mode: arrows + F4=fire → joystick port 2
+        // Joystick mode: gamepad D-pad + A (fire) -> joystick port 2
+        uint32_t pad = c64_pad_held(s_api);
         uint8_t joy = 0;
-        if (held & BTN_UP)    joy |= C64_JOYSTICK_UP;
-        if (held & BTN_DOWN)  joy |= C64_JOYSTICK_DOWN;
-        if (held & BTN_LEFT)  joy |= C64_JOYSTICK_LEFT;
-        if (held & BTN_RIGHT) joy |= C64_JOYSTICK_RIGHT;
-        if (held & BTN_F4)    joy |= C64_JOYSTICK_BTN;
+        if (pad & PAD_UP)    joy |= C64_JOYSTICK_UP;
+        if (pad & PAD_DOWN)  joy |= C64_JOYSTICK_DOWN;
+        if (pad & PAD_LEFT)  joy |= C64_JOYSTICK_LEFT;
+        if (pad & PAD_RIGHT) joy |= C64_JOYSTICK_RIGHT;
+        if (pad & PAD_A)     joy |= C64_JOYSTICK_BTN;
         c64_joystick(&s_c64, 0, joy);
         return;
     }

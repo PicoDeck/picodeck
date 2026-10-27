@@ -221,14 +221,15 @@ camera:update(1 / 30)
 ---
 
 #### `camera:getOffset()`
-Get the current draw offset (camera position plus shake). Add this to world coordinates (scaled by the zoom) to get screen coordinates.
+Get the screen position of world (0, 0), with the camera position, zoom and shake folded in: `screen = world * zoom + offset`. The values are whole pixels (truncated toward zero).
 
 - **Parameters:** None
-- **Returns:** (number, number) Offset `ox, oy`
+- **Returns:** (integer, integer) Offset `ox, oy`
 
 ```lua
 local ox, oy = camera:getOffset()
-picocalc.display.fillRect(player.x - ox, player.y - oy, 8, 8, 0xFFFF)
+local z = camera:getZoom()
+picocalc.display.fillRect(player.x * z + ox, player.y * z + oy, 8, 8, 0xFFFF)
 ```
 
 ---
@@ -338,7 +339,7 @@ Call `draw()` on the current scene. Call once per frame.
 ---
 
 #### `picocalc.game.scene.objectPool(name, factory)`
-Get (or create) the per-scene object pool with the given name.
+Creates an object pool with the given name. Each call creates a new pool, up to 8 per app (further calls raise an error).
 
 - **Parameters:**
   - `name` (string): Pool name
@@ -347,6 +348,44 @@ Get (or create) the per-scene object pool with the given name.
 
 ```lua
 local bullets = picocalc.game.scene.objectPool("bullets", function() return {} end)
+```
+
+---
+
+### Object Pool Methods
+
+A pool holds up to 64 idle objects. Call these with method syntax on the table returned by `objectPool()`.
+
+#### `pool:acquire()`
+Takes an idle object from the pool, or calls the factory to make a new one if the pool is empty.
+
+- **Returns:** (any) The object
+
+#### `pool:release(obj)`
+Returns an object to the pool for reuse. If the pool already holds 64 objects, the object is silently dropped.
+
+- **Parameters:**
+  - `obj` (any): Object to return
+- **Returns:** None
+
+#### `pool:prewarm(count)`
+Calls the factory to fill the pool with idle objects ahead of time, up to the 64-object limit.
+
+- **Parameters:**
+  - `count` (number): Number of objects to create (clamped to 0-64)
+- **Returns:** None
+
+#### `pool:clear()`
+Discards all idle objects in the pool. Objects currently in use are not affected.
+
+- **Returns:** None
+
+```lua
+local bullets = picocalc.game.scene.objectPool("bullets", function() return {x = 0, y = 0} end)
+bullets:prewarm(16)
+local b = bullets:acquire()
+-- ... use b ...
+bullets:release(b)
 ```
 
 ---
@@ -459,6 +498,16 @@ end
 
 A play scene that follows a player sprite with the camera and saves the high score on exit.
 
+The scene reads `picocalc.gamepad` (see [API Gamepad](API-Gamepad.md)), which needs firmware with API version 9. To also run on older firmware, check for it once and fall back to `picocalc.input`:
+
+```lua
+local pad = picocalc.gamepad
+local input = picocalc.input
+-- held mask, and the masks to test it against
+local read = pad and pad.getButtons or input.getButtons
+local RIGHT = pad and pad.PAD_RIGHT or input.BTN_RIGHT
+```
+
 ```lua
 local camera = picocalc.game.camera.new()
 
@@ -478,11 +527,14 @@ end
 
 function play:update(dt)
     picocalc.input.update()
-    local buttons = picocalc.input.getButtons()
-    if buttons & picocalc.input.BTN_RIGHT ~= 0 then player.x = player.x + 2 end
-    if buttons & picocalc.input.BTN_LEFT  ~= 0 then player.x = player.x - 2 end
-    if buttons & picocalc.input.BTN_DOWN  ~= 0 then player.y = player.y + 2 end
-    if buttons & picocalc.input.BTN_UP    ~= 0 then player.y = player.y - 2 end
+    -- The gamepad is the recommended way to read game input: players can
+    -- rebind it in Settings > Controls. Esc stays on picocalc.input.
+    local pad = picocalc.gamepad
+    local buttons = pad.getButtons()
+    if buttons & pad.PAD_RIGHT ~= 0 then player.x = player.x + 2 end
+    if buttons & pad.PAD_LEFT  ~= 0 then player.x = player.x - 2 end
+    if buttons & pad.PAD_DOWN  ~= 0 then player.y = player.y + 2 end
+    if buttons & pad.PAD_UP    ~= 0 then player.y = player.y - 2 end
     score = score + 1
     camera:setTarget(player.x, player.y)
     camera:update(dt)

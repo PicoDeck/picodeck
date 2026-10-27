@@ -18,7 +18,8 @@ build_sim_*/
 build_unit/
 build_fuzz/
 build_web/
-tools/__pycache__/
+# Python bytecode, anywhere (tools/, scripts/ci/, tests/)
+__pycache__/
 build.log
 pico-sdk/
 generated/
@@ -57,14 +58,17 @@ apps/tic-80/
 data/
 reference/
 # system/ is SD-card user data, EXCEPT the shared Lua libraries served by
-# sys.loadlib — those are shipped source and must be version-controlled.
+# sys.loadlib and the shipped .pfn fonts in system/lib/fonts/ — those are
+# shipped content and must be version-controlled.
 system/*
 !system/lib/
 system/lib/*
 !system/lib/*.lua
+!system/lib/fonts/
+system/lib/fonts/*
+!system/lib/fonts/*.pfn
 sim_*.log
 
-tests/e2e/__pycache__/
 *.patch
 
 saves/
@@ -83,9 +87,3 @@ apps/**/*.su
 .understand-anything/
 .playwright-mcp/
 .codegraph/
-
-# scripts/ci/build-web-sim.sh outputs
-web-build.log
-/web-sim/
-/picodeck-web-sim.zip
-/launcher.png

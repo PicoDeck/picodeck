@@ -48,10 +48,20 @@ static inline __attribute__((always_inline)) int16_t scale(mad_fixed_t sample) {
 }
 
 
+/* PicoDeck: on the device this file runs from SRAM (MAD_TEXT_IN_RAM: the
+   build renames its .text to .time_critical); init and mute run once per
+   play, so they stay in flash there. */
+# if defined(MAD_TEXT_IN_RAM)
+#  define MAD_COLD __attribute__((section(".text.mad_cold")))
+# else
+#  define MAD_COLD
+# endif
+
 /*
     NAME:	synth->init()
     DESCRIPTION:	initialize synth struct
 */
+MAD_COLD
 void mad_synth_init(struct mad_synth *synth) {
     mad_synth_mute(synth);
 
@@ -66,6 +76,7 @@ void mad_synth_init(struct mad_synth *synth) {
     NAME:	synth->mute()
     DESCRIPTION:	zero all polyphase filterbank values, resetting synthesis
 */
+MAD_COLD
 void mad_synth_mute(struct mad_synth *synth) {
     unsigned int ch, s, v;
 
@@ -556,6 +567,13 @@ void dct32(mad_fixed_t const in[32], unsigned int slot,
 #  endif
 # endif
 
+/* PicoDeck: in SRAM on the device (MAD_D_IN_RAM; .time_critical sections
+   are copied to RAM at boot): the synthesis reads all of it for every 32
+   samples of each channel, and from flash it went through the XIP cache
+   the app's core shares (issue #28). */
+# if defined(MAD_D_IN_RAM)
+__attribute__((section(".time_critical.mad_D")))
+# endif
 static
 mad_fixed_t const D[17][32] PROGMEM = {
 # include "D.dat.h"
@@ -567,14 +585,17 @@ void synth_full(struct mad_synth *, struct mad_frame const *,
 # else
 /*
     NAME:	synth->full()
-    DESCRIPTION:	perform full frequency PCM synthesis
+    DESCRIPTION:	perform full frequency PCM synthesis (PicoDeck: static,
+		so that its one caller, mad_synth_granule, holds the only
+		copy: an out-of-line one took 1 KB of SRAM)
 */
+static
 void synth_full(struct mad_synth *synth, struct mad_frame const *frame,
                 unsigned int nch, unsigned int ns) {
     unsigned int phase, ch, s, sb, pe, po;
     int16_t *pcm1, *pcm2;
     mad_fixed_t (*filter)[2][2][16][8];
-    mad_fixed_t const(*sbsample)[36][32];
+    mad_fixed_t const(*sbsample)[18][32];
     register mad_fixed_t (*fe)[8], (*fx)[8], (*fo)[8];
     register mad_fixed_t const(*Dptr)[32], *ptr;
     register mad_fixed64hi_t hi;
@@ -704,6 +725,9 @@ void synth_full(struct mad_synth *synth, struct mad_frame const *frame,
 }
 # endif
 
+/* PicoDeck: synth->half() (MAD_OPTION_HALFSAMPLERATE) is left out: it is
+   never asked for, and this file runs from SRAM, where it took 1 KB. */
+# if 0
 /*
     NAME:	synth->half()
     DESCRIPTION:	perform half frequency PCM synthesis
@@ -714,7 +738,7 @@ void synth_half(struct mad_synth *synth, struct mad_frame const *frame,
     unsigned int phase, ch, s, sb, pe, po;
     int16_t *pcm1, *pcm2;
     mad_fixed_t (*filter)[2][2][16][8];
-    mad_fixed_t const(*sbsample)[36][32];
+    mad_fixed_t const(*sbsample)[18][32];
     register mad_fixed_t (*fe)[8], (*fx)[8], (*fo)[8];
     register mad_fixed_t const(*Dptr)[32], *ptr;
     register mad_fixed64hi_t hi;
@@ -846,32 +870,30 @@ void synth_half(struct mad_synth *synth, struct mad_frame const *frame,
     }
 }
 
+# endif
+
+/* PicoDeck: synth->frame() is gone. The PCM buffer holds one granule
+   (576 samples a channel: struct mad_pcm), so a frame is synthesised a
+   granule at a time with mad_synth_granule(). */
+
 /*
-    NAME:	synth->frame()
-    DESCRIPTION:	perform PCM synthesis of frame subband samples
+    NAME:	synth->granule()
+    DESCRIPTION:	PicoDeck: PCM synthesis of one Layer III granule (the 18
+		subband samples sbsample holds, just decoded) into the PCM
+		buffer (576 samples a channel); full frequency only
 */
-void mad_synth_frame(struct mad_synth *synth, struct mad_frame const *frame) {
-    unsigned int nch, ns;
-    void (*synth_frame)(struct mad_synth *, struct mad_frame const *,
-                        unsigned int, unsigned int);
+void mad_synth_granule(struct mad_synth *synth, struct mad_frame const *frame,
+                       unsigned int gr) {
+    unsigned int nch;
 
     nch = MAD_NCHANNELS(&frame->header);
-    ns  = MAD_NSBSAMPLES(&frame->header);
 
     synth->pcm.samplerate = frame->header.samplerate;
     synth->pcm.channels   = nch;
-    synth->pcm.length     = 32 * ns;
+    synth->pcm.length     = 32 * 18;
 
-    synth_frame = synth_full;
+    (void) gr;  /* sbsample holds this granule */
+    synth_full(synth, frame, nch, 18);
 
-    if (frame->options & MAD_OPTION_HALFSAMPLERATE) {
-        synth->pcm.samplerate /= 2;
-        synth->pcm.length     /= 2;
-
-        synth_frame = synth_half;
-    }
-
-    synth_frame(synth, frame, nch, ns);
-
-    synth->phase = (synth->phase + ns) % 16;
+    synth->phase = (synth->phase + 18) % 16;
 }

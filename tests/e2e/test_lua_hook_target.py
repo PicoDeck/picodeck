@@ -1,7 +1,8 @@
 """The Lua service hook reaches code that never calls into the SDK: tight
-loops on the main thread, in coroutines, nested coroutines and in __close
-handlers run by coroutine.close. Runs on the simulator (synchronous count
-hook) and on hardware (timer-armed hook, src/os/lua_bridge.c)."""
+loops on the main thread, in coroutines, nested coroutines, in __close
+handlers run by coroutine.close, and 900 frames deep. Runs on the simulator
+(synchronous count hook) and on hardware (timer-armed hook,
+src/os/lua_bridge.c)."""
 import time
 
 import pytest
@@ -51,6 +52,26 @@ CASES = {"tight": TIGHT, "coro": CORO, "nested": NESTED,
          "after_switches": AFTER_SWITCHES, "close": CLOSE,
          "wrap_close": WRAP_CLOSE}
 
+# A tight loop 900 Lua frames deep: the smallest frames (one stack slot
+# each) near the LUAI_MAXSTACK limit, as unbounded recursion reaches before
+# its "stack overflow" (hw_probe's lua_recursion case). "deep" is recorded
+# at the bottom, before the loop.
+DEEP_DEPTH = 900
+DEEP = f"""
+local T = picocalc.sys.loadlib("picotest")
+local depth = 0
+local function spin() local x = 0 while true do x = x + 1 end end
+local function dive()
+  depth = depth + 1
+  if depth >= {DEEP_DEPTH} then
+    T.case("deep", function() T.eq(depth, {DEEP_DEPTH}) end)
+    spin()
+  end
+  return 1 + dive()
+end
+dive()
+"""
+
 
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_exit_reaches_hook_free_loop(target, name):
@@ -86,3 +107,28 @@ def test_status_answers_during_tight_loop(target):
     target.exit_app()
     target.wait_for_exit(timeout=15)
     assert worst < 1.0, f"status round trip {worst:.2f}s during a tight loop"
+
+
+@pytest.mark.sd(fixtures=[], reserve=1)
+def test_hook_reaches_deep_recursion(target):
+    """The service hook keeps running with the VM 900 frames deep (issue
+    #21). On the device the 1 ms timer that arms the hook used lua_sethook,
+    which walks every frame of the call chain: this deep, that walk of QMI
+    PSRAM took longer than the timer period, the timer IRQ re-fired forever,
+    the VM never ran again and the watchdog reset the device. Here `status`
+    must be answered from inside the hook and `exit` must end the app."""
+    app, app_id = "hook_deep", "com.test.hook_deep"
+    target.stage_lua_app(app, DEEP, id=app_id)
+    target.delete_file(f"/data/{app_id}/test_results.json")
+    target.launch_app(app)
+    doc = target.wait_for_results(
+        app_id, timeout=20,
+        until=lambda d: any(c["name"] == "deep" for c in d.get("cases", [])))
+    assert all(c["status"] == "PASS" for c in doc["cases"]), doc
+    time.sleep(1.0)  # spinning at the bottom
+    st = target.status()
+    assert st["app"] != "launcher", st
+    r = target.exit_app()
+    assert r["ok"], r
+    out = target.wait_for_exit(timeout=15)
+    assert out["result"] == "exit_sentinel", out

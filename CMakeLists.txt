@@ -18,6 +18,11 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
+# SDK 2.2.0's default alarm pool leaks a slot when its first two alarms are
+# cancelled together: build pico_time from a fixed copy (issue #58).
+include(${CMAKE_SOURCE_DIR}/cmake/picodeck_pico_time.cmake)
+picodeck_patch_pico_time()
+
 # ── Version from git tags ────────────────────────────────────────────────────
 execute_process(
     COMMAND git describe --tags --always
@@ -106,7 +111,7 @@ target_include_directories(lua PUBLIC ${LUA_DIR})
 include(${CMAKE_SOURCE_DIR}/cmake/picodeck_lua.cmake)
 picodeck_patch_luaconf(${LUA_DIR})
 target_compile_definitions(lua PUBLIC ${PICODECK_LUA_DEFINITIONS})
-target_sources(lua PRIVATE ${PICODECK_LUA_SOURCES})  # picodeck_lua_sprintf (float formatting)
+target_sources(lua PRIVATE ${PICODECK_LUA_SOURCES})  # picodeck_lua_sprintf, _arm_hook, _strbuf, lua_fastarg.c
 # -O2, not -Os: hook-free, the VM gains ~10% on bytecode and 20-45% on C-call
 # paths at -O2 for +23 KB of flash (P0, specs/2026-09-27-p0-lua-perf-findings.md).
 target_compile_options(lua PRIVATE -O2)
@@ -147,6 +152,12 @@ set(GIF_DIR ${CMAKE_SOURCE_DIR}/third_party/AnimatedGIF)
 include(${CMAKE_SOURCE_DIR}/cmake/picodeck_pngdec.cmake)
 picodeck_pngdec_sources(PICODECK_PNGDEC_SOURCES ${PNGDEC_DIR}/src)
 
+# umm_malloc with its heap-init clear made optional: the firmware zeroes the
+# PSRAM heap itself, by DMA, before the boot splash (issue #73). Patched copy
+# in the build tree; the submodule stays pristine. See the module.
+include(${CMAKE_SOURCE_DIR}/cmake/picodeck_umm.cmake)
+picodeck_umm_source(PICODECK_UMM_SOURCE ${CMAKE_SOURCE_DIR}/third_party/umm_malloc/src)
+
 # JPEGDEC as separate lib with -O2 for faster decode loops (IDCT, Huffman VLC,
 # pixel conversion).  Code grows from ~17KB (-Os) to ~24KB (-O2), but it already
 # exceeded the 16KB XIP cache at -Os, so the extra size doesn't meaningfully
@@ -179,26 +190,41 @@ target_compile_options(image_decoders PRIVATE -O2)
 set(LIBMAD_DIR ${CMAKE_SOURCE_DIR}/third_party/libmad)
 
 # Hot path — placed in SRAM via .time_critical section rename.
-# synth.c (~4.9KB) is the final PCM synthesis step that runs every frame
-# on Core 1; keeping it in SRAM eliminates XIP cache thrashing with
-# Core 0's Lua VM.  layer3.c (~11.6KB) stays in flash — it's called less
-# frequently and would exhaust the SRAM heap if included.
+# synth.c (~3.3KB) is the final PCM synthesis step that runs every granule
+# on Core 1; keeping it in SRAM keeps it off the XIP cache Core 0's Lua VM
+# uses.  layer3.c (~11KB) stays in flash: no SRAM is left for it (the
+# decoder's hot state comes first, issue #28 in src/drivers/CLAUDE.md).
+# PICODECK_EXP_L3_RAM builds it into SRAM for a measurement (mp3bench); it
+# links only with that state back in PSRAM (-DPICODECK_MP3_SRAM=OFF).
+option(PICODECK_EXP_L3_RAM "Experiment: libmad layer3.c in SRAM" OFF)
+if(PICODECK_EXP_L3_RAM)
+  set(LIBMAD_L3_RAM_SRC ${LIBMAD_DIR}/layer3.c ${LIBMAD_DIR}/bit.c)
+  set(LIBMAD_L3_FLASH_SRC)
+else()
+  set(LIBMAD_L3_RAM_SRC)
+  set(LIBMAD_L3_FLASH_SRC ${LIBMAD_DIR}/layer3.c ${LIBMAD_DIR}/bit.c)
+endif()
 add_library(libmad_ram STATIC
-    ${LIBMAD_DIR}/synth.c
+    ${LIBMAD_DIR}/synth.c ${LIBMAD_L3_RAM_SRC}
 )
 target_include_directories(libmad_ram PUBLIC ${LIBMAD_DIR})
-target_compile_definitions(libmad_ram PRIVATE PROGMEM=)
+target_compile_definitions(libmad_ram PRIVATE PROGMEM= MAD_TEXT_IN_RAM=1)
+# Issue #28: the MP3 decoder's hottest state (mp3_player.c) and the
+# synthesis window D[] in SRAM, off the XIP cache the app's core shares.
+option(PICODECK_MP3_SRAM "MP3 decoder hot state and window in SRAM" ON)
+if(PICODECK_MP3_SRAM)
+  target_compile_definitions(libmad_ram PRIVATE MAD_D_IN_RAM=1)
+endif()
 # Place all code in .time_critical section via -fno-function-sections (single .text)
 # then rename via objcopy post-build.  -O2 for speed-critical decode path.
 target_compile_options(libmad_ram PRIVATE -O2 -fno-function-sections -Wno-unused-parameter -Wno-unused-variable)
 
 # Cold path — stays in Flash
 add_library(libmad STATIC
-    ${LIBMAD_DIR}/bit.c
+    ${LIBMAD_L3_FLASH_SRC}
     ${LIBMAD_DIR}/fixed.c
     ${LIBMAD_DIR}/frame.c
     ${LIBMAD_DIR}/huffman.c
-    ${LIBMAD_DIR}/layer3.c
     ${LIBMAD_DIR}/stream.c
     ${LIBMAD_DIR}/timer.c
     ${LIBMAD_DIR}/version.c
@@ -206,6 +232,9 @@ add_library(libmad STATIC
 target_include_directories(libmad PUBLIC ${LIBMAD_DIR})
 target_compile_definitions(libmad PRIVATE PROGMEM=)
 target_compile_options(libmad PRIVATE -O2 -Wno-unused-parameter -Wno-unused-variable)
+# Each calls into the other (synth.c, and layer3.c/bit.c in the experiment).
+target_link_libraries(libmad PUBLIC libmad_ram)
+target_link_libraries(libmad_ram PUBLIC libmad)
 
 # ── PIO PSRAM (mainboard 8MB PSRAM via PIO1 SPI) ─────────────────────────────
 # Uses the polpo rp2040-psram library (third_party/rp2040-psram/).
@@ -239,6 +268,8 @@ add_executable(picodeck
     src/main.c
     src/dev_commands.c
     src/dev_ops.c
+    src/os/mv_op.c
+    src/os/mv_path.c
     src/os/launcher.c
     src/os/lua_runner.c
     src/os/app_stack.c
@@ -263,11 +294,22 @@ add_executable(picodeck
     src/os/lua_bridge_appconfig.c
     src/os/lua_bridge_perf.c
     src/os/perf.c
+    src/os/core0_idle.c
+    src/os/xip_stats.c
+    src/os/pc_prof.c
     src/os/fps_counter.c
     src/os/lua_bridge_graphics.c
     src/os/lua_bridge_3d.c
     src/os/gfx3d.c
     src/os/lua_bridge_gfx3d.c
+    src/os/chargrid.c
+    src/os/chargrid_shapes.c
+    src/os/chargrid_text.c
+    src/os/chargrid_render.c
+    src/os/chargrid_display.c
+    src/os/charshader_compile.c
+    src/os/charshader_vm.c
+    src/os/lua_bridge_chargrid.c
     src/os/module_path.c
     src/os/lua_bridge_require.c
     src/os/lua_corolib.c
@@ -295,6 +337,7 @@ add_executable(picodeck
     src/os/terminal_render.c
     src/os/lua_bridge_terminal.c
     src/os/crypto.c
+    src/os/ssh_blob.c
     src/os/lua_bridge_crypto.c
     src/os/lua_bridge_mod.c
     src/os/lua_bridge_zip.c
@@ -317,6 +360,9 @@ add_executable(picodeck
     src/os/clock.c
     src/os/tz_picker.c
     src/os/ui.c
+    src/os/splash.c
+    src/os/splash_render.c
+    src/os/splash_logo_cells.c
     src/usb/usb_descriptors.c
     src/usb/usb_msc.c
     src/os/image_decoders.cpp
@@ -334,7 +380,11 @@ add_executable(picodeck
     src/drivers/keyboard.c
     src/drivers/kbd_bus.c
     src/drivers/kbd_i2c.c
+    src/drivers/pad_source.c
+    src/drivers/hid_pad.c
+    src/drivers/bt_pad_store.c
     src/drivers/sdcard.c
+    src/drivers/fat_within.c
     src/drivers/wifi.c
     src/drivers/rng.c
     src/drivers/ca_bundle.c
@@ -346,7 +396,7 @@ add_executable(picodeck
     src/drivers/pio_psram_bulk.c
     src/drivers/pio_psram_qpi.c
     third_party/mongoose/mongoose.c
-    third_party/umm_malloc/src/umm_malloc.c
+    ${PICODECK_UMM_SOURCE}
     third_party/miniz/miniz.c
     third_party/miniz/miniz_tinfl.c
     third_party/miniz/miniz_tdef.c
@@ -426,6 +476,18 @@ set_source_files_properties(src/fonts/font.c PROPERTIES COMPILE_OPTIONS "-O2")
 set_source_files_properties(src/os/gfx3d.c PROPERTIES
     COMPILE_OPTIONS "-O2;-ffp-contract=off;-Wdouble-promotion")
 
+# chargrid: -O2 like gfx3d; the renderer's hot loops keep their state in
+# registers (specs/2026-10-09-chargrid-p0-findings.md).
+set_source_files_properties(src/os/chargrid.c src/os/chargrid_shapes.c src/os/chargrid_text.c src/os/chargrid_render.c src/os/charshader_compile.c src/os/charshader_vm.c PROPERTIES
+    COMPILE_OPTIONS "-O2;-ffp-contract=off;-Wdouble-promotion")
+# The bridge inlines noise.h: no FMA contraction, so noise matches the simulator.
+set_source_files_properties(src/os/lua_bridge_chargrid.c PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+# The boot splash's frames: the chargrid shader's maths, no FMA contraction
+# (the device and the simulator agree; tests/unit test_splash_m33).
+set_source_files_properties(src/os/splash_render.c PROPERTIES
+    COMPILE_OPTIONS "-O2;-ffp-contract=off;-Wdouble-promotion")
+
 # ── PIO PSRAM Bulk Transfer (improved driver with 16-bit counters) ─────────────
 # Supports up to 8187 bytes per transaction (vs 27 bytes in polpo library).
 # Uses a custom PIO program in src/drivers/pio_psram_bulk.pio.
@@ -459,10 +521,46 @@ if(PICO_BOARD STREQUAL "pimoroni_pico_plus2_w_rp2350" OR
         MG_ENABLE_DRIVER_PICO_W=1
         MG_ENABLE_TCPIP_DRIVER_INIT=0
         CYW43_LWIP=0
+        # wifi_bus_clock() retunes the CYW43's PIO SPI divider per clk_sys;
+        # dynamic, so a re-init of the bus picks up the current divider too.
+        CYW43_PIO_CLOCK_DIV_DYNAMIC=1
     )
     message(STATUS "WiFi enabled for board: ${PICO_BOARD} (Mongoose TCPIP)")
+
+    # ── Bluetooth gamepads (src/drivers/bt_pad.c, issue #26) ────────────────
+    # BTstack's Classic HID host on the CYW43, off until the user turns it on
+    # (Settings -> Bluetooth): the firmware carries it, a device that never
+    # enables it never loads the BT firmware. CYW43_ENABLE_BLUETOOTH (from
+    # pico_btstack_hci_transport_cyw43) also swaps in the WiFi+BT firmware
+    # blob. Not pico_btstack_cyw43: its btstack_cyw43_init sets BTstack up
+    # inside cyw43_arch_init with a flash TLV; bt_pad.c provides that hook.
+    option(PICODECK_BT "Bluetooth gamepads (BTstack Classic HID host)" ON)
+    if(PICODECK_BT)
+        target_link_libraries(picodeck
+            pico_btstack_classic
+            pico_btstack_hci_transport_cyw43
+            pico_btstack_run_loop_async_context
+        )
+        target_sources(picodeck PRIVATE src/drivers/bt_pad.c)
+        target_include_directories(picodeck PRIVATE src/drivers/btstack)
+        target_compile_definitions(picodeck PRIVATE PICODECK_BT=1)
+        # BTstack's pools are static (btstack_config.h, no HAVE_MALLOC) and
+        # all of its static state goes to QMI PSRAM (bt_psram.ld). The
+        # CYW43's BT shared-bus driver mallocs ~940 B for its firmware
+        # download, a third of the SRAM heap: umm instead.
+        set_source_files_properties(
+            ${PICO_SDK_PATH}/src/rp2_common/pico_cyw43_driver/cybt_shared_bus/cybt_shared_bus.c
+            PROPERTIES COMPILE_DEFINITIONS "malloc=bt_pad_malloc;free=bt_pad_free")
+        set(_bt_ld ${CMAKE_SOURCE_DIR}/src/drivers/btstack/bt_psram.ld)
+        target_link_options(picodeck PRIVATE "LINKER:-T,${_bt_ld}")
+        set_property(TARGET picodeck APPEND PROPERTY LINK_DEPENDS ${_bt_ld})
+        message(STATUS "Bluetooth gamepads: on (BTstack ${PICO_BTSTACK_PATH})")
+    else()
+        target_sources(picodeck PRIVATE src/drivers/bt_pad_stub.c)
+    endif()
 else()
     message(STATUS "WiFi disabled for board: ${PICO_BOARD}")
+    target_sources(picodeck PRIVATE src/drivers/bt_pad_stub.c)
 endif()
 
 # Enable USB serial for stdio (printf goes to USB-C serial — handy for debug)
@@ -504,10 +602,28 @@ target_compile_definitions(picodeck PRIVATE
     PICO_STDIO_USB_ENABLE_RESET_VIA_BAUD_RATE=0
     PICO_STDIO_USB_ENABLE_RESET_VIA_VENDOR_INTERFACE=0
 )
+if(PICODECK_MP3_SRAM)
+  target_compile_definitions(picodeck PRIVATE PICODECK_MP3_SRAM=1)
+endif()
 
 # ── Print firmware size after build ───────────────────────────────────────────
 
 add_custom_command(TARGET picodeck POST_BUILD
     COMMAND arm-none-eabi-size $<TARGET_FILE:picodeck>
     COMMENT "Firmware size:"
+)
+
+# ── Lua apps' hot code at fixed XIP cache sets ────────────────────────────────
+# Lua's runtime, the bridge glue with chargrid, and the shader VM go into
+# .hot_text, each group on an 8 KB boundary, so changes elsewhere no longer
+# move them to other cache sets (src/hot_text.ld). The check fails the build
+# when a group is misaligned or a hot function has left it.
+set(_hot_ld ${CMAKE_SOURCE_DIR}/src/hot_text.ld)
+target_link_options(picodeck PRIVATE "LINKER:-T,${_hot_ld}")
+set_property(TARGET picodeck APPEND PROPERTY LINK_DEPENDS ${_hot_ld})
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_custom_command(TARGET picodeck POST_BUILD
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_hot_text.py
+            --nm ${CMAKE_NM} $<TARGET_FILE:picodeck>
+    COMMENT "Checking .hot_text"
 )

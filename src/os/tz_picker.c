@@ -107,7 +107,7 @@ static int rebuild_filter(const char *search, int *filtered) {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-bool tz_picker_show(void) {
+static bool tz_picker_run(void) {
     int px = (FB_WIDTH  - TZ_PANEL_W) / 2;
     int py = (FB_HEIGHT - TZ_PANEL_H) / 2;
 
@@ -130,6 +130,7 @@ bool tz_picker_show(void) {
     // polls, or injections queued before this modal opened, were not typed
     // at this picker and must not filter or select on its behalf.
     kbd_clear_state();
+    kbd_consume_menu_press();  // a stale press was not made here
 
     while (running) {
         if (need_redraw) {
@@ -197,6 +198,9 @@ bool tz_picker_show(void) {
         // Let a dev "exit" unwind this modal (cancel; the Lua hook handles exit).
         if (dev_commands_wants_exit())
             return false;
+        // The menu key cancels, like Esc, and takes the latch.
+        if (kbd_consume_menu_press())
+            return false;
 
         char     ch      = kbd_get_char();
         uint32_t pressed = kbd_get_buttons_pressed();
@@ -248,4 +252,13 @@ bool tz_picker_show(void) {
     }
 
     return changed;
+}
+
+// System UI draws in the built-in font whatever the app has selected.
+bool tz_picker_show(void) {
+    int saved_font = display_get_font();
+    display_set_font(0);
+    bool ok = tz_picker_run();
+    display_set_font(saved_font);
+    return ok;
 }

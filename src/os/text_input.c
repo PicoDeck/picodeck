@@ -28,8 +28,8 @@
 // Maximum visible characters: text area width divided by font char width (6px)
 #define MAX_VIS  ((PANEL_W - 16) / 6)
 
-bool text_input_show(const char *title, const char *prompt,
-                     const char *initial, char *out, int out_len)
+static bool text_input_run(const char *title, const char *prompt,
+                           const char *initial, char *out, int out_len)
 {
     char buf[256];
     buf[0] = '\0';
@@ -53,6 +53,7 @@ bool text_input_show(const char *title, const char *prompt,
     // polls, or injections queued before this modal opened, were not typed
     // at this dialog and must not accept/cancel it.
     kbd_clear_state();
+    kbd_consume_menu_press();  // a stale press was not made here
 
     int  scroll      = 0;
     bool running     = true;
@@ -126,6 +127,12 @@ bool text_input_show(const char *title, const char *prompt,
             continue;
         }
 
+        // The menu key cancels, like Esc, and takes the latch.
+        if (kbd_consume_menu_press()) {
+            running = false;
+            continue;
+        }
+
         char     ch      = kbd_get_char();
         uint32_t pressed = kbd_get_buttons_pressed();
 
@@ -160,4 +167,15 @@ bool text_input_show(const char *title, const char *prompt,
 
     display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch);
     return confirmed;
+}
+
+// System UI draws in the built-in font whatever the app has selected.
+bool text_input_show(const char *title, const char *prompt,
+                     const char *initial, char *out, int out_len)
+{
+    int saved_font = display_get_font();
+    display_set_font(0);
+    bool ok = text_input_run(title, prompt, initial, out, out_len);
+    display_set_font(saved_font);
+    return ok;
 }

@@ -135,7 +135,7 @@ The `api->version` field indicates which additions are present:
 
 - `1` — Phase 1 additions
 - `2` — Phase 2 additions
-- `3` — `api->fs->browse` (modal file-browser overlay for native apps)
+- `3` — `api->fs->browse` (modal file-browser overlay for native apps; system UI, it draws in the built-in 6x8 font and the app's font is restored. The same holds for `api->ui->textInput` / `text_input_show`)
 - `4` — display clip rect (`setClipRect`/`getClipRect`/`clearClipRect`), mode-7 `drawPlane`, and native parity for `fillHLine`/`fillTriangle`/`setScrollArea`/`setScrollOffset`
 - `5` — zip read-in-place handles
 - `6` — fonts (`setFont`/`getFont`/`getFontWidth`/`getFontHeight`/`textWidth`/`loadFont`/`unloadFont`/`drawTextTransparent`)
@@ -219,6 +219,8 @@ Anything the app got through the API and did not free — files, images, samples
 - Native apps can log via `api->sys->log("message: %d", value)`. Output appears on USB serial at 115200 baud as `[APP] message`.
 - If the app crashes (HardFault), the fault handler displays register state, CFSR flags, and stack pointer info on the LCD. It detects whether the crash was in the app (PSP) or OS (MSP).
 - A stack overflow raises a STKOF UsageFault (CFSR bit 20, 0x00100000) recorded in /system/crashlog.txt with the stack owner (PSP (native app) / PSP (Lua VM) / PSP (OS command) / MSP).
+
+- Native apps also run in the PC simulator, under a CPU emulator against the same API table, which is the quickest way to iterate on logic and to run them under the E2E harness. It is much slower than the device and does not model everything (no `crypto`, a stubbed video player), so test speed and memory use on hardware. See [Simulator and Testing](Simulator-and-Testing.md).
 
 ## See also
 

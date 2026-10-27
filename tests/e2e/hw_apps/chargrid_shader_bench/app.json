@@ -1,0 +1,2 @@
+{ "id": "com.test.chargrid_shader_bench", "name": "chargrid shader bench", "version": "1.0",
+  "description": "chargrid shader-cost benchmark (hardware test)", "author": "PicoDeck" }

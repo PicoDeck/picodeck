@@ -30,6 +30,9 @@ void dev_commands_clear_usb(void);
 
 bool dev_commands_wants_list(void);
 
+// True when the pending `list` was `list all` (hidden apps too).
+bool dev_commands_list_all(void);
+
 void dev_commands_clear_list(void);
 
 bool dev_commands_wants_reboot(void);

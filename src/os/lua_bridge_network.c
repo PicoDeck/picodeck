@@ -159,7 +159,7 @@ void http_lua_fire_pending(lua_State *L) {
 // ───────────────────────────────────────────────────────────────────
 
 static http_ud_t *check_http(lua_State *L, int idx) {
-  return (http_ud_t *)luaL_checkudata(L, idx, HTTP_MT);
+  return (http_ud_t *)lb_checkudata(L, idx, HTTP_MT);
 }
 
 static http_ud_t *check_http_open(lua_State *L, int idx) {

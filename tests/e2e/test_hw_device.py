@@ -100,7 +100,10 @@ def test_c_stack_depth_on_device(target):
     """Lua -> C -> Lua recursion (nested gsub callbacks, a 250-deep __index
     function chain) stops with a catchable "C stack overflow" on the real
     stacks, with headroom left: `stack` reports the app and main-stack peaks
-    below their sizes, and nothing faulted."""
+    below their sizes, and nothing faulted. Unbounded pure-Lua recursion
+    (~976 frames) ends in "stack overflow" with the timer-armed service hook
+    still live: before issue #21's fix its arming walked every frame, the
+    timer IRQ never returned and the watchdog reset the device mid-test."""
     before = target.crash_evidence()["crashlog"]
     _start_probe(target, "cstack")
     try:

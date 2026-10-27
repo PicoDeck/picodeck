@@ -2,8 +2,9 @@
 #include "../dev_commands.h"
 #include "../drivers/display.h"
 #include "../drivers/keyboard.h"
+#include "../drivers/pad_source.h"
 #include "../drivers/wifi.h"
-#include "../splash_logo.h"
+#include "splash.h"
 #include "clock.h"
 #include "config.h"
 #include "os.h"    // BTN_* constants
@@ -20,7 +21,8 @@
 
 // ── Header ──────────────────────────────────────────────────────────────────
 // A UI_HEADER_H bar shaded from top to bottom, then a 1px C_BORDER line.
-// Title on the left; clock, WiFi, charging bolt and battery on the right.
+// Title on the left; clock, gamepad, WiFi, charging bolt and battery on the
+// right.
 // The icons carry the state, so the header stays grey and navy: colour only
 // flags a problem (low battery, WiFi failure).
 
@@ -76,6 +78,21 @@ static const char *const k_wifi[] = {
 };
 #define WIFI_W 11
 #define WIFI_H 8
+
+// A gamepad (D-pad and four face buttons cut out), shown while a pad source
+// is connected (pad_source.h).
+static const char *const k_pad[] = {
+    ".###########.",
+    "#############",
+    "##.######.###",
+    "#...####.#.##",
+    "##.######.###",
+    "#############",
+    "####.....####",
+    ".##.......##.",
+};
+#define PAD_W 13
+#define PAD_H 8
 
 // 3x5 digits for the battery percentage (battery_pct setting).
 static const char *const k_digits[10][5] = {
@@ -143,6 +160,7 @@ static int s_last_bat = -999;
 static bool s_last_charging = false;
 static bool s_last_bat_pct = false;
 static int s_last_wifi_status = -1;
+static bool s_last_pad = false;
 static char s_last_clock[16] = "";
 
 static int header_wifi_status(void) {
@@ -157,6 +175,8 @@ bool ui_needs_header_redraw(void) {
   if (ui_battery_pct_enabled() != s_last_bat_pct)
     return true;
   if (header_wifi_status() != s_last_wifi_status)
+    return true;
+  if ((pad_sources_connected() != 0) != s_last_pad)
     return true;
 
   if (clock_is_set()) {
@@ -183,7 +203,11 @@ int ui_draw_header(const char *title) {
   display_draw_text_transparent(HDR_MARGIN, text_y, title ? title : "",
                                 C_HDR_TEXT);
 
-  // Right-side status, laid out right to left.
+  // Right-side status, laid out right to left, in the built-in font: the
+  // title above uses the app's current font, the status area stays fixed.
+  int saved_font = display_get_font();
+  display_set_font(0);
+  const int status_y = (UI_HEADER_H - (display_get_font_height() - 1)) / 2;
   int x = FB_WIDTH - HDR_MARGIN;
 
   int bat = kbd_get_battery_percent();
@@ -206,14 +230,22 @@ int ui_draw_header(const char *title) {
   if (draw_wifi(x - WIFI_W, (UI_HEADER_H - WIFI_H) / 2, s_last_wifi_status))
     x -= WIFI_W + HDR_ICON_GAP;
 
+  s_last_pad = pad_sources_connected() != 0;
+  if (s_last_pad) {
+    x -= PAD_W;
+    draw_glyph(x, (UI_HEADER_H - PAD_H) / 2, k_pad, PAD_H, C_HDR_TEXT);
+    x -= HDR_ICON_GAP;
+  }
+
   if (clock_is_set()) {
     char clk_buf[16];
     clock_format(clk_buf, sizeof(clk_buf));
     strncpy(s_last_clock, clk_buf, sizeof(s_last_clock));
     x -= display_text_width(clk_buf);
-    display_draw_text_transparent(x, text_y, clk_buf, C_HDR_CLOCK);
+    display_draw_text_transparent(x, status_y, clk_buf, C_HDR_CLOCK);
   }
 
+  display_set_font(saved_font);
   return UI_HEADER_H + 1;
 }
 
@@ -283,41 +315,12 @@ int ui_draw_tabs(const char **tabs, int count, int active_index, int y) {
 }
 
 void ui_draw_splash(const char *status, const char *subtext) {
-  display_clear(COLOR_BLACK);
-
-#if LOGO_W > 0 && LOGO_H > 0
-  // ── Logo ──────────────────────────────────────────────────────────────────
-  int lx = (FB_WIDTH - LOGO_W) / 2;
-  int ly = (FB_HEIGHT - LOGO_H) / 2 - 16;
-  display_draw_image(lx, ly, LOGO_W, LOGO_H, logo_data);
-
-  // ── Status text below logo ─────────────────────────────────────────────
-  if (status && status[0]) {
-    int sx = (FB_WIDTH - display_text_width(status)) / 2;
-    display_draw_text(sx, ly + LOGO_H + 12, status, COLOR_GRAY, COLOR_BLACK);
+  // While Core 1 plays the boot animation it owns the display: hand it the text.
+  if (splash_running()) {
+    splash_set_status(status, subtext);
+    return;
   }
-  if (subtext && subtext[0]) {
-    int s2x = (FB_WIDTH - display_text_width(subtext)) / 2;
-    display_draw_text(s2x, ly + LOGO_H + 24, subtext, COLOR_GRAY, COLOR_BLACK);
-  }
-#else
-  // ── No logo: centred title + status ───────────────────────────────────────
-  const char *title = "PicoDeck";
-  int tx = (FB_WIDTH - display_text_width(title)) / 2;
-  display_draw_text(tx, FB_HEIGHT / 2 - 14, title, COLOR_WHITE, COLOR_BLACK);
-
-  if (status && status[0]) {
-    int sx = (FB_WIDTH - display_text_width(status)) / 2;
-    display_draw_text(sx, FB_HEIGHT / 2 + 2, status, COLOR_GRAY, COLOR_BLACK);
-  }
-  if (subtext && subtext[0]) {
-    int s2x = (FB_WIDTH - display_text_width(subtext)) / 2;
-    display_draw_text(s2x, FB_HEIGHT / 2 + 14, subtext, COLOR_GRAY,
-                      COLOR_BLACK);
-  }
-#endif
-
-  display_flush();
+  splash_draw_static(status, subtext);
 }
 
 // ── Shared dialog style ───────────────────────────────────────────────────────
@@ -357,8 +360,8 @@ static int dlg_draw_message(int x, int y, int w, const char *msg, uint16_t bg) {
 
 // ── ui_text_input ─────────────────────────────────────────────────────────────
 
-bool ui_text_input(const char *prompt, const char *default_val,
-                   char *out_buf, int out_len) {
+static bool ui_text_input_run(const char *prompt, const char *default_val,
+                              char *out_buf, int out_len) {
   // Layout
   const int DH = 90;
   const int DY = (FB_HEIGHT - DH) / 2;
@@ -396,6 +399,7 @@ bool ui_text_input(const char *prompt, const char *default_val,
   // polls, or injections queued before this modal opened, were not typed
   // at this dialog and must not accept/cancel it.
   kbd_clear_state();
+  kbd_consume_menu_press();  // a stale press was not made at this dialog
 
   // Input buffer
   const int MAX_CHARS = 127;
@@ -416,6 +420,8 @@ bool ui_text_input(const char *prompt, const char *default_val,
     // A dev "exit" must be able to unwind this modal: cancel so the Lua hook
     // can process the exit once control returns to the app.
     if (dev_commands_wants_exit()) break;
+    // The menu key cancels, like Esc, and takes the latch.
+    if (kbd_consume_menu_press()) break;
     uint32_t btns = kbd_get_buttons_pressed();
     char c        = kbd_get_char();
 
@@ -456,7 +462,7 @@ bool ui_text_input(const char *prompt, const char *default_val,
 
 // ── ui_confirm ────────────────────────────────────────────────────────────────
 
-bool ui_confirm(const char *message) {
+static bool ui_confirm_run(const char *message) {
   // Only input typed at THIS dialog may answer it.  Keys queued while the
   // app was not polling (still in the STM32 FIFO, in the keyboard bus
   // engine's ring, or decoded by sys.sleep's background polls) or injected
@@ -464,6 +470,7 @@ bool ui_confirm(const char *message) {
   // Enter must be a fresh press edge after it — so an app cannot pre-load a
   // "yes" (sys.applyUpdate relies on this).
   kbd_discard_pending();
+  kbd_consume_menu_press();  // a stale press was not made at this dialog
   // Measure how many lines the message needs (up to 2)
   const int COLS = (DLG_W - 20) / 6;
   int msg_len = message ? strlen(message) : 0;
@@ -499,6 +506,10 @@ bool ui_confirm(const char *message) {
     dev_commands_process();
     // Let a dev "exit" unwind this modal (cancel; the Lua hook handles exit).
     if (dev_commands_wants_exit()) { display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false; }
+    // The menu key is ignored: No can mean "discard" to the app (an editor's
+    // "Save changes?"), so it never answers a dialog. It is still taken, or
+    // it would open the system menu once the dialog had been answered.
+    kbd_consume_menu_press();
     uint32_t btns = kbd_get_buttons_pressed();
     char c        = kbd_get_char();
     if (!armed) {
@@ -518,20 +529,40 @@ bool ui_confirm(const char *message) {
   }
 }
 
+// System modals draw in the built-in 6x8 font whatever the app has selected,
+// and give the app's font back on every way out.
+bool ui_text_input(const char *prompt, const char *default_val,
+                   char *out_buf, int out_len) {
+  int saved_font = display_get_font();
+  display_set_font(0);
+  bool ok = ui_text_input_run(prompt, default_val, out_buf, out_len);
+  display_set_font(saved_font);
+  return ok;
+}
+
+bool ui_confirm(const char *message) {
+  int saved_font = display_get_font();
+  display_set_font(0);
+  bool ok = ui_confirm_run(message);
+  display_set_font(saved_font);
+  return ok;
+}
+
 // ── ui_draw_spinner ───────────────────────────────────────────────────────────
-// Draw a single frame of a rotating line spinner at (cx, cy) with radius r.
-// Call once per frame with an incrementing frame counter for animation.
+// One frame of a pixel-glyph spinner: a 2x2 block chases itself around the
+// corners of a 5x5 glyph (top-left → top-right → bottom-right → bottom-left),
+// with a dim pixel trailing at the corner just vacated. Call once per frame
+// with an incrementing frame counter. r picks the glyph's pixel scale.
 void ui_draw_spinner(int cx, int cy, int r, int frame) {
-  static const int dx8[] = { 0,  1,  1,  1,  0, -1, -1, -1};
-  static const int dy8[] = {-1, -1,  0,  1,  1,  1,  0, -1};
-  int idx = (frame / 2) & 7; // rotate through 8 positions
-  int x1 = cx + dx8[idx] * r;
-  int y1 = cy + dy8[idx] * r;
-  int x2 = cx - dx8[idx] * r;
-  int y2 = cy - dy8[idx] * r;
-  // Draw main line bright, secondary lines dimmer for motion effect
-  display_draw_line(x1, y1, x2, y2, COLOR_WHITE);
-  int prev = (idx + 7) & 7;
-  display_draw_line(cx + dx8[prev] * r, cy + dy8[prev] * r,
-                    cx - dx8[prev] * r, cy - dy8[prev] * r, COLOR_GRAY);
+  static const uint8_t corners[4][2] = { {0, 0}, {3, 0}, {3, 3}, {0, 3} };
+  int px = (2 * r + 4) / 5; // glyph roughly fills the old 2r bounding box
+  if (px < 2) px = 2;
+  int ox = cx - (5 * px) / 2;
+  int oy = cy - (5 * px) / 2;
+  int f = frame & 3;
+  display_fill_rect(ox + corners[f][0] * px, oy + corners[f][1] * px,
+                    2 * px, 2 * px, COLOR_WHITE);
+  int p = (f + 3) & 3;
+  display_fill_rect(ox + corners[p][0] * px, oy + corners[p][1] * px,
+                    px, px, COLOR_GRAY);
 }

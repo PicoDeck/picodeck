@@ -39,7 +39,35 @@ static uint32_t s_underruns;  // frames the output found the ring empty
 static int16_t s_cap[CAP_MAX];  // left sample of every frame pushed, in order
 static uint32_t s_cap_n;
 
-void audio_start_stream(uint32_t sample_rate) { s_starts++; s_rate = sample_rate; s_ring_used = 0; }
+// #34: play() starts the stream held (it plays nothing, so drain() takes
+// nothing) until the player releases it with the ring full; pause holds it;
+// a finished player drains it (running dry is then the end, not an
+// underrun); each wrap marks the loop point.
+static bool s_held, s_ended;
+static int s_releases, s_holds, s_drains, s_marks;
+static uint32_t s_used_at_release;  // the ring's fill at the last release
+void audio_start_stream(uint32_t sample_rate) {
+  s_starts++; s_rate = sample_rate; s_ring_used = 0; s_held = false; s_ended = false;
+}
+void audio_start_stream_held(uint32_t sample_rate) {
+  audio_start_stream(sample_rate);
+  s_held = true;
+}
+void audio_stream_release(void) {
+  if (!s_held) return;
+  s_held = false;
+  s_releases++;
+  s_used_at_release = s_ring_used;
+}
+void audio_stream_hold(void) { s_held = true; s_holds++; }
+void audio_stream_drain(void) { s_ended = true; s_held = false; s_drains++; }
+void audio_stream_mark_loop(void) { s_marks++; }
+static int s_flushes;
+void audio_stream_flush_held(void) {
+  if (!s_held) return;
+  s_ring_used = 0;
+  s_flushes++;
+}
 void audio_stop_stream(void) { s_stops++; }
 uint32_t audio_ring_free(void) { return RING_FRAMES - s_ring_used; }
 void audio_push_samples(const int16_t *samples, int count) {
@@ -59,13 +87,17 @@ void audio_stream_debug(uint32_t *isr_count, uint32_t *underruns,
   if (ring_used) *ring_used = s_ring_used;
 }
 static void drain(uint32_t frames) {
-  if (frames > s_ring_used) s_underruns += frames - s_ring_used;
+  if (s_held) return;  // a held stream plays nothing
+  if (frames > s_ring_used && !s_ended) s_underruns += frames - s_ring_used;
   s_ring_used = frames > s_ring_used ? 0 : s_ring_used - frames;
 }
 
 static void ring_reset(void) {
   s_ring_used = 0; s_pushed = s_dropped = 0; s_starts = s_stops = 0;
   s_underruns = 0; s_cap_n = 0;
+  s_held = s_ended = false;
+  s_releases = s_holds = s_drains = s_marks = s_flushes = 0;
+  s_used_at_release = 0;
 }
 
 // ── WAV fixtures ────────────────────────────────────────────────────────────
@@ -578,8 +610,8 @@ static void test_loop_range_to_end_of_data(void) {
   s_loops = 0;
   fileplayer_set_loop_range(p, 2, 0);
   CHECK(fileplayer_play(p, 1));
-  run_until_pushed(p, 22050 * 3 + 22050 * 2);
-  CHECK_EQ_INT(s_loops, 2);
+  run_until_pushed(p, 22050 * 3 + 22050 * 2 + 22050 / 2);
+  CHECK_EQ_INT(s_loops, 3);
   for (uint32_t i = 44100; i < s_cap_n; i++) CHECK(s_cap[i] == 9000);
   fileplayer_destroy(p);
 }
@@ -797,6 +829,186 @@ static void test_stop_on_underrun(void) {
   fileplayer_destroy(p);
 }
 
+// ── #34 the stream's start, loop points and end ─────────────────────────────
+// The refill interrupt keeps rendering while Core 0 holds the SD card (a
+// sample load right after play(), as Nova Rail's race start does): play()
+// must not start the stream on an empty ring. It starts held and the
+// player releases it only once the ring is full, so the start is covered
+// like any other moment (93 ms of 44.1 kHz stereo, 186 ms at 22.05 kHz).
+static void test_play_starts_the_stream_on_a_full_ring(void) {
+  for (int c = 0; c < 4; c++) {
+    setup();
+    bool qoa = c >= 2, stereo = c % 2 == 0;
+    uint32_t rate = stereo ? 44100 : 22050;
+    if (qoa) put_qoa("/s.qoa", 3 * rate, stereo ? 2 : 1, rate, 700);
+    else put_wav("/s.wav", 3 * rate, stereo ? 2 : 1, rate, 700);
+    fileplayer_t *p = fileplayer_create();
+    CHECK(fileplayer_load(p, qoa ? "/s.qoa" : "/s.wav"));
+    CHECK(fileplayer_play(p, 0));
+    CHECK(s_held);
+    // Core 0 holds the card for 40 ticks; the interrupt renders 128 frames
+    // a tick meanwhile. A stream that played would run dry at once.
+    sdfake_set_busy(true);
+    for (int i = 0; i < 40; i++) { fileplayer_update(); drain(128); }
+    CHECK(s_held);
+    CHECK_EQ_INT(s_underruns, 0);
+    sdfake_set_busy(false);
+    int t = 0;
+    while (s_held && t < 100) { fileplayer_update(); drain(128); t++; }
+    CHECK(!s_held);
+    CHECK_EQ_INT(s_releases, 1);
+    // Released full: a read's worth (READ_MIN, 512 bytes) short at most.
+    CHECK(s_used_at_release + 512 / (stereo ? 4 : 2) > RING_FRAMES);
+    for (int i = 0; i < 2000; i++) { fileplayer_update(); drain(stereo ? 128 : 64); }
+    CHECK_EQ_INT(s_underruns, 0);
+    CHECK_EQ_INT(s_dropped, 0);
+    CHECK_EQ_INT(s_releases, 1);
+    fileplayer_destroy(p);
+  }
+}
+
+// A file shorter than the ring never fills it: its end releases (drains)
+// the stream, and the ring running dry after it is not an underrun.
+static void test_a_short_file_plays_and_ends_without_underruns(void) {
+  for (int qoa = 0; qoa < 2; qoa++) {
+    setup();
+    if (qoa) put_qoa("/s.qoa", 1000, 1, 22050, 700);
+    else put_wav("/s.wav", 1000, 1, 22050, 700);
+    fileplayer_t *p = fileplayer_create();
+    CHECK(fileplayer_load(p, qoa ? "/s.qoa" : "/s.wav"));
+    CHECK(fileplayer_play(p, 1));
+    run(p, 44, 100);
+    CHECK(!fileplayer_is_playing(p));
+    CHECK_EQ_INT(s_drains, 1);
+    CHECK(!s_held);
+    drain(RING_FRAMES);
+    CHECK_EQ_INT(s_ring_used, 0);
+    CHECK_EQ_INT(s_underruns, 0);
+    CHECK_EQ_INT(s_pushed, 1000);
+    CHECK_EQ_INT(s_marks, 0);
+    fileplayer_destroy(p);
+  }
+}
+
+// Every wrap marks the loop point, and a WAV wraps on the tick that read
+// the pass's last frames: the next tick reads the start again (no tick
+// without a read at the loop point).
+static void test_loops_mark_the_stream_and_wrap_at_once(void) {
+  setup();
+  put_wav("/l.wav", 500, 2, 44100, 700);    // 2000 bytes: one read a pass
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/l.wav"));
+  CHECK(fileplayer_play(p, 0));
+  fileplayer_update();
+  CHECK_EQ_INT(s_pushed, 500);
+  CHECK_EQ_INT(s_marks, 1);
+  fileplayer_update();
+  CHECK_EQ_INT(s_pushed, 1000);
+  CHECK_EQ_INT(s_marks, 2);
+  run_until_pushed(p, 44100);
+  CHECK_EQ_INT(s_marks, (int)(s_pushed / 500));
+  CHECK_EQ_INT(s_underruns, 0);
+  CHECK_EQ_INT(s_drains, 0);
+  fileplayer_destroy(p);
+
+  setup();
+  put_qoa("/l.qoa", 3000, 1, 22050, 700);   // one QOA frame a pass
+  p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/l.qoa"));
+  CHECK(fileplayer_play(p, 0));
+  run_until_pushed(p, 30000);
+  CHECK_EQ_INT(s_marks, (int)(s_pushed / 3000));
+  CHECK_EQ_INT(s_underruns, 0);
+  fileplayer_destroy(p);
+}
+
+// Pause holds the stream: the audio stops at once and what the ring holds
+// waits (no underrun while paused); resume releases it on the next tick.
+static void test_pause_holds_the_stream(void) {
+  for (int qoa = 0; qoa < 2; qoa++) {
+    setup();
+    if (qoa) put_qoa("/u.qoa", 44100, 2, 44100, 3);
+    else put_wav("/u.wav", 44100, 2, 44100, 3);
+    fileplayer_t *p = fileplayer_create();
+    CHECK(fileplayer_load(p, qoa ? "/u.qoa" : "/u.wav"));
+    CHECK(fileplayer_play(p, 0));
+    for (int i = 0; i < 20; i++) { fileplayer_update(); drain(128); }
+    CHECK(!s_held);
+    fileplayer_pause(p);
+    CHECK(s_held);
+    CHECK_EQ_INT(s_holds, 1);
+    uint32_t kept = s_ring_used;
+    for (int i = 0; i < 100; i++) { fileplayer_update(); drain(128); }
+    CHECK_EQ_INT(s_ring_used, kept);
+    fileplayer_resume(p);
+    // Released once the ring is topped up: the next tick, or the one after
+    // (a WAV tops it up with one read first).
+    fileplayer_update();
+    fileplayer_update();
+    CHECK(!s_held);
+    for (int i = 0; i < 100; i++) { fileplayer_update(); drain(128); }
+    CHECK_EQ_INT(s_underruns, 0);
+    CHECK(!fileplayer_did_underrun(p));
+    fileplayer_destroy(p);
+  }
+}
+
+// A seek while the stream is held (paused, or filling after play()) drops
+// what the ring holds from before it: resume (or the start) plays the new
+// position, not up to a ring's worth of the old one. Steps 1000 / 5000 /
+// 9000 a second; the seek is to 2 s. QOA's lossy edges get `tol` frames.
+static void check_seek_while_held(bool qoa, bool paused) {
+  setup();
+  const int16_t v[3] = {1000, 5000, 9000};
+  if (qoa) {
+    enum { N = 66150 };
+    int16_t *pcm = malloc(N * 2);
+    for (int i = 0; i < N; i++) pcm[i] = v[i / 22050];
+    put_qoa_pcm("/k.qoa", pcm, N, 1, 22050);
+    free(pcm);
+  } else {
+    put_wav_steps("/k.wav", 3, 22050, v);
+  }
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, qoa ? "/k.qoa" : "/k.wav"));
+  CHECK(fileplayer_play(p, 0));
+  if (paused) {
+    for (int i = 0; i < 20; i++) { fileplayer_update(); drain(64); }
+    CHECK(!s_held);
+    fileplayer_pause(p);
+  } else {
+    fileplayer_update();  // part of the ring, still held
+  }
+  CHECK(s_held);
+  CHECK(s_ring_used > 0);
+  fileplayer_set_offset(p, 2);
+  CHECK_EQ_INT(s_flushes, 1);
+  CHECK_EQ_INT(s_ring_used, 0);
+  CHECK(s_held);
+  uint32_t from = s_cap_n;
+  if (paused) fileplayer_resume(p);
+  for (int i = 0; i < 100 && s_held; i++) { fileplayer_update(); drain(64); }
+  CHECK(!s_held);
+  // Everything the ring held at the release came after the seek.
+  CHECK(s_cap_n - from >= s_used_at_release);
+  uint32_t tol = qoa ? 40 : 0;
+  for (uint32_t i = from + tol; i < s_cap_n; i++)
+    CHECK(s_cap[i] > 7000);
+  // Playing, a seek leaves the ring alone (it plays out, then the new
+  // position), as it always did.
+  for (int i = 0; i < 20; i++) { fileplayer_update(); drain(64); }
+  uint32_t used = s_ring_used;
+  fileplayer_set_offset(p, 0);
+  CHECK_EQ_INT(s_ring_used, used);
+  CHECK_EQ_INT(s_flushes, 1);
+  fileplayer_destroy(p);
+}
+
+static void test_seek_while_held_drops_the_old_audio(void) {
+  for (int c = 0; c < 4; c++)
+    check_seek_while_held(c >= 2, c % 2 == 0);
+}
+
 int main(void) {
   test_flow_control_plays_every_frame();
   test_mono_and_rate_flow_control();
@@ -825,6 +1037,11 @@ int main(void) {
   test_underrun_ignored_while_paused();
   test_no_false_underrun_from_the_first_read();
   test_stop_on_underrun();
+  test_play_starts_the_stream_on_a_full_ring();
+  test_a_short_file_plays_and_ends_without_underruns();
+  test_loops_mark_the_stream_and_wrap_at_once();
+  test_pause_holds_the_stream();
+  test_seek_while_held_drops_the_old_audio();
   fileplayer_reset();
   sdfake_reset();
   return check_report("test_fileplayer");

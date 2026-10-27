@@ -6,6 +6,33 @@ local disp = pc.display
 local input = pc.input
 local game = pc.game
 
+-- Controls. Games read the logical gamepad (picocalc.gamepad) instead of raw
+-- keys: players can rebind it in Settings > Controls with no code here, and
+-- hints use getLabel() so they stay right after a rebind. Esc is not a
+-- gamepad button; it stays on picocalc.input. Older firmware has no gamepad,
+-- so this small adapter falls back to the keys the game read before it.
+local gp = pc.gamepad
+local PAD, read_pad, pad_label
+if gp then
+    PAD = {LEFT = gp.PAD_LEFT, RIGHT = gp.PAD_RIGHT, UP = gp.PAD_UP, A = gp.PAD_A}
+    read_pad = function() return gp.getButtons(), gp.getButtonsPressed() end
+    pad_label = function(btn) return gp.getLabel(btn) or "?" end
+else
+    PAD = {LEFT = input.BTN_LEFT, RIGHT = input.BTN_RIGHT, UP = input.BTN_UP, A = input.BTN_ENTER}
+    read_pad = function() return input.getButtons(), input.getButtonsPressed() end
+    local names = {[PAD.UP] = "Up", [PAD.A] = "Enter"}
+    pad_label = function(btn) return names[btn] or "?" end
+end
+
+-- Menus take A, or Enter as before the gamepad. Enter counts only when it
+-- pressed no gamepad button: a player who bound it to one gets that button's
+-- meaning alone. Gameplay reads A only.
+local function confirm_pressed(pad_pressed)
+    if pad_pressed & PAD.A ~= 0 then return true end
+    return gp ~= nil and pad_pressed == 0
+        and input.getButtonsPressed() & input.BTN_ENTER ~= 0
+end
+
 -- Colors
 local BLACK = disp.rgb(0, 0, 0)
 local WHITE = disp.rgb(255, 255, 255)
@@ -139,7 +166,8 @@ local menu_scene = {
     end,
     
     update = function(dt)
-        if input.getButtonsPressed() & input.BTN_ENTER ~= 0 then
+        local _, pressed = read_pad()
+        if confirm_pressed(pressed) then
             game.scene.switch("play")
         end
     end,
@@ -152,15 +180,15 @@ local menu_scene = {
         disp.drawText(60, 100, "Game Framework Demo", WHITE, BLACK)
         
         -- Instructions
-        disp.drawText(40, 160, "Arrow Keys: Move", GRAY, BLACK)
-        disp.drawText(40, 180, "Up/Space: Jump", GRAY, BLACK)
+        disp.drawText(40, 160, "D-pad: Move", GRAY, BLACK)
+        disp.drawText(40, 180, pad_label(PAD.UP) .. "/" .. pad_label(PAD.A) .. ": Jump", GRAY, BLACK)
         disp.drawText(40, 200, "Collect coins!", YELLOW, BLACK)
         
         -- High score
         disp.drawText(60, 240, "High Score: " .. high_score, GREEN, BLACK)
         
         -- Start prompt
-        disp.drawText(50, 280, "Press ENTER to Start", WHITE, BLACK)
+        disp.drawText(50, 280, "Press " .. pad_label(PAD.A) .. " to Start", WHITE, BLACK)
     end
 }
 
@@ -184,19 +212,19 @@ local play_scene = {
         end
 
         -- Input
-        local btn = input.getButtons()
+        local btn = read_pad()
         
         -- Horizontal movement
-        if btn & input.BTN_LEFT ~= 0 then
+        if btn & PAD.LEFT ~= 0 then
             player.vx = -player.speed
-        elseif btn & input.BTN_RIGHT ~= 0 then
+        elseif btn & PAD.RIGHT ~= 0 then
             player.vx = player.speed
         else
             player.vx = player.vx * 0.8
         end
         
         -- Jump
-        if (btn & input.BTN_UP ~= 0 or btn & input.BTN_ENTER ~= 0) and player.on_ground then
+        if btn & (PAD.UP | PAD.A) ~= 0 and player.on_ground then
             player.vy = player.jump_power
             player.on_ground = false
             spawn_particle(player.x + player.w/2, player.y + player.h, WHITE)
@@ -325,7 +353,8 @@ local gameover_scene = {
     update = function(dt)
         camera:update(dt)
         
-        if input.getButtonsPressed() & input.BTN_ENTER ~= 0 then
+        local _, pressed = read_pad()
+        if confirm_pressed(pressed) then
             game.scene.switch("play")
         elseif input.getButtonsPressed() & input.BTN_ESC ~= 0 then
             game.scene.switch("menu")
@@ -344,7 +373,7 @@ local gameover_scene = {
             disp.drawText(80, 150, "High Score: " .. high_score, GREEN, BLACK)
         end
         
-        disp.drawText(40, 220, "ENTER: Play Again", GRAY, BLACK)
+        disp.drawText(40, 220, pad_label(PAD.A) .. ": Play Again", GRAY, BLACK)
         disp.drawText(40, 240, "ESC: Menu", GRAY, BLACK)
     end
 }

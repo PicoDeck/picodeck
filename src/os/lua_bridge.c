@@ -1,5 +1,6 @@
 #include "lua_bridge_internal.h"
 #include "app_identity.h"
+#include "lua_hook_arm.h"
 #include "lua_psram_alloc.h"
 #include "crashlog.h"
 #include "sim_hooks.h"
@@ -43,6 +44,8 @@ char lua_bridge_exit_tag; // address used as sentinel, value irrelevant
 // colours as RGB565 integers (or we provide helper constructors)
 
 uint16_t l_checkcolor(lua_State *L, int idx) {
+  lua_Integer v;
+  if (picodeck_lua_tointeger_strict(L, idx, &v)) return (uint16_t)v;
   return (uint16_t)luaL_checkinteger(L, idx);
 }
 
@@ -79,8 +82,9 @@ static int lb_argfail(lua_State *L, int arg, const char *what,
 
 // Converts the value at stack index idx; errors blame argument `arg`.
 static lua_Integer lb_toint(lua_State *L, int idx, int arg, const char *what) {
-  if (lua_isinteger(L, idx))
-    return lua_tointeger(L, idx);
+  lua_Integer v;
+  if (picodeck_lua_tointeger_strict(L, idx, &v))  // integers: one stack read
+    return v;
   lua_Number n;
   if (!what) {
     n = luaL_checknumber(L, idx);  // positional: the standard type error
@@ -132,6 +136,93 @@ float lb_checkfloat(lua_State *L, int idx) {
 
 float lb_optfloat(lua_State *L, int idx, float def) {
   return lua_isnoneornil(L, idx) ? def : lb_checkfloat(L, idx);
+}
+
+// ── Userdata type checks
+// ──────────────────────────────────────────────────────────────
+// luaL_checkudata finds the type's metatable by name in the registry on every
+// call (hash and strcmp the name, a table get, a raw compare), about 8 us of a
+// short call on the device. A metatable never changes once registered, so
+// each VM remembers it per type: a table keyed by the type-name pointer (the
+// *_MT macros are string literals) holds the metatable's address, found
+// through the registry the first time a name is checked. lb_checkudata then
+// compares one pointer (picodeck_lua_udata_with_mt); anything that does not
+// match takes luaL_checkudata, so results and errors are unchanged.
+//
+// A table address means something only inside its VM, and the next app's VM
+// may well allocate a different type's metatable at the same address, so
+// every VM gets its own table: lua_bridge_register creates it (lb_mt_reset)
+// before any bridge function of that VM can run, as a userdata anchored in
+// the registry, so it is freed with the VM. (A block kept across apps would
+// stay wherever the first app's heap put it and split the free space later
+// apps need whole; C-Dogs needs one ~5.9 MB block.) Its own finaliser clears
+// s_mt_slots, so nothing points at it once lua_close frees it; a finaliser
+// that runs after that one checks types the standard way. Core 0 only, one
+// VM at a time.
+#define LB_MT_SLOTS 64     // power of two
+#define LB_MT_MAX_USED 48  // keep probe chains short
+typedef struct {
+  const char *name;
+  const void *mt;
+} lb_mt_slot_t;
+static lb_mt_slot_t *s_mt_slots;
+static uint32_t s_mt_used;
+#define LB_MT_SLOTS_KEY "picocalc.bridge.mt_slots"
+
+static int lb_mt_slots_gc(lua_State *L) {
+  if (lua_touserdata(L, 1) == (void *)s_mt_slots) {
+    s_mt_slots = NULL;
+    s_mt_used = 0;
+  }
+  return 0;
+}
+
+static void lb_mt_reset(lua_State *L) {
+  s_mt_slots = NULL;  // nothing of the last VM's is used meanwhile
+  s_mt_used = 0;
+  lb_mt_slot_t *t = lua_newuserdatauv(L, LB_MT_SLOTS * sizeof(lb_mt_slot_t), 0);
+  memset(t, 0, LB_MT_SLOTS * sizeof(lb_mt_slot_t));
+  lua_createtable(L, 0, 1);
+  lua_pushcfunction(L, lb_mt_slots_gc);
+  lua_setfield(L, -2, "__gc");
+  lua_setmetatable(L, -2);
+  lua_setfield(L, LUA_REGISTRYINDEX, LB_MT_SLOTS_KEY);
+  s_mt_slots = t;
+}
+
+// The registered metatable of type `tname` in this VM, or NULL (not
+// registered yet, or no table).
+static const void *lb_mt_lookup(lua_State *L, const char *tname) {
+  lb_mt_slot_t *t = s_mt_slots;
+  if (!t) return NULL;
+  uint32_t i = (uint32_t)((uintptr_t)tname >> 2) & (LB_MT_SLOTS - 1);
+  for (uint32_t n = 0; n < LB_MT_SLOTS; n++, i = (i + 1) & (LB_MT_SLOTS - 1)) {
+    if (t[i].name == tname) return t[i].mt;
+    if (!t[i].name) break;
+  }
+  // First check of this name in this VM: ask the registry, as
+  // luaL_checkudata does, and remember a registered metatable.
+  const void *mt = NULL;
+  if (luaL_getmetatable(L, tname) == LUA_TTABLE) mt = lua_topointer(L, -1);
+  lua_pop(L, 1);
+  if (mt && s_mt_used < LB_MT_MAX_USED && !t[i].name) {
+    t[i].name = tname;
+    t[i].mt = mt;
+    s_mt_used++;
+  }
+  return mt;
+}
+
+void *lb_checkudata(lua_State *L, int idx, const char *tname) {
+  const void *mt = lb_mt_lookup(L, tname);
+  void *p = mt ? picodeck_lua_udata_with_mt(L, idx, mt) : NULL;
+  return p ? p : luaL_checkudata(L, idx, tname);
+}
+
+void *lb_testudata(lua_State *L, int idx, const char *tname) {
+  const void *mt = lb_mt_lookup(L, tname);
+  void *p = mt ? picodeck_lua_udata_with_mt(L, idx, mt) : NULL;
+  return p ? p : luaL_testudata(L, idx, tname);
 }
 
 // ── Registration
@@ -227,13 +318,22 @@ static void lua_bridge_install_hook(lua_State *L, int count) {
 // instruction (vmfetch's `trap`), whatever the count: on the device that
 // tax was ~60% of VM time (P0: an empty loop 491 ns/iter with it, 189
 // without). So on firmware the VM runs hook-free and a 1 ms Core 0 repeating
-// timer arms a count-1 hook on the running thread (lua_sethook is async-safe:
-// Lua's own lua.c arms its SIGINT stop the same way); menu_lua_hook services
+// timer arms a count-1 hook on the running thread; menu_lua_hook services
 // and disarms it. The simulator and the web build have no Core 0 interrupt (a
-// host thread calling lua_sethook would race the VM), so they keep the
-// adaptive synchronous count hook.
+// host thread arming the hook would race the VM), so they keep the adaptive
+// synchronous count hook.
+//
+// The arming is picodeck_lua_arm_hook (lua_hook_arm.h), not lua_sethook:
+// lua_sethook also sets the trap of every frame on the thread's call chain,
+// and ~1000 frames deep (the LUAI_MAXSTACK limit with small frames) that
+// walk of QMI PSRAM outlasts the 1 ms period. Issue #21: the timer then
+// re-fired inside its own IRQ forever, the VM never ran again and the
+// watchdog reset the device. The period is also counted from the end of
+// each callback (a positive delay), not fixed-rate, so a late or slow
+// callback can never catch up back-to-back and starve the VM.
 #ifndef PICODECK_SIMULATOR
 #define LUA_BRIDGE_ASYNC_HOOK 1
+#define LUA_ARM_PERIOD_US 1000
 static volatile bool s_async_active = false;  // an app's VM is running
 static repeating_timer_t s_arm_timer;
 static bool s_arm_timer_started = false;
@@ -242,7 +342,7 @@ static bool lua_bridge_arm_cb(repeating_timer_t *t) {
   (void)t;
   lua_State *L = s_running_L;
   if (s_async_active && L)
-    lua_sethook(L, menu_lua_hook, LUA_MASKCOUNT, 1);
+    picodeck_lua_arm_hook(L, menu_lua_hook);
   return true;
 }
 #else
@@ -256,7 +356,8 @@ static void lua_bridge_hook_start(lua_State *L) {
   lua_sethook(L, NULL, 0, 0);
   if (!s_arm_timer_started)  // default alarm pool: created on Core 0
     s_arm_timer_started =
-        add_repeating_timer_us(-1000, lua_bridge_arm_cb, NULL, &s_arm_timer);
+        add_repeating_timer_us(LUA_ARM_PERIOD_US, lua_bridge_arm_cb, NULL,
+                               &s_arm_timer);
   s_async_active = s_arm_timer_started;
   if (s_async_active)
     return;
@@ -268,28 +369,36 @@ static void lua_bridge_hook_start(lua_State *L) {
 bool lua_bridge_exit_requested(void) { return s_exit_requested; }
 
 void lua_bridge_raise_exit(lua_State *L) {
-  if (!s_exit_requested) {
+  bool first = !s_exit_requested;
+  if (first) {
     s_exit_requested = true;
     // Modal loops (ui_confirm, text input, the system menu) watch the dev
     // flag; they unwind instead of waiting for a key the app will never read.
     dev_commands_set_exit();
   }
-  // Re-raise before every instruction from now on, on every raise: hook
-  // counts are per thread, so a raise from a coroutine that was created
-  // before the first one (or never ran since) arms that thread too. The main
-  // thread as well: a coroutine that raised is dead once resume returns, and
-  // the thread that resumed it has its own count. Check the mask too, not
-  // just the count: a hook disarmed mid-way (count already 1, but mask 0 —
-  // e.g. the async timer's window between menu_lua_hook disarming it and the
-  // next 1 ms re-arm) must be re-armed immediately rather than waiting for
-  // the timer.
-  if (lua_gethookcount(L) != 1 || !(lua_gethookmask(L) & LUA_MASKCOUNT))
-    lua_bridge_install_hook(L, 1);
+  // Re-raise before every instruction from now on: a count-1 hook installed
+  // with lua_sethook, which traps every Lua frame on the chain (here, in
+  // thread context, its walk may take as long as it needs), so whichever
+  // frame a pcall returns to raises at its next instruction. The raising
+  // thread on every raise, even over an armed count-1 hook: hook state is
+  // per thread, and a coroutine that existed before the first raise (or never
+  // ran since) carries at most the timer's arming, which traps only its
+  // innermost Lua frame (picodeck_lua_arm_hook). The main thread as well: a
+  // coroutine that raised is dead once resume returns, and the thread that
+  // resumed it has its own hook. Main is installed on the first raise and
+  // again whenever its hook is not armed; check the mask too, not just the
+  // count: a hook disarmed mid-way (count already 1, but mask 0 — e.g. the
+  // async timer's window between menu_lua_hook disarming it and the next
+  // 1 ms re-arm) must be re-armed immediately rather than waiting for the
+  // timer. Once installed, a thread's mask and traps stay set until the
+  // runner's lua_bridge_exit_reset.
+  lua_bridge_install_hook(L, 1);
   lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
   lua_State *main = lua_tothread(L, -1);
   lua_pop(L, 1);
   if (main && main != L &&
-      (lua_gethookcount(main) != 1 || !(lua_gethookmask(main) & LUA_MASKCOUNT)))
+      (first || lua_gethookcount(main) != 1 ||
+       !(lua_gethookmask(main) & LUA_MASKCOUNT)))
     lua_bridge_install_hook(main, 1);
   lua_pushlightuserdata(L, &lua_bridge_exit_tag);
   lua_error(L);
@@ -403,7 +512,7 @@ static void lua_service_full(lua_State *L) {
 
 // The cheap part plus, when due, the full pass.
 static void lua_service(lua_State *L, bool force) {
-  watchdog_update(); // kick watchdog
+  watchdog_update(); // kick watchdog (the web build yields here when due)
   if (s_exit_requested || dev_commands_wants_exit())
     lua_bridge_raise_exit(L);  // new, or an earlier one that was swallowed
   if (force || g_lua_service_pending ||
@@ -493,6 +602,7 @@ static int l_base_load_text(lua_State *L) {
 }
 
 void lua_bridge_register(lua_State *L) {
+  lb_mt_reset(L);  // a new VM: no metatable address from the last one holds
   printf("[LUA] lua_bridge_register start, PSRAM free=%lu\n",
          (unsigned long)umm_free_heap_size());
 
@@ -573,6 +683,8 @@ void lua_bridge_register(lua_State *L) {
   lua_bridge_register_3d(L);
   printf("[LUA] registering gfx3d...\n");
   lua_bridge_gfx3d_init(L);
+  printf("[LUA] registering chargrid...\n");
+  lua_bridge_chargrid_init(L);
   printf("[LUA] registering ui...\n");
   lua_bridge_ui_init(L);
   printf("[LUA] registering audio...\n");
@@ -626,6 +738,9 @@ void lua_bridge_show_error(lua_State *L, const char *context) {
   crashlog_write_lua_error(me ? me->name : "unknown", context, buf);
   sim_app_report_error(context, buf);
 
+  // System screen: built-in 6x8 font whatever the app left selected. The app
+  // is gone (the launcher resets the font to 0 after it), so no restore.
+  display_set_font(0);
   display_clear(COLOR_BLACK);
   display_draw_text(4, 4, context, COLOR_RED, COLOR_BLACK);
 

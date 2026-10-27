@@ -1,0 +1,3 @@
+{ "id": "com.test.mp3_bench", "name": "MP3 bench", "version": "1.0",
+  "description": "MP3 decode vs a paced game's frame work (issue #28 test)",
+  "author": "PicoDeck", "requirements": ["filesystem", "audio"] }

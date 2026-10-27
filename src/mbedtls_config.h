@@ -58,6 +58,11 @@ extern void umm_free(void *ptr);
 #define MBEDTLS_SHA1_C
 #define MBEDTLS_MD5_C
 #define MBEDTLS_AES_C
+// One forward and one reverse round table (2 KB of SRAM) instead of four
+// each (8 KB): the other three are rotations of the first, computed per
+// lookup (a rotate folded into the EOR on Cortex-M33). The 6 KB went to
+// the MP3 decoder's hot state (issue #28, drivers/mp3_player.c).
+#define MBEDTLS_AES_FEWER_TABLES
 #define MBEDTLS_GCM_C
 #define MBEDTLS_CIPHER_C
 #define MBEDTLS_CIPHER_MODE_CBC

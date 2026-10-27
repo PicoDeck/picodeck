@@ -1,6 +1,7 @@
 // HAL Input - SDL2 Implementation
 
 #include "hal_input.h"
+#include "hal_pad.h"
 #include "hal_timing.h"
 #include "../../src/drivers/kbd_event_queue.h"
 #include <string.h>
@@ -72,8 +73,23 @@ static void stage_event_locked(uint8_t type, uint8_t key, char ch, uint8_t flags
     g_ev_count++;
 }
 
+// Queue a char for kbd_get_char (hal_input_get_char), tagged with the seq of
+// the injection that made it (0 for a host key). Must be called with
+// s_input_mutex held.
+static void push_char_locked(char c, uint32_t seq) {
+    int next = (g_char_head + 1) % sizeof(g_char_buffer);
+    if (next != g_char_tail) {
+        g_char_buffer[g_char_head] = c;
+        g_char_seq[g_char_head] = seq;
+        g_char_head = next;
+    }
+}
+
 // Down/up events for every button bit in `bits`. Call after g_buttons has
-// been updated, so the mods byte reflects the new state.
+// been updated, so the mods byte reflects the new state. An injected button
+// tap is a down and an up only, no char, as on the device (keyboard.c's
+// kbd_inject_poll; test_hw_device.py's keyboard edges): to type Enter's
+// '\n' (ui.textInput's accept), inject the char.
 static void stage_buttons_locked(uint32_t bits, uint8_t type) {
     bits &= ~BTN_MENU;  // the OS's
     for (uint32_t b = 1; b && b <= bits; b <<= 1)
@@ -135,6 +151,12 @@ static struct {
     {0, 0}
 };
 
+// Keys the STM32 repeats as HOLD (keyboard.ino: F-keys, Esc, modifiers, so
+// also Shift+F5 = the menu key and Shift+Esc = Brk), not as fresh PRESSED.
+#define HOLD_REPEAT_MASK (BTN_ESC | BTN_MENU | BTN_F1 | BTN_F2 | BTN_F3 | \
+                          BTN_F4 | BTN_F5 | BTN_F9 | BTN_SHIFT | BTN_CTRL | \
+                          BTN_FN)
+
 bool hal_input_init(void) {
     memset(g_char_buffer, 0, sizeof(g_char_buffer));
     g_char_head = 0;
@@ -150,6 +172,9 @@ void hal_input_shutdown(void) {
 }
 
 void hal_input_handle_event(const SDL_Event* event) {
+    // Game controllers are a gamepad source of their own (hal_pad.c).
+    if (hal_pad_handle_event(event))
+        return;
     if (event->type == SDL_KEYDOWN || event->type == SDL_KEYUP) {
         bool pressed = (event->type == SDL_KEYDOWN);
         SDL_Keycode key = event->key.keysym.sym;
@@ -166,13 +191,24 @@ void hal_input_handle_event(const SDL_Event* event) {
                 uint8_t code = kbd_button_to_keycode(mask);
                 if (pressed) {
                     g_buttons |= mask;
-                    g_buttons_pressed |= mask;
+                    // The STM32 repeats a held F-key, Esc, Brk and the
+                    // modifiers (and the menu key) as HOLD: no new press
+                    // edge. Arrows, Enter, Tab, Backspace and Del repeat as
+                    // fresh PRESSED items, as do letters (the branch below).
+                    // So a SDL auto-repeat of the first kind must not edge,
+                    // or a held menu key would flicker the system menu.
+                    if (!(event->key.repeat && (mask & HOLD_REPEAT_MASK)))
+                        g_buttons_pressed |= mask;
                     if (!(mask & BTN_MENU))
                         stage_event_locked(KBD_EV_DOWN, code, 0, rep);
-                    if (mask & BTN_ENTER)
-                        stage_event_locked(KBD_EV_CHAR, code, '\n', rep);
-                    else if (mask & BTN_BACKSPACE)
-                        stage_event_locked(KBD_EV_CHAR, code, '\b', rep);
+                    // Enter and Backspace make '\n' and '\b', for the event
+                    // queue and for kbd_get_char (ui.textInput), as on the
+                    // device; a repeat makes another, as the STM32's does.
+                    char c = kbd_keycode_to_char(code, false);
+                    if (c) {
+                        stage_event_locked(KBD_EV_CHAR, code, c, rep);
+                        push_char_locked(c, 0);
+                    }
                 } else {
                     g_buttons &= ~mask;
                     if (!(mask & BTN_MENU))
@@ -186,12 +222,7 @@ void hal_input_handle_event(const SDL_Event* event) {
         // Character input
         if (key >= 32 && key < 127) {
             if (pressed) {
-                int next = (g_char_head + 1) % sizeof(g_char_buffer);
-                if (next != g_char_tail) {
-                    g_char_buffer[g_char_head] = (char)key;
-                    g_char_seq[g_char_head] = 0;
-                    g_char_head = next;
-                }
+                push_char_locked((char)key, 0);
                 stage_event_locked(KBD_EV_DOWN, (uint8_t)key, 0, rep);
                 stage_event_locked(KBD_EV_CHAR, (uint8_t)key, (char)key, rep);
             } else {
@@ -324,12 +355,7 @@ void hal_input_release_buttons(uint32_t buttons) {
 void hal_input_inject_char(char c) {
     pthread_mutex_lock(&s_input_mutex);
     uint32_t seq = ++g_seq_issued;
-    int next = (g_char_head + 1) % sizeof(g_char_buffer);
-    if (next != g_char_tail) {
-        g_char_buffer[g_char_head] = c;
-        g_char_seq[g_char_head] = seq;
-        g_char_head = next;
-    }
+    push_char_locked(c, seq);
     stage_char_tap_locked(c);
     pthread_mutex_unlock(&s_input_mutex);
 }

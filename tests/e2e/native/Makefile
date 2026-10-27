@@ -1,7 +1,12 @@
 # Builds the E2E native fixture apps against the public SDK (sdk/native):
-# native_api_probe (api_probe.c) and native_leaky (leaky.c).
+# native_api_probe (api_probe.c), native_leaky (leaky.c),
+# native_pad_probe (pad_probe.c: the gbc / c64 gamepad adapters),
+# native_nopoll (nopoll.c: no sys->poll() for 4 s), native_drawfps
+# (drawfps.c: perf->drawFPS under Show FPS) and native_exit_probe
+# (exit_probe.c: ends only on shouldExit).
 # The outputs are committed so the E2E job needs no ARM toolchain; rebuild
-# and commit them whenever sdk/native/os.h changes:
+# and commit them whenever sdk/native/os.h changes, and the pad probe also
+# whenever apps/gbc/input.[ch] or apps/c64/pad_input.h changes:
 #
 #   make -C tests/e2e/native
 #
@@ -11,6 +16,11 @@
 SDK     ?= ../../../sdk/native
 OUT     ?= ../apps/native_api_probe
 LEAKY   ?= ../apps/native_leaky
+PADPROBE ?= ../fixtures/native_pad_probe
+NOPOLL   ?= ../fixtures/native_nopoll
+DRAWFPS  ?= ../fixtures/native_drawfps
+EXITPROBE ?= ../fixtures/native_exit_probe
+GAMES   ?= ../../../apps
 CC       = arm-none-eabi-gcc
 CFLAGS   = -mcpu=cortex-m33 -mthumb -fpie -fno-plt \
            -ffunction-sections -fdata-sections -Os \
@@ -20,7 +30,8 @@ LDFLAGS  = -T $(SDK)/linker.ld -Wl,--entry=picodeck_main -Wl,-pie \
            -nostartfiles -nodefaultlibs -Wl,--build-id=none
 
 .PHONY: all clean
-all: $(OUT)/main.elf $(LEAKY)/main.elf
+all: $(OUT)/main.elf $(LEAKY)/main.elf $(PADPROBE)/main.elf $(NOPOLL)/main.elf \
+     $(DRAWFPS)/main.elf $(EXITPROBE)/main.elf
 
 $(OUT)/main.elf: api_probe.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker.ld
 	@mkdir -p $(OUT)
@@ -30,5 +41,23 @@ $(LEAKY)/main.elf: leaky.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker.ld
 	@mkdir -p $(LEAKY)
 	$(CC) $(CFLAGS) leaky.c $(LDFLAGS) -o $@
 
+# Built from the games' own adapters (apps/gbc/input.c, apps/c64/pad_input.h).
+$(PADPROBE)/main.elf: pad_probe.c $(GAMES)/gbc/input.c $(GAMES)/gbc/input.h $(GAMES)/c64/pad_input.h $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker.ld
+	@mkdir -p $(PADPROBE)
+	$(CC) $(CFLAGS) -I$(GAMES)/gbc -I$(GAMES)/c64 pad_probe.c $(GAMES)/gbc/input.c $(LDFLAGS) -o $@
+
+$(NOPOLL)/main.elf: nopoll.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker.ld
+	@mkdir -p $(NOPOLL)
+	$(CC) $(CFLAGS) nopoll.c $(LDFLAGS) -o $@
+
+$(DRAWFPS)/main.elf: drawfps.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker.ld
+	@mkdir -p $(DRAWFPS)
+	$(CC) $(CFLAGS) drawfps.c $(LDFLAGS) -o $@
+
+$(EXITPROBE)/main.elf: exit_probe.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker.ld
+	@mkdir -p $(EXITPROBE)
+	$(CC) $(CFLAGS) exit_probe.c $(LDFLAGS) -o $@
+
 clean:
-	rm -f $(OUT)/main.elf $(LEAKY)/main.elf
+	rm -f $(OUT)/main.elf $(LEAKY)/main.elf $(PADPROBE)/main.elf $(NOPOLL)/main.elf \
+	      $(DRAWFPS)/main.elf $(EXITPROBE)/main.elf

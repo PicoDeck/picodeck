@@ -137,11 +137,12 @@ static inline void sleep_us(uint64_t us) {
 #define clk_sys 0
 #define clk_peri 1
 
-// Watchdog stubs
+// Watchdog stubs: these are pico_sdk_stubs.c's only. The OS sources (the Lua
+// hook among them) include stubs/hardware/watchdog.h, whose watchdog_update()
+// is the web build's yield point for Lua loops that never sleep or flush; this
+// copy yields the same way.
 #ifdef __EMSCRIPTEN__
-// Called from the Lua hook every 256 opcodes: the web build's escape hatch for
-// Lua loops that never sleep or flush.
-extern void web_yield_if_due(void);
+#include "../hal/web_platform.h"
 static inline void watchdog_update(void) { web_yield_if_due(); }
 #else
 static inline void watchdog_update(void) {}

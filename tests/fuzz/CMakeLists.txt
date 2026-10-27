@@ -34,3 +34,15 @@ picodeck_fuzz_target(fuzz_app_manifest SOURCES ${PICODECK_ROOT}/src/os/app_manif
 picodeck_fuzz_target(fuzz_wav SOURCES ${PICODECK_ROOT}/src/drivers/wav.c INCLUDES ${PICODECK_ROOT}/src/drivers)
 picodeck_fuzz_target(fuzz_qoa SOURCES ${PICODECK_ROOT}/src/drivers/qoa.c
                      INCLUDES ${PICODECK_ROOT}/src/drivers ${PICODECK_ROOT}/simulator/stubs)
+picodeck_fuzz_target(fuzz_hid_pad SOURCES ${PICODECK_ROOT}/src/drivers/hid_pad.c
+                     INCLUDES ${PICODECK_ROOT}/src/drivers)
+picodeck_fuzz_target(fuzz_chargrid_text
+                     SOURCES ${PICODECK_ROOT}/src/os/chargrid.c ${PICODECK_ROOT}/src/os/chargrid_shapes.c
+                             ${PICODECK_ROOT}/src/os/chargrid_text.c ${PICODECK_ROOT}/src/os/text_wrap.c)
+target_compile_definitions(fuzz_chargrid_text PRIVATE CG_MALLOC=malloc CG_FREE=free)
+picodeck_fuzz_target(fuzz_charshader
+                     SOURCES ${PICODECK_ROOT}/src/os/charshader_compile.c ${PICODECK_ROOT}/src/os/charshader_vm.c
+                             ${PICODECK_ROOT}/src/os/chargrid.c ${PICODECK_ROOT}/src/os/chargrid_shapes.c)
+target_compile_definitions(fuzz_charshader PRIVATE CG_MALLOC=malloc CG_FREE=free)
+target_compile_options(fuzz_charshader PRIVATE -ffp-contract=off)
+target_link_libraries(fuzz_charshader PRIVATE m)

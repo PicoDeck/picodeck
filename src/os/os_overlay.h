@@ -7,6 +7,7 @@
 // only while an app runs: the launcher and the system menu present through
 // display_flush() directly.
 
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef enum {
@@ -59,3 +60,8 @@ int os_overlay_fps_mode(void);
 void os_overlay_reload(void);
 const char *os_overlay_fps_key(int mode);    // NULL (Off: no key), "tr", ...
 const char *os_overlay_fps_label(int mode);  // "Off", "Top right", ...
+
+// Whether the running app shows the OS counter: the setting as read at its
+// launch and when the system menu last closed. perf.drawFPS draws nothing
+// while it does (perf.h), so the screen shows one counter.
+bool os_overlay_fps_on(void);

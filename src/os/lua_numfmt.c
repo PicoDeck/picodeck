@@ -437,9 +437,36 @@ static void out_literal(numfmt_out_t *o, const char *s, const char *end) {
   }
 }
 
+// "%d" of one int, with snprintf's return and truncation. Lua formats every
+// integer it turns into text this way (lua_integer2str: tostring, `..`,
+// lua_pushfstring %d/%I, and string.format's plain %d), always with an int
+// argument (LUAI_UACINT: lua_Integer is 32-bit), so it skips the C library's
+// vsnprintf, a third of a tostring(i) on the device.
+static int fmt_int_d(char *buf, size_t size, int v) {
+  char tmp[12];  // "-2147483648" is 11
+  int n = 0;
+  unsigned u = v < 0 ? 0u - (unsigned)v : (unsigned)v;
+  do {
+    tmp[n++] = (char)('0' + u % 10u);
+    u /= 10u;
+  } while (u);
+  if (v < 0) tmp[n++] = '-';
+  if (size) {
+    size_t k = (size_t)n < size - 1 ? (size_t)n : size - 1;
+    for (size_t i = 0; i < k; i++) buf[i] = tmp[n - 1 - (int)i];
+    buf[k] = '\0';
+  }
+  return n;
+}
+
 int picodeck_lua_sprintf(char *buf, size_t size, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
+  if (fmt[0] == '%' && fmt[1] == 'd' && fmt[2] == '\0') {
+    int r = fmt_int_d(buf, size, va_arg(ap, int));
+    va_end(ap);
+    return r;
+  }
   const char *pct = NULL;
   for (const char *p = fmt; *p; p++) {
     if (*p != '%')

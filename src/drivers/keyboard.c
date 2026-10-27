@@ -2,6 +2,7 @@
 #include "kbd_event_queue.h"
 #include "kbd_i2c.h"
 #include "kbd_bus.h"
+#include "pad_source.h"
 #include "../hardware.h"
 #include "../os/idle_dim.h"
 #include "../os/os.h"
@@ -90,6 +91,8 @@ static kbd_padmap_t s_padmap = KBD_PAD_DEFAULT_MAP;
 // bus engine is paused around it (kbd_i2c_recover). Safe during kbd_init().
 void kbd_recover_i2c_bus(void) { kbd_i2c_recover(); }
 
+#define KBD_STM32_READY_MS 2600u  // uptime from which the STM32 scans its keys
+
 bool kbd_init(void) {
   // ── Step 1: Unconditional bus clear ───────────────────────────────────────
   // Sample SDA before recovery so we can log whether the bus was already stuck.
@@ -109,13 +112,16 @@ bool kbd_init(void) {
   // The STM32's I2C peripheral starts ~100ms after power-on, but its keyboard
   // FIFO scanning doesn't start until ~2.5s from power-on. If we poll before
   // scanning is active, I2C ACKs but the FIFO is always empty (keys don't
-  // work). From observation, 2.5s from RP2350 boot is reliable.
+  // work). From observation, 2.5s from RP2350 boot is reliable; the first
+  // poll has always gone at 2.6 s or later (the loop below used to sleep
+  // 100 ms before it), so that is the mark. main() brings the keyboard up at
+  // the end of the boot, which is usually past it: no wait then.
   {
     uint32_t boot_ms = to_ms_since_boot(get_absolute_time());
-    if (boot_ms < 2500) {
+    if (boot_ms < KBD_STM32_READY_MS) {
       printf("[KBD] boot=%lums — waiting %lums for STM32 keyboard scanning\n",
-             (unsigned long)boot_ms, (unsigned long)(2500 - boot_ms));
-      sleep_ms(2500 - boot_ms);
+             (unsigned long)boot_ms, (unsigned long)(KBD_STM32_READY_MS - boot_ms));
+      sleep_ms(KBD_STM32_READY_MS - boot_ms);
     }
   }
 
@@ -128,7 +134,9 @@ bool kbd_init(void) {
   uint8_t ver = 0;
 
   for (int poll = 0; poll < 50; poll++) {
-    sleep_ms(100);
+    // The first try goes at once (Step 3 waited); a NACK costs a retry.
+    if (poll > 0)
+      sleep_ms(100);
 
     uint8_t reg = 0x01;
     int wret = i2c_write_timeout_us(KBD_I2C_PORT, KBD_I2C_ADDR, &reg, 1, false,
@@ -244,6 +252,14 @@ static void kbd_poll_impl(bool bg) {
       s_screenshot_pressed = true;
   }
 
+  // The other gamepad sources (pad_source.h: the `pad` dev command, later a
+  // Bluetooth or USB pad), ORed with the keyboard's aliases in the getters.
+  // A source's Home raises the menu like the Sym key (and, like it, wakes a
+  // dimmed screen without being swallowed).
+  bool pad_home = pad_sources_poll(bg, now_ms);
+  if (pad_home)
+    s_menu_pressed = true;
+
   // Intercept BTN_MENU: detect rising edge, flag it for the OS, hide from apps.
   if ((s_btn.curr & BTN_MENU) && !(s_btn.prev & BTN_MENU))
     s_menu_pressed = true;
@@ -258,12 +274,14 @@ static void kbd_poll_impl(bool bg) {
   bool activity = bg ? (new_key || s_in.char_pushed)
                      : ((s_btn.curr & ~s_btn.prev) || s_in.char_pushed ||
                         s_last_raw_key);
+  activity = activity || pad_sources_fresh() || pad_home;
   if (activity) {
     if (idle_dim_note_activity()) {
       // Drop this poll's fresh press edges (in a background run, only this
       // poll's: earlier polls of the run stay for the app).
       kbd_buttons_swallow(&s_btn, bg_run, curr_before, prev_before);
       kbd_pad_swallow(&s_btn.pad, bg_run, pad_before);
+      pad_sources_swallow();
       s_last_raw_key = bg_run ? raw_before : 0;
       // ...and this poll's queued presses and chars. Releases of keys that
       // were down before this poll stay, so a key the app saw go down still
@@ -310,14 +328,19 @@ uint32_t kbd_get_buttons_released(void) {
   return (~s_btn.curr & s_btn.prev);
 }
 
-uint32_t kbd_get_pad(void) { return s_btn.pad.curr; }
+// The keyboard's aliases ORed with every other source (pad_source.h).
+uint32_t kbd_get_pad(void) { return pad_sources_combine_held(s_btn.pad.curr); }
 
 uint32_t kbd_get_pad_pressed(void) {
-  return (uint32_t)(s_btn.pad.curr & ~s_btn.pad.prev);
+  return pad_sources_combine_pressed(s_btn.pad.curr, s_btn.pad.prev);
 }
 
 uint32_t kbd_get_pad_released(void) {
-  return (uint32_t)(s_btn.pad.prev & ~s_btn.pad.curr);
+  return pad_sources_combine_released(s_btn.pad.curr, s_btn.pad.prev);
+}
+
+uint32_t kbd_get_pad_nav_pressed(void) {
+  return pad_nav_buttons(pad_sources_pressed());
 }
 
 void kbd_set_pad_map(const kbd_padmap_t *map) {
@@ -379,6 +402,7 @@ void kbd_discard_pending(void) {
   kbd_inject_drop_oneshots(&s_inj, &s_btn, &s_padmap);
   s_inj.ch = 0;
   kbd_clear_state();  // a keydown latch stays held, without an edge
+  pad_sources_discard();  // a pad button held now gives no press edge
 }
 
 void kbd_clear_state(void) {
@@ -391,8 +415,10 @@ void kbd_clear_state(void) {
   // held with no press edge, and its retire/keyup still releases it; a
   // pending injection is published, with its edge, by the next poll; an
   // unread injected char is dropped. See kbd_inject_after_clear. The
-  // gamepad (in s_btn) goes with the buttons, likewise.
+  // gamepad (in s_btn) goes with the buttons, likewise, and a pad source's
+  // button the app saw stays held without an edge (pad_sources_clear).
   kbd_inject_after_clear(&s_inj, &s_btn, &s_padmap);
+  pad_sources_clear();
 }
 
 void kbd_inject_buttons(uint32_t buttons) {

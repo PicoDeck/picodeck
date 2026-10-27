@@ -23,6 +23,7 @@
 void display_clear(uint16_t color);
 int  display_draw_text(int x, int y, const char *text, uint16_t fg, uint16_t bg);
 void display_flush(void);
+void display_set_font(int font_id);
 
 // Forward declarations for launcher functions used in hardfault_c.
 const char* launcher_get_running_app_name(void);
@@ -66,6 +67,12 @@ void runtime_init_per_core_install_stack_guard(void *stack_bottom) {
 // native app or the Lua VM. NULL when no app runtime is on the PSP. Used to
 // bound PSP overflow checks and to name the stack in the crash record.
 #include "os/app_stack.h"
+#include "os/splash.h"
+#include "tusb.h"
+
+// Uptime by which a USB host has configured the device if one is attached
+// (main(), the boot's wait for the serial console).
+#define USB_HOST_WAIT_MS 1000u
 
 // Native app image placement (defined in native_loader.c) — lets the
 // hardfault handler report crash PC/LR as ELF-relative offsets.
@@ -126,6 +133,10 @@ static void __attribute__((used)) hardfault_c(uint32_t *frame, uint32_t exc_retu
   // First, so Core 0's keyboard bus engine is off the bus well before the
   // reset below (see the comment there).
   kbd_i2c_halt();
+  // Core 1 may be playing the boot splash. On Core 0, stop it before the
+  // fault screen is drawn (it would draw over it); on Core 1, tell Core 0
+  // not to reset this handler before its screen and reboot (splash.h).
+  splash_fault_stop();
 
   // ARM exception frame layout (8 words pushed by hardware on entry):
   //   frame[0]=R0, [1]=R1, [2]=R2, [3]=R3,
@@ -317,6 +328,7 @@ static void __attribute__((used)) hardfault_c(uint32_t *frame, uint32_t exc_retu
   // LCD is disconnected or PIO is stuck, we won't hang forever.
   // Uses static buffers to avoid touching an already-damaged stack.
   static char ln[56]; // static to avoid stack usage
+  display_set_font(0);   // built-in 6x8 whatever the app selected (an id only: no registry access)
   display_clear(0x0000); // black
 
   snprintf(ln, sizeof(ln), "!!! HARDFAULT !!!");
@@ -497,6 +509,7 @@ void __attribute__((naked)) isr_hardfault(void) {
 #include "drivers/keyboard.h"
 #include "drivers/sdcard.h"
 #include "drivers/wifi.h"
+#include "drivers/bt_pad.h"
 #include "drivers/rng.h"
 #include "fonts/font_registry.h"
 #include "core1_stats.h"
@@ -897,22 +910,12 @@ static const picocalc_psram_t s_psram_impl = {
     .qmiFree          = psram_qmi_free,
 };
 
-static void perf_draw_fps_wrapper(int x, int y) {
-    int fps = perf_get_fps();
-    char buf[16];
-    snprintf(buf, sizeof(buf), "FPS: %d", fps);
-    uint16_t color = (fps >= 55)   ? COLOR_GREEN
-                     : (fps >= 30) ? COLOR_YELLOW
-                                   : COLOR_RED;
-    display_draw_text(x, y, buf, color, COLOR_BLACK);
-}
-
 static const picocalc_perf_t s_perf_impl = {
     .beginFrame = perf_begin_frame,
     .endFrame = perf_end_frame,
     .getFPS = perf_get_fps,
     .getFrameTime = perf_get_frame_time,
-    .drawFPS = perf_draw_fps_wrapper,
+    .drawFPS = perf_draw_fps,
     .setTargetFPS = perf_set_target_fps,
 };
 
@@ -1964,6 +1967,30 @@ static void crash_log_save(const char *app_name) {
   printf("[CRASH] Saved crash log to /system/crashlog.txt\n");
 }
 
+// The keyboard comes up near the end of the boot: kbd_init() first waits
+// until the STM32 scans its keys (~2.5 s after power-on), and the boot steps
+// before it run during that wait instead of after it. The SD card's retry
+// screen, which reads Enter, brings it up sooner.
+static void boot_keyboard(void) {
+  if (kbd_init())
+    return;
+  // Keyboard failed - STM32 didn't respond
+  splash_stop();
+  display_clear(COLOR_BLACK);
+  display_draw_text(8, 8, "Keyboard Controller Error!", COLOR_RED,
+                    COLOR_BLACK);
+  display_draw_text(8, 20, "STM32 (I2C 0x%02X) NACK.", COLOR_WHITE,
+                    COLOR_BLACK);
+  display_draw_text(8, 36, "The bus may be stuck.", COLOR_GRAY, COLOR_BLACK);
+  display_draw_text(8, 48, "Try power cycling device.", COLOR_GRAY,
+                    COLOR_BLACK);
+  display_flush();
+  // We can't wait for a keypress if the keyboard is dead,
+  // but we'll wait a few seconds so the user can see the error.
+  watchdog_update();
+  sleep_ms(5000);
+}
+
 int main(void) {
   // Paint the free part of the 4 KB main stack so the `stack` dev command
   // can report its high-water mark (the launcher and IRQs stay on the MSP).
@@ -2042,11 +2069,63 @@ int main(void) {
 
   stdio_init_all();
 
-  // Wait up to 3 s for a USB serial host to connect so early printf output
-  // isn't lost. Skips automatically if already connected.
-  for (int i = 0; i < 30 && !stdio_usb_connected(); i++) {
+  // Bring up the QMI PSRAM in quad (QPI) mode before any PSRAM pointers are
+  // accessed.  Falls back to the reset-default serial mode if the chip fails
+  // the quad self-test (see drivers/qmi_psram.c).
+  //
+  // Self-recovery guard: a bug in the direct-mode window stalls flash XIP and
+  // hangs the CPU with no watchdog armed — an unrecoverable brick (happened
+  // 2026-07-19; needed BOOTSEL).  Arm the watchdog for the attempt and mark
+  // it in a scratch register: if the init hangs, the watchdog reboots and the
+  // next boot sees the flag and stays on the reset-default serial mode.
+#ifdef PICO_RP2350
+#define QMI_QUAD_ATTEMPT_MAGIC 0x51AD9E7Bu
+  //
+  // After BOOT_MAX_RETRIES failed boots the watchdog must stay off, and the
+  // quad attempt is unguarded without it, so stay on serial mode then too.
+  if (watchdog_hw->scratch[4] == QMI_QUAD_ATTEMPT_MAGIC || skip_boot_watchdog) {
+    if (!skip_boot_watchdog)
+      printf("[QMI_PSRAM] previous quad-mode attempt hung — serial mode\n");
+    gpio_set_function(47, GPIO_FUNC_XIP_CS1);
+    xip_ctrl_hw->ctrl |= XIP_CTRL_WRITABLE_M1_BITS;
+  } else {
+    // watchdog_enable() itself writes scratch[4] (the SDK's non-reboot
+    // magic), so set the attempt flag after it, not before.
+    watchdog_enable(8000, true);
+    watchdog_hw->scratch[4] = QMI_QUAD_ATTEMPT_MAGIC;
+    qmi_psram_init(47);
     watchdog_update();
-    sleep_ms(100);
+    watchdog_hw->scratch[4] = 0;
+  }
+#endif
+
+  // Zero the PSRAM heap by DMA while the display initialises: its panel-reset
+  // waits cover most of the ~0.24 s clear (issue #73; lua_psram_alloc.c).
+  lua_psram_alloc_clear_start();
+
+  // Initialise display first so we can show progress
+  display_init();
+
+  // The clear saturates the QMI, which Core 1 runs the animation from: let
+  // it finish first.
+  lua_psram_alloc_clear_wait();
+
+  // The boot splash: Core 1 plays it from here while Core 0 boots, not after
+  // a failed boot (keep the recovery path as simple as it was). The QMI
+  // PSRAM init above must come first: its direct-mode window stalls flash
+  // fetches, and Core 1 runs from flash.
+  splash_start(boot_attempt == 0 && !s_had_crash);
+
+  // Wait up to 3 s for a USB serial host to open the port so early printf
+  // output isn't lost. Skips automatically if already connected. A host
+  // configures the device ~0.4 s after reset; on battery or a charger
+  // nothing does, so stop once the uptime reaches USB_HOST_WAIT_MS without
+  // it: the whole boot waits here.
+  for (int i = 0; i < 300 && !stdio_usb_connected(); i++) {
+    if (!tud_mounted() && to_ms_since_boot(get_absolute_time()) >= USB_HOST_WAIT_MS)
+      break;
+    watchdog_update();
+    sleep_ms(10);
   }
   watchdog_update();
 
@@ -2081,41 +2160,8 @@ int main(void) {
   g_api.gamepad     = &s_gamepad_impl;
   // fs wired after SD card init
 
-  // Bring up the QMI PSRAM in quad (QPI) mode before any PSRAM pointers are
-  // accessed.  Falls back to the reset-default serial mode if the chip fails
-  // the quad self-test (see drivers/qmi_psram.c).
-  //
-  // Self-recovery guard: a bug in the direct-mode window stalls flash XIP and
-  // hangs the CPU with no watchdog armed — an unrecoverable brick (happened
-  // 2026-07-19; needed BOOTSEL).  Arm the watchdog for the attempt and mark
-  // it in a scratch register: if the init hangs, the watchdog reboots and the
-  // next boot sees the flag and stays on the reset-default serial mode.
-#ifdef PICO_RP2350
-#define QMI_QUAD_ATTEMPT_MAGIC 0x51AD9E7Bu
-  //
-  // After BOOT_MAX_RETRIES failed boots the watchdog must stay off, and the
-  // quad attempt is unguarded without it, so stay on serial mode then too.
-  if (watchdog_hw->scratch[4] == QMI_QUAD_ATTEMPT_MAGIC || skip_boot_watchdog) {
-    if (!skip_boot_watchdog)
-      printf("[QMI_PSRAM] previous quad-mode attempt hung — serial mode\n");
-    gpio_set_function(47, GPIO_FUNC_XIP_CS1);
-    xip_ctrl_hw->ctrl |= XIP_CTRL_WRITABLE_M1_BITS;
-  } else {
-    // watchdog_enable() itself writes scratch[4] (the SDK's non-reboot
-    // magic), so set the attempt flag after it, not before.
-    watchdog_enable(8000, true);
-    watchdog_hw->scratch[4] = QMI_QUAD_ATTEMPT_MAGIC;
-    qmi_psram_init(47);
-    watchdog_update();
-    watchdog_hw->scratch[4] = 0;
-  }
-#endif
-
   gpio_init(USB_VBUS_PIN);
   gpio_set_dir(USB_VBUS_PIN, GPIO_IN);
-
-  // Initialise display first so we can show progress
-  display_init();
 
   // Arm watchdog early so any boot hang triggers a reset.
   // Disabled after BOOT_MAX_RETRIES failures so the device stays on the
@@ -2138,39 +2184,43 @@ int main(void) {
   mod_player_init();
   printf("[BOOT] mod_player done\n"); stdio_flush(); watchdog_update();
 
-  printf("[BOOT] drawing splash...\n"); stdio_flush();
-  ui_draw_splash("Initialising keyboard...", NULL);
-  printf("[BOOT] splash done\n"); stdio_flush(); watchdog_update();
-
-  bool kbd_ok = kbd_init();
-  watchdog_update();
-  if (kbd_ok) {
-    // Bootstrap level only — SD/config aren't up yet; the user's saved
-    // brightness is restored after config_load() later in boot.
-    kbd_set_backlight(128);
-  } else {
-    // Keyboard failed - STM32 didn't respond
-    display_clear(COLOR_BLACK);
-    display_draw_text(8, 8, "Keyboard Controller Error!", COLOR_RED,
-                      COLOR_BLACK);
-    display_draw_text(8, 20, "STM32 (I2C 0x%02X) NACK.", COLOR_WHITE,
-                      COLOR_BLACK);
-    display_draw_text(8, 36, "The bus may be stuck.", COLOR_GRAY, COLOR_BLACK);
-    display_draw_text(8, 48, "Try power cycling device.", COLOR_GRAY,
-                      COLOR_BLACK);
-    display_flush();
-    // We can't wait for a keypress if the keyboard is dead,
-    // but we'll wait a few seconds so the user can see the error.
-    watchdog_update();
-    sleep_ms(5000);
+  // Initialize the PSRAM allocator BEFORE anything that uses it
+  // (SD card file ops use umm_malloc for FIL/FILINFO structs, config_load,
+  // WiFi, Lua, OTA update, etc.). The heap was zeroed before the splash, so
+  // this only writes umm's block headers.
+  lua_psram_alloc_init();
+  {
+    void *pool = lua_psram_get_core1_pool();
+    size_t pool_size = lua_psram_get_core1_pool_size();
+    if (pool && pool_size > 0) {
+      core1_alloc_init(pool, pool_size);
+      // Flush dirty cache lines so Core 1 sees the init block header.
+      // core1_alloc_init writes through Core 0's write-back XIP cache;
+      // Core 1 has its own cache and would read stale zeros on a cold miss.
+#ifndef PICODECK_SIMULATOR
+      __asm volatile ("dsb sy" ::: "memory");
+      xip_cache_clean_all();
+      __asm volatile ("isb sy" ::: "memory");
+#endif
+      printf("[MAIN] Core 1 allocator: %u KB at %p\n",
+             (unsigned)(pool_size / 1024), pool);
+    }
   }
+  watchdog_update();
 
+  // While the animation plays this only hands Core 1 the status; after a
+  // failed boot (no animation) it draws the still frame with it.
   ui_draw_splash("Mounting SD card...", NULL);
   watchdog_update();
   bool sd_ok = sdcard_init();
   watchdog_update();
 
+  bool kbd_up = false;
   if (!sd_ok) {
+    boot_keyboard();  // the retry screen reads Enter
+    kbd_up = true;
+    kbd_set_backlight(128);  // no config yet
+    splash_stop();
     display_clear(COLOR_BLACK);
     display_draw_text(8, 8, "SD card not found!", COLOR_RED, COLOR_BLACK);
     display_draw_text(8, 20, "Insert a FAT32 SD card", COLOR_WHITE,
@@ -2198,31 +2248,6 @@ int main(void) {
   g_api.fs = &s_fs_impl;
   watchdog_update();
 
-  watchdog_update();
-
-  // Initialize the PSRAM allocator BEFORE anything that uses it
-  // (SD card file ops use umm_malloc for FIL/FILINFO structs, config_load,
-  // WiFi, Lua, OTA update, etc.)
-  lua_psram_alloc_init();
-  {
-    void *pool = lua_psram_get_core1_pool();
-    size_t pool_size = lua_psram_get_core1_pool_size();
-    if (pool && pool_size > 0) {
-      core1_alloc_init(pool, pool_size);
-      // Flush dirty cache lines so Core 1 sees the init block header.
-      // core1_alloc_init writes through Core 0's write-back XIP cache;
-      // Core 1 has its own cache and would read stale zeros on a cold miss.
-#ifndef PICODECK_SIMULATOR
-      __asm volatile ("dsb sy" ::: "memory");
-      xip_cache_clean_all();
-      __asm volatile ("isb sy" ::: "memory");
-#endif
-      printf("[MAIN] Core 1 allocator: %u KB at %p\n",
-             (unsigned)(pool_size / 1024), pool);
-    }
-  }
-  watchdog_update();
-
   // Check for pending OTA firmware update (must be before Core 1 launch).
   // The ONLY trigger is the one-shot token in watchdog scratch that C sets
   // after consent (ota_trigger_update: sys.applyUpdate's confirm, or the
@@ -2233,6 +2258,7 @@ int main(void) {
   if (!ota_pending && sdcard_fsize(OTA_BIN_PATH) > 0)
     ota_discard_unrequested();
   if (ota_pending) {
+    splash_stop();
     ui_draw_splash("Applying firmware update...", "DO NOT POWER OFF!");
     watchdog_update();
     if (!ota_apply_update()) {
@@ -2277,6 +2303,7 @@ int main(void) {
       crashlog_clear_running();
     }
     if (s_had_crash || (dirty && wdt_reset)) {
+      splash_stop();
       display_clear(COLOR_BLACK);
       display_draw_text(8, 8,
                         s_had_crash ? "Recovered from crash"
@@ -2302,14 +2329,14 @@ int main(void) {
 
   // Idle screen dimming (burn-in protection). Config "dim_timeout_s"
   // overrides the 60s default; "0" disables dimming entirely. Backlight
-  // level restores from config "brightness" (floor 16 — see config.h).
+  // level restores from config "brightness" (floor 16 — see config.h) once
+  // the keyboard controller, which drives it, is up.
+  uint8_t brightness = config_parse_brightness(config_get("brightness"));
   {
     uint32_t dim_timeout_s = 60;
     const char *dt = config_get("dim_timeout_s");
     if (dt)
       dim_timeout_s = (uint32_t)atoi(dt);
-    uint8_t brightness = config_parse_brightness(config_get("brightness"));
-    kbd_set_backlight(brightness);
     idle_dim_init(brightness, dim_timeout_s);
   }
 
@@ -2327,6 +2354,9 @@ int main(void) {
   wifi_init();
   http_init();
   tcp_init();
+  // Bluetooth pads, only if the user turned them on: loads the BT firmware
+  // over the CYW43's bus before Core 1 (and its WiFi traffic) starts.
+  bt_pad_init();
   watchdog_update();
 
   // Debug: check free size after WiFi/HTTP init
@@ -2336,14 +2366,27 @@ int main(void) {
 
   image_preload_init();
 
+  // The launcher's app scan (SD reads and icon decodes, ~1 s with 40 apps)
+  // runs here, during the animation, rather than after the hand-over.
+  ui_draw_splash("Loading...", NULL);
+  launcher_prepare();
+  watchdog_update();
+
+  if (!kbd_up)
+    boot_keyboard();
+  kbd_set_backlight(brightness);
+  watchdog_update();
+
+  // Core 1 has been playing the boot splash: wait for its final frame (it
+  // stays up until the launcher draws), then give Core 1 its own work.
+  splash_finish();
+  watchdog_update();
+
   // Launch Core 1 background tasks
   multicore_launch_core1(core1_entry);
   watchdog_update();
 
   system_menu_init();
-
-  ui_draw_splash("Loading...", NULL);
-  sleep_ms(300); // Brief pause so the splash is visible
 
   // Boot completed successfully — clear the boot attempt counter so a
   // future watchdog reset starts fresh.

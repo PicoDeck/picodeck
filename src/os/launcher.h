@@ -2,22 +2,29 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// Allocates the app table and scans /apps/ (app.json, icons). main() calls
+// it before the boot splash hands over, so the scan runs during the
+// animation; launcher_run() calls it when nothing has. Once per boot.
+void launcher_prepare(void);
+
 // Runs the app launcher loop (never returns).
-// Scans /apps/ on SD card, renders a scrollable menu, and launches selected apps.
+// Renders a scrollable menu of the scanned apps and launches selected apps.
 void launcher_run(void);
 
 // Re-scans the SD card for apps and resets the selection.
 void launcher_refresh_apps(void);
 
-// List all installed apps to serial output (shows name and ID)
-void launcher_list_apps(void);
+// List all installed apps to serial output (shows name and ID). `all` adds
+// the hidden apps under /apps/.test and /apps/.dev, tagged with their root.
+void launcher_list_apps(bool all);
 
 // Launch an app by ID. Returns true if app was found and launched.
 // Returns false if app not found.
 bool launcher_launch_by_id(const char *id);
 
 // Launch an app by name or ID. Returns true if app was found and launched.
-// Tries ID match first, then falls back to name match.
+// Tries ID match first, then falls back to name match, then the directory
+// name, then the hidden roots (/apps/.test, /apps/.dev; dev console only).
 // Returns false if app not found.
 bool launcher_launch_by_name(const char *name);
 

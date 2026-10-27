@@ -32,6 +32,7 @@
 #include "app_identity.h"
 #include "native_loader.h"
 #include "os_overlay.h"
+#include "sim_native_api.h"
 
 // From unicorn_runner.c
 extern uc_engine *g_uc;
@@ -126,6 +127,7 @@ extern void perf_end_frame(void);
 extern int  perf_get_fps(void);
 extern uint32_t perf_get_frame_time(void);
 extern void perf_set_target_fps(uint32_t fps);
+extern void perf_draw_fps(int x, int y);
 
 // WiFi functions (from sim_wifi.c)
 extern void wifi_connect(const char *ssid, const char *pass);
@@ -274,17 +276,6 @@ extern bool video_player_get_audio_muted(void *player);
 // Image (from stubs)
 extern pc_image_t *image_load(const char *path);
 extern pc_image_t *image_new_blank(int width, int height);
-
-// Dev commands
-extern bool dev_commands_wants_exit(void);
-extern void dev_commands_clear_exit(void);
-
-// Keyboard
-extern void kbd_poll(void);
-extern bool kbd_consume_menu_press(void);
-
-// System menu for native apps
-extern bool system_menu_show_for_native(void);
 
 // =============================================================================
 // Helper: read ARM register values
@@ -679,11 +670,6 @@ enum {
 
     SLOT_TOTAL_COUNT = SLOT_GAMEPAD_END,
 };
-
-// =============================================================================
-// Native exit flag (mirrors s_native_exit in src/main.c)
-// =============================================================================
-static volatile bool s_emu_exit = false;
 
 // =============================================================================
 // Display trampoline handlers
@@ -1692,22 +1678,11 @@ static void tramp_sys_log(uc_engine *uc) {
 
 static void tramp_sys_poll(uc_engine *uc) {
     (void)uc;
-    // Poll keyboard + check for exit
-    kbd_poll();
-
-    // Socket commands (screenshot, exit, etc.) are handled by the dedicated
-    // socket thread — no need to poll here.
-
-    if (kbd_consume_menu_press()) {
-        if (system_menu_show_for_native()) {
-            s_emu_exit = true;
-        }
-    }
-
-    if (dev_commands_wants_exit()) {
-        s_emu_exit = true;
-        dev_commands_clear_exit();
-    }
+    // Keyboard, system menu, a queued control-channel command (`dev_command`
+    // RPC, run on this thread as firmware's sys_poll() runs the serial
+    // console's) and the exit request: shared with the web build's
+    // compiled-in apps (sim_native_api.c).
+    sim_native_poll();
 
     // Yield CPU to avoid burning 100% in tight poll loops.
     // Real hardware's display_flush blocks ~65ms; emulated apps need throttling.
@@ -1716,9 +1691,9 @@ static void tramp_sys_poll(uc_engine *uc) {
 }
 
 static void tramp_sys_should_exit(uc_engine *uc) {
-    // Return the flag without clearing it — on real hardware, shouldExit()
-    // stays true once set so the app sees it on every subsequent check.
-    write_reg(uc, UC_ARM_REG_R0, s_emu_exit ? 1 : 0);
+    // True once per exit request, as firmware sys_shouldExit() (src/main.c):
+    // the app is expected to leave its loop on the first true.
+    write_reg(uc, UC_ARM_REG_R0, sim_native_should_exit() ? 1 : 0);
 }
 
 static void tramp_sys_set_audio_callback(uc_engine *uc) {
@@ -1855,12 +1830,7 @@ static void tramp_perf_get_frame_time(uc_engine *uc) {
 static void tramp_perf_draw_fps(uc_engine *uc) {
     int x = (int)read_reg(uc, UC_ARM_REG_R0);
     int y = (int)read_reg(uc, UC_ARM_REG_R1);
-    // perf_draw_fps is a wrapper in main.c, not available in simulator
-    // Draw FPS manually
-    int fps = perf_get_fps();
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%d fps", fps);
-    display_draw_text(x, y, buf, 0xFFFF, 0x0000);
+    perf_draw_fps(x, y);  // the firmware's: nothing while Show FPS is on
 }
 
 static void tramp_perf_set_target_fps(uc_engine *uc) {
@@ -3085,14 +3055,12 @@ void unicorn_tramp_init(uc_engine *uc) {
     (void)uc;
     memset(s_dispatch, 0, sizeof(s_dispatch));
 
-    // Reset the emulated shouldExit() latch for the new app run. s_emu_exit
-    // is intentionally sticky within a single run (tramp_sys_should_exit()
-    // never clears it, matching hardware's "stays true once set" contract),
-    // but it is a process-lifetime static — without this reset, exiting any
-    // app once (exit_app, Sym-menu exit) leaves it permanently true and every
-    // native app launched afterward in the same simulator session observes
-    // shouldExit()==true on its very first poll and self-exits within seconds.
-    s_emu_exit = false;
+    // Reset the shouldExit() latch (sim_native_api.c) for the new app run. It
+    // is a process-lifetime static that shouldExit() clears on read; an app
+    // that exits without reading it (a poll-only app, a kill) would otherwise
+    // leave it set and the next native app would see shouldExit()==true on
+    // its first check.
+    sim_native_app_begin();
 
     // Reset native-app system-menu item slots on every app launch so a
     // previous (possibly crashed) app's guest callback pointers can never

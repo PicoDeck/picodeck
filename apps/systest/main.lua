@@ -284,8 +284,12 @@ local function run_pio_psram_test()
 end
 
 local function run_xip_cache_test()
-    local mem = sys.getMemInfo()
-    local rate = mem.xip_cache_hit_rate
+    -- xip_cache_hit_rate covers the time since the previous getMemInfo()
+    -- call: start a measurement, run some code, then read it.
+    sys.getMemInfo()
+    local x = 0
+    for i = 1, 20000 do x = x + i % 7 end
+    local rate = sys.getMemInfo().xip_cache_hit_rate
     if rate >= 0 then
         tests.xip_cache.status = "PASS"
         tests.xip_cache.value = rate .. "% hit rate"

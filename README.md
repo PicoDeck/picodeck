@@ -10,6 +10,17 @@ An app platform for the ClockworkPi PicoCalc, built around a resident Lua runtim
 
 📖 **Documentation:** Full SDK reference and guides are available on the [PicoDeck Wiki](https://picodeck.net/docs/).
 
+## Features
+
+- **Apps in Lua or native C/C++.** Lua 5.4 apps get a `picocalc.*` API; native apps are position-independent ELF binaries using the same API through a C table (see [Native Loading](https://picodeck.net/docs/native-loading/)). The first-party emulators (C64, Game Boy Color, DOS/86, TIC-80) are native.
+- **Graphics.** Double-buffered 60 FPS display, images (BMP, JPEG, PNG, GIF), sprites and tilemaps, flat-shaded 3D (`gfx3d`), MJPEG video, and `picocalc.chargrid`, a character-cell grid with text, shapes, palettes and a small shader language (plus `picocalc.noise`).
+- **Audio.** WAV, MP3, QOA and tracker modules (MOD, XM, S3M), tones, and raw sample streaming.
+- **Input.** The built-in keyboard, a rebindable gamepad layer, and Bluetooth gamepads (Classic HID), paired from Settings.
+- **Networking.** WiFi, an HTTP/HTTPS client, TCP sockets, crypto primitives, and an SSH client app.
+- **System.** A launcher and system menu, an app store, signed over-the-air firmware updates, crash logging with a watchdog, and per-app config and save data.
+- **Developer tools.** A PC simulator with a scripted test channel, an E2E suite that runs on the simulator or a real device, host unit tests and fuzzers, a USB serial dev console (with a PC-sampling profiler), and an MCP server (`tools/picodeck_mcp.py`) for driving a device.
+- **Boot animation.** Core 1 plays a boot animation from first light while Core 0 brings up the system, so boot work costs nothing until it outlasts the 2.8 s animation.
+
 ---
 
 ## Architecture
@@ -181,14 +192,16 @@ make build
 
 Output: `build/picodeck.uf2` — drag-and-drop to Pico in BOOTSEL mode.
 
-**Available Make targets:**
+**Available Make targets** (`make help` lists them all):
 - `make setup` — Download Lua/FatFS, verify environment
 - `make build` — Compile firmware
-- `make clean` — Remove build directory
-- `make rebuild` — Clean and rebuild
+- `make clean` / `make rebuild` — Remove the build directory / clean and rebuild
 - `make flash` — Show flashing instructions (auto-detects RPI-RP2 on Linux)
+- `make flash-ota` — Build and push the firmware to a USB-connected device over the air
+- `make simulator` / `make simulator-run` — Build / run the PC simulator (also `simulator-asan`, `simulator-tsan`, `simulator-net`)
 - `make test-lua` — Test all Lua apps for syntax errors before deployment
-- `make help` — Show all targets
+- `make test-unit` — Host unit tests
+- `make fuzz` — Run the libFuzzer targets (clang)
 
 ---
 
@@ -225,6 +238,20 @@ Catches common errors before deployment:
 - String/syntax errors
 
 **Note:** `make build` automatically runs tests. To skip: `make build -o test-lua`
+
+---
+
+### Simulator and test suites
+
+The PC simulator runs Lua and native apps in an SDL2 window, with no device needed:
+
+```bash
+make simulator-run                       # needs SDL2 (see simulator/README.md)
+make test-unit                           # host unit tests
+SDL_VIDEODRIVER=dummy pytest tests/e2e -n auto   # E2E suite against the simulator
+```
+
+The E2E suite can also run against a real device (`--target hw:<serial port>`). See [`simulator/README.md`](simulator/README.md), [`tests/e2e/README.md`](tests/e2e/README.md) and [Simulator and Testing](https://picodeck.net/docs/simulator-and-testing/).
 
 ---
 
@@ -359,46 +386,34 @@ end
 ## Project Structure
 
 ```
-picocalc-os/
-├── CMakeLists.txt
-├── pico_sdk_import.cmake      ← copy from $PICO_SDK_PATH/external/
-├── README.md
-├── SDK.md                     ← full Lua API reference
+picodeck/
+├── CMakeLists.txt, Makefile    ← firmware build and the top-level targets
+├── pico_sdk_import.cmake       ← copy from $PICO_SDK_PATH/external/
+├── README.md, CLAUDE.md        ← CLAUDE.md is the contributor guide (nested ones sit beside the code)
+├── TODO.md                     ← roadmap and open API gaps
+├── docs/                       ← app-facing SDK reference, published at picodeck.net/docs
+├── docs_coverage.md            ← which Lua functions the docs cover (scripts/list_lua_api)
 ├── src/
-│   ├── hardware.h             ← ALL pin definitions here
-│   ├── main.c                 ← boot, init, splash, calls launcher_run()
-│   ├── os/
-│   │   ├── os.h               ← PicoCalcAPI struct (hardware API table)
-│   │   ├── launcher.h/c       ← app discovery + scrollable menu
-│   │   ├── lua_bridge.h/c     ← C functions registered as picocalc.* Lua API
-│   │   ├── lua_psram_alloc.h/c ← PSRAM-backed Lua heap allocator
-│   │   ├── system_menu.h/c    ← system menu overlay (Menu key)
-│   │   ├── config.h/c         ← persistent JSON config
-│   │   ├── clock.h/c          ← NTP time sync
-│   │   ├── ui.h/c             ← shared header/footer drawing
-│   │   ├── image_decoders.h/cpp ← JPEG/PNG/GIF decoding
-│   │   ├── file_browser.h/c   ← file picker overlay
-│   │   ├── screenshot.h/c     ← BMP screenshot capture
-│   │   └── text_input.h/c     ← text entry overlay
-│   └── drivers/
-│       ├── display.h/c        ← ST7365P, PIO SPI, DMA double-buffered flush
-│       ├── keyboard.h/c       ← STM32 I2C keyboard + battery
-│       ├── sdcard.h/c         ← FatFS wrapper
-│       ├── wifi.h/c           ← CYW43 WiFi driver
-│       └── http.h/c           ← Mongoose HTTP client
-├── apps/
-│   ├── hello/                 ← example: drawing + input
-│   ├── tetris/                ← example: full game
-│   ├── snake/                 ← example: full game
-│   ├── wikipedia/             ← example: networking
-│   └── image_viewer/          ← example: graphics API
-└── third_party/
-    ├── lua-5.4/               ← Lua 5.4 source
-    ├── fatfs/                 ← Chan FatFS + SPI port
-    ├── umm_malloc/            ← Embedded memory allocator for PSRAM Lua heap
-    ├── mongoose/              ← Mongoose networking library
-    ├── tgx/                   ← TGX graphics library (scaling/rotation)
-    ├── JPEGDEC/               ← JPEG decoder
-    ├── PNGdec/                ← PNG decoder
-    └── AnimatedGIF/           ← GIF decoder
+│   ├── hardware.h              ← ALL pin definitions here
+│   ├── main.c                  ← boot, init, calls launcher_run()
+│   ├── dev_commands.c, dev_ops.c ← USB serial dev console
+│   ├── os/                     ← launcher, Lua bridge, app runners, config, OTA, splash, chargrid, UI
+│   ├── drivers/                ← display, keyboard, SD card, WiFi/HTTP/TCP, audio, video, PSRAM, Bluetooth
+│   ├── usb/                    ← USB mass-storage mode
+│   └── fonts/
+├── apps/                       ← first-party apps (Lua and native), each with an app.json
+├── sdk/                        ← app-author kit: Lua stub for editors, native app template and ABI header, fonts
+├── system/                     ← files for SD:/system/ (shared Lua libraries such as panels and widgets, fonts)
+├── simulator/                  ← PC simulator (SDL2 + Unicorn); see simulator/README.md
+├── tests/
+│   ├── unit/                   ← host unit tests (make test-unit)
+│   ├── e2e/                    ← pytest suite for the simulator and real hardware
+│   └── fuzz/                   ← libFuzzer targets (make fuzz)
+├── tools/                      ← build, asset and device tooling (OTA flash, profiler, MCP server)
+├── scripts/                    ← CI helpers and the Lua API coverage generator
+├── specs/                      ← design notes and plans for larger features
+└── third_party/                ← vendored and submoduled dependencies
+    ├── lua-5.4/, fatfs/, umm_malloc/, rp2040-psram/, mongoose/, wolfssl/, miniz/
+    ├── tgx/, JPEGDEC/, PNGdec/, AnimatedGIF/, stb/        (graphics, image decoding)
+    └── libmad/, BackgroundAudio/, pocketmod/, qoa/        (audio)
 ```

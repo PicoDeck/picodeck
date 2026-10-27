@@ -9,8 +9,15 @@
 #include "rng.h"
 #include "display.h"
 #include "http.h"
+#include "bt_pad.h"
 
 #include "mongoose.h"
+#ifndef PICODECK_SIM_FIRMWARE_NET
+#include "pico/cyw43_arch.h"
+#include "pico/cyw43_driver.h" // cyw43_set_pio_clkdiv_int_frac8
+#include "hardware/gpio.h"
+#include "hardware/pio.h"
+#endif
 #include "umm_malloc.h"
 #include "hardware/sync.h"
 #include "pico/multicore.h"
@@ -301,6 +308,7 @@ static bool tls_clock_ready(void) {
 // (Guard: the simulator's SIM_FIRMWARE_NET build runs this file on Mongoose
 // MG_ARCH_UNIX with TLS compiled out, so there is no mbedTLS here; the #else
 // branch below refuses TLS instead.)
+#include "mbedtls/sha256.h"
 
 // The root bundle, parsed ONCE (wifi_tls_init, at boot) into one chain that
 // every connection shares read-only, instead of Mongoose re-parsing ~15 KB
@@ -367,6 +375,18 @@ static bool tls_start(struct mg_connection *nc, const char *host,
   return true;
 }
 
+bool wifi_tls_peer_fingerprint(struct mg_connection *nc, char *out, size_t n) {
+  if (n > 0) out[0] = '\0';
+  if (!nc || !nc->tls || n < 65) return false;
+  struct mg_tls *tls = (struct mg_tls *)nc->tls;
+  const mbedtls_x509_crt *crt = mbedtls_ssl_get_peer_cert(&tls->ssl);
+  if (!crt || !crt->raw.p || crt->raw.len == 0) return false;
+  unsigned char h[32];
+  if (mbedtls_sha256(crt->raw.p, crt->raw.len, h, 0) != 0) return false;
+  for (int i = 0; i < 32; i++) snprintf(out + 2 * i, 3, "%02x", h[i]);
+  return true;
+}
+
 bool wifi_tls_verify_error(struct mg_connection *nc, char *out, size_t n) {
   if (!nc || !nc->tls) return false;
   struct mg_tls *tls = (struct mg_tls *)nc->tls;
@@ -405,6 +425,12 @@ bool wifi_tls_verify_error(struct mg_connection *nc, char *out, size_t n) {
   (void)nc;
   (void)out;
   (void)n;
+  return false;
+}
+
+bool wifi_tls_peer_fingerprint(struct mg_connection *nc, char *out, size_t n) {
+  (void)nc;
+  if (n > 0) out[0] = '\0';
   return false;
 }
 
@@ -607,6 +633,7 @@ void wifi_init(void) {
 bool wifi_is_available(void) { return s_available; }
 
 void wifi_connect(const char *ssid, const char *password) {
+  wifi_resume_radio();  // a connect needs the driver polling again
   if (!s_available || !ssid || !ssid[0])
     return;
 
@@ -665,6 +692,154 @@ bool wifi_has_internet(void) {
 
 bool wifi_hw_disconnected(void) {
   return atomic_load_explicit(&s_hw_disconnected, memory_order_acquire);
+}
+
+#ifndef PICODECK_SIM_FIRMWARE_NET
+// cyw43_poll while the radio is paused (NULL otherwise).
+static void (*s_paused_poll)(void);
+
+// Both run under the CYW43 async context's lock, on its core (Core 0, where
+// wifi_init ran cyw43_arch_init).
+static uint32_t radio_pause(void *param) {
+  (void)param;
+  if (!cyw43_poll)
+    return 0;  // paused already
+  cyw43_ll_bus_sleep(&cyw43_state.cyw43_ll, true);
+  cyw43_sleep = 0;  // nothing left for the driver's sleep countdown
+  // With no poll function the context's worker does nothing: the host-wake
+  // interrupt fires at most once (its handler disables it, and only a poll
+  // enables it again) and the sleep checks stop.
+  s_paused_poll = cyw43_poll;
+  cyw43_poll = NULL;
+  return 0;
+}
+
+static uint32_t radio_resume(void *param) {
+  (void)param;
+  if (!s_paused_poll)
+    return 0;
+  cyw43_poll = s_paused_poll;
+  s_paused_poll = NULL;
+  // Whatever the chip raised meanwhile, and the host-wake interrupt again.
+  cyw43_schedule_internal_poll_dispatch(cyw43_poll);
+  return 0;
+}
+#endif
+
+void wifi_pause_radio(void) {
+#ifndef PICODECK_SIM_FIRMWARE_NET
+  // Only with Core 1 off the driver. wifi_hw_disconnected() alone does not
+  // say so: it stays true from boot, and from the last disconnect, through
+  // a connect (wifi_connect never clears it). Core 1 polls the CYW43 only
+  // while connecting or connected, so those states rule a pause out: a
+  // paused driver reads as powered off (cyw43_poll NULL), and the next
+  // call into it from Core 1 would power-cycle the chip and reload its
+  // firmware.
+  // Nor while Bluetooth is on: it polls the chip through the same driver.
+  wifi_status_t st = wifi_get_status();
+  if (!s_available || !wifi_hw_disconnected() || bt_pad_radio_in_use() ||
+      st == WIFI_STATUS_CONNECTED || st == WIFI_STATUS_CONNECTING ||
+      st == WIFI_STATUS_ONLINE)
+    return;
+  async_context_execute_sync(cyw43_arch_async_context(), radio_pause, NULL);
+#endif
+}
+
+void wifi_resume_radio(void) {
+#ifndef PICODECK_SIM_FIRMWARE_NET
+  // s_paused_poll changes only in radio_pause/radio_resume, which run here
+  // on Core 0: read unlocked, it spares every wifi_connect the context's
+  // lock, which Core 1 holds through each of its calls into the driver.
+  if (!s_available || !s_paused_poll)
+    return;
+  async_context_execute_sync(cyw43_arch_async_context(), radio_resume, NULL);
+#endif
+}
+
+#ifndef PICODECK_SIM_FIRMWARE_NET
+// The state machine driving the CYW43's SPI: in the PIO whose function GPIO
+// CYW43_PIN_WL_CLOCK has, side-setting that pin (cyw43_bus_pio_spi.c keeps
+// its PIO/SM in a private struct). -1 when not found.
+static int cyw43_bus_sm(PIO *pio_out) {
+  static const uint8_t k_func[] = {GPIO_FUNC_PIO0, GPIO_FUNC_PIO1,
+                                   GPIO_FUNC_PIO2};
+  uint func = gpio_get_function(CYW43_PIN_WL_CLOCK);
+  for (uint i = 0; i < NUM_PIOS && i < count_of(k_func); i++) {
+    if (func != k_func[i])
+      continue;
+    PIO pio = pio_get_instance(i);
+    uint pin = CYW43_PIN_WL_CLOCK - pio_get_gpio_base(pio);
+    for (int sm = 0; sm < 4; sm++) {
+      uint32_t ctrl = pio->sm[sm].pinctrl;
+      if (((ctrl & PIO_SM0_PINCTRL_SIDESET_BASE_BITS) >>
+           PIO_SM0_PINCTRL_SIDESET_BASE_LSB) == pin &&
+          ((ctrl & PIO_SM0_PINCTRL_SIDESET_COUNT_BITS) >>
+           PIO_SM0_PINCTRL_SIDESET_COUNT_LSB) == 1 &&
+          pio_sm_is_claimed(pio, (uint)sm)) {
+        *pio_out = pio;
+        return sm;
+      }
+    }
+  }
+  return -1;
+}
+
+// Times the bus state machine was not found (wifi_bus_errors()).
+static uint32_t s_bus_errors;
+
+static uint32_t bus_clock(void *arg) {
+  uint32_t khz = *(const uint32_t *)arg;
+  uint32_t div = (khz + 99999u) / 100000u;
+  if (div < 2)
+    div = 2;
+  // For the next cyw43_spi_init (a re-init after a chip power-cycle), and
+  // for the running state machine (the SDK applies it only at init).
+  cyw43_set_pio_clkdiv_int_frac8(div, 0);
+  PIO pio;
+  int sm = cyw43_bus_sm(&pio);
+  if (sm < 0)
+    return 1;
+  pio_sm_set_clkdiv_int_frac8(pio, (uint)sm, div, 0);
+  return 0;
+}
+#endif
+
+uint32_t wifi_bus_errors(void) {
+#ifndef PICODECK_SIM_FIRMWARE_NET
+  return s_bus_errors;
+#else
+  return 0;
+#endif
+}
+
+void wifi_bus_hold(bool hold) {
+#ifndef PICODECK_SIM_FIRMWARE_NET
+  async_context_t *ctx = s_available ? cyw43_arch_async_context() : NULL;
+  if (!ctx)
+    return;
+  if (hold)
+    async_context_acquire_lock_blocking(ctx);
+  else
+    async_context_release_lock(ctx);
+#else
+  (void)hold;
+#endif
+}
+
+void wifi_bus_clock(uint32_t khz) {
+#ifndef PICODECK_SIM_FIRMWARE_NET
+  if (!s_available)
+    return;
+  if (async_context_execute_sync(cyw43_arch_async_context(), bus_clock,
+                                 &khz) != 0) {
+    // Its divider is then the one before: out of spec above 200 MHz.
+    s_bus_errors++;
+    printf("WiFi: CYW43 bus state machine not found (%lu kHz)\n",
+           (unsigned long)khz);
+  }
+#else
+  (void)khz;
+#endif
 }
 
 const char *wifi_get_ip(void) {

@@ -8,7 +8,7 @@ PicoDeck captures two categories of failure: HardFaults (CPU exceptions) and Lua
 
 ## HardFault recovery flow
 
-1. **Fault fires** — the `isr_hardfault` / `hardfault_c` handler runs on Core 0.
+1. **Fault fires** — the `isr_hardfault` / `hardfault_c` handler runs on the core that faulted (Core 0 or Core 1).
 2. **Display** — fault details (PC, LR, SP, CFSR/HFSR/BFAR, decoded flag names) are printed to both the LCD and UART so you can read them without a serial adapter.
 3. **Scratch registers** — the record is written to watchdog scratch 0-3,
    which survive `watchdog_reboot(0, 0, 0)`: [0] tag + flags (fault during

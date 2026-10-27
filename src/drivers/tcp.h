@@ -62,6 +62,10 @@ typedef struct {
     bool     insecure;  // TLS without certificate checks (opt-in, set before connect)
 
     char err[TCP_ERR_MAX];      // written before the FAILED/CLOSED store
+    // Lowercase hex SHA-256 of the TLS peer certificate (DER), "" when none.
+    // Cleared by tcp_connect; written by Core 1 before the CONNECTED store,
+    // so Core 0 reads it once tcp_get_state() returns CONNECTED or later.
+    char fingerprint[65];
     uint32_t pending;  // TCP_CB_* flags (pool lock)
 
     uint8_t *rx_buf;
@@ -69,6 +73,14 @@ typedef struct {
     uint32_t rx_head;  // pool lock
     uint32_t rx_tail;  // pool lock
     uint32_t rx_count; // pool lock
+
+    // What Mongoose still held when the connection closed and the ring
+    // could not take (umm, through the cached alias: see tcp_ev_fn). Core 1 sets
+    // it once, before the CLOSED store; tcp_read hands it out after the ring
+    // and frees it once read; tcp_connect and tcp_reap free what is left.
+    uint8_t *spill;     // pool lock
+    uint32_t spill_len; // pool lock
+    uint32_t spill_off; // pool lock
 
     void *pcb;  // mongoose mg_connection — Core 1 only
 

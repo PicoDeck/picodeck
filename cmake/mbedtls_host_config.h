@@ -1,6 +1,7 @@
 // mbedTLS configuration for HOST builds (simulator and tests/unit): what
 // src/os/ota_verify.c needs (PEM public-key parsing, ECDSA P-256 verify,
-// SHA-256) plus X.509 chain verification for tests/unit/test_ca_bundle.c.
+// SHA-256) plus X.509 chain verification for tests/unit/test_ca_bundle.c, and what
+// src/os/crypto.c needs (AES-CTR, ECDH, RSA) for tests/unit/test_crypto_verify.c.
 // No MBEDTLS_HAVE_TIME_DATE: the chain test checks trust paths and names,
 // not dates (so its captured fixtures never expire).  The firmware uses
 // src/mbedtls_config.h instead.
@@ -28,6 +29,13 @@
 #define MBEDTLS_RSA_C
 #define MBEDTLS_PKCS1_V15
 #define MBEDTLS_PKCS1_V21
+// AES, CTR, ECDH and Curve25519 are for tests/unit/test_crypto_verify.c (it
+// builds all of crypto.c); the simulator, which has no crypto, links them too:
+// about 5 KB of Curve25519 code, unused.
+#define MBEDTLS_AES_C
+#define MBEDTLS_CIPHER_MODE_CTR
+#define MBEDTLS_ECDH_C
+#define MBEDTLS_ECP_DP_CURVE25519_ENABLED
 #define MBEDTLS_X509_USE_C
 #define MBEDTLS_X509_CRT_PARSE_C
 

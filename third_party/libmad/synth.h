@@ -30,8 +30,8 @@ struct mad_pcm {
     unsigned int samplerate;		/* sampling frequency (Hz) */
     unsigned short channels;		/* number of channels */
     unsigned short length;		/* number of samples per channel */
-    //  int16_t samples[2][1152];		/* PCM output samples [ch][sample] */
-    int16_t samplesX[1152][2] __attribute__((aligned(4)));		/* PCM output samples [ch][sample] */
+    /* PicoDeck: one granule, interleaved [sample][ch] */
+    int16_t samplesX[576][2] __attribute__((aligned(4)));
 };
 
 struct mad_synth {
@@ -66,6 +66,7 @@ void mad_synth_init(struct mad_synth *);
 
 void mad_synth_mute(struct mad_synth *);
 
-void mad_synth_frame(struct mad_synth *, struct mad_frame const *);
+void mad_synth_granule(struct mad_synth *, struct mad_frame const *,
+                       unsigned int);
 
 # endif

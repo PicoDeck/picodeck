@@ -109,6 +109,17 @@ typedef struct {
 // and quant tables all get single-cycle SRAM access instead of going through
 // the 16KB XIP cache (which thrashes against 24KB of JPEGDEC flash code).
 static JPEGDEC s_jpeg_sram;
+// Players alive (created, not yet destroyed): while there are none,
+// s_jpeg_sram is lent to chargrid shader runs. JPEGDEC holds only its
+// JPEGIMAGE, which openRAM clears before every frame, so what a run leaves
+// there does no harm. Create, destroy and runs are all on Core 0.
+static int s_players;
+
+extern "C" void *charshader_sram(size_t *bytes) {
+    if (s_players) return NULL;
+    *bytes = sizeof(s_jpeg_sram);
+    return &s_jpeg_sram;
+}
 
 // --- Adaptive quality: 2x nearest-neighbor upscale callback ---
 // When the player falls behind, we decode at half resolution and upscale
@@ -662,10 +673,17 @@ static uint32_t read_audio_prefeed(video_priv_t *priv, uint32_t cursor,
 // (Re)start fed-mode audio positioned at `frame`.  A first start pre-fills
 // the compressed ring from SD before its output starts.  A restart (a seek,
 // or a loop the audio could not follow) reads the new position's first
-// chunks while the old audio still plays, then restarts the session on the
-// ring it has: only the fade-out and the decoder's start are left in the
-// gap.  The output starts at once unless `defer_output` (paused: resume
-// starts it).
+// chunks while the old audio still plays.  Playing, it then restarts in
+// place (mp3_player_restart_fed): the decoder starts on the new chunks
+// while the old audio plays on, then the old fades into the new, and only
+// the render that ends the fade-out is silent.  Mid-stream the decoder is
+// primed with one frame it does not play, so those chunks start one
+// earlier: the first frame heard is the one an unprimed restart from the
+// cursor's chunk played first (libmad drops that chunk's own frame, whose
+// bit reservoir it never saw).  Paused, or with nothing playing, the
+// session restarts on the ring it has from the cursor's chunk (fade-out,
+// then silence until its pre-roll is decoded); the output starts at once
+// unless `defer_output` (paused: resume starts it).
 static void audio_start_at(video_priv_t *priv, video_player_t *player,
                            uint32_t frame, bool defer_output) {
     if (!priv->has_audio || priv->audio_format != 0x0055 || priv->audio_muted ||
@@ -681,8 +699,33 @@ static void audio_start_at(video_priv_t *priv, video_player_t *player,
         cursor = priv->audio_index.count - 1;
 
     uint32_t pre_bytes = 0, pre_chunks = 0;
+    uint32_t first = cursor;               // the prefeed's first chunk
+    if (priv->audio_active && !defer_output && cursor > 0)
+        first = cursor - 1;                // the primer of a restart in place
     if (priv->audio_active)
-        pre_bytes = read_audio_prefeed(priv, cursor, &pre_chunks);
+        pre_bytes = read_audio_prefeed(priv, first, &pre_chunks);
+
+    // Primed whenever the primer chunk leads, chunk 0 included: unprimed,
+    // a seek to chunk 1 would play chunk 0 (it needs no bit reservoir).
+    if (pre_bytes && !defer_output &&
+        mp3_player_restart_fed(priv->audio_prefeed, pre_bytes, first < cursor)) {
+        mp3_player_set_volume(mp3_player_create(), priv->audio_volume);
+        priv->audio_loop_pending = false;  // the restart cleared the mark
+        priv->audio_output_pending = false;
+        priv->audio_feed_cursor = first + pre_chunks;
+        return;
+    }
+
+    // Refused (nothing audible: play() on a paused video, or audio that ran
+    // out before the video): start_fed does not prime, so the primer chunk
+    // goes and the audio starts from the cursor's chunk, as it always has.
+    uint32_t skip = 0;
+    if (first < cursor && pre_chunks > 0) {
+        skip = priv->audio_index.entries[first].chunk_size;
+        pre_bytes -= skip;
+        pre_chunks--;
+        first = cursor;
+    }
 
     if (!mp3_player_start_fed(priv->audio_sample_rate, priv->audio_channels)) {
         audio_stop(priv);
@@ -694,8 +737,8 @@ static void audio_start_at(video_priv_t *priv, video_player_t *player,
     priv->audio_output_pending = defer_output;
     priv->audio_feed_cursor = cursor;
     if (pre_bytes) {
-        mp3_player_feed(priv->audio_prefeed, pre_bytes);
-        priv->audio_feed_cursor += pre_chunks;
+        mp3_player_feed(priv->audio_prefeed + skip, pre_bytes);
+        priv->audio_feed_cursor = first + pre_chunks;
     } else {
         video_feed_audio(priv, player, 50);  // pre-fill fed ring with compressed data
     }
@@ -741,6 +784,7 @@ video_player_t *video_player_create(void) {
     priv->osd_backup = (uint16_t *)umm_malloc(OSD_STRIP_H * FB_WIDTH * sizeof(uint16_t));
 
     player->priv = priv;
+    s_players++;
     return player;
 }
 
@@ -767,6 +811,7 @@ void video_player_destroy(video_player_t *player) {
         umm_free(priv);
     }
     umm_free(player);
+    s_players--;
 }
 
 bool video_player_load(video_player_t *player, const char *path) {
@@ -968,8 +1013,9 @@ bool video_player_load(video_player_t *player, const char *path) {
 static void video_boost_clock(video_priv_t *priv) {
     if (priv->overclocked) return;
 
-    // The CYW43 PIO SPI clock divider is set at init (200 MHz) and is NOT
-    // updated by launcher_apply_clock(), so WiFi must be disconnected first.
+    // WiFi is disconnected for the boost: the radio's traffic and power are
+    // not wanted during playback. (launcher_apply_clock retunes the CYW43's
+    // PIO SPI divider for 300 MHz, so a live link would stay in spec.)
     priv->wifi_was_connected = false;
     if (wifi_is_available()) {
         wifi_status_t wst = wifi_get_status();
@@ -990,6 +1036,11 @@ static void video_boost_clock(video_priv_t *priv) {
         if (!wifi_hw_disconnected())
             printf("[VIDEO] WiFi not idle after %d ms; boosting anyway\n",
                    WIFI_HW_DISCONNECT_WAIT_MS);
+        // While the radio idles, its driver would put the SPI bus to sleep
+        // a few seconds into the video, at 300 MHz, where that handshake
+        // fails and stalls Core 0 for ~68 ms (wifi.h): sleep it now, at
+        // 200, and keep the driver quiet until the clock is back.
+        wifi_pause_radio();
     }
 
     // Boost to 300 MHz for video playback
@@ -1002,6 +1053,7 @@ static void video_restore_clock(video_priv_t *priv) {
 
     launcher_apply_clock(200000);
     priv->overclocked = false;
+    wifi_resume_radio();
 
     // Reconnect WiFi if it was connected before
     if (priv->wifi_was_connected && wifi_is_available()) {

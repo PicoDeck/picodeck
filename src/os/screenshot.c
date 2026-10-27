@@ -142,8 +142,12 @@ static void screenshot_write(void *arg) {
   uint16_t *back = (uint16_t *)display_get_framebuffer();
   memcpy(back, fb, FB_WIDTH * FB_HEIGHT * 2);
 
+  // Built-in font whatever the app selected: the box is sized for it.
+  int saved_font = display_get_font();
+  display_set_font(0);
   display_fill_rect(0, 0, display_text_width(msg) + 4, 10, COLOR_BLACK);
   display_draw_text(2, 1, msg, COLOR_WHITE, COLOR_BLACK);
+  display_set_font(saved_font);
 
   // Show the message
   display_flush();

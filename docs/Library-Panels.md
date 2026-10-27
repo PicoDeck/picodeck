@@ -179,7 +179,7 @@ Every layer needs at least one of `image`, `images`, or `text`.
 | `w`, `h` | number | — | When both are set on a text layer, the text is word-wrapped into that box via `picocalc.graphics.drawTextInRect` (with optional `align`: 0 left, 1 center, 2 right). |
 | `scrollTrigger` | number | — | 0–1. Hide the layer until the panel's scroll percentage reaches this value. Ignored by `images` frame-array layers. |
 | `renderCondition` | table | — | `{ var = "name", equals = value }` — draw only while `Panels.vars[var] == value` (see [Branching](#panelsvars-and-branching)). |
-| `animate` | table | — | Keyframed movement: `{ x?, y?, duration, ease?, delay?, scrollTrigger? }`. `duration` (ms) is required. Arms once when `pct` reaches `scrollTrigger` (default 0), then animates from the layer's `x`/`y` to `animate.x`/`animate.y` with easing `ease` (default `"cubicOut"`) after `delay` ms (default 0). Re-arms if the panel scrolls off-screen and back. |
+| `animate` | table | — | Keyframed movement: `{ x?, y?, duration, ease?, delay?, scrollTrigger? }`. `duration` (ms) is required. Arms once when `pct` reaches `scrollTrigger` (default 0), then animates from the layer's `x`/`y` to `animate.x`/`animate.y` with easing `ease` (default `"cubicOut"`; one of the [`animator.new` easing names](API-Display-and-Graphics.md#picocalcgraphicsanimationanimatornewdurationms-from-to--easing--delayms), and an unknown name is logged as `PANELS:ERR unknown ease "<name>", using linear` and moves linearly) after `delay` ms (default 0). Re-arms if the panel scrolls off-screen and back. |
 | `effect` | table | — | `{ type = "shake", strength = 3 }` or `{ type = "blink", onMs = 400, offMs = 300 }`. |
 | `transparentColor` | number \| true | — | Colour-key transparency for the layer's image. `true` selects the conventional magenta key `Panels.MAGENTA_KEY` (`rgb(255, 0, 254)`). Note: pure black (`0`) cannot be used as a key. |
 | `visible` | boolean | `true` | `false` hides the layer entirely. |
@@ -342,7 +342,7 @@ Panels.start(comic, {
 
 - `Panels.validate` (run by `new`/`start`) fails loudly with a path to the mistake, e.g. `panels: sequences[1].panels[2].layers[1]: parallax must be a number 0..1`.
 - Runtime errors in `updateFunction`/`renderFunction` and validation errors surface on a full-screen **PANELS FAULT** display (also logged as `PANELS:ERR`); **Esc** returns `"error", err` from `Panels.start`.
-- Missing images and failed audio loads are logged and skipped — the comic keeps running.
+- Missing images and failed audio loads are logged and skipped — the comic keeps running. An unknown `animate.ease` name is logged once and replaced by `"linear"`.
 - On older firmware the library degrades instead of crashing: without the clip rect, layers overhang their panels; without `game.save`, progress is not persisted; without `picocalc.sound`, audio cues are silent.
 
 ---

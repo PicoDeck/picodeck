@@ -2,7 +2,7 @@
     "id": "net.picodeck.gbc",
     "name": "GBC Emulator",
     "description": "Game Boy Color emulator - play GB and GBC games",
-    "version": "0.1",
+    "version": "0.2",
     "author": "PicoDeck",
     "system_clock_khz": 300000,
     "requirements": [

@@ -81,6 +81,20 @@ function picocalc.display.setPixel(x, y, color) end
 ---@return integer color RGB565 colour
 function picocalc.display.getPixel(x, y) end
 
+---A handle on the frame being drawn (the back buffer), for bulk pixel access.
+---
+---Lua cannot dereference a raw pointer, so this is the capability rather than
+---the address the C `display->getBackBuffer()` returns: read and write the
+---back buffer as host-order RGB565 with no intermediate image. For a single
+---pixel use `display.setPixel()` / `display.getPixel()`, which this does not
+---mirror.
+---
+---The handle refers to the back buffer by role, not by address, so it stays
+---correct across `flush()` (which swaps the buffers under it). It is the same
+---stateless object every call returns.
+---@return PicoDeckFramebuffer
+function picocalc.display.getBackBuffer() end
+
 ---Fill a solid rectangle.
 ---@param x integer
 ---@param y integer
@@ -547,7 +561,8 @@ function picocalc.sys.getVersion() end
 ---@return string? error
 function picocalc.sys.applyUpdate(path) end
 
----Register a custom item in the system-menu overlay (max 4 per app).
+---Register a custom item in the system-menu overlay (max 4 per app, counting
+---`addMenuOption` rows too).
 ---The callback runs after the menu has closed and given the app its screen back
 ---(both framebuffers, when memory for the copy is available); what it draws
 ---shows at the app's next flush, and it may call `sys.exit()`.
@@ -555,7 +570,21 @@ function picocalc.sys.applyUpdate(path) end
 ---@param callback fun() Called when the item is selected
 function picocalc.sys.addMenuItem(label, callback) end
 
----Remove all app-registered menu items. Called automatically on app exit.
+---Register a value row in the system-menu overlay, shown as `Label: value <>`
+---(shares the 4 slots with `addMenuItem`). Left/Right step the value (stopping
+---at the ends), Enter steps forward and wraps; the menu stays open. After the
+---menu closes, the callback of each row whose value changed runs, in row
+---order, before a chosen item's callback (also when the user picks Exit App).
+---A bad argument raises an error. `nil` on firmware older than this function.
+---@param label string Row text, at most 12 bytes
+---@param options string[] 1 to 16 values, each at most 14 bytes (copied: changing the table later changes nothing)
+---@param current string The value shown first; one of `options`
+---@param callback fun(value: string, index: integer) The new value and its 1-based index
+function picocalc.sys.addMenuOption(label, options, current, callback) end
+
+---Remove all app-registered menu rows, items and option rows alike. Called
+---automatically on app exit. Called from a menu callback, it also cancels the
+---callbacks still pending from that menu visit.
 function picocalc.sys.clearMenuItems() end
 
 ---Deliberately trigger a HardFault for crash-handler testing. **Never call in production.**
@@ -666,6 +695,20 @@ function PicoDeckFile:seek(offset, whence) end
 ---@return integer offset
 function PicoDeckFile:tell() end
 
+---The total size of this open file in bytes, without moving the read
+---position. `seek(0, "end")` then `tell()` gives the same number but leaves the
+---handle at end of file.
+---@return integer? bytes `nil` if the size could not be read
+---@return string? error
+function PicoDeckFile:fsize() end
+
+---Function form of `file:fsize()`: the size of an open file in bytes, without
+---moving the read position.
+---@param file PicoDeckFile
+---@return integer? bytes `nil` if the size could not be read
+---@return string? error
+function picocalc.fs.fsize(file) end
+
 ---Open a file on the SD card.
 ---@param path string Absolute SD card path
 ---@param mode? string `"r"` (default), `"w"`, `"a"`, `"r+"`, etc.
@@ -723,6 +766,14 @@ function picocalc.fs.readFile(path) end
 ---@param path string
 ---@return integer
 function picocalc.fs.size(path) end
+
+---Return `true` if the path exists and is a directory (the volume root `/`
+---counts, for an app with the root-filesystem requirement). `false` for a file, for
+---a missing path, and for a path the sandbox refuses (the same "not usable"
+---answer `fs.exists` gives).
+---@param path string
+---@return boolean
+function picocalc.fs.isDir(path) end
 
 ---@class PicoDeckDirEntry
 ---@field name string File or directory name (not full path)
@@ -1385,9 +1436,18 @@ function picocalc.tcp.new(host, port, use_ssl) end
 function PicoDeckTcpConn:connect() end
 
 ---Before `connect()`: TLS without certificate verification or the clock
----check (self-signed development servers only). Default false.
+---check, for self-signed servers: development servers, or servers whose
+---certificate the app pins itself with `peerFingerprint()`. Default false.
 ---@param flag boolean
 function PicoDeckTcpConn:setInsecure(flag) end
+
+---The SHA-256 of the TLS server's certificate as 64 lowercase hex digits, for
+---apps that pin certificates themselves (trust on first use). Still there
+---after the server closes or the connection fails, until the next `connect()`;
+---nil for a plain socket, before the handshake completes, after `close()`, or
+---when the server sent no certificate.
+---@return string?
+function PicoDeckTcpConn:peerFingerprint() end
 
 ---Write data to the connection. Returns bytes written, or -1 on error.
 ---@param data string
@@ -1517,7 +1577,8 @@ function picocalc.perf.getFPS() end
 ---@return integer
 function picocalc.perf.getFrameTime() end
 
----Draw a colour-coded FPS counter at (x, y).
+---Draw a colour-coded FPS counter at (x, y). Draws nothing while the OS
+---counter (Settings -> Show FPS) is on: that one replaces it.
 ---@param x? integer Default: right-aligned 8px from the right edge
 ---@param y? integer Default: 24, just below the standard header
 function picocalc.perf.drawFPS(x, y) end
@@ -1668,7 +1729,9 @@ function picocalc.graphics.image.load(path) end
 ---@param y integer Source y offset
 ---@param w integer Region width
 ---@param h integer Region height
----@return PicoDeckImage img Raises on failure
+---@return PicoDeckImage img Raises on failure. Its pixel coordinates start at (0, 0)
+---@return integer w Width actually produced (the region is clamped to the image)
+---@return integer h Height actually produced
 function picocalc.graphics.image.loadRegion(path, x, y, w, h) end
 
 ---Load and scale an image from the SD card.
@@ -2357,7 +2420,7 @@ local PicoDeckAnimator = {}
 ---@param duration_ms integer Duration comes first
 ---@param from number
 ---@param to number
----@param easing? string Easing name: "linear" (default), "sineIn", "sineOut", "sineInOut", "quadIn", "quadOut", "quadInOut", "cubicIn", "cubicOut", "cubicInOut" (an unknown name is linear; a function is not accepted)
+---@param easing? string Easing name: "linear" (default), "sineIn", "sineOut", "sineInOut", "quadIn", "quadOut", "quadInOut", "cubicIn", "cubicOut", "cubicInOut" (nil is linear; any other name raises; a function is not accepted)
 ---@param delay_ms? integer Wait this long before starting
 ---@return PicoDeckAnimator
 function picocalc.graphics.animation.animator.new(duration_ms, from, to, easing, delay_ms) end
@@ -2755,7 +2818,8 @@ function PicoDeckCamera:screenToWorld(sx, sy) end
 ---@param dt number Seconds since the last update
 function PicoDeckCamera:update(dt) end
 
----Return the current draw offset applied to the display.
+---Return the screen position of world (0, 0), with the camera position, zoom
+---and shake folded in: screen = world * zoom + offset (whole pixels).
 ---@return integer ox
 ---@return integer oy
 function PicoDeckCamera:getOffset() end
@@ -3108,17 +3172,19 @@ function picocalc.crypto.ecdh_x25519_new() end
 ---@return PicoDeckEcdh
 function picocalc.crypto.ecdh_p256_new() end
 
----Verify an RSA signature. Returns `true` if valid.
----@param pubkey string DER-encoded RSA public key
----@param sig string Signature bytes
----@param hash string Hash of the signed data
+---Verify an RSA PKCS#1 v1.5 signature over a SHA-256 hash. Returns `true` if valid.
+---Raises if `hash` is not exactly 32 bytes; malformed or mismatched keys and signatures return `false`.
+---@param pubkey string RSA public key in SSH wire format: string("ssh-rsa") + mpint(e) + mpint(n)
+---@param sig string Raw PKCS#1 v1.5 signature bytes, exactly the modulus length (not the SSH signature wrapper)
+---@param hash string 32-byte SHA-256 hash of the signed data
 ---@return boolean valid
 function picocalc.crypto.rsaVerify(pubkey, sig, hash) end
 
----Verify an ECDSA P-256 signature. Returns `true` if valid.
----@param pubkey string P-256 public key bytes (65-byte uncompressed)
----@param sig string Signature bytes
----@param hash string Hash of the signed data
+---Verify an ECDSA P-256 signature over a SHA-256 hash. Returns `true` if valid.
+---Raises if `hash` is not exactly 32 bytes; malformed or mismatched keys and signatures return `false`.
+---@param pubkey string P-256 public key in SSH wire format: string("ecdsa-sha2-nistp256") + string("nistp256") + string(Q), Q the 65-byte uncompressed point
+---@param sig string The inner signature blob mpint(r) + mpint(s), without the outer algorithm-name wrapper
+---@param hash string 32-byte SHA-256 hash of the signed data
 ---@return boolean valid
 function picocalc.crypto.ecdsaP256Verify(pubkey, sig, hash) end
 
@@ -3220,6 +3286,43 @@ function picocalc.zip.list(zip_path) end
 ---@return string? error
 function picocalc.zip.extract(zip_path, dest_dir, progress_fn) end
 
+---@class PicoDeckFramebuffer
+---A handle on the frame being drawn. From `picocalc.display.getBackBuffer()`.
+local PicoDeckFramebuffer = {}
+
+---Width of the framebuffer in pixels (320).
+---@return integer
+function PicoDeckFramebuffer:width() end
+
+---Height of the framebuffer in pixels (320).
+---@return integer
+function PicoDeckFramebuffer:height() end
+
+---Read a rectangle of the back buffer as host-order RGB565, row-major, top row
+---first -- the same encoding `PicoDeckImage:getPixels()` uses. The clip rect
+---does not apply (matching `display.getPixel()`); the rectangle must lie
+---inside the screen or this raises (before anything is allocated).
+---@param x integer 0-319
+---@param y integer 0-319
+---@param w integer pixels
+---@param h integer pixels
+---@return string pixels `w * h * 2` bytes
+function PicoDeckFramebuffer:getPixels(x, y, w, h) end
+
+---Write host-order RGB565 into the back buffer. Clipped to the clip rect
+---exactly as `display.setPixel()` is, so a partly hidden rectangle writes only
+---its visible part, each pixel landing where it would unclipped. `data` must be
+---exactly `w * h * 2` bytes, and the rectangle must lie inside the screen, or
+---this raises. Returns `false` when the rectangle is on screen but wholly
+---outside the clip rect, meaning nothing was drawn.
+---@param data string `w * h * 2` bytes
+---@param x integer
+---@param y integer
+---@param w integer pixels
+---@param h integer pixels
+---@return boolean drew `false` if nothing was visible
+function PicoDeckFramebuffer:setPixels(data, x, y, w, h) end
+
 ---@class PicoDeckZipArchive : userdata
 local PicoDeckZipArchive = {}
 
@@ -3245,6 +3348,26 @@ function PicoDeckZipArchive:exists(name) end
 ---@return integer? bytes
 function PicoDeckZipArchive:size(name) end
 
+---Number of entries in the archive: files plus directory entries. Valid entry
+---indexes are `0 .. numEntries() - 1` (0-based, as in the C API; `list()` is a
+---1-based array, so loop `for i = 0, ar:numEntries() - 1 do`). Raises
+---`archive is closed` on a closed archive.
+---@return integer count
+function PicoDeckZipArchive:numEntries() end
+
+---The index of an entry (0-based, as in the C API), as `statIndex()` and
+---`extractEntry()` address it, or `nil` if no entry has that exact name.
+---@param name string
+---@return integer? index
+function PicoDeckZipArchive:locate(name) end
+
+---One entry's metadata by index, keyed the way `list()` reports it. `nil` for an
+---index outside `0 .. numEntries() - 1` (0-based, as in the C API); raises on a
+---closed archive.
+---@param index integer 0-based; must be an integer
+---@return { name: string, size: integer, compressed_size: integer, is_dir: boolean }? entry
+function PicoDeckZipArchive:statIndex(index) end
+
 ---Decompress a whole entry into a Lua string. Fails if the entry exceeds
 ---`max_len` (when given) or the 4 MB in-memory cap.
 ---@param name string
@@ -3260,6 +3383,16 @@ function PicoDeckZipArchive:read(name, max_len) end
 ---@return boolean ok
 ---@return string? error
 function PicoDeckZipArchive:extract(name, dest_path) end
+
+---`extract()` addressed by entry index (0-based, `0 .. numEntries() - 1`)
+---instead of name. A bad index returns `false, "no such entry"` before the
+---destination is opened, so an existing file there is untouched. Raises on a
+---closed archive.
+---@param index integer 0-based; must be an integer
+---@param dest_path string
+---@return boolean ok
+---@return string? error
+function PicoDeckZipArchive:extractEntry(index, dest_path) end
 
 ---Extract every file entry into a directory. Optional progress callback.
 ---@param dest_dir string
@@ -3338,3 +3471,161 @@ function picocalc.repl.echo(flag) end
 ---@param vertSize? integer Vertex dot size (default 3)
 ---@param faces? integer[] Flat vertex-index triples for filled triangles
 function draw3DWireframeEx(verts, edges, angleX, angleY, angleZ, scx, scy, fov, edgeColor, fillColor, fillMode, vertSize, faces) end
+
+-- =============================================================================
+-- picocalc.chargrid
+-- =============================================================================
+
+---@class PicoDeckCharGrid : userdata
+local PicoDeckCharGrid = {}
+---@return integer cols
+---@return integer rows
+function PicoDeckCharGrid:getSize() end
+---@return integer cellW
+---@return integer cellH
+function PicoDeckCharGrid:getCellSize() end
+---@param fontId integer
+function PicoDeckCharGrid:setFont(fontId) end
+---@param code integer 1-255
+---@param rows integer[] cellH rows, bit cellW-1 = leftmost pixel
+function PicoDeckCharGrid:defineGlyph(code, rows) end
+---@param colors integer[] RGB565
+---@param first? integer default 0
+function PicoDeckCharGrid:setPalette(colors, first) end
+function PicoDeckCharGrid:setColor(index, color) end
+---@return integer color
+function PicoDeckCharGrid:getColor(index) end
+---@param glyphs string|integer[]
+---@param dither? boolean
+function PicoDeckCharGrid:setRamp(glyphs, dither) end
+---@param indices integer[]
+---@param dither? boolean
+function PicoDeckCharGrid:setColorRamp(indices, dither) end
+---@param glyph? integer|string
+---@param fg? integer
+---@param bg? integer
+function PicoDeckCharGrid:clear(glyph, fg, bg) end
+---@param glyph integer|string
+---@param fg? integer
+---@param bg? integer
+function PicoDeckCharGrid:set(x, y, glyph, fg, bg) end
+---@return integer glyph
+---@return integer fg
+---@return integer bg
+function PicoDeckCharGrid:get(x, y) end
+---@param glyph? integer|string
+function PicoDeckCharGrid:fill(x, y, w, h, glyph, fg, bg) end
+---@param glyphs string|integer[]|integer|nil
+---@param fgs? string|integer[]|integer
+---@param bgs? string|integer[]|integer
+---@param x? integer
+function PicoDeckCharGrid:setRow(y, glyphs, fgs, bgs, x) end
+---@return string glyphs
+---@return string fgs
+---@return string bgs
+function PicoDeckCharGrid:getRow(y, x, n) end
+function PicoDeckCharGrid:setRect(x, y, w, h, glyphs, fgs, bgs) end
+---@param levels number[]|nil
+---@param tones? number[]
+---@param x? integer
+function PicoDeckCharGrid:shadeRow(y, levels, tones, x) end
+---@return integer x
+function PicoDeckCharGrid:print(x, y, text, fg, bg) end
+---@return integer rows
+function PicoDeckCharGrid:printWrapped(x, y, w, text, fg, bg) end
+---@param style? integer BOX_SINGLE | BOX_BLOCK | BOX_ASCII
+function PicoDeckCharGrid:box(x, y, w, h, style, fg, bg) end
+---@param transparent? string|integer default " "
+function PicoDeckCharGrid:stamp(x, y, art, fg, bg, transparent) end
+---@param src PicoDeckCharGrid
+---@param transparentGlyph? integer|string
+function PicoDeckCharGrid:blit(src, sx, sy, w, h, dx, dy, transparentGlyph) end
+function PicoDeckCharGrid:scroll(dx, dy, glyph, fg, bg) end
+function PicoDeckCharGrid:draw(px, py, sx, sy, w, h) end
+---@return boolean
+function PicoDeckCharGrid:isDirty() end
+---@return {cells: integer, us: integer}
+function PicoDeckCharGrid:getStats() end
+
+---@class PicoDeckCharShader : userdata
+local PicoDeckCharShader = {}
+---@param name string a declared uniform
+---@param value number
+function PicoDeckCharShader:set(name, value) end
+---@param name string a declared array
+---@param values number[] shader index 0 is values[1]
+---@param n? integer default #values, at most 1024
+function PicoDeckCharShader:setArray(name, values, n) end
+---@param grid PicoDeckCharGrid
+---@param ... number|PicoDeckCharGrid optional x, y, w, h, then the declared layers in order
+function PicoDeckCharShader:run(grid, ...) end
+---@return {cells: integer, us: integer, instructions: integer, registers: integer}
+function PicoDeckCharShader:getStats() end
+
+---@class picocalc.chargrid
+---@field EMPTY integer
+---@field DOT1 integer
+---@field DOT2 integer
+---@field DOT3 integer
+---@field DOT4 integer
+---@field SHADE1 integer
+---@field SHADE2 integer
+---@field SHADE3 integer
+---@field SHADE4 integer
+---@field HALF_TOP integer
+---@field HALF_BOTTOM integer
+---@field HALF_LEFT integer
+---@field HALF_RIGHT integer
+---@field BOX_H integer
+---@field BOX_V integer
+---@field BOX_TL integer
+---@field BOX_TR integer
+---@field BOX_BL integer
+---@field BOX_BR integer
+---@field BOX_LT integer
+---@field BOX_RT integer
+---@field BOX_TT integer
+---@field BOX_BT integer
+---@field BOX_X integer
+---@field TRI_UP integer
+---@field TRI_RIGHT integer
+---@field TRI_DOWN integer
+---@field TRI_LEFT integer
+---@field BOX_SINGLE integer
+---@field BOX_BLOCK integer
+---@field BOX_ASCII integer
+picocalc.chargrid = {}
+---@param cols number
+---@param rows number
+---@param fontId? integer
+---@param cellW? number
+---@param cellH? number
+---@return PicoDeckCharGrid
+function picocalc.chargrid.new(cols, rows, fontId, cellW, cellH) end
+---@param source string
+---@return PicoDeckCharShader|nil shader
+---@return string? err "line L:C: message"
+function picocalc.chargrid.shader(source) end
+
+-- =============================================================================
+-- picocalc.noise
+-- =============================================================================
+
+---@class picocalc.noise
+picocalc.noise = {}
+---@param x number floored
+---@param y number floored
+---@param seed? integer default 0
+---@return number h in [0, 1)
+function picocalc.noise.hash(x, y, seed) end
+---@param x number
+---@param y number
+---@param seed? integer default 0
+---@return number v in [0, 1)
+function picocalc.noise.value(x, y, seed) end
+---@param x number
+---@param y number
+---@param octaves integer 1-8
+---@param seed? integer default 0
+---@return number v in [0, 1)
+function picocalc.noise.fbm(x, y, octaves, seed) end

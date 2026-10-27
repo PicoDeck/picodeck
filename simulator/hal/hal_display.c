@@ -6,7 +6,7 @@
 #include <string.h>
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
-#include "web/web_platform.h"
+#include "web_platform.h"
 #endif
 
 static SDL_Window* g_window = NULL;

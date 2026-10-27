@@ -67,7 +67,10 @@ static void term_clear(void) {
 
 static void term_draw_char(int x, int y, char c, uint16_t fg, uint16_t bg) {
     char s[2] = {c, '\0'};
+    int saved_font = display_get_font();   // 6x8 cells: the built-in font
+    display_set_font(0);
     display_draw_text(x * 6, y * 8, s, fg, bg);
+    display_set_font(saved_font);
 }
 
 static void term_draw_line(int row, const char *line, int start_col, uint16_t fg, uint16_t bg) {

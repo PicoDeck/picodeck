@@ -9,12 +9,7 @@ sudo apt-get install -y cmake curl unzip gcc-arm-none-eabi libnewlib-arm-none-ea
 # Lua 5.4.7, patched to honour the CMake Lua config (see cmake/picodeck_lua.cmake).
 make download-lua
 
-# FatFS R0.15 upstream sources only; ffconf.h and port/diskio_spi.c are tracked.
-curl -fL https://elm-chan.org/fsw/ff/arc/ff15.zip -o /tmp/ff15.zip
-unzip -o -j /tmp/ff15.zip \
-  'source/ff.c' 'source/ff.h' 'source/diskio.h' \
-  'source/ffsystem.c' 'source/ffunicode.c' \
-  -d third_party/fatfs/
+scripts/ci/fetch-fatfs.sh
 
 if [ ! -d "$HOME/pico-sdk" ]; then
   git clone --depth 1 --branch 2.2.0 https://github.com/raspberrypi/pico-sdk.git "$HOME/pico-sdk"

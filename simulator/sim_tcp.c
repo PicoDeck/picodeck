@@ -6,6 +6,8 @@
 #include "os.h"
 
 #include <curl/curl.h>
+#include "mbedtls/base64.h"
+#include "mbedtls/sha256.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,6 +67,39 @@ static void rx_write(tcp_conn_t *c, const uint8_t *data, uint32_t len) {
     c->rx_count += len;
 }
 
+// The lowercase hex SHA-256 of the peer certificate curl saw (CERTINFO's PEM
+// "Cert:" field, decoded), as tcp.c computes it on the device; "" when curl
+// gives none.
+static void sim_peer_fingerprint(CURL *easy, char *out, size_t n) {
+    if (n < 65) return;
+    out[0] = '\0';
+    struct curl_certinfo *ci = NULL;
+    if (curl_easy_getinfo(easy, CURLINFO_CERTINFO, &ci) != CURLE_OK || !ci || ci->num_of_certs < 1)
+        return;
+    for (struct curl_slist *s = ci->certinfo[0]; s; s = s->next) {
+        if (strncmp(s->data, "Cert:", 5) != 0) continue;
+        const char *begin = strstr(s->data, "-----BEGIN CERTIFICATE-----");
+        const char *end = begin ? strstr(begin, "-----END CERTIFICATE-----") : NULL;
+        if (!end) return;
+        begin += strlen("-----BEGIN CERTIFICATE-----");
+        size_t cap = (size_t)(end - begin);
+        unsigned char *b64 = malloc(cap + 1), *der = malloc(cap);
+        size_t len = 0, der_len = 0;
+        if (b64 && der) {
+            for (const char *p = begin; p < end; p++)
+                if (*p != '\n' && *p != '\r' && *p != ' ') b64[len++] = (unsigned char)*p;
+            unsigned char h[32];
+            if (mbedtls_base64_decode(der, cap, &der_len, b64, len) == 0 &&
+                mbedtls_sha256(der, der_len, h, 0) == 0) {
+                for (int i = 0; i < 32; i++) snprintf(out + 2 * i, 3, "%02x", h[i]);
+            }
+        }
+        free(b64);
+        free(der);
+        return;
+    }
+}
+
 // ── Pool management ─────────────────────────────────────────────────────────
 
 void tcp_init(void) {
@@ -111,13 +146,17 @@ tcp_conn_t *tcp_get_conn(int idx) {
 bool tcp_connect(tcp_conn_t *c, const char *host, uint16_t port, bool use_ssl) {
     if (!c || !wifi_is_available())
         return false;
-    strncpy(c->host, host, sizeof(c->host) - 1);
+    if (host != c->host) {  // Lua passes the slot's own buffer
+        strncpy(c->host, host, sizeof(c->host) - 1);
+        c->host[sizeof(c->host) - 1] = '\0';
+    }
     c->port = port;
     c->use_ssl = use_ssl;
     c->state = TCP_STATE_QUEUED;
     c->pending = 0;
     c->rx_head = c->rx_tail = c->rx_count = 0;
     c->err[0] = '\0';
+    c->fingerprint[0] = '\0';
 
     conn_req_t req = {.type = CONN_REQ_TCP_CONNECT, .conn = (http_conn_t *)c};
     return wifi_req_push(&req);
@@ -247,8 +286,12 @@ void sim_tcp_start_connect(tcp_conn_t *c) {
         snprintf(url, sizeof(url), "https://%s:%u", c->host, (unsigned)c->port);
         curl_easy_setopt(easy, CURLOPT_URL, url);
         curl_easy_setopt(easy, CURLOPT_CONNECT_ONLY, 1L);
-        curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
-        curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
+        // setInsecure skips the certificate check, as on the device. No ALPN:
+        // the device's Mongoose offers none, and this is a raw TLS socket.
+        curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, c->insecure ? 0L : 1L);
+        curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, c->insecure ? 0L : 2L);
+        curl_easy_setopt(easy, CURLOPT_SSL_ENABLE_ALPN, 0L);
+        curl_easy_setopt(easy, CURLOPT_CERTINFO, 1L);
         curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 10L);
 
         // Blocking perform on Core 1 — OK since it's a background thread
@@ -261,6 +304,7 @@ void sim_tcp_start_connect(tcp_conn_t *c) {
             return;
         }
 
+        sim_peer_fingerprint(easy, c->fingerprint, sizeof(c->fingerprint));
         c->pcb = easy;
         s_is_tls[idx] = true;
         c->state = TCP_STATE_CONNECTED;
@@ -390,8 +434,10 @@ void sim_tcp_poll(void) {
             if (res == CURLE_OK && nread > 0) {
                 rx_write(c, buf, (uint32_t)nread);
                 c->pending |= TCP_CB_READ;
-            } else if (res != CURLE_AGAIN && res != CURLE_OK) {
-                // Connection closed or error
+            } else if (res != CURLE_AGAIN) {
+                // CURLE_OK with nothing read: the server closed (a TLS
+                // close_notify, which Gemini servers always send); any other
+                // result but CURLE_AGAIN is an error. Either way it is over.
                 c->state = TCP_STATE_CLOSED;
                 c->pending |= TCP_CB_CLOSED;
                 curl_easy_cleanup((CURL *)c->pcb);

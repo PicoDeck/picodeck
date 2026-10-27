@@ -17,7 +17,7 @@ static const void *s_mod_owner = NULL;
 // The live player at idx, or a Lua error. The pointer is NULL once __gc ran
 // (reachable only from a later finaliser: __gc is not a method).
 static mod_player_t *check_modplayer(lua_State *L, int idx) {
-    mod_player_t **ud = luaL_checkudata(L, idx, MODPLAYER_USERDATA);
+    mod_player_t **ud = lb_checkudata(L, idx, MODPLAYER_USERDATA);
     if (!*ud)
         luaL_error(L, "attempt to use a destroyed modplayer");
     return *ud;
@@ -26,7 +26,7 @@ static mod_player_t *check_modplayer(lua_State *L, int idx) {
 static int l_mod_create(lua_State *L) {
     lua_rawgetp(L, LUA_REGISTRYINDEX, &s_mod_owner);  // weak cache
     if (lua_rawgeti(L, -1, 1) == LUA_TUSERDATA) {
-        mod_player_t **live = luaL_checkudata(L, -1, MODPLAYER_USERDATA);
+        mod_player_t **live = lb_checkudata(L, -1, MODPLAYER_USERDATA);
         if (*live && (const void *)live == s_mod_owner)
             return 1;  // the one live handle
     }
@@ -117,7 +117,7 @@ static int l_mod_set_loop(lua_State *L) {
 // Only the owning handle stops the player and frees its module (see
 // s_mod_owner); a stale handle just goes dead.
 static int l_mod_gc(lua_State *L) {
-    mod_player_t **ud = luaL_checkudata(L, 1, MODPLAYER_USERDATA);
+    mod_player_t **ud = lb_checkudata(L, 1, MODPLAYER_USERDATA);
     if (*ud && (const void *)ud == s_mod_owner) {
         mod_player_destroy(*ud);
         s_mod_owner = NULL;

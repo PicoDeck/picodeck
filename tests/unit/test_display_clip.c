@@ -166,6 +166,72 @@ static void test_lines_match_reference(void) {
   CHECK_EQ_INT(bad, 0);
 }
 
+static void ref_fill(uint16_t *fb, int stride, const disp_clip_t *c, int x,
+                     int y, int w, int h, uint16_t v) {
+  for (int r = y; r < y + h; r++)
+    for (int i = x; i < x + w; i++)
+      if (i >= c->x0 && i <= c->x1 && r >= c->y0 && r <= c->y1)
+        fb[r * stride + i] = v;
+}
+
+// Rects of every width and start parity (the store loop's aligned, odd-start
+// and odd-length cases), columns, and rects clipped on any side.
+static void test_fill_matches_reference(void) {
+  int bad = 0;
+  for (int i = 0; i < 20000; i++) {
+    disp_clip_t c = random_clip();
+    int x = rnd(-20, SW + 4), y = rnd(-20, SH + 4);
+    int w = rnd(0, SW + 24), h = rnd(0, SH + 24);
+    if (i % 5 == 0) w = 1;
+    reset(0);
+    disp_fill(screen(s_got), CW, &c, x, y, w, h, 0x5A3C);
+    ref_fill(screen(s_want), CW, &c, x, y, w, h, 0x5A3C);
+    if (!same("fill") && bad++ < 5)
+      printf("  fill %d,%d %dx%d clip %d,%d-%d,%d\n", x, y, w, h, c.x0, c.y0,
+             c.x1, c.y1);
+  }
+  CHECK_EQ_INT(bad, 0);
+}
+
+// A rect as wide as the buffer's rows is filled as one run; the run is set
+// at both start alignments and the guard pixels around it stay untouched.
+static void test_fill_full_width(void) {
+  enum { W = 21, H = 7, G = 3 };  // odd width: runs end mid-word
+  static uint16_t buf[G + W * H + G + 1];
+  disp_clip_t c = {0, 0, W - 1, H - 1};
+  for (int shift = 0; shift < 2; shift++) {
+    uint16_t *fb = buf + G + shift;
+    for (int y0 = 0; y0 < H; y0++)
+      for (int h = 1; y0 + h <= H; h++) {
+        for (size_t i = 0; i < sizeof buf / sizeof buf[0]; i++) buf[i] = 0xEEEE;
+        disp_fill(fb, W, &c, -5, y0, W + 9, h, 0x0F0F);  // clipped to full width
+        bool ok = true;
+        for (int i = -G - shift; i < W * H + G + 1 - shift; i++) {
+          bool in = i >= y0 * W && i < (y0 + h) * W;
+          if (fb[i] != (in ? 0x0F0F : 0xEEEE)) ok = false;
+        }
+        if (!ok) printf("  full width: shift %d rows %d+%d\n", shift, y0, h);
+        CHECK(ok);
+      }
+  }
+}
+
+static void test_fill_px_runs(void) {
+  enum { N = 40, G = 4 };
+  static uint16_t buf[G + 1 + N + G];
+  for (int a = 0; a < 2; a++)            // start on a word boundary or not
+    for (int n = 0; n <= N; n++) {
+      for (size_t i = 0; i < sizeof buf / sizeof buf[0]; i++) buf[i] = 0x1111;
+      uint16_t *p = buf + G + a;
+      disp_fill_px(p, (size_t)n, 0xBEEF);
+      bool ok = true;
+      for (int i = -G - a; i < N + G + 1 - a; i++)
+        if (p[i] != ((i >= 0 && i < n) ? 0xBEEF : 0x1111)) ok = false;
+      if (!ok) printf("  fill_px: align %d n %d\n", a, n);
+      CHECK(ok);
+    }
+}
+
 static void test_huge_lines(void) {
   disp_clip_t c = {0, 0, SW - 1, SH - 1};
   // (0,0) -> (1e9,1e9) is the diagonal, returned without walking 1e9 steps.
@@ -187,6 +253,13 @@ static void test_huge_lines(void) {
   disp_line(screen(s_got), CW, &c, 1000000000, -1000000000, 1000000001,
             1000000000, 7);
   CHECK(same("off-screen line"));
+  // Straight lines take the fill path, before the general empty-clip check:
+  // an empty clip still draws nothing.
+  disp_clip_t empty = {5, 5, 4, 4};
+  reset(0);
+  disp_line(screen(s_got), CW, &empty, 0, 5, 40, 5, 7);
+  disp_line(screen(s_got), CW, &empty, 5, 0, 5, 30, 7);
+  CHECK(same("straight lines, empty clip"));
   // A long shallow line that crosses the screen: same pixels as walking it.
   reset(0);
   disp_line(screen(s_got), CW, &c, -30000, -10, 30000, 40, 7);
@@ -597,8 +670,135 @@ static void test_span16(void) {
   CHECK(row[1] == 2 && row[2] == 3);
 }
 
+// disp_set_pixels: distinct source pixels must land where they would unclipped
+// (the visible part only), on every clip side; reads ignore the clip.
+static void check_set_pixels(const char *what, disp_clip_t c, int x, int y,
+                             int w, int h, bool swap, bool want_ret) {
+  uint8_t src[24 * 20 * 2];
+  for (int i = 0; i < w * h; i++) {
+    uint16_t v = (uint16_t)(0x1000 + i);
+    src[2 * i] = (uint8_t)(v & 0xFF);
+    src[2 * i + 1] = (uint8_t)(v >> 8);
+  }
+  reset(0);
+  bool got = disp_set_pixels(screen(s_got), CW, &c, x, y, w, h, src, swap);
+  for (int r = 0; r < h; r++)
+    for (int col = 0; col < w; col++) {
+      int px = x + col, py = y + r;
+      if (px < c.x0 || px > c.x1 || py < c.y0 || py > c.y1) continue;
+      screen(s_want)[py * CW + px] = disp_px((uint16_t)(0x1000 + r * w + col), swap);
+    }
+  CHECK(got == want_ret);
+  CHECK(same(what));
+}
+
+static void test_set_pixels(void) {
+  for (int sw = 0; sw < 2; sw++) {
+    bool swap = sw;
+    disp_clip_t full = {0, 0, SW - 1, SH - 1};
+    check_set_pixels("unclipped", full, 3, 2, 8, 5, swap, true);
+    disp_clip_t l = {4, 0, SW - 1, SH - 1};
+    check_set_pixels("left clip", l, 0, 0, 8, 3, swap, true);
+    disp_clip_t r = {0, 0, 10, SH - 1};
+    check_set_pixels("right clip", r, 6, 0, 8, 3, swap, true);
+    disp_clip_t t = {0, 2, SW - 1, SH - 1};
+    check_set_pixels("top clip", t, 0, 0, 5, 6, swap, true);
+    disp_clip_t b = {0, 0, SW - 1, 3};
+    check_set_pixels("bottom clip", b, 0, 1, 5, 6, swap, true);
+    disp_clip_t both = {5, 2, 9, 4};
+    check_set_pixels("both sides", both, 2, 0, 12, 8, swap, true);
+    check_set_pixels("fully clipped", both, 20, 20, 4, 4, swap, false);
+    check_set_pixels("fully clipped, left of", both, 0, 2, 5, 3, swap, false);
+    disp_clip_t empty = {0, 0, -1, -1};
+    check_set_pixels("empty clip", empty, 0, 0, 4, 4, swap, false);
+  }
+}
+
+static void test_get_pixels(void) {
+  for (int sw = 0; sw < 2; sw++) {
+    bool swap = sw;
+    reset(0);
+    for (int y = 0; y < SH; y++)
+      for (int x = 0; x < SW; x++)
+        screen(s_got)[y * CW + x] = disp_px((uint16_t)(y * 100 + x), swap);
+    uint8_t out[6 * 4 * 2];
+    disp_get_pixels(screen(s_got), CW, 7, 5, 6, 4, out, swap);
+    bool ok = true;
+    for (int r = 0; r < 4; r++)
+      for (int c = 0; c < 6; c++) {
+        uint16_t v = (uint16_t)(out[2 * (r * 6 + c)] | (out[2 * (r * 6 + c) + 1] << 8));
+        if (v != (uint16_t)((5 + r) * 100 + 7 + c)) ok = false;
+      }
+    CHECK(ok);
+  }
+}
+
+// disp_copy_px_bytes against the per-byte loop it replaced, at every byte
+// offset of both sides (Lua strings and odd-x rows are not word aligned), for
+// every count through two unrolled blocks plus a remainder, both directions.
+static void test_copy_px_bytes_alignments(void) {
+  uint8_t src[4 + 2 * 40], dst[4 + 2 * 40 + 4], want[sizeof dst];
+  for (size_t i = 0; i < sizeof src; i++) src[i] = (uint8_t)(i * 37 + 11);
+  int bad = 0;
+  for (int sw = 0; sw < 2; sw++)
+    for (int so = 0; so < 4; so++)
+      for (int d0 = 0; d0 < 4; d0++)
+        for (size_t n = 0; n <= 40; n++) {
+          memset(dst, 0xEE, sizeof dst);
+          memset(want, 0xEE, sizeof want);
+          disp_copy_px_bytes(dst + d0, src + so, n, sw);
+          for (size_t i = 0; i < n; i++) {
+            uint16_t v = (uint16_t)(src[so + 2 * i] | (src[so + 2 * i + 1] << 8));
+            v = disp_px(v, sw);
+            want[d0 + 2 * i] = (uint8_t)(v & 0xFF);
+            want[d0 + 2 * i + 1] = (uint8_t)(v >> 8);
+          }
+          if (memcmp(dst, want, sizeof dst) != 0) bad++;
+        }
+  CHECK(bad == 0);
+}
+
+// Get then set round-trips any rectangle (odd x and odd widths put rows off
+// word alignment), and get reads exactly the pixels a per-pixel loop reads.
+static void test_get_set_pixels_odd_rects(void) {
+  static uint8_t out[SW * SH * 2 + 3];
+  int bad = 0;
+  for (int sw = 0; sw < 2; sw++)
+    for (int x = 0; x < 4; x++)
+      for (int w = 1; w <= 9; w++)
+        for (int off = 0; off < 4; off++) {
+          reset(0);
+          for (int yy = 0; yy < SH; yy++)
+            for (int xx = 0; xx < SW; xx++)
+              screen(s_got)[yy * CW + xx] =
+                  disp_px((uint16_t)(yy * 211 + xx * 7 + 3), sw);
+          const int y = 3, h = 5;
+          disp_get_pixels(screen(s_got), CW, x, y, w, h, out + off, sw);
+          for (int r = 0; r < h; r++)
+            for (int c = 0; c < w; c++) {
+              const uint8_t *p = out + off + 2 * (r * w + c);
+              if ((uint16_t)(p[0] | (p[1] << 8)) !=
+                  (uint16_t)((y + r) * 211 + (x + c) * 7 + 3))
+                bad++;
+            }
+          // Write it back one row lower; the rows must match what was read.
+          disp_clip_t full = {0, 0, SW - 1, SH - 1};
+          CHECK(disp_set_pixels(screen(s_got), CW, &full, x, y + 1, w, h,
+                                out + off, sw));
+          for (int r = 0; r < h; r++)
+            for (int c = 0; c < w; c++)
+              if (screen(s_got)[(y + 1 + r) * CW + x + c] !=
+                  disp_px((uint16_t)((y + r) * 211 + (x + c) * 7 + 3), sw))
+                bad++;
+        }
+  CHECK(bad == 0);
+}
+
 int main(void) {
   test_clip_rect();
+  test_fill_matches_reference();
+  test_fill_full_width();
+  test_fill_px_runs();
   test_lines_match_reference();
   test_huge_lines();
   test_triangles_match_reference();
@@ -614,5 +814,9 @@ int main(void) {
   test_tri_f_shared_edges_fill_once();
   test_tri_f_degenerate_and_huge();
   test_span16();
+  test_set_pixels();
+  test_get_pixels();
+  test_copy_px_bytes_alignments();
+  test_get_set_pixels_odd_rects();
   return check_report("test_display_clip");
 }

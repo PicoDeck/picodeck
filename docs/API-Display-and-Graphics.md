@@ -62,6 +62,58 @@ print(picocalc.display.getPixel(11, 11) == 0x1234)  -- true
 
 ---
 
+#### `picocalc.display.getBackBuffer()`
+A handle on the frame being drawn (the back buffer), for **bulk** pixel access.
+
+The C API hands out a raw `uint16_t *` here (`display->getBackBuffer()`). Lua cannot dereference a pointer — nothing in the sandbox can — so this returns the capability rather than the address: read and write the back buffer in whole rectangles as host-order RGB565, with no intermediate image. For a single pixel use `display.setPixel()` / `display.getPixel()`; this deliberately does not mirror them.
+
+- **Returns:** (`PicoDeckFramebuffer`) The framebuffer handle
+
+The handle is **stateless and refers to the back buffer by role, not by address**, so it stays correct across a `flush()` (which swaps the buffers underneath it), exactly as `setPixel`/`getPixel` do. It is the same object on every call. Fetch it again after the system menu closes if you are holding one across that.
+
+Per-pixel `display.getPixel` is usually simpler, and often fast enough: the per-call cost is Lua call overhead, so prefer `setPixels` once you are writing more than a handful of pixels in a row.
+
+##### `fb:width()` / `fb:height()`
+Framebuffer size in pixels (320 x 320). **Returns:** (number)
+
+##### `fb:getPixels(x, y, w, h)`
+Read a rectangle as a string of host-order RGB565, row-major, top row first — the same encoding `PicoDeckImage:getPixels()` returns.
+
+- **Parameters:** `x`, `y` (number) top-left; `w`, `h` (number) size in pixels
+- **Returns:** (string) `w * h * 2` bytes
+- **Errors:** if the rectangle is not wholly inside the screen, or `w`/`h` is not positive. The rectangle is checked before anything is allocated, so a huge request raises `outside the screen` rather than running out of memory
+
+The clip rect does not apply to reads (matching `display.getPixel()`).
+
+On the device (200 MHz) a read costs about 0.16-0.2 µs per byte, mostly writing the new string into PSRAM: a 320 x 27 strip (17 KB) takes about 3.7 ms and a 320 x 240 block (150 KB) about 24 ms, plus the collector's work for that much garbage. Reading back what you drew every frame is rarely worth it; `setPixels` is about four times cheaper per byte.
+
+##### `fb:setPixels(data, x, y, w, h)`
+Write host-order RGB565 into the back buffer.
+
+- **Parameters:**
+  - `data` (string): exactly `w * h * 2` bytes
+  - `x`, `y` (number): top-left
+  - `w`, `h` (number): size in pixels
+- **Returns:** (boolean) `true` when anything was drawn; `false` when the rectangle is on screen but lies wholly outside the clip rect, so nothing was drawn
+- **Errors:** if `data` is not exactly `w * h * 2` bytes, the rectangle is not inside the screen, or `w`/`h` is not positive
+
+Clipped to the clip rect exactly as `display.setPixel()` is, so a partly hidden rectangle writes only its visible part, each pixel at the position it would have unclipped. Note the asymmetry, which matches the single-pixel calls: writes respect the clip rect, reads do not.
+
+```lua
+-- Push a computed frame straight into the back buffer, no image in between.
+local fb = picocalc.display.getBackBuffer()
+local W, H = 64, 64
+local red = string.pack("<I2", picocalc.display.rgb(255, 0, 0))  -- RGB565, little-endian
+local row = string.rep(red, W)              -- one row of red
+local frame = string.rep(row, H)                -- 64 rows
+fb:setPixels(frame, 128, 128, W, H)
+picocalc.display.flush()
+```
+
+Because the bytes are host-order RGB565, build them from the same `rgb(r, g, b)` helper the rest of the API takes, encoded with `string.pack("<I2", color)`, not from the swapped buffer `display->getBackBuffer()` exposes to C.
+
+---
+
 #### `picocalc.display.fillRect(x, y, width, height, color)`
 Draws a filled rectangle.
 
@@ -415,7 +467,7 @@ end
 ---
 
 #### `picocalc.display.setFont(fontId)`
-Set the active bitmap font for `drawText` and `textWidth`.
+Set the active bitmap font for `drawText` and `textWidth`. System UI always draws in the built-in 6x8 font whatever font is active, and leaves your selection as it was: the system menu, toasts, the `ui.textInput` / `ui.confirm` dialogs, `fs.browse`, the status area of `ui.drawHeader`, and the OS error, crash, update and screenshot screens. The title of `ui.drawHeader` and the app-positioned `ui.draw*` widgets (`drawFooter`, `drawTabs`, `drawPanel`, `ui.splash` and the rest) use the active font.
 
 - **Parameters:**
   - `fontId` (number): One of the `FONT_*` constants, or an id returned by `loadFont`. An id that is not currently loaded (unknown, unloaded, or never loaded) is ignored and the active font is left unchanged.
@@ -1235,18 +1287,21 @@ print(info.width, info.height, info.format)
 ---
 
 #### `picocalc.graphics.image.loadRegion(path, x, y, w, h)`
-Loads an image and keeps only the given sub-rectangle. The region is clamped to the image bounds.
+Loads an image and keeps only the given sub-rectangle. The region is clamped to the image bounds, so the result can be smaller than the size you asked for: compare the returned `w`, `h` with the request to detect it.
+
+The loaded region is its own image. Its pixel coordinates start at `(0, 0)`, not at the `x`, `y` you passed, so read it back with `region:getPixels(0, 0, w, h)`. (Unlike `loadRegion`, `img:getPixels` and `img:setPixels` do not clamp: a rectangle that is not fully inside the image raises.)
 
 - **Parameters:**
   - `path` (string): Absolute file path
   - `x`, `y` (number): Top-left of the region
   - `w`, `h` (number): Region dimensions in pixels
-- **Returns:** (userdata) Image object
-- **Errors:** If the file fails to load or the region lies outside the image
+- **Returns:** (userdata, integer, integer) The image, then its width and height after clamping. As the last argument of a call, all three values are passed on, so wrap it in parentheses where only the image is wanted: `table.insert(tiles, (loadRegion(...)))`.
+- **Errors:** If the file fails to load or the region does not overlap the image at all
 
 ```lua
 -- Load just the top-left 64x64 corner of a large image
-local corner = picocalc.graphics.image.loadRegion("/apps/myapp/big.png", 0, 0, 64, 64)
+local corner, w, h = picocalc.graphics.image.loadRegion("/apps/myapp/big.png", 0, 0, 64, 64)
+local raw = corner:getPixels(0, 0, w, h)   -- region coordinates, not the source's
 ```
 
 ---
@@ -1498,7 +1553,7 @@ Coordinates and sizes round like every other quantity; colors must be integers. 
 
 Everything that draws an image reads its pixels at draw time, so a write shows at the next draw, with one exception: `sprite:setSourceRect` copies its rectangle out of the image when you call it (and `sprite:copy()` copies that copy). After writing to a sprite sheet, call `setSourceRect` again on the sprites that use it.
 
-Each call costs a Lua-to-C call: for more than a few pixels, build a string and use `setPixels`. A bulk string lives on the Lua heap like any other (a whole 256×256 image is 128 KB), so work in rows or tiles on large images. `getPixels` of a rectangle narrower than the image briefly needs twice the string's size (it is assembled in a buffer, then copied).
+Each call costs a Lua-to-C call: for more than a few pixels, build a string and use `setPixels`. A bulk string lives on the Lua heap like any other (a whole 256×256 image is 128 KB), so work in rows or tiles on large images. `getPixels` writes straight into the string it returns, so a read needs only that string's memory.
 
 #### `img:getPixel(x, y)`
 Returns the color of one pixel.
@@ -1534,7 +1589,7 @@ Returns the pixels of the rectangle (default: the whole image) as a string of `w
 - **Parameters:**
   - `x`, `y`, `w`, `h` (number, optional): Rectangle inside the image; give all four or none. A zero width or height returns `""`.
 - **Returns:** (string) Pixel data
-- **Errors:** If the rectangle is not inside the image
+- **Errors:** If the rectangle is not inside the image. It is never clamped; `loadRegion` does clamp, and its result is a separate image whose coordinates start at `(0, 0)`.
 
 ```lua
 local s = img:getPixels(0, 0, 4, 1)           -- the first 4 pixels of row 0
@@ -1550,7 +1605,7 @@ Writes the rectangle (default: the whole image) from a string of exactly `w * h 
   - `data` (string): Pixel data
   - `x`, `y`, `w`, `h` (number, optional): Rectangle inside the image; give all four or none
 - **Returns:** None
-- **Errors:** If `data` is not a string of exactly `w * h * 2` bytes, or the rectangle is not inside the image
+- **Errors:** If `data` is not a string of exactly `w * h * 2` bytes, or the rectangle is not inside the image (never clamped, unlike `loadRegion`)
 
 ```lua
 -- A 64x64 checkerboard floor for mode 7
@@ -2199,7 +2254,7 @@ Resets the collision rectangle to the full sprite size.
 ---
 
 #### `sprite:setClipRect(x, y, w, h)` / `sprite:setClipRect(rect)`
-Sets a clipping rectangle for the sprite, relative to the screen.
+Sets a clipping rectangle for the sprite, relative to the screen. The rectangle is stored but not applied when the sprite is drawn.
 
 - **Parameters:**
   - `x`, `y`, `w`, `h` (number), OR
@@ -2211,6 +2266,26 @@ Sets a clipping rectangle for the sprite, relative to the screen.
 #### `sprite:clearClipRect()`
 Clears the clipping rectangle.
 
+- **Returns:** None
+
+---
+
+#### `picocalc.graphics.sprite.setClipRectsInRange(x, y, w, h, startZ, endZ)` / `picocalc.graphics.sprite.setClipRectsInRange(rect, startZ, endZ)`
+Sets the same clipping rectangle on every sprite whose z-index is between `startZ` and `endZ` (inclusive). Like `sprite:setClipRect()`, the rectangle is stored but not applied when drawing.
+
+- **Parameters:**
+  - `x`, `y`, `w`, `h` (number), OR
+  - `rect` (table): `{x, y, w, h}` (all four fields required)
+  - `startZ`, `endZ` (number): Z-index range, inclusive
+- **Returns:** None
+
+---
+
+#### `picocalc.graphics.sprite.clearClipRectsInRange(startZ, endZ)`
+Clears the clipping rectangle of every sprite whose z-index is between `startZ` and `endZ` (inclusive).
+
+- **Parameters:**
+  - `startZ`, `endZ` (number): Z-index range, inclusive
 - **Returns:** None
 
 ---
@@ -2309,6 +2384,42 @@ Sets a stencil image for the sprite. Accepted but not applied (no effect yet).
 
 ---
 
+#### `sprite:clearStencil()`
+Removes the sprite's stencil image and stencil pattern. Since stencils are not applied when drawing, this has no visible effect.
+
+- **Returns:** None
+
+---
+
+#### `sprite:setImageDrawMode(mode)`
+Accepted for compatibility; has no effect. Arguments are ignored.
+
+- **Returns:** None
+
+---
+
+#### `sprite:setBackgroundDrawingCallback(callback)`
+Accepted for compatibility; has no effect. The callback is ignored and never called.
+
+- **Returns:** None
+
+---
+
+#### `sprite:alphaCollision(other)`
+Pixel-perfect overlap test between two sprites: true only if at least one pixel that is not the transparent color in this sprite lies on a non-transparent pixel of `other`. Each sprite's own transparent color is used, falling back to the display's. Flips are honoured. Falls back to a plain bounding-box overlap test when either sprite has no image, is rotated, or is scaled (other than integer nearest-neighbour scaling) or has a vertical scale other than 1.
+
+- **Parameters:**
+  - `other` (userdata): The other sprite
+- **Returns:** (boolean) True if the sprites overlap
+
+```lua
+if player:alphaCollision(enemy) then
+    print("hit")
+end
+```
+
+---
+
 #### `sprite:setTilemap(tilemap)`
 Assigns a tilemap to this sprite. When set, the sprite renders the tilemap instead of a single image. The sprite's position acts as the tilemap scroll offset. Pass `nil` to clear.
 
@@ -2323,6 +2434,21 @@ local bgSprite = picocalc.graphics.sprite.new()
 bgSprite:setTilemap(tm)
 bgSprite:moveTo(0, 0)
 bgSprite:add()
+```
+
+---
+
+#### `picocalc.graphics.sprite.addEmptyCollisionSprite(x, y, w, h)` / `picocalc.graphics.sprite.addEmptyCollisionSprite(rect)`
+Creates an invisible sprite with no image, positioned at `x, y` with a `w` by `h` collision rectangle, collisions enabled, and adds it to the sprite list. Useful for walls and trigger zones.
+
+- **Parameters:**
+  - `x`, `y`, `w`, `h` (number), OR
+  - `rect` (table): `{x, y, w, h}` (all four fields required)
+- **Returns:** (userdata) The new sprite
+- **Errors:** `"max sprites reached"` if the sprite limit is hit
+
+```lua
+local zone = picocalc.graphics.sprite.addEmptyCollisionSprite(0, 200, 320, 8)
 ```
 
 ---
@@ -2512,6 +2638,86 @@ end
 
 ---
 
+## picocalc.graphics.animation.loop
+
+A loop cycles through a list of images at a fixed interval. Call `update()` each frame to advance it, then `draw()` or `image()` to show the current frame.
+
+#### `picocalc.graphics.animation.loop.new([intervalMs [, frames [, looping]]])`
+Creates an animation loop.
+
+- **Parameters:**
+  - `intervalMs` (number, optional): Milliseconds per frame (default 100)
+  - `frames` (table, optional): Array of image objects; at most 32 are used. Entries that are not images (or are freed) become empty frames.
+  - `looping` (boolean, optional): Wrap to the first frame after the last (default `true`)
+- **Returns:** (userdata) Loop object. It is not valid until it has at least one frame.
+
+### Loop Methods
+
+- `loop:update()` advances to the next frame if the interval has elapsed. Does nothing if the loop is not valid. Without looping, it stays on the last frame.
+- `loop:draw(x, y [, flip])` draws the current frame at `x, y`, horizontally flipped if `flip` is true. Does nothing if the loop is not valid.
+- `loop:image()` returns the current frame's image, or nothing if the loop is not valid.
+- `loop:reset()` goes back to frame 0 and restarts the interval timer.
+- `loop:isValid()` returns `true` if the loop has at least one frame.
+- `loop:getFrameIndex()` returns the current frame index, counting from 0.
+- `loop:setImageTable(frames)` replaces the frames with the images in the table (same rules as `new`), resetting to frame 0. Passing a non-table clears the frames, making the loop invalid.
+- `loop:setInterval(ms)` sets the milliseconds per frame.
+- `loop:setLooping(flag)` sets whether the loop wraps after the last frame.
+
+```lua
+local loop = picocalc.graphics.animation.loop.new(80, {img1, img2, img3})
+while true do
+    loop:update()
+    loop:draw(100, 100)
+end
+```
+
+---
+
+## picocalc.graphics.animation.blinker
+
+A blinker alternates between on and off states on a timer. At most 32 blinkers are tracked by `updateAll()` and `stopAll()`; blinkers that are garbage collected leave that list.
+
+#### `picocalc.graphics.animation.blinker.new([onMs [, offMs [, loop [, cycles [, startOff]]]]])`
+Creates a blinker. It does not run until started.
+
+- **Parameters:**
+  - `onMs`, `offMs` (number, optional): Durations of the on and off phases in milliseconds (default 500 each)
+  - `loop` (boolean, optional): Repeat forever (default `true`)
+  - `cycles` (number, optional): With `loop` false, the number of on/off cycles to run before stopping
+  - `startOff` (boolean, optional): Intended to start in the off state; the blinker is reported on at first regardless
+- **Returns:** (userdata) Blinker object
+
+### Blinker Methods
+
+- `blinker:update()` returns the current state (`true` = on). The first call starts the blinker. Returns `false` once a non-looping blinker has finished or been stopped.
+- `blinker:start([onMs [, offMs [, loop [, cycles [, startOff]]]]])` (re)starts the blinker, optionally changing its settings, beginning in the on state.
+- `blinker:startLoop()` starts the blinker as an endless loop, keeping its on/off durations.
+- `blinker:stop()` stops the blinker.
+- `blinker:isRunning()` returns `true` if the blinker is running.
+- `blinker:remove()` stops the blinker and removes it from the `updateAll()`/`stopAll()` list.
+
+#### `picocalc.graphics.animation.blinker.updateAll()`
+Updates the state of every running blinker (and stops finished non-looping ones). Read each blinker's state afterwards with `blinker:update()`.
+
+- **Returns:** None
+
+#### `picocalc.graphics.animation.blinker.stopAll()`
+Stops every blinker.
+
+- **Returns:** None
+
+```lua
+local b = picocalc.graphics.animation.blinker.new(400, 200)
+b:startLoop()
+while true do
+    if b:update() then
+        -- draw the cursor
+    end
+end
+```
+
+---
+
 ## picocalc.graphics.animation.animator
 
 An animator interpolates a number from a start value to an end value over a duration. Poll it each frame; it has no callbacks.
@@ -2522,9 +2728,10 @@ Creates and starts an animator. The duration comes first.
 - **Parameters:**
   - `durationMs` (number): Length of the animation in milliseconds
   - `from`, `to` (number): Start and end values
-  - `easing` (string, optional): `"linear"` (default), `"sineIn"`, `"sineOut"`, `"sineInOut"`, `"quadIn"`, `"quadOut"`, `"quadInOut"`, `"cubicIn"`, `"cubicOut"` or `"cubicInOut"`. An unknown name is linear; a function is not accepted.
+  - `easing` (string, optional): `"linear"` (default), `"sineIn"`, `"sineOut"`, `"sineInOut"`, `"quadIn"`, `"quadOut"`, `"quadInOut"`, `"cubicIn"`, `"cubicOut"` or `"cubicInOut"` (the capitalised forms such as `"SineIn"` also work). Omitting it or passing `nil` is linear. Any other name raises an error listing these; a function is not accepted.
   - `delayMs` (number, optional): Wait this long before starting
 - **Returns:** (userdata) Animator object
+- **Errors:** If `easing` is a string that is not one of the names above
 
 ```lua
 local a = picocalc.graphics.animation.animator.new(500, 0, 100, "cubicOut")

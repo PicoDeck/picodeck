@@ -9,6 +9,7 @@ This document provides a complete reference for all Lua APIs available to PicoDe
 - [Global Variables and Permissions](Global-Variables-and-Permissions.md)
 - [API 3D](API-3D.md) — Flat-shaded 3D meshes, camera, light, fog, sky and sprites (`picocalc.gfx3d`)
 - [API Audio and Sound](API-Audio-and-Sound.md) — Audio Playback (WAV, MP3) & Tones
+- [API Chargrid](API-Chargrid.md) — Character-cell grids: text, shapes, palettes and ramps drawn in one call (`picocalc.chargrid`), and deterministic noise (`picocalc.noise`)
 - [API Crypto](API-Crypto.md) — Cryptographic Primitives
 - [API Display and Graphics](API-Display-and-Graphics.md) — Graphics & Display
 - [API Filesystem](API-Filesystem.md) — Filesystem (SD Card)
@@ -61,7 +62,7 @@ end
 
 - The display uses a **double-buffered framebuffer in SRAM** (2× 200 KB). DMA flushes run in the background while the CPU draws the next frame.
 - Call `picocalc.input.update()` and `picocalc.display.flush()` **once per frame**.
-- The Menu key (F10) is automatically intercepted by the OS to show the system menu overlay.
+- The Menu key (F10) is automatically intercepted by the OS to show the system menu overlay; pressing it while the menu is open closes the menu again.
 - All file paths must be absolute (e.g., `"/apps/myapp/data.txt"` or `APP_DIR .. "/data.txt"`).
 - Use `picocalc.fs.appPath("filename")` for per-app data storage — it auto-creates the directory.
 - Without `root-filesystem` permission, file access is sandboxed to your app's directory and `/data/<appid>/`.

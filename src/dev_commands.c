@@ -13,6 +13,10 @@
 #include "os/launcher.h"
 #include "os/app_stack.h"
 #include "os/os.h"
+#include "os/core0_idle.h"
+#include "os/xip_stats.h"
+#include "os/pc_prof.h"
+#include "os/splash.h"
 #include "tusb.h"
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
@@ -35,6 +39,7 @@ static bool s_cmd_reboot = false;
 static bool s_cmd_reboot_flash = false;
 static bool s_cmd_reboot_ota = false;
 static bool s_cmd_list = false;
+static bool s_cmd_list_all = false;
 static const char* s_pending_launch = NULL;
 
 #define FILE_RECEIVE_CHUNK_SIZE 256
@@ -90,6 +95,16 @@ static int b64_decode_char(char c) {
 static void b64_recv_char(int c);
 static void b64_recv_abort(const char *why);
 
+// The default alarm pool's free and lost slots (the `alarmpool` command).
+// cmake/picodeck_pico_time.cmake compiles the real one into its patched
+// pico_time; an SDK it leaves unpatched (2.3.1 on) gets this one, false.
+__attribute__((weak)) bool picodeck_alarm_pool_census(int *free_slots,
+                                                      int *lost_slots) {
+    (void)free_slots;
+    (void)lost_slots;
+    return false;
+}
+
 // Map a dev-command key name to a BTN_* mask (0 = not a named button).
 static uint32_t dev_key_name_to_mask(const char *key) {
     static const struct { const char *name; uint32_t mask; } map[] = {
@@ -143,6 +158,7 @@ void dev_commands_init(void) {
     s_cmd_reboot_flash = false;
     s_cmd_reboot_ota = false;
     s_cmd_list = false;
+    s_cmd_list_all = false;
     s_pending_launch = NULL;
     s_file_recv_handle = NULL;
     s_file_recv_expected = 0;
@@ -409,6 +425,66 @@ static void dev_send_file_b64(const char *path) {
     s_transfer_quiet = false;
 }
 
+// `xipstat [reset|off|prio core0|prio none|mp3idle on|mp3idle off]`: the
+// XIP cache and the XIP ports' contention counters over a window
+// (os/xip_stats.h; issue #28), with Core 0's pacing idle time
+// (os/core0_idle.h) and when the MP3 decoder decoded (mp3_sched.h) since
+// the reset. "reset" starts a window, which ends by itself when the app it
+// measured exits; a bare `xipstat` reports it (and keeps it running).
+// "prio" and "mp3idle" are switches for A/B runs ("prio core0" lasts until
+// the next app exits: the launcher clears it). One line of key=value
+// integers, as audiostat.
+static void dev_xipstat(const char *arg) {
+    if (strcmp(arg, "reset") == 0) {
+        core0_idle_reset_stats();
+        mp3_player_reset_sched_stats();
+        xip_stats_start();
+    } else if (strcmp(arg, "mp3idle on") == 0)
+        mp3_player_set_decode_ahead(true);
+    else if (strcmp(arg, "mp3idle off") == 0)
+        mp3_player_set_decode_ahead(false);
+    else if (strcmp(arg, "off") == 0)
+        xip_stats_stop();
+    else if (strcmp(arg, "prio core0") == 0)
+        xip_stats_set_core0_priority(true);
+    else if (strcmp(arg, "prio none") == 0)
+        xip_stats_set_core0_priority(false);
+    else if (arg[0]) {
+        printf("[DEV] Error: xipstat [reset|off|prio core0|prio none|"
+               "mp3idle on|mp3idle off]\n");
+        return;
+    }
+    xip_stats_t x;
+    xip_stats_get(&x);
+    uint32_t idle_windows;
+    uint64_t idle_us;
+    core0_idle_stats(&idle_windows, &idle_us);
+    mp3_sched_stats_t m;
+    mp3_player_get_sched_stats(&m);
+    uint64_t miss = x.accesses - x.hits;
+    unsigned long hit_pm = x.accesses
+        ? (unsigned long)(x.hits * 1000u / x.accesses) : 0ul;
+    printf("[DEV] XIP: window_ms=%lu running=%d frozen=%d saturated=%d "
+           "acc=%llu hit=%llu miss=%llu hit_pm=%lu stall0=%llu stall1=%llu "
+           "contested0=%llu contested1=%llu prio0=%d idle_windows=%lu "
+           "idle_ms=%lu mp3_low_frames=%lu mp3_idle_frames=%lu "
+           "mp3_overran=%lu mp3_frame_us=%lu mp3idle=%d mp3_dec_us=%lu "
+           "mp3_syn_us=%lu mp3_out_us=%lu sys_khz=%lu\n",
+           (unsigned long)x.window_ms, x.running, x.frozen, x.saturated,
+           (unsigned long long)x.accesses, (unsigned long long)x.hits,
+           (unsigned long long)miss, hit_pm,
+           (unsigned long long)x.stall[0], (unsigned long long)x.stall[1],
+           (unsigned long long)x.contested[0],
+           (unsigned long long)x.contested[1],
+           xip_stats_core0_priority(), (unsigned long)idle_windows,
+           (unsigned long)(idle_us / 1000u), (unsigned long)m.low_frames,
+           (unsigned long)m.idle_frames, (unsigned long)m.overran,
+           (unsigned long)m.frame_us, m.decode_ahead,
+           (unsigned long)m.dec_us, (unsigned long)m.syn_us,
+           (unsigned long)m.out_us,
+           (unsigned long)(clock_get_hz(clk_sys) / 1000u));
+}
+
 // Executes the line in s_cmd_buf. Runs on an app stack (see
 // dev_commands_process): the file commands below reach FatFs and miniz,
 // whose frames do not fit the 4 KB main stack.
@@ -418,6 +494,24 @@ static void dev_command_run(void *arg) {
 
     if (strcmp(s_cmd_buf, "ping") == 0) {
         printf("[DEV] pong\n");
+    } else if (strcmp(s_cmd_buf, "alarmpool") == 0) {
+        // Issue #58: a slot that is in none of the default pool's lists
+        // (lost) only comes from a leak; tests/e2e/test_kbd_hw.py checks it.
+        // A slot Core 1 is adding at that instant reads as lost for a
+        // moment, so a nonzero count is read again (up to three reads).
+        int free_slots = 0, lost_slots = 0;
+        bool ok = false;
+        for (int i = 0; i < 3; i++) {
+            if (i)
+                busy_wait_us(500);
+            ok = picodeck_alarm_pool_census(&free_slots, &lost_slots);
+            if (!ok || lost_slots == 0)
+                break;
+        }
+        if (ok)
+            printf("[DEV] AlarmPool: free=%d lost=%d\n", free_slots, lost_slots);
+        else
+            printf("[DEV] AlarmPool: unavailable (pico_time not patched)\n");
     } else if (strcmp(s_cmd_buf, "stack") == 0) {
         // Peak use of Core 0's 4 KB main stack since boot, and of the app
         // runtime's PSP stack since launch (when an app is running).
@@ -457,6 +551,12 @@ static void dev_command_run(void *arg) {
                wifi_str,
                sdcard_is_mounted() ? "mounted" : "absent",
                kbd_get_battery_percent());
+    } else if (strcmp(s_cmd_buf, "splash") == 0) {
+        // The boot splash's measurements (src/os/splash.c;
+        // tests/e2e/test_splash_hw.py).
+        char line[256];
+        splash_stats_format(line, sizeof line);
+        printf("[DEV] Splash: %s\n", line);
     } else if (strcmp(s_cmd_buf, "exit") == 0) {
         char reply[DEV_OP_REPLY_MAX];
         dev_op_exit(reply, sizeof(reply));
@@ -477,7 +577,9 @@ static void dev_command_run(void *arg) {
     } else if (strncmp(s_cmd_buf, "launch ", 7) == 0) {
         s_pending_launch = s_cmd_buf + 7;
         s_cmd_exit = true;  // Exit current app first
-    } else if (strcmp(s_cmd_buf, "list") == 0) {
+    } else if (strcmp(s_cmd_buf, "list") == 0 ||
+               strcmp(s_cmd_buf, "list all") == 0) {
+        s_cmd_list_all = s_cmd_buf[4] != '\0';
         s_cmd_list = true;
     } else if (strcmp(s_cmd_buf, "screenshot") == 0) {
         dev_commands_send_screenshot();
@@ -502,38 +604,24 @@ static void dev_command_run(void *arg) {
                d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9],
                d[1] ? (unsigned long)(d[10] / d[1]) : 0ul);
         mp3_player_reset_diag();
+        // A video's seeks: restarts of its playing audio (mp3_player.h).
+        mp3_fed_restart_stats_t rs;
+        mp3_player_fed_restart_stats(&rs, true);
+        printf("[DEV] mp3 restarts: restarts=%lu fallbacks=%lu gap_us=%lu "
+               "gap_max_us=%lu preroll_max_us=%lu margin_min_us=%lu late=%lu (reset)\n",
+               (unsigned long)rs.restarts, (unsigned long)rs.fallbacks,
+               (unsigned long)rs.gap_us, (unsigned long)rs.gap_max_us,
+               (unsigned long)rs.preroll_max_us, (unsigned long)rs.margin_min_us,
+               (unsigned long)rs.late);
     } else if (strcmp(s_cmd_buf, "audiostat") == 0 ||
                strcmp(s_cmd_buf, "audiostat reset") == 0) {
-        // Core 1's tick cost and the audio output's refill interrupt
-        // (tests/e2e/test_audio_hw.py). "reset" starts a new window; Core 1
-        // zeroes its tick counters at its next tick (1 ms) and the refill
-        // interrupt its own at its next refill (~2.9 ms), so give them both
-        // time.
-        if (strcmp(s_cmd_buf, "audiostat reset") == 0) {
-            core1_reset_tick_stats();
-            audio_output_reset_stats();
-            audio_stream_reset_underruns();
-            mp3_player_reset_staging_underruns();
-            sleep_ms(5);
-        }
-        core1_tick_stats_t t;
-        core1_get_tick_stats(&t);
-        audio_output_stats_t o;
-        audio_output_get_stats(&o);
-        uint32_t stream_underruns = 0;
-        audio_stream_debug(NULL, &stream_underruns, NULL);
-        printf("[DEV] Audio: window_ms=%lu ticks=%lu tick_over=%lu "
-               "tick_missed=%lu tick_max_us=%lu out=%d isr=%lu isr_us=%lu "
-               "isr_max_us=%lu stream_underruns=%lu mp3_underruns=%lu "
-               "voices=%d sys_khz=%lu\n",
-               (unsigned long)t.window_ms, (unsigned long)t.ticks,
-               (unsigned long)t.over, (unsigned long)t.missed,
-               (unsigned long)t.max_us, o.running ? 1 : 0,
-               (unsigned long)o.isr_count, (unsigned long)o.isr_us,
-               (unsigned long)o.isr_max_us, (unsigned long)stream_underruns,
-               (unsigned long)mp3_player_staging_underruns(),
-               sound_get_playing_source_count(),
-               (unsigned long)(clock_get_hz(clk_sys) / 1000));
+        // Core 1's tick cost, the refill interrupt and the stream's
+        // underruns (tests/e2e/test_audio_hw.py); dev_ops.c, shared with
+        // the simulator's dev_command RPC.
+        char reply[DEV_OP_REPLY_MAX];
+        dev_op_audiostat(strcmp(s_cmd_buf, "audiostat reset") == 0, reply,
+                         sizeof(reply));
+        printf("[DEV] %s\n", reply);
     } else if (strcmp(s_cmd_buf, "kbdstat") == 0 ||
                strcmp(s_cmd_buf, "kbdstat reset") == 0 ||
                strcmp(s_cmd_buf, "kbdstat fault") == 0) {
@@ -541,6 +629,10 @@ static void dev_command_run(void *arg) {
         // zeroes them first, "fault" makes the next transaction go
         // unanswered so the recovery path runs (tests/e2e/test_kbd_hw.py).
         // sys_khz is the clock right now: the clock-change test reads it.
+        // A KbdFail line follows for the first and the latest failure of
+        // the latest failure streak, if there was one ("reset" clears them,
+        // except during a streak, and `kbdstat log`'s trace). ago_ms wraps
+        // after 71.6 min.
         if (strcmp(s_cmd_buf, "kbdstat reset") == 0)
             kbd_i2c_reset_stats();
         else if (strcmp(s_cmd_buf, "kbdstat fault") == 0)
@@ -550,14 +642,86 @@ static void dev_command_run(void *arg) {
         printf("[DEV] Kbd: state=%s window_ms=%lu reads=%lu items=%lu "
                "dropped=%lu bat_reads=%lu bl_writes=%lu errors=%lu "
                "recoveries=%lu max_gap_us=%lu max_read_us=%lu isr_us=%lu "
-               "interval_us=%lu battery=%d sys_khz=%lu\n",
+               "interval_us=%lu battery=%d sys_khz=%lu aborts=%lu "
+               "timeouts=%lu short_reads=%lu lost_alarms=%lu cuts=%lu\n",
                k.state, (unsigned long)k.window_ms, (unsigned long)k.reads,
                (unsigned long)k.items, (unsigned long)k.dropped,
                (unsigned long)k.bat_reads, (unsigned long)k.bl_writes,
                (unsigned long)k.errors, (unsigned long)k.recoveries,
                (unsigned long)k.max_gap_us, (unsigned long)k.max_read_us,
                (unsigned long)k.isr_us, (unsigned long)k.interval_us,
-               k.battery, (unsigned long)(clock_get_hz(clk_sys) / 1000u));
+               k.battery, (unsigned long)(clock_get_hz(clk_sys) / 1000u),
+               (unsigned long)k.aborts, (unsigned long)k.timeouts,
+               (unsigned long)k.short_reads, (unsigned long)k.lost_alarms,
+               (unsigned long)k.cuts);
+        static const char *const k_why[] = {"abort", "timeout", "short",
+                                            "lost", "?", "?", "?", "?"};
+        kbd_i2c_fail_t ff[2];
+        kbd_i2c_get_failures(&ff[0], &ff[1]);
+        uint32_t now = time_us_32();
+        for (int i = 0; i < 2; i++) {
+            const kbd_i2c_fail_t *f = &ff[i];
+            if (!f->at_us)
+                continue;
+            printf("[DEV] KbdFail: which=%s ago_ms=%lu why=%s state=%s "
+                   "job=%u abrt_src=0x%lx raw_intr=0x%lx status=0x%lx "
+                   "txflr=%u rxflr=%u sda=%u scl=%u sys_mhz=%u\n",
+                   i ? "last" : "first",
+                   (unsigned long)((now - f->at_us) / 1000u), k_why[f->why],
+                   kbd_i2c_state_name(f->state), f->job,
+                   (unsigned long)f->abrt_src, (unsigned long)f->raw_intr,
+                   (unsigned long)f->status, f->txflr, f->rxflr,
+                   f->lines & 1u, (f->lines >> 1) & 1u, f->sys_mhz);
+        }
+    } else if (strcmp(s_cmd_buf, "kbdstat log") == 0) {
+        // The bus engine's recent events, oldest first (kbd_i2c_event_t).
+        kbd_i2c_event_t ev[KBD_I2C_TRACE_LEN];
+        int n = kbd_i2c_get_trace(ev, KBD_I2C_TRACE_LEN);
+        uint32_t now = time_us_32();
+        for (int i = 0; i < n; i++)
+            printf("[DEV] KbdLog: ago_ms=%lu ev=%c state=%s arg=%u\n",
+                   (unsigned long)((now - ev[i].t_us) / 1000u), ev[i].ev,
+                   kbd_i2c_state_name(ev[i].state), ev[i].arg);
+        printf("[DEV] KbdLog: %d events\n", n);
+    } else if (strcmp(s_cmd_buf, "kbdstat hw") == 0) {
+        // The I2C block, the keyboard pins and the engine's alarm, with
+        // clk_sys measured by the frequency counter (kbd_i2c_hw_t).
+        kbd_i2c_hw_t hw;
+        kbd_i2c_get_hw(&hw);
+        printf("[DEV] KbdHw: fc_sys_khz=%lu hcnt=%lu lcnt=%lu tar=0x%lx "
+               "en_status=0x%lx status=0x%lx raw_intr=0x%lx intr_mask=0x%lx "
+               "pad_sda=0x%lx pad_scl=0x%lx ctrl_sda=0x%lx ctrl_scl=0x%lx "
+               "sda=%u scl=%u irq=%d alarm=%d armed=%d due_in_us=%ld\n",
+               (unsigned long)frequency_count_khz(CLOCKS_FC0_SRC_VALUE_CLK_SYS),
+               (unsigned long)hw.hcnt, (unsigned long)hw.lcnt,
+               (unsigned long)hw.tar, (unsigned long)hw.enable_status,
+               (unsigned long)hw.status, (unsigned long)hw.raw_intr,
+               (unsigned long)hw.intr_mask, (unsigned long)hw.pad_sda,
+               (unsigned long)hw.pad_scl, (unsigned long)hw.ctrl_sda,
+               (unsigned long)hw.ctrl_scl, hw.lines & 1u,
+               (hw.lines >> 1) & 1u, hw.irq_on, hw.alarm_num, hw.armed,
+               (long)hw.due_in_us);
+    } else if (strncmp(s_cmd_buf, "mp3bench ", 9) == 0) {
+        // `mp3bench <path> [frames] [flags]`: a frame's decode cost, by
+        // phase (issue #28; mp3_player_bench, which says what flags do).
+        char path[128];
+        const char *a = s_cmd_buf + 9;
+        size_t n = strcspn(a, " ");
+        if (n > 0 && n < sizeof path) {
+            memcpy(path, a, n);
+            path[n] = '\0';
+            char *end;
+            unsigned long frames = strtoul(a + n, &end, 10);
+            unsigned long flags = strtoul(end, NULL, 10);
+            mp3_player_bench(path, frames ? (uint32_t)frames : 200u,
+                             (uint32_t)flags);
+        }
+    } else if (strcmp(s_cmd_buf, "prof") == 0 ||
+               strncmp(s_cmd_buf, "prof ", 5) == 0) {
+        pc_prof_command(s_cmd_buf + 4);
+    } else if (strcmp(s_cmd_buf, "xipstat") == 0 ||
+               strncmp(s_cmd_buf, "xipstat ", 8) == 0) {
+        dev_xipstat(s_cmd_buf[7] ? s_cmd_buf + 8 : "");
     } else if (strncmp(s_cmd_buf, "keypress ", 9) == 0 ||
                strncmp(s_cmd_buf, "keydown ", 8) == 0 ||
                strncmp(s_cmd_buf, "keyup ", 6) == 0) {
@@ -586,6 +750,18 @@ static void dev_command_run(void *arg) {
             if (ch) kbd_inject_char(ch);
         }
         printf("[DEV] Key injected: %s\n", key);
+    } else if (strncmp(s_cmd_buf, "pad ", 4) == 0 ||
+               strcmp(s_cmd_buf, "pad") == 0) {
+        char reply[DEV_OP_REPLY_MAX];
+        dev_op_pad(s_cmd_buf + 3, reply, sizeof(reply));
+        printf("[DEV] %s\n", reply);
+    } else if (strncmp(s_cmd_buf, "bt ", 3) == 0 ||
+               strcmp(s_cmd_buf, "bt") == 0) {
+        // Bluetooth gamepads (drivers/bt_pad.h): dev_ops.c, shared with
+        // the simulator's dev_command RPC.
+        char reply[DEV_OP_REPLY_MAX];
+        dev_op_bt(s_cmd_buf + 2, reply, sizeof(reply));
+        printf("[DEV] %s\n", reply);
     } else if (strncmp(s_cmd_buf, "put ", 4) == 0) {
         const char *args = s_cmd_buf + 4;
         uint32_t size = 0;
@@ -740,22 +916,31 @@ static void dev_command_run(void *arg) {
         char reply[DEV_OP_REPLY_MAX];
         dev_op_rm(s_cmd_buf + 3, reply, sizeof(reply));
         printf("[DEV] %s\n", reply);
+    } else if (strncmp(s_cmd_buf, "mv ", 3) == 0) {
+        char reply[DEV_OP_REPLY_MAX];
+        dev_op_mv(s_cmd_buf + 3, reply, sizeof(reply));
+        printf("[DEV] %s\n", reply);
     } else if (strcmp(s_cmd_buf, "help") == 0) {
         printf("[DEV] Available commands:\n");
         printf("[DEV]   ping           - Check device is responding\n");
         printf("[DEV]   ver            - Show firmware build date/time\n");
         printf("[DEV]   stack          - Main, app and OS-command stack peak use\n");
-        printf("[DEV]   kbdstat [reset|fault] - Keyboard bus engine counters\n");
+        printf("[DEV]   splash         - The boot splash's state, frame rate and timings\n");
+        printf("[DEV]   alarmpool      - Default alarm pool: free and lost slots (lost re-read 3x)\n");
+        printf("[DEV]   kbdstat [reset|fault|log|hw] - Keyboard bus engine counters\n");
+        printf("[DEV]   xipstat [reset|off|prio core0|prio none|mp3idle on|mp3idle off] - XIP cache, bus contention and MP3 decode timing\n");
+        printf("[DEV]   mp3bench <path> [frames] [flags] - MP3 decode cost per frame, by phase (at the launcher)\n");
         printf("[DEV]   exit           - Signal current app to exit (error if none)\n");
         printf("[DEV]   usb            - Enable USB storage mode\n");
         printf("[DEV]   reboot         - Reboot device\n");
         printf("[DEV]   reboot-flash   - Reboot to BOOTSEL for flashing\n");
         printf("[DEV]   reboot-ota     - Apply staged /system/update.bin (needs .sha256 + .sig)\n");
-        printf("[DEV]   launch <arg>   - Launch app by ID or name\n");
-        printf("[DEV]   list           - List installed apps\n");
+        printf("[DEV]   launch <arg>   - Launch app by ID or name (also hidden apps under /apps/.test, /apps/.dev)\n");
+        printf("[DEV]   list [all]     - List installed apps ('all' adds the hidden ones)\n");
         printf("[DEV]   screenshot     - Capture screen\n");
         printf("[DEV]   keypress <key> - Inject keypress\n");
         printf("[DEV]   keydown <key> / keyup <key> - Hold/release a key (chords)\n");
+        printf("[DEV]   pad <btns|none|off> [ms] - Test gamepad: e.g. 'pad up+a', 'pad home 100'\n");
         printf("[DEV]   put <path> <size> - Receive file from host (USB CDC only)\n");
         printf("[DEV]   get <path>     - Send file to host (USB CDC only)\n");
         printf("[DEV]   putb64 <path> <size> - Receive file as base64 (any transport)\n");
@@ -766,6 +951,7 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   mkdir <path>   - Create directory (recursive)\n");
         printf("[DEV]   unzip <zip> <dest> - Extract a ZIP archive on-device\n");
         printf("[DEV]   rm <path>      - Delete a file or directory (recursive)\n");
+        printf("[DEV]   mv <src> <dst> - Move/rename within the card (not /system, never overwrites)\n");
         printf("[DEV]   status         - Show app/uptime/wifi/sd/battery\n");
         printf("[DEV]   help           - Show this help\n");
         printf("[DEV] Valid keys: up, down, left, right, enter, esc, menu, f1-f10, backspace, tab, del, shift, a-z, A-Z, 0-9, punctuation\n");
@@ -832,8 +1018,13 @@ bool dev_commands_wants_list(void) {
     return s_cmd_list;
 }
 
+bool dev_commands_list_all(void) {
+    return s_cmd_list_all;
+}
+
 void dev_commands_clear_list(void) {
     s_cmd_list = false;
+    s_cmd_list_all = false;
 }
 
 const char* dev_commands_get_pending_launch(void) {

@@ -11,16 +11,20 @@ firmware screenshot reads the framebuffer, so it has no such box.)
 The fixtures paint the whole screen blue, so black pixels can only come from
 the counter box, and its text is one of the drawFPS colours (green, yellow,
 red; grey for "--" before the first 1 s window completes).
+
+While the counter is on, an app's own perf.drawFPS (Lua or native) draws
+nothing, so the screen shows one counter (issue #66).
 """
 
 import json
+import shutil
 import time
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from helpers import stage_lua_app
+from helpers import app_rel_dir, stage_lua_app
 
 BOX_W, BOX_H = 52, 12
 CORNERS = {"tr": (262, 22), "tl": (6, 22), "br": (262, 302), "bl": (6, 302)}
@@ -383,6 +387,107 @@ def test_new_corner_shows_at_the_next_present_after_the_menu(sim_factory, test_s
     assert untouched(arr, "tr"), "old corner not cleared by the app's frame"
 
 
+# ── The app's own counter (perf.drawFPS) ────────────────────────────────────
+
+
+# The SDK Showcase's frame (issue #66): paced at 60, a full redraw with a
+# 14px header and clipped content, its own perf.drawFPS(W - 30, HEADER_H + 1)
+# (a counter that runs off the right edge: only "FPS:" shows), one flush and
+# endFrame. With Show FPS on, that call drew a second, cut-off counter just
+# above the OS box. Nothing but a counter draws green, yellow, red or grey.
+APP_COUNTER_FIXTURE = """
+local d = picocalc.display
+local input = picocalc.input
+local perf = picocalc.perf
+local sys = picocalc.sys
+perf.setTargetFPS(60)
+local n = 0
+while true do
+    input.update()
+    if input.getButtonsPressed() & input.BTN_ESC ~= 0 then return end
+    d.clear(0x001F)
+    d.fillRect(0, 0, 320, 14, 0x4208)
+    d.drawText(4, 3, "SHOWCASE", 0xFFFF, 0x4208)
+    d.setClipRect(0, 27, 320, 281)
+    d.fillRect(20, 60, 100, 100, 0xFFFF)
+    d.clearClipRect()
+    perf.drawFPS({at})
+    d.flush()
+    perf.endFrame()
+    n = n + 1
+    if n == 3 then sys.log("FPSAPP:READY") end
+end
+"""
+
+
+def counter_ink(arr) -> np.ndarray:
+    """Where the screen shows counter text: the drawFPS colours, or the grey
+    of the OS counter's "--"."""
+    mask = np.zeros(arr.shape[:2], dtype=bool)
+    for ink in NUMBER_INKS | {DASH_INK}:
+        mask |= (arr == ink).all(axis=2)
+    return mask
+
+
+def only_counter_at(arr, corner) -> bool:
+    """The OS counter at `corner` and no counter text anywhere else."""
+    if not counter_at(arr, corner):
+        return False
+    ink = counter_ink(arr)
+    x, y = CORNERS[corner]
+    ink[y:y + BOX_H, x:x + BOX_W] = False
+    return not ink.any()
+
+
+def _ink_report(arr, corner=None) -> str:
+    ink = counter_ink(arr)
+    if corner:
+        x, y = CORNERS[corner]
+        ink[y:y + BOX_H, x:x + BOX_W] = False
+    if not ink.any():
+        return "no counter text outside the box"
+    ys, xs = np.nonzero(ink)
+    return (f"{int(ink.sum())} counter px outside the box, "
+            f"x {xs.min()}..{xs.max()}, y {ys.min()}..{ys.max()}")
+
+
+@pytest.mark.parametrize("corner,at", [
+    ("tr", "290, 15"),   # the Showcase's call: two counters in issue #66
+    ("bl", ""),          # drawFPS's default spot (top right), the box elsewhere
+    ("tl", "200, 100"),
+])
+def test_os_counter_replaces_the_apps_own(sim_factory, test_sd_card, corner, at):
+    """While Show FPS is on, perf.drawFPS draws nothing: the screen shows
+    exactly one counter, the OS one at the chosen corner."""
+    sim = boot(sim_factory, test_sd_card, show_fps=corner)
+    name = f"fps_app_{corner}"
+    stage_lua_app(Path(sim.sd_card_path), name, APP_COUNTER_FIXTURE.format(at=at))
+    sim.launch_app(name)
+    sim.wait_for_log("FPSAPP:READY", timeout=15)
+    arr = wait_screen(sim, lambda a: only_counter_at(a, corner))
+    assert counter_at(arr, corner), f"no OS counter at {corner}"
+    assert only_counter_at(arr, corner), (
+        f"a second counter on screen (drawFPS({at})): {_ink_report(arr, corner)}")
+
+
+def test_apps_own_counter_draws_with_show_fps_off(sim_factory, test_sd_card):
+    """With Show FPS off, perf.drawFPS(290, 15) draws "FPS: n" in the colour
+    code there (cut off at the right edge), and nothing else does."""
+    sim = boot(sim_factory, test_sd_card)
+    stage_lua_app(Path(sim.sd_card_path), "fps_app_off",
+                  APP_COUNTER_FIXTURE.format(at="290, 15"))
+    sim.launch_app("fps_app_off")
+    sim.wait_for_log("FPSAPP:READY", timeout=15)
+    sim.wait_frames(3)
+    arr = _rgb(sim.screenshot_pil())
+    ink = counter_ink(arr)
+    ys, xs = np.nonzero(ink)
+    assert ink.any(), "perf.drawFPS drew nothing with Show FPS off"
+    assert xs.min() >= 290 and ys.min() >= 15 and ys.max() <= 22, _ink_report(arr)
+    # Its glyph cells: the colour code on black, from x 290 to the edge.
+    assert _colours(arr[15:23, 290:320]) - {(0, 0, 0)} <= NUMBER_INKS
+
+
 # ── Native apps ─────────────────────────────────────────────────────────────
 
 
@@ -399,3 +504,31 @@ def test_counter_over_native_app(sim_factory, test_sd_card):
 
     arr = wait_screen(sim, lambda a: ink(a) and ink(a) <= NUMBER_INKS)
     assert ink(arr) and ink(arr) <= NUMBER_INKS, f"no counter over hello_c: {ink(arr)}"
+
+
+@pytest.mark.parametrize("show_fps", [None, "tr"])
+def test_native_drawfps_matches_lua(sim_factory, test_sd_card, show_fps):
+    """Native perf->drawFPS is the Lua call: "FPS: n" in the colour code
+    with Show FPS off (the simulator's trampoline used to draw "n fps" in
+    white), nothing with it on, so the OS counter is the only one."""
+    sim = boot(sim_factory, test_sd_card, show_fps=show_fps)
+    shutil.copytree(Path(__file__).parent / "fixtures" / "native_drawfps",
+                    Path(sim.sd_card_path) / app_rel_dir("native_drawfps", True))
+    sim.launch_app("native_drawfps")
+    sim.wait_for_log("DF:READY", timeout=15)
+    if show_fps:
+        arr = wait_screen(sim, lambda a: only_counter_at(a, show_fps))
+        assert counter_at(arr, show_fps), f"no OS counter at {show_fps}"
+        assert only_counter_at(arr, show_fps), (
+            f"a second counter on screen: {_ink_report(arr, show_fps)}")
+        # Not even in another colour: rows 15..21 there are the app's blue.
+        assert _colours(arr[15:22, 290:320]) == {BG}, "drawFPS drew with Show FPS on"
+        return
+    sim.wait_frames(3)
+    arr = _rgb(sim.screenshot_pil())
+    ink = counter_ink(arr)
+    assert ink.any(), "perf->drawFPS drew no counter text with Show FPS off"
+    ys, xs = np.nonzero(ink)
+    assert xs.min() >= 290 and ys.min() >= 15 and ys.max() <= 22, _ink_report(arr)
+    # "FPS:" from x 290: the F's top bar is the first glyph row's ink.
+    assert ink[15, 290:295].all(), "not the firmware's \"FPS: n\" text"

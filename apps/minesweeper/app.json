@@ -1,0 +1,10 @@
+{
+    "id": "net.picodeck.minesweeper",
+    "name": "Minesweeper",
+    "description": "Classic minesweeper game",
+    "version": "1.0",
+    "author": "PicoDeck",
+    "category": "games",
+    "repo": "PicoDeck/picodeck",
+    "min_firmware": "1.0.0"
+}

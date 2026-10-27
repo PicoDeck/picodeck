@@ -49,6 +49,9 @@ var docFileMapping = map[string]string{
 	"perf":      "API-Performance.md",
 	"graphics":  "API-Display-and-Graphics.md",
 	"gfx3d":     "API-3D.md",
+	"chargrid":  "API-Chargrid.md",
+	"gamepad":   "API-Gamepad.md",
+	"noise":     "API-Chargrid.md",
 	"video":     "API-Video.md",
 	"repl":      "API-Repl.md",
 	"terminal":  "API-Terminal.md",
@@ -325,11 +328,18 @@ func checkDocumentation(module *Module, docContents map[string]string) {
 		return
 	}
 
+	// picocalc.appconfig is another name for picocalc.config, so its
+	// functions are documented under the config spelling.
+	docName := module.Name
+	if docName == "appconfig" {
+		docName = "config"
+	}
+
 	for i := range module.Functions {
 		fname := module.Functions[i].Name
 		searchPatterns := []string{
-			fmt.Sprintf("picocalc.%s.%s(", module.Name, fname),
-			fmt.Sprintf("`picocalc.%s.%s(", module.Name, fname),
+			fmt.Sprintf("picocalc.%s.%s(", docName, fname),
+			fmt.Sprintf("`picocalc.%s.%s(", docName, fname),
 			fmt.Sprintf(":%s(", fname[strings.LastIndex(fname, ".")+1:]), // method syntax e.g. player:load(
 		}
 		found := false
@@ -344,8 +354,8 @@ func checkDocumentation(module *Module, docContents map[string]string) {
 
 	for i := range module.Constants {
 		searchPatterns := []string{
-			fmt.Sprintf("picocalc.%s.%s", module.Name, module.Constants[i].Name),
-			fmt.Sprintf("`picocalc.%s.%s`", module.Name, module.Constants[i].Name),
+			fmt.Sprintf("picocalc.%s.%s", docName, module.Constants[i].Name),
+			fmt.Sprintf("`picocalc.%s.%s`", docName, module.Constants[i].Name),
 			fmt.Sprintf("**%s**", module.Constants[i].Name),
 		}
 		found := false

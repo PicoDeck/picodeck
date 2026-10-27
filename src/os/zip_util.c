@@ -313,8 +313,14 @@ static bool extract_streamed(zip_reader_t *zr, int idx, const char *dest_path,
 
 bool zip_reader_extract_entry(zip_reader_t *zr, int idx, const char *dest_path,
                               char err[ZIP_ERR_MAX]) {
-    if (!zr || !zr->open || !dest_path || !dest_path[0] || idx < 0) {
+    if (!zr || !zr->open || !dest_path || !dest_path[0]) {
         zip_set_err(err, "bad zip");
+        return false;
+    }
+    // Refuse before touching dest: extract_streamed opens it "w" (truncating
+    // an existing file) well before miniz would notice a bad index.
+    if (idx < 0 || idx >= zip_reader_num_entries(zr)) {
+        zip_set_err(err, "no such entry");
         return false;
     }
     if (mz_zip_reader_is_file_a_directory(&zr->mz, (mz_uint)idx)) {

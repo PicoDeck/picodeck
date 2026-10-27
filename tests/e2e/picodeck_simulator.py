@@ -656,13 +656,24 @@ class PicodeckSimulator:
         entries = result.get("entries", [])
         return [e["name"] for e in entries if e.get("is_dir")]
 
-    def launch_app(self, name: str) -> dict:
+    def launch_app(self, name: str, hidden: Optional[bool] = None) -> dict:
         """Queue an app launch. Returns {"queued": True, "busy": bool}.
+
+        A plain name for which the SD card has a hidden test copy
+        (/apps/.test/<name>, what helpers.stage_lua_app writes) is sent as
+        ".test/<name>", so a listed app of the same name cannot shadow it.
+        hidden=False sends the name as given (the launcher's own order:
+        listed apps first); hidden=True forces the .test/ form.
 
         The launch runs when the launcher loop next runs (after any running
         app exits). An app staged after boot is found by the sim's rescan-on-
         miss. Use wait_for_exit() for the outcome.
         """
+        if hidden is None and "/" not in name and self.sd_card_path:
+            hidden = (Path(self.sd_card_path) / "apps" / ".test" / name
+                      / "app.json").is_file()
+        if hidden and not name.startswith("."):
+            name = f".test/{name}"
         with self._notif_cond:
             self._launch_rx = self._rx_counter
         result = self.call("launch_app", {"name": name})
@@ -729,6 +740,11 @@ class PicodeckSimulator:
         Named keys: up, down, left, right, enter, esc, menu, f1-f5,
         backspace, tab, del, shift.
         Character keys: a-z, A-Z, 0-9, space, punctuation — sent via inject_char.
+
+        A named key is a button tap: a down and an up, no char, as on the
+        device. "\\n" and "\\b" are Enter's and Backspace's chars (a tap
+        that also gives getChar '\\n' / '\\b'): what ui.textInput reads to
+        accept and to delete.
         """
         if key.lower() in self._BUTTONS:
             return self.call("inject_button", {"button": key, "action": "click"})
@@ -736,6 +752,22 @@ class PicodeckSimulator:
             return self.call("inject_char", {"char": key})
         else:
             return self.call("inject_button", {"button": key, "action": "click"})
+
+    def pad(self, state: str, hold_ms: int = 0) -> str:
+        """Set the test gamepad source through the `pad` dev command (the
+        firmware's handler, src/dev_ops.c): buttons joined by '+' ("up+a",
+        "home"), "none" (nothing held, still connected) or "off"
+        (disconnected). Held until the next call, or for hold_ms from the
+        first poll that sees it. Returns the reply ("Pad: up+a"); raises on
+        an error reply."""
+        cmd = f"pad {state}" + (f" {int(hold_ms)}" if hold_ms else "")
+        # The server gives up before this client does, so a non-polling app
+        # gets an error reply and never keeps the socket thread blocked.
+        r = self.call("dev_command",
+                      {"cmd": cmd, "timeout_ms": int(self.timeout * 800)})
+        if not r.get("ok"):
+            raise RuntimeError(f"{cmd!r}: {r.get('output')}")
+        return r.get("output", "")
 
     def get_input_state(self) -> dict:
         """{issued_seq, consumed_seq}: every injection with seq <= consumed_seq

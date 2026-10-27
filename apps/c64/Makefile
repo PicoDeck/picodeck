@@ -34,7 +34,7 @@ all: $(TARGET)
 stubs.o: stubs.c
 	$(CC) $(CFLAGS_NOLTO) -c $< -o $@
 
-$(TARGET): main.c stubs.o linker.ld ../../sdk/native/os.h ../../sdk/native/app_abi.h
+$(TARGET): main.c pad_input.h stubs.o linker.ld ../../sdk/native/os.h ../../sdk/native/app_abi.h
 	$(CC) $(CFLAGS) main.c stubs.o $(LDFLAGS) -o $@
 	arm-none-eabi-size $@
 

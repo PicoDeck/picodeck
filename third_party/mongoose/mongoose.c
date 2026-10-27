@@ -6188,24 +6188,43 @@ long mg_io_send(struct mg_connection *c, const void *buf, size_t len) {
   return (long) len;
 }
 
+// PicoDeck patch: decrypt every record that is ready, not one per call. It
+// runs once per received packet and once per poll, and a server that streams
+// many small TLS records (an LLM gateway: one ~300-byte event per token at
+// 60-85 KB/s) outran one record a call: the raw bytes piled up in c->rtls
+// until growing it failed in Core 1's pool ("partial: oom"). Stops when no
+// record is complete, the handler has closed the connection, or c->recv is
+// full (is_full: the app is behind), and after a bounded number of records
+// so one call can't hold Core 1.
+#define MG_TLS_RECORDS_PER_CALL 16
+
 static void handle_tls_recv(struct mg_connection *c) {
-  size_t avail = mg_tls_pending(c);
-  size_t min = avail > MG_MAX_RECV_SIZE ? MG_MAX_RECV_SIZE : avail;
-  struct mg_iobuf *io = &c->recv;
-  if (io->size - io->len < min && !mg_iobuf_resize(io, io->len + min)) {
-    mg_error(c, "oom");
-  } else {
-    size_t space = io->size - io->len;
+  int i;
+  for (i = 0; i < MG_TLS_RECORDS_PER_CALL; i++) {
+    size_t avail = mg_tls_pending(c);
+    size_t min = avail > MG_MAX_RECV_SIZE ? MG_MAX_RECV_SIZE : avail;
+    struct mg_iobuf *io = &c->recv;
+    long n;
+    if (i > 0 && (c->is_closing || c->is_full || (avail == 0 && c->rtls.len == 0)))
+      break;
+    if (io->size - io->len < min && !mg_iobuf_resize(io, io->len + min)) {
+      mg_error(c, "oom");
+      break;
+    }
     // Decrypt data directly into c->recv
-    long n = mg_tls_recv(c, io->buf != NULL ? &io->buf[io->len] : io->buf,
-                         space);
+    n = mg_tls_recv(c, io->buf != NULL ? &io->buf[io->len] : io->buf,
+                    io->size - io->len);
     if (n == MG_IO_ERR) {
       mg_error(c, "TLS recv error");
-    } else if (n > 0) {
-      // Decrypted successfully - trigger MG_EV_READ
-      io->len += (size_t) n;
-      mg_call(c, MG_EV_READ, &n);
+      break;
     }
+    // n == 0: a record was read into mbedTLS with no room in c->recv yet
+    // (an empty one): go round to make room for it.
+    if (n == 0 && mg_tls_pending(c) > 0) continue;
+    if (n <= 0) break;  // no complete record yet (or the peer's close)
+    // Decrypted successfully - trigger MG_EV_READ
+    io->len += (size_t) n;
+    mg_call(c, MG_EV_READ, &n);
   }
 }
 
@@ -16732,6 +16751,15 @@ long mg_tls_recv(struct mg_connection *c, void *buf, size_t len) {
     return MG_IO_WAIT;
   }
 #endif
+  // PicoDeck patch: the peer's close_notify ends the stream cleanly (Gemini
+  // servers end every response with one); it used to fail the connection with
+  // "TLS recv error". Close gracefully: MG_EV_CLOSE follows, with what was
+  // received still in c->recv. A transport close without a close_notify
+  // (n == 0) stays an error, so a truncated stream is still reported.
+  if (n == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+    c->is_draining = 1;
+    return MG_IO_WAIT;
+  }
   if (n <= 0) return MG_IO_ERR;
   return n;
 }

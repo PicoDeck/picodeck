@@ -34,7 +34,7 @@
 #include <stdbool.h>
 #include <time.h>
 #ifdef __EMSCRIPTEN__
-#include "web/web_platform.h"
+#include "web_platform.h"
 #endif
 
 static int g_debug_mode = 0;

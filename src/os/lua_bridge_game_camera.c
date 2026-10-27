@@ -27,7 +27,7 @@ typedef struct {
 #define CAMERA_MT "picocalc.game.camera"
 
 static lua_camera_t *check_camera(lua_State *L, int idx) {
-    return (lua_camera_t *)luaL_checkudata(L, idx, CAMERA_MT);
+    return (lua_camera_t *)lb_checkudata(L, idx, CAMERA_MT);
 }
 
 static int l_camera_new(lua_State *L) {

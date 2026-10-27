@@ -4,7 +4,14 @@
 #include "small_alloc.h"
 #include <stdbool.h>
 
-// Initialize the PSRAM allocator. Call once on boot.
+// Zero the heap by DMA through the uncached alias (firmware with QMI PSRAM;
+// a no-op elsewhere): start it once the QMI PSRAM is in quad mode, and wait
+// for it before Core 1 runs from flash (the clear saturates the QMI). Nothing
+// may touch the heap in between.
+void lua_psram_alloc_clear_start(void);
+void lua_psram_alloc_clear_wait(void);
+
+// Initialize the PSRAM allocator (waits for the clear first). Call once on boot.
 void lua_psram_alloc_init(void);
 
 // Allocator function compatible with lua_Alloc. Requests of up to

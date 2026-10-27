@@ -17,6 +17,14 @@ The OS handles the low-level hardware details so you can focus on your app's log
 
 For performance-critical applications or those who prefer C/C++, PicoDeck supports [Native App Development](Native-Loading.md) using a C API that mirrors the Lua SDK. Native apps are compiled as Position-Independent ELF binaries and loaded into PSRAM.
 
+## Where to start
+
+- [Creating your first app](Creating-your-first-app.md) — a Lua app from `app.json` to the SD card.
+- [Lua SDK Reference](Lua-SDK-Reference.md) — every `picocalc.*` module: display and graphics, 3D, character-cell grids ([chargrid](API-Chargrid.md)), audio, input and [gamepads](API-Gamepad.md) (including Bluetooth controllers), networking, files and more.
+- [Simulator and Testing](Simulator-and-Testing.md) — run and test apps on your computer, or [in your browser](https://picodeck.net/try/), without a device.
+- [Publishing Apps](Publishing-Apps.md) — put your app in the app store.
+- [Crash Logging and Watchdog](Crash-Logging-and-Watchdog.md) — what the device records when an app misbehaves.
+
 ## Screenshots
 
 <img width="640" height="640" alt="shot001" src="https://github.com/user-attachments/assets/2ab5ab5a-3921-44ba-b841-4ee365bb9fcb" />

@@ -6,7 +6,7 @@
 // The live player at idx, or a Lua error. The pointer is NULL once __gc
 // destroyed it (reachable only from a later finaliser: __gc is not a method).
 static video_player_t *check_video(lua_State *L, int idx) {
-    video_player_t **ud = luaL_checkudata(L, idx, VIDEO_USERDATA);
+    video_player_t **ud = lb_checkudata(L, idx, VIDEO_USERDATA);
     if (!*ud)
         luaL_error(L, "attempt to use a destroyed video player");
     return *ud;
@@ -231,7 +231,7 @@ static int l_video_setAutoFlush(lua_State *L) {
 }
 
 static int l_video_gc(lua_State *L) {
-    video_player_t **ud = luaL_checkudata(L, 1, VIDEO_USERDATA);
+    video_player_t **ud = lb_checkudata(L, 1, VIDEO_USERDATA);
     if (*ud) {
         video_player_destroy(*ud);
         *ud = NULL;

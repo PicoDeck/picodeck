@@ -74,15 +74,58 @@ set_source_files_properties(${PICODECK_ROOT}/third_party/qoa/qoa.c
 picodeck_unit_test(test_audio_ring INCLUDES ${SRC}/drivers)
 # The MP3 staging buffer as a mixer source (header-only, like audio_ring.h).
 picodeck_unit_test(test_pcm_stage INCLUDES ${SRC}/drivers)
+# When Core 1's MP3 decoder decodes (header-only), with a model of the ring,
+# the stage, the mixer and a paced or unpaced Core 0.
+picodeck_unit_test(test_mp3_sched INCLUDES ${SRC}/drivers)
 # The video player's audio chunk index: sizing and growth (header-only).
 picodeck_unit_test(test_avi_index INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_event_queue INCLUDES ${SRC}/drivers)
 # The gamepad layer of the same decode (keys -> PAD_* through the pad map).
 picodeck_unit_test(test_kbd_pad INCLUDES ${SRC}/drivers)
+# Pad sources (the `pad` dev command, the simulator's controller, later a BT
+# or USB pad) ORed into the same gamepad.
+picodeck_unit_test(test_pad_source SOURCES ${SRC}/drivers/pad_source.c INCLUDES ${SRC}/drivers)
+# A Bluetooth pad's HID descriptor and reports -> PAD_* (bt_pad.c's parser).
+picodeck_unit_test(test_hid_pad SOURCES ${SRC}/drivers/hid_pad.c INCLUDES ${SRC}/drivers)
+# The Bluetooth pads' bonding store (link keys + paired pads, on the SD card).
+picodeck_unit_test(test_bt_pad_store SOURCES ${SRC}/drivers/bt_pad_store.c INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_bus SOURCES ${SRC}/drivers/kbd_bus.c INCLUDES ${SRC}/drivers)
+# The default alarm pool fix (cmake/picodeck_pico_time.cmake, #58): the
+# cancellation pass cut out of the patched pico_time the firmware build
+# generates, from the SDK's time.c when PICO_SDK_PATH has one the patch
+# applies to, else from SDK 2.2.0's pass in fixtures/pico_time (the CI unit
+# job has no SDK). The configure fails if the patch does not apply.
+include(${PICODECK_ROOT}/cmake/picodeck_pico_time.cmake)
+set(_pt_src "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pico_time/cancel_pass_2_2_0.c")
+if(DEFINED ENV{PICO_SDK_PATH} AND
+   EXISTS "$ENV{PICO_SDK_PATH}/src/common/pico_time/time.c")
+    file(READ "$ENV{PICO_SDK_PATH}/src/common/pico_time/time.c" _pt_text)
+    picodeck_pico_time_patch_text(_pt_text _pt_applied)
+    if(_pt_applied)
+        set(_pt_src "$ENV{PICO_SDK_PATH}/src/common/pico_time/time.c")
+    endif()
+endif()
+file(READ "${_pt_src}" _pt_orig)
+string(REPLACE "\r\n" "\n" _pt_orig "${_pt_orig}")
+set(_pt_patched "${_pt_orig}")
+picodeck_pico_time_patch_text(_pt_patched _pt_applied)
+if(NOT _pt_applied)
+    message(FATAL_ERROR "cmake/picodeck_pico_time.cmake does not apply to ${_pt_src}")
+endif()
+picodeck_pico_time_cut_pass("${_pt_orig}" _pt_pass_orig)
+picodeck_pico_time_cut_pass("${_pt_patched}" _pt_pass_patched)
+set(_pt_dir "${CMAKE_CURRENT_BINARY_DIR}/pico_time_pass")
+file(MAKE_DIRECTORY "${_pt_dir}")
+_picodeck_pico_time_write("${_pt_dir}/pass_orig.inc" "${_pt_pass_orig}")
+_picodeck_pico_time_write("${_pt_dir}/pass_patched.inc" "${_pt_pass_patched}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_pt_src}"
+             "${PICODECK_ROOT}/cmake/picodeck_pico_time.cmake")
+message(STATUS "test_pico_time_pass: the pass from ${_pt_src}")
+picodeck_unit_test(test_pico_time_pass INCLUDES ${_pt_dir})
 picodeck_unit_test(test_pio_psram_range INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_pio_psram_xip INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_qmi_psram_clkdiv INCLUDES ${SRC}/drivers)
+picodeck_unit_test(test_ssh_blob SOURCES ${SRC}/os/ssh_blob.c)
 picodeck_unit_test(test_zip_name SOURCES ${SRC}/os/zip_name.c)
 picodeck_unit_test(test_text_wrap SOURCES ${SRC}/os/text_wrap.c)
 # The OS FPS counter's counting rules (Show FPS; os_overlay.c draws it).
@@ -90,6 +133,8 @@ picodeck_unit_test(test_fps_counter SOURCES ${SRC}/os/fps_counter.c)
 picodeck_unit_test(test_module_path SOURCES ${SRC}/os/module_path.c ${SRC}/os/fs_path.c)
 # Clip-once rasterisers shared by the firmware display and the simulator.
 picodeck_unit_test(test_display_clip INCLUDES ${SRC}/drivers)
+# The LCD's PIO SPI program and divider per clk_sys (issue #70).
+picodeck_unit_test(test_lcd_spi_rate INCLUDES ${SRC}/drivers)
 target_link_libraries(test_display_clip PRIVATE m)
 target_compile_options(test_display_clip PRIVATE -ffp-contract=off)
 # The 3D pipeline (src/os/gfx3d.c) over host malloc; -ffp-contract=off as on
@@ -98,6 +143,25 @@ picodeck_unit_test(test_gfx3d SOURCES ${SRC}/os/gfx3d.c INCLUDES ${SRC}/drivers
                    DEFINES GFX3D_MALLOC=malloc GFX3D_FREE=free)
 target_link_libraries(test_gfx3d PRIVATE m)
 target_compile_options(test_gfx3d PRIVATE -ffp-contract=off -Wdouble-promotion)
+# picocalc.chargrid core (src/os/chargrid*.c) over host malloc.
+picodeck_unit_test(test_chargrid SOURCES ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c
+                   ${SRC}/os/chargrid_text.c ${SRC}/os/text_wrap.c
+                   ${SRC}/fonts/font_6x8.c ${SRC}/fonts/font.c
+                   INCLUDES ${SRC}/fonts
+                   DEFINES CG_MALLOC=malloc CG_FREE=free)
+target_compile_options(test_chargrid PRIVATE -ffp-contract=off -Wdouble-promotion)
+# The chargrid renderer: fast pair stores and the per-pixel path vs a reference.
+picodeck_unit_test(test_chargrid_render
+                   SOURCES ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c ${SRC}/os/chargrid_render.c
+                   DEFINES CG_MALLOC=malloc CG_FREE=free)
+# Lattice hash, value noise and fBm (src/os/noise.h, header-only).
+picodeck_unit_test(test_noise)
+target_compile_options(test_noise PRIVATE -ffp-contract=off -Wdouble-promotion)
+target_link_libraries(test_noise PRIVATE m)
+# The shader's polynomial maths (src/os/charshader_math.h, header-only) vs libm.
+picodeck_unit_test(test_charshader_math)
+target_compile_options(test_charshader_math PRIVATE -ffp-contract=off -Wdouble-promotion)
+target_link_libraries(test_charshader_math PRIVATE m)
 # Lua float formatting vs glibc (built without PICODECK_LUA_SPRINTF: no luaconf).
 picodeck_unit_test(test_numfmt SOURCES ${SRC}/os/lua_numfmt.c)
 target_link_libraries(test_numfmt PRIVATE m)
@@ -107,6 +171,46 @@ add_executable(numfmt_sweep EXCLUDE_FROM_ALL
 target_include_directories(numfmt_sweep PRIVATE ${SRC}/os)
 target_compile_options(numfmt_sweep PRIVATE -O2 -Wno-error)
 target_link_libraries(numfmt_sweep PRIVATE m)
+
+# The Lua core as the firmware builds it (cmake/picodeck_lua.cmake: the VM
+# configuration plus PicoDeck's sources in the Lua library), for tests of code
+# that uses VM internals. `make test-unit` fetches it (download-lua).
+set(LUA_SRC ${PICODECK_ROOT}/third_party/lua-5.4/src)
+if(EXISTS ${LUA_SRC}/lua.h)
+    include(${PICODECK_ROOT}/cmake/picodeck_lua.cmake)
+    picodeck_patch_luaconf(${LUA_SRC})
+    file(GLOB LUA_CORE_SOURCES ${LUA_SRC}/l*.c)
+    list(FILTER LUA_CORE_SOURCES EXCLUDE REGEX "/(lua|luac)\\.c$")
+    add_library(lua_host STATIC ${LUA_CORE_SOURCES} ${PICODECK_LUA_SOURCES})
+    target_include_directories(lua_host PUBLIC ${LUA_SRC} ${SRC}/os)
+    target_compile_definitions(lua_host PUBLIC ${PICODECK_LUA_DEFINITIONS})
+    target_compile_options(lua_host PRIVATE ${PICODECK_UNIT_SAN_FLAGS})
+    set_source_files_properties(${LUA_CORE_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+    target_link_libraries(lua_host PUBLIC m)
+    # The service hook's interrupt-safe, depth-independent arming (issue #21).
+    picodeck_unit_test(test_lua_hook_arm)
+    target_link_libraries(test_lua_hook_arm PRIVATE lua_host)
+    # String results built in place by the bulk bridge calls (fb:getPixels,
+    # fs.read, ...): they must behave exactly as Lua-made strings.
+    picodeck_unit_test(test_lua_strbuf)
+    target_link_libraries(test_lua_strbuf PRIVATE lua_host)
+    # The bridge's one-call argument checks (lb_checkudata, lb_checkint).
+    picodeck_unit_test(test_lua_fastarg)
+    target_link_libraries(test_lua_fastarg PRIVATE lua_host)
+else()
+    message(WARNING "Lua sources not found at ${LUA_SRC} (run `make download-lua`): "
+                    "test_lua_hook_arm, test_lua_strbuf and test_lua_fastarg are not built")
+endif()
+
+# The dev `mv`: path hygiene and the command over the vendored FatFS on a RAM
+# disk (-w: FatFS is third-party code).
+set(FATFS_DIR ${PICODECK_ROOT}/third_party/fatfs)
+picodeck_unit_test(test_mv_op SOURCES ${SRC}/os/mv_op.c ${SRC}/os/mv_path.c
+                ${SRC}/drivers/fat_within.c ${FATFS_DIR}/ff.c
+                ${FATFS_DIR}/ffunicode.c
+                INCLUDES ${FATFS_DIR} ${SRC} ${PICODECK_ROOT}/simulator/stubs)
+set_source_files_properties(${FATFS_DIR}/ff.c ${FATFS_DIR}/ffunicode.c
+                PROPERTIES COMPILE_OPTIONS "-w")
 
 # The simulator's SD-root containment (host filesystem; sim_log_err faked).
 picodeck_unit_test(test_sim_sdcard SOURCES ${PICODECK_ROOT}/simulator/hal/hal_sdcard.c
@@ -187,17 +291,35 @@ target_compile_definitions(libmad_host PRIVATE FPM_64BIT HAVE_STDINT_H=1
             SIZEOF_INT=4 SIZEOF_LONG=${CMAKE_SIZEOF_VOID_P} SIZEOF_LONG_LONG=8
             NDEBUG=1 OPT_SPEED=1 OPT_SSO=1 PROGMEM=)
 target_compile_options(libmad_host PRIVATE -O2 -w)
-picodeck_unit_test(test_mp3_fed SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE}
+picodeck_unit_test(test_mp3_fed SOURCES ${SRC}/drivers/mp3_player.c
+                ${SRC}/os/core0_idle.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_fed PRIVATE libmad_host)
 # The pico/critical_section.h stub leaves a parameter unused.
 target_compile_options(test_mp3_fed PRIVATE -Wno-unused-parameter)
+# The restart tests model a frame's decode time: the test's
+# __wrap_mad_synth_granule renders output after each frame.
+target_link_options(test_mp3_fed PRIVATE -Wl,--wrap=mad_synth_granule)
 # ...and its decode loop at the ends of the input buffer (no frame lost
 # where a refill ends), from a file (the SD fake) and fed.
-picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c ${SD_FAKE}
+picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c
+                ${SRC}/os/core0_idle.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_refill PRIVATE libmad_host)
 target_compile_options(test_mp3_refill PRIVATE -Wno-unused-parameter)
+# ...and what its decoder writes (a mono frame's samples, in order) and when
+# (ahead, in Core 0's idle windows).
+picodeck_unit_test(test_mp3_decode SOURCES ${SRC}/drivers/mp3_player.c
+                ${SRC}/os/core0_idle.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES})
+target_link_libraries(test_mp3_decode PRIVATE libmad_host)
+target_compile_options(test_mp3_decode PRIVATE -Wno-unused-parameter)
+# The ID3v2 tags an MP3 file's audio starts after (header-only).
+picodeck_unit_test(test_mp3_id3 INCLUDES ${SRC}/drivers)
+# libmad a granule at a time (mp3_player.c's half frames) against the
+# whole-frame decode: the same PCM.
+picodeck_unit_test(test_mp3_granule)
+target_link_libraries(test_mp3_granule PRIVATE libmad_host)
 # The MOD player (mod_player.c + pocketmod): Core 0 load/free vs Core 1
 # update on two threads.
 picodeck_unit_test(test_mod_player SOURCES ${SRC}/drivers/mod_player.c ${SD_FAKE}
@@ -223,9 +345,129 @@ target_link_libraries(test_ota_verify PRIVATE picodeck_host_mbedtls)
 picodeck_unit_test(test_ca_bundle SOURCES ${SRC}/drivers/ca_bundle.c
                 INCLUDES ${SRC}/drivers)
 target_link_libraries(test_ca_bundle PRIVATE picodeck_host_mbedtls)
+# The signature verifiers behind picocalc.crypto.rsaVerify / ecdsaP256Verify:
+# crypto.c over the firmware's mbedTLS, with real SSH-format vectors.
+picodeck_unit_test(test_crypto_verify
+                SOURCES ${SRC}/os/crypto.c ${SRC}/os/ssh_blob.c ${SD_FAKE}
+                INCLUDES ${SD_INCLUDES})
+target_link_libraries(test_crypto_verify PRIVATE picodeck_host_mbedtls)
 
 picodeck_unit_test(test_small_alloc SOURCES ${SRC}/os/small_alloc.c)
 
 if(PICODECK_FUZZ)
     add_subdirectory(${PICODECK_ROOT}/tests/fuzz ${CMAKE_CURRENT_BINARY_DIR}/fuzz)
+endif()
+
+# The chargrid shader: compiler (Task 4), VM and outputs (Tasks 5-6). Its
+# allocations go through cg_test_alloc.h, so a test can refuse them.
+picodeck_unit_test(test_charshader SOURCES ${SRC}/os/charshader_compile.c ${SRC}/os/charshader_vm.c
+                   ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c)
+target_compile_options(test_charshader PRIVATE -ffp-contract=off -Wdouble-promotion
+                       -include ${CMAKE_CURRENT_SOURCE_DIR}/cg_test_alloc.h)
+target_link_libraries(test_charshader PRIVATE m)
+
+# The boot splash's frames (src/os/splash_render.c): the chargrid shader's
+# maths, so no FMA contraction (the device and the simulator agree).
+picodeck_unit_test(test_splash_render SOURCES ${SRC}/os/splash_render.c
+                   ${SRC}/os/splash_logo_cells.c ${SRC}/fonts/font.c ${SRC}/fonts/font_6x8.c
+                   INCLUDES ${SRC}/fonts)
+target_compile_options(test_splash_render PRIVATE -ffp-contract=off -Wdouble-promotion)
+target_link_libraries(test_splash_render PRIVATE m)
+
+# The shader's device-only paths (ARMv8 floors, the VM's VLDM/VSTM lanes)
+# against the host's C, bit for bit: charshader_xcheck.c built for the host
+# and for the Cortex-M33 with the firmware's flags, at -O2 (the shader's
+# flag) and -Os (the firmware's default), run under qemu-arm
+# (charshader_xcheck.cmake). Reported as skipped, not failed, without
+# arm-none-eabi-gcc (with newlib's rdimon) or qemu-arm.
+set(XCHECK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/charshader_xcheck.c
+    ${SRC}/os/charshader_compile.c ${SRC}/os/charshader_vm.c
+    ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c)
+add_executable(charshader_xcheck ${XCHECK_SOURCES})
+target_include_directories(charshader_xcheck PRIVATE ${SRC}/os)
+target_compile_definitions(charshader_xcheck PRIVATE CG_MALLOC=malloc CG_FREE=free)
+target_compile_options(charshader_xcheck PRIVATE -ffp-contract=off -Wdouble-promotion
+                       ${PICODECK_UNIT_SAN_FLAGS})
+target_link_options(charshader_xcheck PRIVATE ${PICODECK_UNIT_SAN_FLAGS})
+target_link_libraries(charshader_xcheck PRIVATE m)
+
+find_program(PICODECK_ARM_GCC arm-none-eabi-gcc)
+find_program(PICODECK_QEMU_ARM qemu-arm)
+set(M33_FLAGS -mcpu=cortex-m33 -mthumb -march=armv8-m.main+fp+dsp -mfloat-abi=softfp)
+set(XCHECK_SKIP "")
+if(NOT PICODECK_ARM_GCC)
+    set(XCHECK_SKIP "arm-none-eabi-gcc not found")
+elseif(NOT PICODECK_QEMU_ARM)
+    set(XCHECK_SKIP "qemu-arm not found")
+else()
+    execute_process(COMMAND ${PICODECK_ARM_GCC} ${M33_FLAGS} -print-file-name=librdimon.a
+                    OUTPUT_VARIABLE XCHECK_RDIMON OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT IS_ABSOLUTE "${XCHECK_RDIMON}")
+        set(XCHECK_SKIP "arm-none-eabi-gcc has no newlib rdimon (semihosting)")
+    endif()
+endif()
+if(XCHECK_SKIP)
+    add_test(NAME test_charshader_m33 COMMAND ${CMAKE_COMMAND} -E echo "SKIPPED: ${XCHECK_SKIP}")
+    set_tests_properties(test_charshader_m33 PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+else()
+    file(GLOB XCHECK_HEADERS ${SRC}/os/charshader*.h ${SRC}/os/chargrid.h ${SRC}/os/noise.h
+         ${SRC}/fonts/font.h)
+    set(XCHECK_ELFS "")
+    foreach(opt O2 Os)
+        set(elf ${CMAKE_CURRENT_BINARY_DIR}/charshader_xcheck_m33_${opt}.elf)
+        add_custom_command(OUTPUT ${elf}
+            COMMAND ${PICODECK_ARM_GCC} ${M33_FLAGS} -${opt} -std=gnu11 -ffp-contract=off
+                    -Wall -Wextra -Wdouble-promotion -I${SRC}/os -DCG_MALLOC=malloc
+                    -DCG_FREE=free --specs=rdimon.specs ${XCHECK_SOURCES} -lm -o ${elf}
+            DEPENDS ${XCHECK_SOURCES} ${XCHECK_HEADERS}
+            COMMENT "Building the shader cross-check for the Cortex-M33 (-${opt})"
+            VERBATIM)
+        list(APPEND XCHECK_ELFS ${elf})
+    endforeach()
+    add_custom_target(charshader_xcheck_m33 ALL DEPENDS ${XCHECK_ELFS})
+    add_test(NAME test_charshader_m33
+             COMMAND ${CMAKE_COMMAND} -DHOST=$<TARGET_FILE:charshader_xcheck>
+                     -DQEMU=${PICODECK_QEMU_ARM}
+                     -DM33=${CMAKE_CURRENT_BINARY_DIR}/charshader_xcheck_m33_
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/charshader_xcheck.cmake)
+    set_tests_properties(test_charshader_m33 PROPERTIES
+        ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:abort_on_error=0;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
+endif()
+
+# The boot splash on the Cortex-M33 against the host, bit for bit: the
+# shader cross-check's toolchain checks, flags and comparison script.
+set(SPLASH_XCHECK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/splash_xcheck.c ${SRC}/os/splash_render.c
+    ${SRC}/os/splash_logo_cells.c ${SRC}/fonts/font.c ${SRC}/fonts/font_6x8.c)
+add_executable(splash_xcheck ${SPLASH_XCHECK_SOURCES})
+target_include_directories(splash_xcheck PRIVATE ${SRC}/os ${SRC}/fonts)
+target_compile_options(splash_xcheck PRIVATE -ffp-contract=off -Wdouble-promotion
+                       ${PICODECK_UNIT_SAN_FLAGS})
+target_link_options(splash_xcheck PRIVATE ${PICODECK_UNIT_SAN_FLAGS})
+target_link_libraries(splash_xcheck PRIVATE m)
+if(XCHECK_SKIP)
+    add_test(NAME test_splash_m33 COMMAND ${CMAKE_COMMAND} -E echo "SKIPPED: ${XCHECK_SKIP}")
+    set_tests_properties(test_splash_m33 PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+else()
+    set(SPLASH_XCHECK_ELFS "")
+    foreach(opt O2 Os)
+        set(elf ${CMAKE_CURRENT_BINARY_DIR}/splash_xcheck_m33_${opt}.elf)
+        add_custom_command(OUTPUT ${elf}
+            COMMAND ${PICODECK_ARM_GCC} ${M33_FLAGS} -${opt} -std=gnu11 -ffp-contract=off
+                    -Wall -Wextra -Wdouble-promotion -I${SRC}/os -I${SRC}/fonts
+                    --specs=rdimon.specs ${SPLASH_XCHECK_SOURCES} -lm -o ${elf}
+            DEPENDS ${SPLASH_XCHECK_SOURCES} ${SRC}/os/splash_render.h
+                    ${SRC}/os/splash_logo_cells.h ${SRC}/os/charshader_math.h
+                    ${SRC}/os/noise.h ${SRC}/fonts/font.h
+            COMMENT "Building the splash cross-check for the Cortex-M33 (-${opt})"
+            VERBATIM)
+        list(APPEND SPLASH_XCHECK_ELFS ${elf})
+    endforeach()
+    add_custom_target(splash_xcheck_m33 ALL DEPENDS ${SPLASH_XCHECK_ELFS})
+    add_test(NAME test_splash_m33
+             COMMAND ${CMAKE_COMMAND} -DHOST=$<TARGET_FILE:splash_xcheck>
+                     -DQEMU=${PICODECK_QEMU_ARM}
+                     -DM33=${CMAKE_CURRENT_BINARY_DIR}/splash_xcheck_m33_
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/charshader_xcheck.cmake)
+    set_tests_properties(test_splash_m33 PROPERTIES
+        ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:abort_on_error=0;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
 endif()

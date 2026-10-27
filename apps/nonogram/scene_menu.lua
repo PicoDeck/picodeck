@@ -14,6 +14,7 @@ local T       = require("theme")
 local Render  = require("render")
 local Builtin = require("builtin")
 local Records = require("records")
+local Pad     = require("pad")
 
 local S = {}
 
@@ -69,19 +70,19 @@ function S.enter()
 end
 
 function S.update(dt)
-    local pressed = input.getButtonsPressed()
-    local edges = NG_CAP.repeatIn and input.getButtonsRepeated() or pressed
+    local _, padPressed = Pad.read()
+    local edges = Pad.dpadEdges()
 
-    if pressed & input.BTN_ESC ~= 0 then
+    if input.getButtonsPressed() & input.BTN_ESC ~= 0 then
         Records.save()
         NG_QUIT()
         return
     end
 
-    if edges & input.BTN_DOWN ~= 0 then
+    if edges & Pad.DOWN ~= 0 then
         sel = sel + 1; if sel > #items then sel = 1; scroll = 0 end
     end
-    if edges & input.BTN_UP ~= 0 then
+    if edges & Pad.UP ~= 0 then
         sel = sel - 1
         if sel < 1 then
             sel = #items
@@ -91,13 +92,13 @@ function S.update(dt)
 
     -- Size filter. Uses press edges rather than repeat edges so holding LEFT
     -- does not race through every filter.
-    if pressed & input.BTN_LEFT ~= 0 then
+    if padPressed & Pad.LEFT ~= 0 then
         sizeIdx = sizeIdx - 1
         if sizeIdx < 1 then sizeIdx = #sizes + 1 end
         sel, scroll = 1, 0
         rebuild()
     end
-    if pressed & input.BTN_RIGHT ~= 0 then
+    if padPressed & Pad.RIGHT ~= 0 then
         sizeIdx = sizeIdx + 1
         if sizeIdx > #sizes + 1 then sizeIdx = 1 end
         sel, scroll = 1, 0
@@ -108,7 +109,7 @@ function S.update(dt)
     if sel > scroll + VISIBLE then scroll = sel - VISIBLE end
     if scroll < 0 then scroll = 0 end
 
-    if pressed & input.BTN_ENTER ~= 0 then
+    if Pad.confirmed(padPressed) then
         local it = items[sel]
         if it.kind == "puzzle" then
             NG_SCENES.switch("play", { puzzle = it.puzzle })
@@ -225,7 +226,9 @@ function S.draw()
 
     local solved = select(1, Records.summary())
     Render.header("NEUROGRAM", ("%d done"):format(solved))
-    Render.footer("L/R size  UP/DN pick  ENTER open", "ESC quit")
+    Render.footer(Pad.label(Pad.LEFT) .. "/" .. Pad.label(Pad.RIGHT) .. " size  " ..
+                  Pad.label(Pad.UP) .. "/" .. Pad.label(Pad.DOWN) .. " pick  " ..
+                  Pad.label(Pad.A) .. " open", "ESC quit")
 end
 
 return S

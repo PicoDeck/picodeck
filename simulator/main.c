@@ -9,18 +9,19 @@
 #include <unistd.h>
 #ifndef __EMSCRIPTEN__
 #include <execinfo.h>
-#else
-#include "web/web_platform.h"
 #endif
+#include "hal/web_platform.h"  // sim_core1_service(); the web build's hooks
 #include <fcntl.h>
 #include "hal/hal_display.h"
 #include "hal/hal_input.h"
+#include "hal/hal_pad.h"
 #include "hal/hal_sdcard.h"
 #include "hal/hal_psram.h"
 #include "hal/hal_timing.h"
 #include "hal/hal_audio.h"
 #include "hal/hal_threading.h"
 #include "sim_socket.h"
+#include "sim_native_api.h"
 
 // PicoDeck includes (adapted for simulator)
 #include "os.h"
@@ -28,16 +29,21 @@
 #include "launcher.h"
 #include "lua_psram_alloc.h"
 #include "stubs/umm_malloc.h"  // sim_umm_use_real (--real-umm)
-#include "splash_logo.h"
+#include "splash.h"
+#include "splash_render.h"
+#include "drivers/display_raster.h"
 #include "drivers/display.h"
 #include "drivers/audio.h"
 #include "drivers/sound.h"
 #include "drivers/fileplayer.h"
 #include "drivers/mp3_player.h"
 #include "drivers/http.h"
+#include "drivers/mod_player.h"
 #ifdef PICODECK_SIM_FIRMWARE_NET
 #include "drivers/wifi.h"
 #include "net/sim_net.h"
+#else
+#include "sim_wifi.h"
 #endif
 #include "drivers/keyboard.h"
 #include "appconfig.h"
@@ -47,6 +53,9 @@
 #include "idle_dim.h"
 #include "system_menu.h"
 #include "sim_test_control.h"
+#include "core1_stats.h"
+#include <stdatomic.h>
+#include <time.h>
 
 // Simulator configuration
 #define SIM_WINDOW_TITLE "PicoDeck Simulator"
@@ -68,6 +77,8 @@ static char g_launch_app[128] = "";  // App to auto-launch
 static int g_auto_launch_done = 0;   // Flag to track if auto-launch was attempted
 static int g_show_splash = 0;        // Show boot splash screen
 static int g_virtual_time = 0;       // --virtual-time (needs --test-mode)
+static int g_host_gamepad = -1;      // --gamepad 1 / --no-gamepad 0; -1: on
+                                     // unless --test-mode
 static int g_tcp_port = 7878;        // TCP port for RPC socket
 static char g_instance_id[64] = "";  // Instance ID for unique socket paths
 static char g_unix_socket[256] = ""; // --unix-socket PATH|none ("" = default)
@@ -167,6 +178,9 @@ static void print_usage(const char* program) {
            "                       2026-01-01T00:00:00Z at boot\n");
     printf("  --virtual-time       (with --test-mode) virtual clock: Core 0 sleeps\n"
            "                       advance it instead of waiting (step_time RPC)\n");
+    printf("  --gamepad            Read the host's game controllers (the default,\n"
+           "                       except under --test-mode)\n");
+    printf("  --no-gamepad         Ignore the host's game controllers\n");
     printf("  --debug              Enable debug logging\n");
     printf("  --real-umm           Run umm_* on the firmware's umm_malloc (device heap\n"
            "                       size, 200 B blocks) instead of the counting allocator\n");
@@ -217,6 +231,10 @@ static void parse_args(int argc, char** argv) {
             sim_set_test_mode(true);
         } else if (strcmp(argv[i], "--virtual-time") == 0) {
             g_virtual_time = 1;
+        } else if (strcmp(argv[i], "--gamepad") == 0) {
+            g_host_gamepad = 1;
+        } else if (strcmp(argv[i], "--no-gamepad") == 0) {
+            g_host_gamepad = 0;
         } else if (strcmp(argv[i], "--debug") == 0) {
             hal_set_debug_mode(1);
         } else if (strcmp(argv[i], "--real-umm") == 0) {
@@ -249,66 +267,117 @@ static void parse_args(int argc, char** argv) {
     unlink(g_crash_log_path);
 }
 
-// Draw splash screen with status message
-static void draw_splash_screen(const char* status, const char* subtext) {
-    // Clear to black
-    uint16_t* fb = hal_display_get_framebuffer();
-    for (int i = 0; i < 320 * 320; i++) {
-        fb[i] = 0x0000;  // Black in RGB565
-    }
-
-#if LOGO_W > 0 && LOGO_H > 0
-    // Draw logo centered
-    int lx = (320 - LOGO_W) / 2;
-    int ly = (320 - LOGO_H) / 2 - 16;
-
-    // Draw the logo pixel by pixel
-    for (int dy = 0; dy < LOGO_H && ly + dy < 320; dy++) {
-        for (int dx = 0; dx < LOGO_W && lx + dx < 320; dx++) {
-            if (lx + dx >= 0 && ly + dy >= 0) {
-                fb[(ly + dy) * 320 + (lx + dx)] = logo_data[dy * LOGO_W + dx];
-            }
-        }
-    }
-
-    // Draw status text (using simple font approximation)
-    if (status && status[0]) {
-        // Draw status at bottom of screen
-        // For now, we'll skip text drawing since we don't have a simple text renderer here
-        // The visual logo is sufficient for the splash screen
-        (void)status;
-        (void)subtext;
-    }
-#endif
-
-    // Present to screen
-    hal_display_present();
-}
-
-// Show boot splash sequence with artificial delays
+// Show the boot splash with artificial delays (for screencasts): the
+// device's boot animation in real time (src/os/splash_render.c), then the
+// boot's status steps over its still frame.
 static void show_boot_splash(void) {
     printf("[Core0] Showing boot splash screen...\n");
     fflush(stdout);
 
-    // Initial splash - "PicoDeck Simulator"
-    draw_splash_screen("PicoDeck Simulator", "Starting up...");
-    hal_sleep_ms(800);
+    const uint32_t t0 = hal_get_time_ms();
+    for (;;) {
+        const float t = (float)(hal_get_time_ms() - t0) / 1000.0f;
+        display_raster_target_t r;
+        display_get_raster_target(&r);
+        splash_render(r.fb, r.stride, r.swap, t, NULL, NULL);
+        display_flush();
+        if (t >= SPLASH_T_END) break;
+        hal_sleep_ms(16);
+    }
 
-    // Show initialization steps like hardware does
-    draw_splash_screen("Initialising keyboard...", NULL);
-    hal_sleep_ms(600);
-
-    draw_splash_screen("Mounting SD card...", NULL);
-    hal_sleep_ms(800);
-
-    draw_splash_screen("Initialising WiFi...", NULL);
-    hal_sleep_ms(600);
-
-    draw_splash_screen("Loading...", NULL);
-    hal_sleep_ms(500);
+    static const char *const steps[] = {"Initialising keyboard...", "Mounting SD card...",
+                                        "Initialising WiFi...", "Loading..."};
+    static const uint32_t delays_ms[] = {600, 800, 600, 500};
+    for (int i = 0; i < 4; i++) {
+        splash_draw_static(steps[i], NULL);
+        hal_sleep_ms(delays_ms[i]);
+    }
 
     printf("[Core0] Splash sequence complete\n");
     fflush(stdout);
+}
+
+// One Core 1 tick, with no sleep. core1_thread repeats it every 5 ms; the web
+// build has no threads, so its web_core1_tick() paces it instead (see
+// hal/web_platform.h). A new Core 1 duty goes here, so it runs in both.
+// stubs/driver_stubs.c. The launcher pauses Core 1 around a clock change
+// (launcher_apply_clock) and waits for the ack, which firmware Core 1 gives
+// before it stops (src/main.c); a paused tick here acks and does nothing.
+extern volatile bool g_core1_pause;
+extern volatile bool g_core1_paused;
+
+void sim_core1_service(void) {
+    if (g_core1_pause) {
+        g_core1_paused = true;
+        return;
+    }
+    g_core1_paused = false;
+
+    // Update audio
+    hal_audio_update();
+
+    // MOD player: render PCM and push to audio stream
+    mod_player_update();
+
+    // A native app's audio callback (sys->setAudioCallback), where firmware
+    // Core 1 runs it (src/main.c). Only the web build's compiled-in apps set
+    // it: Unicorn's setAudioCallback is a stub.
+    void (*audio_cb)(void) = atomic_load(&g_native_audio_callback);
+    if (audio_cb)
+        audio_cb();
+
+    // Network polling — drain IPC queue, run curl_multi, poll TCP sockets
+    wifi_poll();
+    http_fire_c_pending();
+}
+
+// core1_stats.h, for `audiostat` (src/dev_ops.c): the desktop Core 1
+// thread's service passes, timed on the host's monotonic clock (Core 1 is
+// never on virtual time). Nothing merges ticks here, so `missed` stays 0,
+// and a tick is 5 ms, not the device's 1 ms. The web build's cooperative
+// tick (web_core1_tick) is not timed: its counters stay 0.
+static _Atomic uint32_t s_c1_ticks, s_c1_over, s_c1_max_us;
+static _Atomic uint64_t s_c1_window_t0_us;
+static atomic_bool s_c1_reset_req;
+
+static uint64_t core1_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+void core1_get_tick_stats(core1_tick_stats_t *out) {
+    // A reset the Core 1 thread has not carried out yet reads as the empty
+    // window it asked for.
+    bool reset = atomic_load(&s_c1_reset_req);
+    out->window_ms = reset ? 0
+        : (uint32_t)((core1_now_us() - atomic_load(&s_c1_window_t0_us)) / 1000);
+    out->ticks = reset ? 0 : atomic_load(&s_c1_ticks);
+    out->over = reset ? 0 : atomic_load(&s_c1_over);
+    out->missed = 0;
+    out->max_us = reset ? 0 : atomic_load(&s_c1_max_us);
+}
+
+void core1_reset_tick_stats(void) {
+    atomic_store(&s_c1_reset_req, true);
+}
+
+// One timed service pass (the Core 1 thread only).
+static void core1_timed_service(void) {
+    if (atomic_exchange(&s_c1_reset_req, false)) {
+        atomic_store(&s_c1_ticks, 0);
+        atomic_store(&s_c1_over, 0);
+        atomic_store(&s_c1_max_us, 0);
+        atomic_store(&s_c1_window_t0_us, core1_now_us());
+    }
+    uint64_t t0 = core1_now_us();
+    sim_core1_service();
+    uint32_t dt = (uint32_t)(core1_now_us() - t0);
+    atomic_fetch_add(&s_c1_ticks, 1);
+    if (dt > 1000)
+        atomic_fetch_add(&s_c1_over, 1);
+    if (dt > atomic_load(&s_c1_max_us))
+        atomic_store(&s_c1_max_us, dt);
 }
 
 // Core 1 entry point (simulates the second core)
@@ -324,19 +393,9 @@ static void* core1_thread(void* arg) {
     hal_audio_init();
     
     // Core 1 main loop
+    atomic_store(&s_c1_window_t0_us, core1_now_us());
     while (g_running) {
-        // Update audio
-        hal_audio_update();
-
-        // MOD player: render PCM and push to audio stream
-        extern void mod_player_update(void);
-        mod_player_update();
-
-        // Network polling — drain IPC queue, run curl_multi, poll TCP sockets
-        extern void wifi_poll(void);
-        wifi_poll();
-        extern void http_fire_c_pending(void);
-        http_fire_c_pending();
+        core1_timed_service();
 
         // 5ms delay (same as hardware)
         hal_sleep_ms(5);
@@ -483,6 +542,7 @@ static const picocalc_gamepad_t s_gamepad_impl = {
 
 static void sim_wire_g_api(void) {
     memset(&g_api, 0, sizeof(g_api));
+    sim_native_api_wire(&g_api);  // display, sys, input, perf, fs, audio
     g_api.soundplayer = &s_soundplayer_impl;
     g_api.http        = &s_http_impl;
     g_api.appconfig   = &s_appconfig_impl;
@@ -525,7 +585,7 @@ int main(int argc, char** argv) {
 #ifdef __EMSCRIPTEN__
     // Read keys from the canvas, not the whole window: keys reach the simulator
     // while it has focus, and the page around it (picodeck.net) still scrolls
-    // and takes typing. simulator/web/shell.js sends the touch pad's keys there.
+    // and takes typing. PicoDeck/web-sim's page/shell.js sends the touch pad's keys there.
     SDL_SetHint(SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT, "#canvas");
 #endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS) < 0) {
@@ -551,6 +611,15 @@ int main(int argc, char** argv) {
         SDL_Quit();
         return 1;
     }
+    // The host's game controllers as a gamepad source (hal_pad.c). Off in
+    // --test-mode unless asked for, so a test never sees whatever controller
+    // the host has. The web build has no command line: always on there, for
+    // the pads the browser lists (SDL's Emscripten joystick driver).
+#ifdef __EMSCRIPTEN__
+    hal_pad_init(true);
+#else
+    hal_pad_init(g_host_gamepad < 0 ? !sim_test_mode() : g_host_gamepad != 0);
+#endif
     
 #ifdef __EMSCRIPTEN__
     web_fs_init(g_sd_card_path);
@@ -623,6 +692,9 @@ int main(int argc, char** argv) {
     wifi_init();
     http_init();
     tcp_init();
+    // Bluetooth pads (sim_bt.c, a scripted radio), as src/main.c.
+    extern void bt_pad_init(void);
+    bt_pad_init();
 #ifdef PICODECK_SIM_FIRMWARE_NET
     // Firmware network stack (simulator/net): join the stand-in network now,
     // as sim_wifi.c's mock is "always online", unless config.json's
@@ -632,8 +704,8 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef __EMSCRIPTEN__
-    // No threads in the browser: Core 1's loop runs cooperatively from every
-    // yield point (see web/web_platform.c).
+    // No threads in the browser: the web sources' web_core1_tick() runs
+    // sim_core1_service() cooperatively from every yield point.
     hal_audio_init();
 #else
     // Start Core 1 thread (simulates second core)
@@ -691,6 +763,7 @@ int main(int argc, char** argv) {
     sim_socket_close();
     hal_psram_shutdown();
     hal_sdcard_shutdown();
+    hal_pad_shutdown();
     hal_input_shutdown();
     hal_display_shutdown();
     SDL_Quit();

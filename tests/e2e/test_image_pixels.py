@@ -71,6 +71,6 @@ def test_pixels_contract_on_device(target):
     image must come back as the colour it was built with."""
     target.push_app(FIXTURE_APPS / APP, APP)
     # Never pushed; a stale one from a manual run would switch to draw mode.
-    target.delete_file(f"/apps/{APP}/draw.flag")
+    target.delete_file(f"/apps/.test/{APP}/draw.flag")
     run = target.run_lua_app(APP, timeout=60)
     run.assert_all_passed(CASES)

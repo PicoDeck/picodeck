@@ -107,6 +107,8 @@ def test_panels_full_lifecycle(sim_factory, test_sd_card):
 
     # Custom renderFunction ran with the panel clip active.
     _wait_for(simulator, "PT RENDERFN")
+    # A misspelled animate.ease is logged, not silently linear (#56).
+    _wait_for(simulator, 'PANELS:ERR unknown ease "cubik", using linear')
     _advance(simulator, TRANSITION_MS)   # any opening fade has finished
 
     # Advance mode: forward key steps panels, then crosses into sequence 2.
@@ -132,6 +134,7 @@ def test_panels_full_lifecycle(sim_factory, test_sd_card):
     _tap(simulator, "esc")
     joined = _wait_for(simulator, "PT EXIT quit")
     assert "PANELS:EXIT quit" in joined
+    assert joined.count("PANELS:ERR unknown ease") == 1, joined
     assert simulator.wait_for_exit(timeout=10.0)["result"] == "returned"
 
     # Relaunch: resume=true restores the saved sequence, not sequence 1.

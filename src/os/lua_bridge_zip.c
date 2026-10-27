@@ -98,7 +98,7 @@ static int s_lua_zip_open_count = 0;
 
 static lua_zip_archive_t *check_archive(lua_State *L) {
     lua_zip_archive_t *ar =
-        (lua_zip_archive_t *)luaL_checkudata(L, 1, ZIP_MT);
+        (lua_zip_archive_t *)lb_checkudata(L, 1, ZIP_MT);
     if (!ar->open)
         luaL_error(L, "archive is closed");
     return ar;
@@ -226,6 +226,71 @@ static int l_ar_size(lua_State *L) {
     return 1;
 }
 
+// ── ar:numEntries() → integer (files + directories) ──────────────────────────
+static int l_ar_num_entries(lua_State *L) {
+  lua_zip_archive_t *ar = check_archive(L);
+  lua_pushinteger(L, zip_reader_num_entries(&ar->zr));
+  return 1;
+}
+
+// ── ar:locate(name) → index | nil ────────────────────────────────────────────
+// The name → index mapping the index-addressed calls below take.
+static int l_ar_locate(lua_State *L) {
+  lua_zip_archive_t *ar = check_archive(L);
+  const char *name = luaL_checkstring(L, 2);
+  int idx = zip_reader_locate(&ar->zr, name);
+  if (idx < 0) {
+    lua_pushnil(L);
+    return 1;
+  }
+  lua_pushinteger(L, idx);
+  return 1;
+}
+
+// ── ar:statIndex(idx) → {name, size, compressed_size, is_dir} | nil ──────────
+// The metadata of one entry, keyed the way :list() reports it.
+static int l_ar_stat_index(lua_State *L) {
+  lua_zip_archive_t *ar = check_archive(L);
+  lua_Integer idx = luaL_checkinteger(L, 2);  // an identifier: exact integers only
+  zip_entry_info_t info;
+  if (!zip_reader_stat_index(&ar->zr, (int)idx, &info)) {
+    lua_pushnil(L);
+    return 1;
+  }
+  lua_createtable(L, 0, 4);
+  lua_pushstring(L, info.name);
+  lua_setfield(L, -2, "name");
+  lua_pushinteger(L, (lua_Integer)info.size);
+  lua_setfield(L, -2, "size");
+  lua_pushinteger(L, (lua_Integer)info.comp_size);
+  lua_setfield(L, -2, "compressed_size");
+  lua_pushboolean(L, info.is_dir);
+  lua_setfield(L, -2, "is_dir");
+  return 1;
+}
+
+// ── ar:extractEntry(idx, dest_path) → ok [, err] ──────────────────────────────
+// :extract() is this, addressed by entry name.
+static int l_ar_extract_entry(lua_State *L) {
+  lua_zip_archive_t *ar = check_archive(L);
+  lua_Integer idx = luaL_checkinteger(L, 2);  // an identifier: exact integers only
+  const char *dest = luaL_checkstring(L, 3);
+
+  if (!fs_sandbox_check(L, dest, true)) {
+    lua_pushboolean(L, false);
+    lua_pushstring(L, "permission denied (destination)");
+    return 2;
+  }
+  char err[ZIP_ERR_MAX];
+  if (!zip_reader_extract_entry(&ar->zr, (int)idx, dest, err)) {
+    lua_pushboolean(L, false);
+    lua_pushstring(L, err);
+    return 2;
+  }
+  lua_pushboolean(L, true);
+  return 1;
+}
+
 // ── ar:read(name [, max_len]) → string | nil, err ────────────────────────────
 static int l_ar_read(lua_State *L) {
     lua_zip_archive_t *ar = check_archive(L);
@@ -256,8 +321,8 @@ static int l_ar_read(lua_State *L) {
         lua_pushstring(L, "size cap");
         return 2;
     }
-    luaL_Buffer b;
-    void *buf = luaL_buffinitsize(L, &b, (size_t)info.size);
+    picodeck_lua_strbuf_t sb;  // extracted straight into the result string
+    void *buf = picodeck_lua_strbuf_init(L, &sb, (size_t)info.size);
     char err[ZIP_ERR_MAX];
     int n = zip_reader_read_to_buf(&ar->zr, idx, buf, (size_t)info.size, err);
     if (n < 0) {
@@ -265,7 +330,7 @@ static int l_ar_read(lua_State *L) {
         lua_pushstring(L, err);
         return 2;
     }
-    luaL_pushresultsize(&b, (size_t)n);
+    picodeck_lua_strbuf_push(L, &sb, (size_t)n);
     return 1;
 }
 
@@ -328,7 +393,7 @@ static int l_ar_extract_all(lua_State *L) {
 // ── ar:close() ───────────────────────────────────────────────────────────────
 static int l_ar_close(lua_State *L) {
     lua_zip_archive_t *ar =
-        (lua_zip_archive_t *)luaL_checkudata(L, 1, ZIP_MT);
+        (lua_zip_archive_t *)lb_checkudata(L, 1, ZIP_MT);
     archive_do_close(ar);  // double-close is a no-op, not an error
     return 0;
 }
@@ -337,16 +402,20 @@ static int l_ar_close(lua_State *L) {
 // or leaves a <close> scope.
 static int l_ar_gc(lua_State *L) {
     lua_zip_archive_t *ar =
-        (lua_zip_archive_t *)luaL_checkudata(L, 1, ZIP_MT);
+        (lua_zip_archive_t *)lb_checkudata(L, 1, ZIP_MT);
     archive_do_close(ar);
     return 0;
 }
 
 static const luaL_Reg archive_methods[] = {
-    {"list",       l_ar_list},
-    {"exists",     l_ar_exists},
-    {"size",       l_ar_size},
-    {"read",       l_ar_read},
+    {"list",        l_ar_list},
+    {"exists",      l_ar_exists},
+    {"size",        l_ar_size},
+    {"numEntries",  l_ar_num_entries},
+    {"locate",      l_ar_locate},
+    {"statIndex",   l_ar_stat_index},
+    {"extractEntry",l_ar_extract_entry},
+    {"read",        l_ar_read},
     {"extract",    l_ar_extract},
     {"extractAll", l_ar_extract_all},
     {"close",      l_ar_close},

@@ -5,6 +5,31 @@ local pc    = picocalc
 local disp  = pc.display
 local input = pc.input
 
+-- Input: the logical gamepad (rebindable in Settings > Controls) where the
+-- firmware has it, raw keys on older firmware.
+local gp = pc.gamepad
+local P, read_buttons, key_label
+if gp then
+    P = {UP = gp.PAD_UP, DOWN = gp.PAD_DOWN, LEFT = gp.PAD_LEFT,
+         RIGHT = gp.PAD_RIGHT, A = gp.PAD_A}
+    read_buttons = function() return gp.getButtons(), gp.getButtonsPressed() end
+    key_label = function() return gp.getLabel(gp.PAD_A) or "?" end
+else
+    P = {UP = input.BTN_UP, DOWN = input.BTN_DOWN, LEFT = input.BTN_LEFT,
+         RIGHT = input.BTN_RIGHT, A = input.BTN_ENTER}
+    read_buttons = function() return input.getButtons(), input.getButtonsPressed() end
+    key_label = function() return "Enter" end
+end
+
+-- A, or Enter as before the gamepad, answers "play again". Enter counts only
+-- when it pressed no gamepad button: a player who bound it to one gets that
+-- button's meaning alone.
+local function confirm_pressed(pad_pressed)
+    if pad_pressed & P.A ~= 0 then return true end
+    return gp ~= nil and pad_pressed == 0
+        and input.getButtonsPressed() & input.BTN_ENTER ~= 0
+end
+
 -- ── Config ────────────────────────────────────────────────────────────────────
 
 local CELL  = 10          -- grid cell size in pixels
@@ -93,14 +118,14 @@ local function game_over_screen()
     disp.drawText(90, 120, "GAME OVER", TEXT_C,  disp.BLACK)
     disp.drawText(90, 140, "Score: " .. score,   FOOD_C,  disp.BLACK)
     disp.drawText(76, 160, "Hi: "    .. highscore, DIM_C, disp.BLACK)
-    disp.drawText(40, 190, "Enter: Play again  Esc: Quit", DIM_C, disp.BLACK)
+    disp.drawText(40, 190, key_label() .. ": Play again  Esc: Quit", DIM_C, disp.BLACK)
     disp.flush()
 
     while true do
         input.update()
-        local p = input.getButtonsPressed()
-        if p & input.BTN_ENTER ~= 0 then return "restart" end
-        if p & input.BTN_ESC   ~= 0 then return "quit"    end
+        local _, p = read_buttons()
+        if confirm_pressed(p) then return "restart" end
+        if input.getButtonsPressed() & input.BTN_ESC ~= 0 then return "quit" end
         pc.sys.sleep(16)
     end
 end
@@ -116,11 +141,11 @@ while true do
     local pressed = input.getButtonsPressed()
     if pressed & input.BTN_ESC ~= 0 then return end
 
-    local held = input.getButtons()
-    if held & input.BTN_UP    ~= 0 and dir.y == 0 then next_dir = {x=0, y=-1} end
-    if held & input.BTN_DOWN  ~= 0 and dir.y == 0 then next_dir = {x=0, y=1}  end
-    if held & input.BTN_LEFT  ~= 0 and dir.x == 0 then next_dir = {x=-1,y=0}  end
-    if held & input.BTN_RIGHT ~= 0 and dir.x == 0 then next_dir = {x=1, y=0}  end
+    local held = read_buttons()
+    if held & P.UP    ~= 0 and dir.y == 0 then next_dir = {x=0, y=-1} end
+    if held & P.DOWN  ~= 0 and dir.y == 0 then next_dir = {x=0, y=1}  end
+    if held & P.LEFT  ~= 0 and dir.x == 0 then next_dir = {x=-1,y=0}  end
+    if held & P.RIGHT ~= 0 and dir.x == 0 then next_dir = {x=1, y=0}  end
 
     -- Move every SPEED frames
     if frame % SPEED == 0 then

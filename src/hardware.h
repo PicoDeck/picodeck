@@ -21,8 +21,11 @@
 #define LCD_PIN_RST 15  // GP15 / Reset
 #define LCD_WIDTH 320
 #define LCD_HEIGHT 320
-#define LCD_SPI_BAUD                                                           \
-  (100 * 1000 * 1000) // 80 MHz target (clk_peri=200MHz ÷2) — ~60 fps max
+// The LCD SPI's ceiling (past the panel's datasheet, proven on the device):
+// display.c runs the fastest clock at or below it that clk_sys gives with
+// lcd_spi.pio's programs (lcd_spi_rate.h): 100 MHz at 200 and 300 MHz, a full
+// 320x320 flush ~16-17 ms.
+#define LCD_SPI_BAUD (100 * 1000 * 1000)
 
 // --- SD Card: FatFS, SPI0 ---------------------------------------------------
 #define SD_SPI_PORT spi0

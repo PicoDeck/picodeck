@@ -23,7 +23,9 @@ set(PICODECK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 # Find required packages
 if(EMSCRIPTEN)
     # Web demo build (emcmake cmake ..): SDL2 comes from Emscripten's ports,
-    # and there are no threads, libcurl or Unicorn in a browser. See web/.
+    # and there are no threads, libcurl or Unicorn in a browser. The browser
+    # build itself lives in PicoDeck/web-sim (simulator/CLAUDE.md, "Web build
+    # seam").
     add_library(SDL2::SDL2 INTERFACE IMPORTED)
     set_target_properties(SDL2::SDL2 PROPERTIES
         INTERFACE_COMPILE_OPTIONS "-sUSE_SDL=2"
@@ -32,6 +34,41 @@ if(EMSCRIPTEN)
     # musl only exposes the glibc-style `uint` typedef the SDK stubs use here
     add_compile_definitions(_GNU_SOURCE)
     set(SIM_SIZEOF_LONG 4)
+    # The web project's half of the build (simulator/CLAUDE.md, "Web build
+    # seam"): PICODECK_WEB_DIR holds web.cmake, which sets the platform and
+    # network-stub sources and defines picodeck_web_package(target). The
+    # browser demo lives in PicoDeck/web-sim.
+    set(PICODECK_WEB_DIR "" CACHE PATH
+        "A PicoDeck/web-sim checkout; its web.cmake builds the browser demo")
+    if(NOT PICODECK_WEB_DIR)
+        message(FATAL_ERROR "The browser build lives in PicoDeck/web-sim: build it there "
+            "(make build), or pass -DPICODECK_WEB_DIR=<a PicoDeck/web-sim checkout>")
+    endif()
+    get_filename_component(PICODECK_WEB_DIR "${PICODECK_WEB_DIR}" ABSOLUTE)
+    set(PICODECK_WEB_CMAKE "${PICODECK_WEB_DIR}/web.cmake")
+    if(NOT EXISTS "${PICODECK_WEB_CMAKE}")
+        message(FATAL_ERROR "PICODECK_WEB_DIR=${PICODECK_WEB_DIR} has no web.cmake")
+    endif()
+    include("${PICODECK_WEB_CMAKE}")
+    # Check what web.cmake must provide, so a broken one fails here, by name,
+    # rather than as a missing source or command further down (or at link).
+    foreach(web_var PICODECK_WEB_PLATFORM_SOURCES PICODECK_WEB_NET_SOURCES)
+        list(LENGTH ${web_var} web_n)
+        if(web_n EQUAL 0)
+            message(FATAL_ERROR "${PICODECK_WEB_CMAKE} does not set ${web_var} "
+                "(simulator/CLAUDE.md, \"Web build seam\")")
+        endif()
+        foreach(web_src IN LISTS ${web_var})
+            if(NOT IS_ABSOLUTE "${web_src}")
+                message(FATAL_ERROR "${PICODECK_WEB_CMAKE}: ${web_var} entry "
+                    "\"${web_src}\" is not an absolute path")
+            endif()
+        endforeach()
+    endforeach()
+    if(NOT COMMAND picodeck_web_package)
+        message(FATAL_ERROR "${PICODECK_WEB_CMAKE} does not define "
+            "picodeck_web_package(target) (simulator/CLAUDE.md, \"Web build seam\")")
+    endif()
 else()
     find_package(SDL2 REQUIRED)
     find_package(SDL2_image REQUIRED)
@@ -67,7 +104,9 @@ set(LUA_SOURCES
     ${LUA_DIR}/ldump.c
     ${LUA_DIR}/lfunc.c
     ${LUA_DIR}/lgc.c
-    ${LUA_DIR}/linit.c
+    # No linit.c: the bridge opens its own restricted libraries, and the web
+    # build links as a main module (whole archives), where linit.c's
+    # references to the io/os/package/debug libraries it leaves out fail.
     ${LUA_DIR}/llex.c
     ${LUA_DIR}/lmem.c
     ${LUA_DIR}/lobject.c
@@ -96,7 +135,7 @@ target_include_directories(lua_sim PUBLIC ${LUA_DIR})
 include(${PICODECK_ROOT}/cmake/picodeck_lua.cmake)
 picodeck_patch_luaconf(${LUA_DIR})
 target_compile_definitions(lua_sim PUBLIC ${PICODECK_LUA_DEFINITIONS})
-target_sources(lua_sim PRIVATE ${PICODECK_LUA_SOURCES})  # picodeck_lua_sprintf (float formatting)
+target_sources(lua_sim PRIVATE ${PICODECK_LUA_SOURCES})  # picodeck_lua_sprintf, _arm_hook, _strbuf, lua_fastarg.c
 target_compile_definitions(lua_sim PRIVATE PICODECK_SIMULATOR=1)
 target_compile_options(lua_sim PRIVATE -O2 -Wall)
 # The string hash seed comes from sim_test_control.c (sim_lua_seed.h): fixed
@@ -174,6 +213,11 @@ target_compile_options(image_decoders_sim PRIVATE -O2)
 add_library(sim_hal STATIC
     hal/hal_display.c
     hal/hal_input.c
+    hal/hal_pad.c
+    ${PICODECK_ROOT}/src/drivers/pad_source.c
+    sim_bt.c
+    ${PICODECK_ROOT}/src/drivers/bt_pad_store.c
+    ${PICODECK_ROOT}/src/drivers/hid_pad.c
     hal/hal_sdcard.c
     hal/hal_psram.c
     hal/hal_timing.c
@@ -225,9 +269,9 @@ target_compile_definitions(sim_hal PUBLIC
 # reproduce the Core 0/Core 1 close races (specs/test-audit-2026-09-24.md
 # R13); tests/e2e/test_network_firmware.py runs only against it.
 if(EMSCRIPTEN)
-    # Web demo (make simulator-web): no network in the browser;
-    # web/web_net_stubs.c returns NULL from every connection allocation.
-    add_library(sim_network STATIC sim_wifi.c web/web_net_stubs.c)
+    # Web build: no network in the browser; the web project's stubs
+    # (PICODECK_WEB_NET_SOURCES) return NULL from every connection allocation.
+    add_library(sim_network STATIC sim_wifi.c ${PICODECK_WEB_NET_SOURCES})
 elseif(SIM_FIRMWARE_NET)
     add_library(sim_network STATIC
         ${PICODECK_ROOT}/src/drivers/wifi.c
@@ -279,6 +323,8 @@ else()
         sim_http.c
         sim_tcp.c
     )
+    # sim_tcp.c: the TLS peer certificate's SHA-256 (tcp:peerFingerprint).
+    target_link_libraries(sim_network PRIVATE picodeck_host_mbedtls)
 endif()
 target_include_directories(sim_network PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -347,11 +393,20 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_bridge_appconfig.c
     ${PICODECK_ROOT}/src/os/lua_bridge_perf.c
     ${PICODECK_ROOT}/src/os/perf.c
+    ${PICODECK_ROOT}/src/os/core0_idle.c
     ${PICODECK_ROOT}/src/os/fps_counter.c
     ${PICODECK_ROOT}/src/os/lua_bridge_graphics.c
     ${PICODECK_ROOT}/src/os/lua_bridge_3d.c
     ${PICODECK_ROOT}/src/os/gfx3d.c
     ${PICODECK_ROOT}/src/os/lua_bridge_gfx3d.c
+    ${PICODECK_ROOT}/src/os/chargrid.c
+    ${PICODECK_ROOT}/src/os/chargrid_shapes.c
+    ${PICODECK_ROOT}/src/os/chargrid_text.c
+    ${PICODECK_ROOT}/src/os/chargrid_render.c
+    ${PICODECK_ROOT}/src/os/chargrid_display.c
+    ${PICODECK_ROOT}/src/os/charshader_compile.c
+    ${PICODECK_ROOT}/src/os/charshader_vm.c
+    ${PICODECK_ROOT}/src/os/lua_bridge_chargrid.c
     ${PICODECK_ROOT}/src/os/module_path.c
     ${PICODECK_ROOT}/src/os/lua_bridge_require.c
     ${PICODECK_ROOT}/src/os/lua_corolib.c
@@ -402,10 +457,15 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/clock.c
     ${PICODECK_ROOT}/src/os/tz_picker.c
     ${PICODECK_ROOT}/src/os/ui.c
+    ${PICODECK_ROOT}/src/os/splash.c
+    ${PICODECK_ROOT}/src/os/splash_render.c
+    ${PICODECK_ROOT}/src/os/splash_logo_cells.c
     ${PICODECK_ROOT}/src/os/ui_widgets.c
     ${PICODECK_ROOT}/src/os/text_wrap.c
     ${CMAKE_CURRENT_SOURCE_DIR}/stubs/dev_commands_stub.c
     ${PICODECK_ROOT}/src/dev_ops.c
+    ${PICODECK_ROOT}/src/os/mv_op.c
+    ${PICODECK_ROOT}/src/os/mv_path.c
     ${PICODECK_ROOT}/src/fonts/font.c
     ${PICODECK_ROOT}/src/fonts/font_registry.c
     ${PICODECK_ROOT}/src/fonts/font_6x8.c
@@ -436,7 +496,7 @@ list(APPEND PICODECK_CORE_SOURCES
 )
 
 if(EMSCRIPTEN)
-    set(SIM_PLATFORM_SOURCES web/web_platform.c)
+    set(SIM_PLATFORM_SOURCES ${PICODECK_WEB_PLATFORM_SOURCES})
 else()
     set(SIM_PLATFORM_SOURCES
         sim_socket.c
@@ -446,14 +506,32 @@ else()
     )
 endif()
 
+# PicoDeck/web-sim recognises a PicoDeck whose web build seam has native
+# apps by the name sim_native_api.c appearing in this file (its
+# scripts/picodeck-ref.mjs and Makefile): keep it listed here, by name.
 add_executable(picodeck_simulator
     main.c
+    sim_native_api.c
     sim_test_control.c
     ${SIM_PLATFORM_SOURCES}
     ${PICODECK_CORE_SOURCES}
 )
 
 set_source_files_properties(${PICODECK_ROOT}/src/os/gfx3d.c PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+
+set_source_files_properties(${PICODECK_ROOT}/src/os/chargrid.c
+    ${PICODECK_ROOT}/src/os/chargrid_shapes.c
+    ${PICODECK_ROOT}/src/os/chargrid_text.c
+    ${PICODECK_ROOT}/src/os/chargrid_render.c
+    ${PICODECK_ROOT}/src/os/charshader_compile.c
+    ${PICODECK_ROOT}/src/os/charshader_vm.c PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+# The bridge inlines noise.h: no FMA contraction, so noise matches the device.
+set_source_files_properties(${PICODECK_ROOT}/src/os/lua_bridge_chargrid.c PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+# The boot splash's frames: no FMA contraction, so they match the device.
+set_source_files_properties(${PICODECK_ROOT}/src/os/splash_render.c PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 
 target_include_directories(picodeck_simulator PRIVATE
@@ -565,82 +643,9 @@ set_target_properties(picodeck_simulator PROPERTIES
 )
 
 # ── Web demo packaging ──────────────────────────────────────────────────────
+# The SD image, link options and page come from the web project's web.cmake.
 if(EMSCRIPTEN)
-    # Lua apps bundled into the demo's SD image: names of dirs under apps/, or
-    # absolute paths to app dirs that live in their own repos.
-    set(PICODECK_WEB_APPS "snake;nonogram;calculator;editor;3dtest"
-        CACHE STRING "Apps to bundle into the web demo SD image")
-    # Store apps bundled from their release ZIPs, pinned by hash:
-    # "<dir under /apps>|<zip URL>|<SHA-256>". Downloaded at configure time
-    # into web_downloads/ and reused while the hash still matches.
-    set(PICODECK_WEB_STORE_APPS
-        "blockexe|https://github.com/PicoDeck/blockexe/releases/download/v1.0.3/picodeck-blockexe-v1.0.3.zip|66cc0c9ebc251e704a78ecf540b94ca6bab2055bf66f96ea550319e9a8dbcac7"
-        CACHE STRING "Store app release ZIPs to bundle into the web demo SD image")
-
-    set(WEB_SD_DIR ${CMAKE_BINARY_DIR}/web_sd)
-    file(REMOVE_RECURSE ${WEB_SD_DIR})
-    file(MAKE_DIRECTORY ${WEB_SD_DIR}/apps ${WEB_SD_DIR}/data)
-    file(COPY ${PICODECK_ROOT}/system DESTINATION ${WEB_SD_DIR})
-    foreach(app ${PICODECK_WEB_APPS})
-        if(IS_ABSOLUTE ${app})
-            set(app_src ${app})
-        else()
-            set(app_src ${PICODECK_ROOT}/apps/${app})
-        endif()
-        if(NOT IS_DIRECTORY ${app_src})
-            message(FATAL_ERROR "PICODECK_WEB_APPS: ${app_src} is not a directory")
-        endif()
-        file(COPY ${app_src} DESTINATION ${WEB_SD_DIR}/apps
-             PATTERN ".git" EXCLUDE PATTERN ".github" EXCLUDE
-             PATTERN "tests" EXCLUDE PATTERN "tools" EXCLUDE
-             PATTERN "*.md" EXCLUDE)
-    endforeach()
-    foreach(entry ${PICODECK_WEB_STORE_APPS})
-        string(REPLACE "|" ";" fields "${entry}")
-        list(LENGTH fields nfields)
-        if(NOT nfields EQUAL 3)
-            message(FATAL_ERROR "PICODECK_WEB_STORE_APPS: '${entry}' is not <dir>|<url>|<sha256>")
-        endif()
-        list(GET fields 0 app_dir)
-        list(GET fields 1 app_url)
-        list(GET fields 2 app_sha)
-        set(app_zip ${CMAKE_BINARY_DIR}/web_downloads/${app_dir}.zip)
-        set(have_sha "")
-        if(EXISTS ${app_zip})
-            file(SHA256 ${app_zip} have_sha)
-        endif()
-        if(NOT have_sha STREQUAL app_sha)
-            file(DOWNLOAD ${app_url} ${app_zip} TLS_VERIFY ON
-                 EXPECTED_HASH SHA256=${app_sha} STATUS dl_status)
-            list(GET dl_status 0 dl_code)
-            if(NOT dl_code EQUAL 0)
-                message(FATAL_ERROR "PICODECK_WEB_STORE_APPS: ${app_url}: ${dl_status}")
-            endif()
-        endif()
-        file(ARCHIVE_EXTRACT INPUT ${app_zip} DESTINATION ${WEB_SD_DIR}/apps/${app_dir})
-        if(NOT EXISTS ${WEB_SD_DIR}/apps/${app_dir}/main.lua)
-            message(FATAL_ERROR "PICODECK_WEB_STORE_APPS: ${app_url} has no main.lua at its root")
-        endif()
-    endforeach()
-
-    set_target_properties(picodeck_simulator PROPERTIES
-        SUFFIX ".html"
-        LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html)
-    # The page glue shell.html loads (and picodeck.net/try/ loads from the zip).
-    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/web/shell.js ${CMAKE_BINARY_DIR}/shell.js COPYONLY)
-    target_link_options(picodeck_simulator PRIVATE
-        -O2
-        -sASYNCIFY
-        -sASYNCIFY_STACK_SIZE=262144
-        -sSTACK_SIZE=1048576
-        -sALLOW_MEMORY_GROWTH
-        -sINITIAL_MEMORY=64MB
-        -sEXIT_RUNTIME=0
-        -lidbfs.js
-        -sEXPORTED_RUNTIME_METHODS=FS
-        --preload-file ${WEB_SD_DIR}@/sd
-        --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html
-    )
+    picodeck_web_package(picodeck_simulator)
 endif()
 
 # Copy SDL2 DLL on Windows (if needed)

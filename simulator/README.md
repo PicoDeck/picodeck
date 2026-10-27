@@ -6,10 +6,16 @@ A cross-platform SDL2-based simulator for PicoDeck that runs on desktop computer
 
 - **3x Scale Display**: 960×960 window simulating the 320×320 LCD
 - **Dual-Core Simulation**: Core 0 (Lua VM) and Core 1 (audio/network) run in separate threads
-- **Keyboard Input**: Full keyboard mapping to PicoDeck buttons
+- **Lua and native apps**: Lua apps run on the same bridge as the firmware; native ELF apps run under the Unicorn CPU emulator, and a few are compiled straight into the simulator
+- **Keyboard and game controllers**: full keyboard mapping, plus host SDL game controllers feeding `picocalc.gamepad` (and a scripted Bluetooth radio for the pairing UI)
 - **Host Filesystem**: SD card simulated as local directory
 - **Audio Support**: SDL2 audio output
+- **Test control channel**: a JSON-RPC socket for launching apps, injecting input, reading logs and stepping a virtual clock; the E2E suite (`tests/e2e`) drives it
+- **Sanitizer builds**: ASan/UBSan and TSan variants, and a build on the firmware's network stack
+- **Browser build**: the same sources build to WASM for [picodeck.net/try](https://picodeck.net/try/) (see below)
 - **Debuggable**: Use GDB/LLDB, printf debugging, IDE breakpoints
+
+See [`CLAUDE.md`](CLAUDE.md) for where the simulator diverges from the device and for the control protocol, and [Simulator and Testing](../docs/Simulator-and-Testing.md) for the test commands.
 
 ## Building
 
@@ -36,18 +42,21 @@ pacman -S mingw-w64-x86_64-cmake mingw-w64-x86_64-SDL2
 
 ### Build Commands
 
+From the repository root:
+
 ```bash
-# Create build directory
+make simulator          # Release build -> build_sim/picodeck_simulator
+make simulator-run      # Build and run
+make simulator-asan     # ASan + UBSan (build_sim_asan/); also simulator-tsan, simulator-net
+```
+
+or by hand:
+
+```bash
 mkdir build_sim && cd build_sim
-
-# Configure
-cmake .. -DPICODECK_SIMULATOR=ON
-
-# Build
+cmake ../simulator -DCMAKE_BUILD_TYPE=Release
 make -j4
-
-# Run
-./picodeck_simulator
+./picodeck_simulator --sd-card ../apps
 ```
 
 ## Usage
@@ -59,8 +68,14 @@ make -j4
 # Run with custom SD card path
 ./picodeck_simulator --sd-card /path/to/apps
 
-# Show boot splash screen with delays (for screencasting)
+# Play the boot splash animation, then its status steps (for screencasting)
 ./picodeck_simulator --show-splash
+
+# Launch an app at startup
+./picodeck_simulator --launch hello
+
+# Deterministic runs for tests (fixed clock and random seed, error screens return at once)
+./picodeck_simulator --test-mode --virtual-time
 
 # Enable debug logging
 ./picodeck_simulator --debug
@@ -88,19 +103,25 @@ make -j4
 
 ```
 simulator/
-├── CMakeLists.txt          # Simulator build configuration
+├── CMakeLists.txt          # Simulator build configuration (also the Emscripten build)
 ├── main.c                  # SDL2 main loop, dual-core simulation
 ├── hal/                    # Hardware Abstraction Layer
 │   ├── hal_display.c/h     # SDL2 320×320 display
 │   ├── hal_input.c/h       # Keyboard → button mapping
+│   ├── hal_pad.c/h         # Host game controllers
 │   ├── hal_sdcard.c/h      # Host filesystem
 │   ├── hal_psram.c/h       # Host memory allocation
 │   ├── hal_timing.c/h      # SDL2 timing
 │   ├── hal_audio.c/h       # SDL2 audio
-│   └── hal_threading.c/h   # POSIX threads
-├── stubs/                  # Pico SDK stubs
-│   ├── pico_sdk_stubs.c/h  # Minimal SDK implementations
-│   └── hardware_stubs.c/h  # Hardware register stubs
+│   ├── hal_threading.c/h   # POSIX threads
+│   └── web_platform.h      # Contract with the browser build (PicoDeck/web-sim)
+├── unicorn_runner.c/h      # Runs native ELF apps under Unicorn
+├── unicorn_trampolines.c   # The PicoCalcAPI table, as seen by those apps
+├── sim_native_api.c/h      # The same API for apps compiled into the simulator
+├── sim_socket*.c/h         # JSON-RPC control channel
+├── sim_test_control.c/h    # Test hooks (virtual time, input injection)
+├── sim_wifi.c, sim_http.c, sim_tcp.c, sim_bt.c, sim_audio.c  # Scripted radios and host-backed I/O
+├── stubs/                  # Pico SDK, driver and keyboard stubs
 └── assets/
     └── sd_card/            # Simulated SD card
         ├── apps/           # Lua apps
@@ -111,37 +132,34 @@ simulator/
 ## Differences from Hardware
 
 1. **No actual GPIO**: Hardware drivers are stubbed
-2. **No WiFi**: Network stack stubbed (can be enabled with host sockets)
-3. **Faster execution**: PC is faster than RP2350
-4. **More memory**: Uses host RAM instead of limited PSRAM
-5. **Different timing**: SDL2 timing vs hardware timers
+2. **WiFi, HTTP and TCP use the host's network** (or a scripted radio under test); Bluetooth is a scripted radio
+3. **No `picocalc.crypto`**: mbedTLS is firmware-only
+4. **Faster execution**: PC is faster than RP2350, and native apps run under an emulator, not on a real core
+5. **More memory**: Uses host RAM instead of limited PSRAM (`--real-umm` uses the firmware's heap allocator for realistic fragmentation)
+6. **Different timing**: SDL2 timing vs hardware timers (`--virtual-time` makes it deterministic)
 
-## Adding to CI/CD
+The full list is in [`CLAUDE.md`](CLAUDE.md).
 
-The simulator enables automated testing:
+## Browser Build
 
-```yaml
-# GitHub Actions example
-- name: Build Simulator
-  run: |
-    mkdir build_sim && cd build_sim
-    cmake .. -DPICODECK_SIMULATOR=ON
-    make -j4
+The demo at [picodeck.net/try](https://picodeck.net/try/) is built from these sources by [PicoDeck/web-sim](https://github.com/PicoDeck/web-sim), not by this repository. It runs Lua apps and native apps compiled into the page (DOOM is one), but not Unicorn-emulated ELF apps (no JIT in WASM), and has no networking. `hal/web_platform.h` is the contract between the two projects.
 
-- name: Run Tests
-  run: |
-    ./build_sim/picodeck_simulator --sd-card ./test_apps &
-    sleep 5
-    # Run automated tests...
+## Automated Testing
+
+CI builds the simulator and drives it with the pytest suite in [`tests/e2e`](../tests/e2e/README.md) (see `.github/workflows/e2e.yml` and `build-sim.yml`):
+
+```bash
+make simulator
+SDL_VIDEODRIVER=dummy pytest tests/e2e -n auto
 ```
+
+Host unit tests (`make test-unit`) and the nightly fuzzers (`make fuzz`) do not need the simulator.
 
 ## Future Enhancements
 
 - [ ] GDB remote debugging support
-- [ ] Screenshot/video capture for regression testing
-- [ ] Network passthrough to host
-- [ ] Performance profiling tools
-- [ ] Headless mode for CI
+- [ ] Video capture for regression testing
+- [ ] Network passthrough to host for every network API
 
 ## License
 

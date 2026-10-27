@@ -1,0 +1,3 @@
+{ "id": "com.test.lua_bench", "name": "lua bench", "version": "1.0",
+  "description": "Lua app hot-path benchmark (hardware test)", "author": "PicoDeck",
+  "system_clock_khz": 300000 }

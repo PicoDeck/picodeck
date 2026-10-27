@@ -31,8 +31,8 @@ void audio_init(void) {
 }
 
 void audio_core1_init(void) {
-  // Hardware alarm 2 (default pool uses 3). 4 slots covers the Core 1
-  // tick and spare.
+  // Hardware alarm 2 (the default pool uses 3, the keyboard bus engine 0).
+  // 4 slots covers the Core 1 tick and spare.
   s_core1_alarm_pool = alarm_pool_create(2, 4);
   if (!s_core1_alarm_pool) {
     printf("[AUDIO] WARNING: failed to create Core 1 alarm pool\n");

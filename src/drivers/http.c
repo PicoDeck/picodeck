@@ -158,7 +158,10 @@ static uint32_t sink_put(http_conn_t *c, spill_sink_t *sp, const uint8_t *d,
   uint32_t room = sp->cap - sp->len;
   if (n > room)
     n = room;
-  memcpy(rx_buf_uncached(sp->buf) + sp->len, d, n);
+  // Through the cached alias: umm's header shares the buffer's first cache
+  // line, and a write-back of it would overwrite bytes written uncached
+  // (tcp.c's spill lost its first 4 bytes that way on the device).
+  memcpy(sp->buf + sp->len, d, n);
   sp->len += n;
   return n;
 }
@@ -366,6 +369,13 @@ static bool c1_parse_head(struct mg_connection *nc, http_conn_t *c) {
       c->content_length = 0;
     }
     mg_iobuf_del(&nc->recv, 0, (size_t)n);
+    // The response has begun, so the whole request has been sent: give
+    // nc->send's memory back to Core 1's pool. Mongoose keeps an iobuf at
+    // its high-water size, so a chat POST's ~20 KB body held 24 KB for the
+    // whole response, and the pool, fragmented around it, then couldn't
+    // grow another buffer.
+    if (nc->send.len == 0)
+      mg_iobuf_free(&nc->send);
     printf("[HTTP] Headers received, status %d, %s %d\n", status,
            c->chunked ? "chunked" : "Content-Length", (int)c->content_length);
 
@@ -966,7 +976,7 @@ uint32_t http_read(http_conn_t *c, uint8_t *out, uint32_t len) {
     uint32_t m = c->spill_len - c->spill_off;
     if (m > len - n)
       m = len - n;
-    memcpy(out + n, rx_buf_uncached(c->spill) + c->spill_off, m);
+    memcpy(out + n, c->spill + c->spill_off, m);  // cached: see sink_put
     c->spill_off += m;
     n += m;
   }

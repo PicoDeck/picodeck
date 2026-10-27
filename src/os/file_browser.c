@@ -164,8 +164,8 @@ static void draw_browser(const char *path, int sel, int scroll) {
 // ── Public API
 // ────────────────────────────────────────────────────────────────
 
-bool file_browser_show(const char *start_path, const char *root_path,
-                       char *out_path, int out_len) {
+static bool file_browser_run(const char *start_path, const char *root_path,
+                             char *out_path, int out_len) {
   char cur_path[192];
   strncpy(cur_path, start_path, sizeof(cur_path) - 1);
   cur_path[sizeof(cur_path) - 1] = '\0';
@@ -189,6 +189,7 @@ bool file_browser_show(const char *start_path, const char *root_path,
   // polls, or injections queued before this modal opened, were not typed
   // at this browser and must not navigate or select on its behalf.
   kbd_clear_state();
+  kbd_consume_menu_press();  // a stale press was not made here
 
   int sel = 0;
   int scroll = 0;
@@ -212,6 +213,12 @@ bool file_browser_show(const char *start_path, const char *root_path,
     dev_commands_process();
     // Let a dev "exit" unwind this modal (cancel; the Lua hook handles exit).
     if (dev_commands_wants_exit()) {
+      kbd_clear_state();
+      display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false;
+    }
+    // The menu key cancels the browser, like Esc (and takes the latch, so it
+    // cannot open the system menu once the browser has returned).
+    if (kbd_consume_menu_press()) {
       kbd_clear_state();
       display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false;
     }
@@ -291,4 +298,15 @@ bool file_browser_show(const char *start_path, const char *root_path,
     watchdog_update();
     sleep_ms(16);
   }
+}
+
+// System UI draws in the built-in font whatever the app has selected; the
+// app's font comes back on every way out.
+bool file_browser_show(const char *start_path, const char *root_path,
+                       char *out_path, int out_len) {
+  int saved_font = display_get_font();
+  display_set_font(0);
+  bool ok = file_browser_run(start_path, root_path, out_path, out_len);
+  display_set_font(saved_font);
+  return ok;
 }

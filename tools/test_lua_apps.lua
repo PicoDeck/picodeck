@@ -74,6 +74,7 @@ local function create_mock_api()
         exit = function() end,
         reboot = function() end,
         addMenuItem = function() end,
+        addMenuOption = function() end,
         clearMenuItems = function() end,
     }
     

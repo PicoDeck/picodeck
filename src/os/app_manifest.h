@@ -46,3 +46,10 @@ bool app_manifest_id_valid(const char *id);
 // Is `name` one of the space-separated names in `list` (app_entry_t
 // .requirements)?  Whole names only.
 bool app_requirements_has(const char *list, const char *name);
+
+// A directory name the launcher looks for under the hidden roots
+// (/apps/.test, /apps/.dev) on a dev `launch`: 1-63 characters (the dev
+// command's launch argument limit), no '/', '\\' or control characters, no
+// "..", no leading '.', no trailing '.' (FatFS strips it).
+#define APP_HIDDEN_NAME_MAX 63
+bool app_hidden_name_valid(const char *name);

@@ -7,6 +7,11 @@
 #include "umm_malloc.h"
 #include "umm_malloc_cfg.h"
 #include "hardware/watchdog.h"
+#if defined(PICO_RP2350) && !defined(PICODECK_SIMULATOR)
+#include "hardware/dma.h"
+#include "hardware/regs/addressmap.h"
+#include "hardware/xip_cache.h"
+#endif
 #include "pico/critical_section.h"
 #include "pico/stdlib.h"
 #include <stdbool.h>
@@ -62,6 +67,7 @@ static int l_panic(lua_State *L) {
   // so the next boot does not report the same event a second time.
   crashlog_clear_running();
 
+  display_set_font(0);  // built-in font whatever the app selected; rebooting
   display_clear(COLOR_BLACK);
   display_draw_text(4, 4, "Lua panic (unprotected error):", COLOR_RED, COLOR_BLACK);
   // Word-wrap the message at 52 columns.
@@ -109,7 +115,56 @@ static void l_warnfoff(void *ud, const char *message, int tocont) {
   (void)tocont;
 }
 
+#if defined(PICO_RP2350) && !defined(PICODECK_SIMULATOR)
+// The heap clear (issue #73). umm reads a fresh heap as zero (its init
+// leaves header fields at 0, and memory never handed out reads as 0), and its
+// own clear, a memset through the cached alias, took ~0.79 s of every boot:
+// each line it allocated cost a fill and a write-back over the QMI, and it
+// evicted Core 1's boot animation from the XIP cache. A DMA through the
+// uncached, no-allocate alias needs no CPU and no cache line; main() starts
+// it as soon as the QMI PSRAM is in quad mode and waits for it before the
+// boot splash, so it runs under display_init()'s panel-reset waits. umm's own
+// clear is compiled out (UMM_HEAP_PRECLEARED, umm_malloc_cfgport.h).
+static uint32_t s_zero;          // the DMA's source, in SRAM: nothing read over the QMI
+static int s_clear_chan = -1;
+static uint32_t s_clear_us;      // start time, then how long the clear took
+
+void lua_psram_alloc_clear_start(void) {
+  // Drop the cache's lines first: a dirty one left by the previous boot
+  // (a warm reset keeps the cache) would be written back over the zeroes.
+  // Nothing in this boot has written QMI PSRAM through the cache yet (the
+  // QMI self-test uses the uncached alias), so this loses nothing.
+  xip_cache_invalidate_all();
+  s_clear_chan = dma_claim_unused_channel(true);
+  dma_channel_config c = dma_channel_get_default_config((uint)s_clear_chan);
+  channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
+  channel_config_set_read_increment(&c, false);
+  channel_config_set_write_increment(&c, true);
+  s_clear_us = time_us_32();
+  dma_channel_configure((uint)s_clear_chan, &c,
+                        s_lua_psram_heap - XIP_BASE + XIP_NOCACHE_NOALLOC_BASE, &s_zero,
+                        UMM_MALLOC_CFG_HEAP_SIZE / 4, true);
+}
+
+void lua_psram_alloc_clear_wait(void) {
+  if (s_clear_chan < 0) return;
+  dma_channel_wait_for_finish_blocking((uint)s_clear_chan);
+  s_clear_us = time_us_32() - s_clear_us;
+  dma_channel_unclaim((uint)s_clear_chan);
+  s_clear_chan = -1;
+  // Nothing reads the heap while the DMA runs; drop any line anyway, so no
+  // cached copy can shadow the zeroes.
+  xip_cache_invalidate_all();
+}
+#else
+// The simulator's heap is host memory, and a board without PSRAM uses a
+// static array that crt0 zeroes with the rest of .bss.
+void lua_psram_alloc_clear_start(void) {}
+void lua_psram_alloc_clear_wait(void) {}
+#endif
+
 void lua_psram_alloc_init(void) {
+  lua_psram_alloc_clear_wait();
   critical_section_init(&g_umm_critsec);
 #ifdef PICODECK_SIMULATOR
   // 8 MB for the counting allocator, the device size under --real-umm
@@ -126,6 +181,9 @@ void lua_psram_alloc_init(void) {
   umm_init_heap(s_lua_psram_heap, UMM_MALLOC_CFG_HEAP_SIZE);
   printf("PSRAM Lua Allocator Initialized: %d bytes\n",
          (int)UMM_MALLOC_CFG_HEAP_SIZE);
+#if defined(PICO_RP2350) && !defined(PICODECK_SIMULATOR)
+  printf("[PSRAM] heap cleared by DMA in %lu ms\n", (unsigned long)(s_clear_us / 1000u));
+#endif
   
   // Debug: check free size immediately after init
   size_t free_after_init = umm_free_heap_size();

@@ -169,7 +169,7 @@ C_NETWORK = _rgb565(50, 200, 150)
 def test_app_without_icon_gets_a_cartridge(sim_factory, test_sd_card):
     """No icon.png: the launcher draws a cartridge in the app's category
     colour on the dark icon background, with the first letter on its label."""
-    app = stage_lua_app(test_sd_card, "aardvark", "return\n")
+    app = stage_lua_app(test_sd_card, "aardvark", "return\n", hidden=False)  # listed: drawn
     manifest = json.loads((app / "app.json").read_text())
     manifest.update(name="Aardvark", category="network")   # sorts first
     (app / "app.json").write_text(json.dumps(manifest))

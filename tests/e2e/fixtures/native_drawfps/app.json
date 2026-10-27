@@ -1,0 +1,7 @@
+{
+    "id": "com.test.native_drawfps",
+    "name": "Native drawFPS",
+    "description": "E2E fixture: perf->drawFPS under Show FPS (source: tests/e2e/native/drawfps.c)",
+    "version": "1.0",
+    "author": "PicoDeck E2E"
+}

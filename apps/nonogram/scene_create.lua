@@ -21,6 +21,7 @@ local Layout = require("layout")
 local Render = require("render")
 local Solver = require("solver")
 local Store  = require("store")
+local Pad    = require("pad")
 
 local S = {}
 
@@ -156,9 +157,10 @@ end
 -- ── Update ───────────────────────────────────────────────────────────────────
 
 function S.update(dt)
-    local pressed = input.getButtonsPressed()
+    local pressed = input.getButtonsPressed()   -- raw keys: Esc only
+    local _, padPressed = Pad.read()
     local ch = input.getChar()
-    local edges = NG_CAP.repeatIn and input.getButtonsRepeated() or pressed
+    local edges = Pad.dpadEdges()
 
     if pressed & input.BTN_ESC ~= 0 then
         NG_SCENES.switch("menu")
@@ -166,25 +168,25 @@ function S.update(dt)
     end
 
     local moved = false
-    if edges & input.BTN_UP    ~= 0 then cy = math.max(1, cy - 1); moved = true end
-    if edges & input.BTN_DOWN  ~= 0 then cy = math.min(h, cy + 1); moved = true end
-    if edges & input.BTN_LEFT  ~= 0 then cx = math.max(1, cx - 1); moved = true end
-    if edges & input.BTN_RIGHT ~= 0 then cx = math.min(w, cx + 1); moved = true end
+    if edges & Pad.UP    ~= 0 then cy = math.max(1, cy - 1); moved = true end
+    if edges & Pad.DOWN  ~= 0 then cy = math.min(h, cy + 1); moved = true end
+    if edges & Pad.LEFT  ~= 0 then cx = math.max(1, cx - 1); moved = true end
+    if edges & Pad.RIGHT ~= 0 then cx = math.min(w, cx + 1); moved = true end
     if moved then L:ensureVisible(cx, cy) end
 
-    if pressed & input.BTN_ENTER ~= 0 then toggle() end
+    if padPressed & Pad.A ~= 0 then toggle() end
     if ch == " " then
         if grid[cy][cx] ~= 0 then grid[cy][cx] = 0; dirtyClues = true; scheduleVerify() end
     end
 
-    if pressed & input.BTN_F4 ~= 0 then
+    if padPressed & Pad.START ~= 0 then
         setSize((sizeIdx % #SIZES) + 1)
         ui.toast(("%dx%d"):format(w, h))
     end
-    if pressed & input.BTN_F5 ~= 0 then scheduleVerify(); verifyAt = sys.getTimeMs() end
-    if pressed & input.BTN_F6 ~= 0 then mirrorX() end
-    if pressed & input.BTN_F7 ~= 0 then invert() end
-    if pressed & input.BTN_F9 ~= 0 then doSave() end
+    if padPressed & Pad.B ~= 0 then scheduleVerify(); verifyAt = sys.getTimeMs() end
+    if padPressed & Pad.X ~= 0 then mirrorX() end
+    if padPressed & Pad.Y ~= 0 then invert() end
+    if padPressed & Pad.SELECT ~= 0 then doSave() end
 
     if dirtyClues then recomputeClues() end
 
@@ -307,7 +309,8 @@ function S.draw()
     disp.fillRect(0, y, 320, T.FOOTER_H, T.BG_PANEL)
     disp.fillHLine(y, 0, 319, T.GRID_MAJOR)
     disp.setFont(T.FONT_6X8)
-    disp.drawText(T.MARGIN_L, y + 6, "F4 size  F6 flip  F7 inv  F9 save",
+    disp.drawText(T.MARGIN_L, y + 6, Pad.label(Pad.START) .. " size  " .. Pad.label(Pad.X) .. " flip  " ..
+                  Pad.label(Pad.Y) .. " inv  " .. Pad.label(Pad.SELECT) .. " save",
                   T.TEXT_DIM, false)
     local lw = disp.textWidth(label)
     disp.drawText(320 - T.MARGIN_R - lw, y + 6, label, col, false)

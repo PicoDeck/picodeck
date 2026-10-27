@@ -294,3 +294,17 @@ bool app_manifest_id_valid(const char *id) {
         return false;
     return true;
 }
+
+bool app_hidden_name_valid(const char *name) {
+    if (!name || !name[0] || name[0] == '.')
+        return false;
+    size_t n = bounded_len(name, APP_HIDDEN_NAME_MAX + 1);
+    if (n > APP_HIDDEN_NAME_MAX)
+        return false;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (c == '/' || c == '\\' || c < 0x20 || c == 0x7f)
+            return false;
+    }
+    return strstr(name, "..") == NULL && name[n - 1] != '.';
+}

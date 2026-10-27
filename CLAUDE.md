@@ -9,7 +9,7 @@ PicoDeck is a bare-metal embedded OS for the [ClockworkPi PicoCalc v2.0](https:/
 - `src/os/CLAUDE.md` — app runners and exit teardown, Lua bridge internals (object types, number rules, count hook, sticky exit), sandbox, file handles, config stores, save slots, OTA policy, crash records, Lua heap
 - `simulator/CLAUDE.md` — simulator divergences, the test control channel, `--test-mode` and virtual time, allocators, sanitizer and firmware-net builds. Read it before writing an E2E test or trusting a simulator result.
 - `docs/` — the app-facing API reference (Markdown in this repo), published at https://picodeck.net/docs/ from each release's `picodeck-docs.zip`. Change it in the same commit as the behaviour it documents; where it disagrees with the nested files, the nested files are right and the doc is a bug. `docs/_sidebar.json` is the site's sidebar.
-- The app store is `PicoDeck/store` (https://store.picodeck.net); the website is `PicoDeck/website` (https://picodeck.net), rebuilt from the latest release by a Pages deploy hook.
+- The app store is `PicoDeck/store` (https://store.picodeck.net); the website is `PicoDeck/website` (https://picodeck.net), rebuilt from the latest release by a Pages deploy hook. The browser demo (picodeck.net/try) is [PicoDeck/web-sim](https://github.com/PicoDeck/web-sim), built from this repo's simulator (`simulator/CLAUDE.md`, "Web build seam") and released on its own, following PicoDeck's releases.
 
 This file keeps only what applies across the tree. Record subsystem behaviour in the nested file (or header comment) nearest the code.
 
@@ -50,12 +50,16 @@ USB serial at 115200 baud. App log calls appear as `[APP] message`. Lua errors d
 
 Stage multi-file apps (hardware or simulator) with the `push_app` MCP tool (`tools/picodeck_mcp.py`): it ships the directory as one ZIP and extracts it on-device with the `unzip <zip> <dest>` dev command (`rm <path>` cleans up), far faster than per-file transfers. Dev commands run on an app stack, so `unzip` is safe at the launcher.
 
+**Hidden apps.** `/apps` holds at most 64 listed apps (`MAX_APPS`), and the launcher caches `app.json` at boot, so a card full of test apps stops listing new ones. Two dot-name roots under `/apps` are skipped by the launcher scan (never listed, never counted) but still started by the dev `launch` (so `launch_app`, the E2E harness): `/apps/.test/<name>` (the harness's; wiped freely: it runs `rm /apps/.test` at the start and end of a hardware session) and `/apps/.dev/<name>` (your own hidden dev apps; the harness never touches it). `push_app(..., hidden="test"|"dev")` stages there; `launch` falls back to them, `.test` first, matching the directory name, then the `app.json` id, after every listed app, with no reboot or rescan (`src/os/CLAUDE.md`). `list all` (MCP `list_apps(include_hidden=True)`) also lists them, tagged `[.test]` / `[.dev]`; `launch .test/<name>` / `launch .dev/<name>` search only that root (what the harness uses; MCP `launch_app(hidden=)`), so a listed app cannot shadow a staged one; `mv <src> <dst>` moves a directory on the card (e.g. `mv /apps/old_probe /apps/.dev/old_probe`; never overwrites; refuses `/system`, the top-level directories, a move into itself and the running app's directory, by FatFS directory identity, and refuses when it cannot verify: `src/os/CLAUDE.md`).
+
+**Profiling.** `prof start [period_us] [max_samples]` / `prof stop` / `prof dump` / `prof free` (dev command, `src/os/pc_prof.c`, firmware only) samples the running app's PC and LR from its PSP stack every period (default 200 µs, into one umm block); `python3 tools/pc_prof.py [--launch <app>] [-s secs]` drives it and attributes the samples to functions of `build/picodeck.elf` (the build on the device). Pair it with `xipstat` (`src/drivers/CLAUDE.md`): most Core 0 time on the device is XIP cache misses, so a function's share is mostly the code and PSRAM lines it touches, and a change of code layout alone can move a short call ±40%. Compare whole workloads, not single calls. Lua apps' hot code (Lua's runtime, the bridge glue with chargrid, the shader VM) is pinned at fixed cache sets in `.hot_text` (`src/hot_text.ld`), so changes elsewhere no longer move it: before that, ascii-scene's fire ran at 34, 43 or 25 fps on builds differing only in unrelated code. `tools/check_hot_text.py` fails the build if that layout breaks (a hot function you add or rename belongs in its list), and `tests/e2e/test_lua_perf_hw.py` guards its speed on the device; when profiling a new hot path, consider adding its objects to `hot_text.ld`.
+
 Dev commands while an app runs (`src/dev_commands.c`, `lua_bridge.c`, native `sys_poll`): plain `reboot` and `reboot-flash` are honoured at once and kill the app without teardown (a native app that never calls `sys->poll()` latches them until the launcher); `reboot-ota` is dropped (`reboot-ota ignored`), so `make flash-ota` (`tools/ota_flash.py`) exits the app first; `usb` waits for the launcher. `exit` with no app running replies `Error: exit: no app running` and still closes a modal open at the launcher (system menu, text input).
 
 ### Tests
 - **E2E (simulator)**: `SDL_VIDEODRIVER=dummy pytest tests/e2e -n auto` (see `tests/e2e/README.md`; config and markers in the repo-level `pytest.ini`). Runs against `build_sim/picodeck_simulator`; `PICODECK_SIM_BINARY` (or `--simulator-path`) selects another build: `make simulator-asan` (`build_sim_asan/`, enables `asan_only` tests), `make simulator-tsan`, `make simulator-net` / `-net-asan` / `-net-tsan` (`build_sim_net/`…, the firmware network stack; enables `firmware_net` tests). Virtual time and `--real-umm` are described in `simulator/CLAUDE.md`. Lua fixture apps report through `tests/e2e/lib/picotest.lua` (staged as `/system/lib/picotest.lua`).
 - **E2E (hardware)**: `--target hw:/dev/serial/by-id/<PicoDeck device>` runs the `hardware`/`both` tests on a real PicoCalc through `tests/e2e/hw_target.py` (they skip, allow-listed, on the simulator).
-- **Unit**: `make test-unit` (host C tests: `tests/unit/CMakeLists.txt` → `build_unit/`, ctest, ASan+UBSan; covers the pure modules `elf_plan`, `fs_path`, `app_manifest`, `config`/`appconfig` over an in-memory SD fake, `wav`, `qoa`, `audio_ring`, `zip_name`, `text_wrap`, `lua_numfmt` vs glibc, fonts), `python3 -m pytest tests/unit`, `make test-lua`.
+- **Unit**: `make test-unit` (host C tests: `tests/unit/CMakeLists.txt` → `build_unit/`, ctest, ASan+UBSan; covers the pure modules `elf_plan`, `fs_path`, `app_manifest`, `config`/`appconfig` over an in-memory SD fake, `wav`, `qoa`, `audio_ring`, `zip_name`, `text_wrap`, `chargrid` (and its renderer), `noise`, `charshader` (compiler, VM, maths), `lua_numfmt` vs glibc, fonts, the keyboard decode, `pad_source`, `hid_pad` (Bluetooth pads' HID reports), the patched alarm pool's cancellation pass (`test_pico_time_pass`, cut from the SDK's `time.c` under `PICO_SDK_PATH`, else from a 2.2.0 fixture), and `lua_hook_arm` against the real Lua core, which `make test-unit` fetches with `download-lua`), `python3 -m pytest tests/unit`, `make test-lua`.
 - **Fuzz**: `make fuzz` runs the libFuzzer targets in `tests/fuzz/` (clang; `FUZZ_TARGETS=`, `FUZZ_SECONDS=`). CI runs them nightly (`.github/workflows/fuzz.yml`) and the unit job on every push (`unit.yml`). There is no linter.
 
 ## Architecture
@@ -64,64 +68,77 @@ Dev commands while an app runs (`src/dev_commands.c`, `lua_bridge.c`, native `sy
 ```
 main()
   set_sys_clock_khz(200000)     // 200 MHz overclock
+  stdio_init_all()
+  qmi_psram_init()              // QMI PSRAM to quad mode (before Core 1 runs from flash)
+  lua_psram_alloc_clear_start() // zero the 6 MB heap by DMA through the uncached alias...
+  display_init()                // PIO0 SPI, double-buffered SRAM (...under its panel-reset waits)
+  lua_psram_alloc_clear_wait()  // the clear saturates the QMI: done before Core 1 runs from flash
+  splash_start()                // Core 1 plays the boot animation (src/os/splash.c)
+  USB serial wait               // ≤ 3 s for a host to open the port; stops at 1 s uptime if none configured the device
   Wire g_api struct (function pointers)
-  display_init()                // PIO0 SPI, double-buffered SRAM
   pio_psram_init()              // Mainboard 8MB PIO PSRAM (non-fatal if absent)
   sound_init() → audio_init()
-  kbd_init()
+  lua_psram_alloc_init()        // umm_malloc heap on QMI PSRAM (headers only: already zeroed)
   sdcard_init()
-  lua_psram_alloc_init()        // umm_malloc heap on QMI PSRAM
   config_load()                 // /system/config.json
   boot_crypto_init()            // on the OS stack: Core 0 CTR_DRBG seed + CA bundle parse
   wifi_init() → http_init() → tcp_init()
+  bt_pad_init()                 // Bluetooth pads, only if the user turned them on
+  launcher_prepare()            // the app scan, while the animation plays
+  kbd_init()                    // waits for the STM32 (2.6 s after power-on); the SD retry screen calls it sooner
+  splash_finish()               // wait for the animation's final frame; reset Core 1
   multicore_launch_core1()      // Core 1: wifi_poll, http, mp3, fileplayer
   system_menu_init()
   launcher_run()                // Never returns
 ```
+Everything from `splash_start()` to `splash_finish()` runs while Core 1 plays the 2.8 s animation, so a boot step there costs nothing until Core 0's work outlasts it (~3.1 s to the launcher on a warm reboot with WiFi and Bluetooth on); none of it may flood the QMI (Dual-Core Model, below).
 
 ### Dual-Core Model
 - **Core 0**: runs the launcher, Lua VM and native apps. Owns the display, keyboard and SD card.
 - **Core 1**: runs the network stack (Mongoose/CYW43) and audio decode (MP3, fileplayer, MOD) on a 1 ms tick. Core 0 talks to it through an IPC ring (`wifi_req_push()`). **Core 0 must never call `mg_*` functions directly.** Core 1 only try-locks shared player/SD state and skips the tick when busy.
+- **During boot** Core 1 first plays the boot splash (`src/os/splash.c`) and owns the display; Core 0 must not draw while `splash_running()` (`ui_draw_splash` hands it the status; error screens call `splash_stop()` first; `display_flush` counts and logs a flush from the wrong core), and must not flood the QMI (large PSRAM writes, flash writes) while the animation moves, as Core 1 renders from flash and starves. `splash_finish()` resets Core 1 before `core1_entry` launches.
 
 ### Central API (`src/os/os.h`)
 `PicoCalcAPI g_api` is a function pointer table wired in `main.c`. Sub-tables, native name → Lua name:
 - `display`, `input`, `fs`, `sys`, `wifi`, `audio`, `tcp`, `ui` → `picocalc.<same>`. Lua input also has `pollEvent()` (ordered `{type="down"|"up"|"char", key, char, mods, button, repeat}` events, nil when empty) and `isKeyDown(k)`; Lua TCP sockets are `picocalc.tcp.new(host, port, tls)` objects.
 - `http` → `picocalc.network.http` (OO connections); `soundplayer` → `picocalc.sound`; `graphics` → `picocalc.graphics.image`; `video` → `picocalc.video`; `modplayer` → `picocalc.modplayer`; `zip` → `picocalc.zip`; `crypto` → `picocalc.crypto` (SHA-256/SHA-1/HMAC/AES-CTR/ECDH).
 - `appconfig` → `picocalc.config` **and** `picocalc.appconfig` (same store, two names).
-- `gamepad` → `picocalc.gamepad`: `PAD_*` buttons aliased to keys (primary + alternate slot; the keys still report through `input`), resolved in the shared keyboard decode (`src/drivers/CLAUDE.md`); key names and the bindings files (`/system/gamepad.json`, per app `/data/<id>/gamepad.json`, loaded at every launch) in `src/os/gamepad_map.c` (`src/os/CLAUDE.md`).
+- `gamepad` → `picocalc.gamepad`: `PAD_*` buttons aliased to keys (primary + alternate slot; the keys still report through `input`), resolved in the shared keyboard decode (`src/drivers/CLAUDE.md`), ORed with the pad sources (`src/drivers/pad_source.h`: the `pad` dev command, the simulator's game controller, a Bluetooth pad: `src/drivers/bt_pad.c`, Settings → Bluetooth); key names and the bindings files (`/system/gamepad.json`, per app `/data/<id>/gamepad.json`, loaded at every launch) in `src/os/gamepad_map.c` (`src/os/CLAUDE.md`).
 - `picocalc.sysconfig` is Lua-only and needs the `"sysconfig"` requirement; there is no `g_api.config`.
 - `g_api.version`: 1 = Phase 1, 2 = Phase 2, 3 = `fs->browse`, 4 = clip rect + mode-7 plane, 5 = zip read-in-place handles, 6 = fonts (setFont/getFont/getFontWidth/getFontHeight/textWidth/loadFont/unloadFont/drawTextTransparent), 7 = video time seek/position, progress OSD, `hasEnded`, 8 = TLS verification: `http->setInsecure`, `tcp->connectEx` (`PCTCP_TLS`/`PCTCP_TLS_INSECURE`), 9 = `gamepad` (the first table after `version`: native apps check `version >= 9` before reading it).
 
 > ⚠️ **Config naming**: in Lua, `picocalc.config` (alias `picocalc.appconfig`) is the **per-app** store (`/data/<APP_ID>/config.json`); `picocalc.sysconfig` is the **system-wide** store (`/system/config.json`).
 
 ### App Lifecycle (`src/os/launcher.c`)
-1. Scans `/apps/` for dirs containing `main.lua` or `main.elf` (native wins if both), reads each `app.json`, shows a scrollable menu with a battery % header.
+1. Scans `/apps/` for dirs containing `main.lua` or `main.elf` (native wins if both; dot-named dirs are skipped, the hidden roots `/apps/.test` and `/apps/.dev` among them), reads each `app.json`, shows a scrollable menu with a battery % header.
 2. Installs the app's identity (`src/os/app_identity.c`: id, dirs, requirements). Every enforcement check reads it, never the `APP_*` Lua globals.
 3. Runs the app through the `AppRunner` vtable (`src/os/app_runner.h`) on its own `PSPLIM`-guarded PSP stack (`app_stack_run()`; IRQs and the launcher stay on the MSP): **Lua** (`lua_runner.c`, 64 KB VM stack) or **native** (`native_loader.c`, ELF32 PIE relocated to PSRAM, validated by the pure `elf_plan.c`).
 4. Tears down whatever the app left open: files, handles, players, connections, fonts, menu items, zip handles (full lists in `src/os/CLAUDE.md`).
 
 ### Lua Bridge (`src/os/lua_bridge*.c`)
 - One file per `picocalc.*` module, coordinated by `lua_bridge.c`. Functions are `static int l_<module>_<fn>(lua_State *L)` wrappers in `luaL_Reg` tables passed to `register_subtable()`; integer constants (button codes, colour names) are pushed with `lua_pushinteger` / `lua_setfield`.
-- Every userdata type registers with `lb_register_type()` (methods in a separate `__index` table, locked metatable), and each `__gc` leaves its object dead so a resurrected object is rejected. Check userdata with `luaL_checkudata`/`luaL_testudata`, never `lua_touserdata`.
+- Every userdata type registers with `lb_register_type()` (methods in a separate `__index` table, locked metatable), and each `__gc` leaves its object dead so a resurrected object is rejected. Check userdata with `lb_checkudata`/`lb_testudata` (`luaL_checkudata`/`luaL_testudata` minus the per-call registry lookup), never `lua_touserdata`.
 - Lua 5.4.7 with a restricted stdlib: `base`, `table`, `string`, `math`, `coroutine`, `utf8`. Blocked: `io`, `os`, `package`, `debug`; `dofile`/`loadfile` removed. `load` is text-only (bytecode rejected), as are app `main.lua` and `sys.loadlib`. Apps load their own modules with the sandboxed global `require` (`lua_bridge_require.c`).
 - Numbers: `lua_Integer` is 32-bit and `lua_Number` is `float` (integers exact only to 2^24). Bridge quantity arguments (coordinates, sizes, durations, volumes) round floats to nearest; identifiers (handles, enums, colours, masks, byte counts, ports) require exact integers. Compile-time config lives in `cmake/picodeck_lua.cmake`.
 
 ### Drivers: rules that apply everywhere
 - **Framebuffer pixels are byte-swapped RGB565** (panel order): every primitive swaps on write, every reader swaps back, and native apps writing via `getBackBuffer()` write swapped pixels.
 - Every display primitive clips to the clip rect **once**, before any pixel loop. The simulator has its own display implementation (`simulator/stubs/driver_stubs.c`): a primitive change lands in both.
-- Every HTTPS / `tls://` connection verifies the server certificate and waits for SNTP to set the clock; `setInsecure(true)` (Lua) or `PCTCP_TLS_INSECURE` (native) opts one connection out, for self-signed dev servers only.
+- Every HTTPS / `tls://` connection verifies the server certificate and waits for SNTP to set the clock; `setInsecure(true)` (Lua) or `PCTCP_TLS_INSECURE` (native) opts one connection out, for self-signed servers: development servers, or ones whose certificate the app pins with `tcp:peerFingerprint()`.
 - Volumes are 0-100 everywhere; larger values clamp.
+- The default alarm pool: SDK 2.2.0 (which release builds pin) loses a slot whenever its two earliest alarms are both cancelled before its interrupt handler runs, and a full pool breaks `stdio_usb`, the keyboard bus, the CYW43 driver and every other user (issue #58). The build compiles a fixed copy of pico_time's `time.c` (`cmake/picodeck_pico_time.cmake`: the configure fails on an SDK before 2.3.1 it cannot patch; `tests/unit/test_pico_time_pass.c` runs the patched pass; the `alarmpool` dev command counts lost slots; drop it once the SDK is past 2.3.0). A driver that needs a timeout per step still arms its own hardware alarm rather than cancelling and re-adding pool alarms (`kbd_i2c.c`). TIMER0's alarms: 0 the keyboard engine, 2 Core 1's audio pool, 3 the default pool, so only alarm 1 is left (`hardware_alarm_claim_unused(true)` panics once it is taken); TIMER1's four alarms are unused.
 
 ### System Menu (`src/os/system_menu.c`)
 - Triggered by the Sym key; detected via `kbd_consume_menu_press()` in the Lua count hook.
 - Overlays the current framebuffer (darkened with `display_darken()`) and gives the app both framebuffers back when it closes; app item callbacks run after that (`src/os/CLAUDE.md`).
 - Apps and OS register items with `system_menu_add_item()` / `picocalc.sys.addMenuItem()`.
+- Option rows (`system_menu_add_option()` / `picocalc.sys.addMenuOption()`) share the 4 slots; Left/Right/Enter step the value and the callback of each changed row runs after the menu closes (`src/os/CLAUDE.md`).
 
 ### Memory Map
-- **SRAM heap**: ~2.6 KB (`__end__`=0x2007f580 to `__HeapLimit`=0x20080000; the 400 KB double framebuffer is BSS), so effectively none: scratch buffers go through `umm_malloc`.
-- **QMI PSRAM (8 MB)**: Lua heap via `umm_malloc` at 0x11200000 (cached alias), 6 MB minus the 128 KB Core 1 pool; ELF app data/BSS. Every umm allocation costs at least one 200-byte block (small Lua objects share slabs; see `src/os/CLAUDE.md`).
+- **SRAM heap**: ~4.3 KB (4264 B: `__end__`=0x2007ef58 to `__HeapLimit`=0x20080000, of which the SDK reserves 2 KB; the 400 KB double framebuffer is BSS), so effectively none: scratch buffers go through `umm_malloc`.
+- **QMI PSRAM (8 MB)**: Lua heap via `umm_malloc` at 0x11200000 (cached alias), 6 MB minus the 128 KB Core 1 pool; ELF app data/BSS. Below it, BTstack's static state is linked at 0x11100000 (`src/drivers/btstack/bt_psram.ld`, NOLOAD, zeroed at Bluetooth's first start); the rest of the low 2 MB is unused (the boot self-test touches 0x3E0-0x4E0). Every umm allocation costs at least one 200-byte block (small Lua objects share slabs; see `src/os/CLAUDE.md`).
 - **PIO PSRAM (8 MB)**: the OS owns everything below `0x48000` (MP3 PCM ring); apps get `0x48000`+, range-checked for Lua and native. Accessed via `pio_psram_read`/`pio_psram_write` and `g_api.psram`.
-- **Main stack (MSP)**: 4 KB in SCRATCH (`__StackBottom`=0x20081000, `__StackTop`=0x20082000), `MSPLIM`-guarded. Boot, the launcher (menus, USB MSC) and every IRQ run here; dev commands and screenshot save move to a short-lived 32 KB PSRAM stack. Measured peak ~2.2-2.5 KB; the `stack` dev command prints it and the running app's stack peak.
+- **Main stack (MSP)**: 4 KB in SCRATCH (`__StackBottom`=0x20081000, `__StackTop`=0x20082000), `MSPLIM`-guarded. Boot, the launcher (menus, USB MSC) and every IRQ run here; dev commands and screenshot save move to a short-lived 32 KB PSRAM stack. Measured peak ~2.2-2.5 KB; the `stack` dev command prints it and the running app's stack peak. Drawing the splash still frame (USB mode, the update screen) takes ~1.2 KB of it (~1.35 KB on the deepest path, `launcher_run` included).
 - **Lua VM stack**: 64 KB `umm_malloc` per launch, on the PSP. PSRAM because no SRAM region that size exists; costs ~10-50% on C-call-heavy Lua code (pure Lua loops unchanged).
 - **Native app stack**: 16 KB SRAM `malloc` if available (in practice never), else 64 KB `umm_malloc`; on the PSP.
 

@@ -96,6 +96,51 @@ try("ANIMDELAY", function()
     return held .. "/" .. p, a:currentValue() .. "/" .. tostring(a:ended())
 end)
 
+-- An easing name that is not recognised raises and names the valid set; a
+-- valid name constructs, and so does an absent one (linear).
+try("EASEBAD", function() return anim.new(100, 0, 100, "easeIn") end)
+try("EASEEMPTY", function() return anim.new(100, 0, 100, "") end)
+try("EASEOK", function() return anim.new(100, 0, 100, "quadInOut") ~= nil end)
+try("EASELINEAR", function()
+    -- Sampled mid-curve, where linear (~50) and quadIn (~25) are far apart;
+    -- at t = 0 every curve reads 0 and nothing would be compared.
+    local a = anim.new(2000, 0, 100, nil)
+    local b = anim.new(2000, 0, 100, "linear")
+    local q = anim.new(2000, 0, 100, "quadIn")
+    pc.sys.sleep(1000)
+    local va, vb, vq = a:currentValue(), b:currentValue(), q:currentValue()
+    return math.abs(va - vb) <= 1 and va - vq > 15 and "same",
+           string.format("%.1f/%.1f/%.1f", va, vb, vq)
+end)
+
+-- image.getInfo reads a JPEG's size from its SOF segment, walking the segments
+-- from the start of the file. Both headers (320x213, no scan data: getInfo
+-- decodes nothing) open with an APP2 ICC profile, as cameras and ffmpeg write
+-- one, whose payload holds bytes that read as markers 40 bytes in. The probe
+-- once began its walk 33 bytes in, inside the profile, and took them for
+-- real: a stray SOF gave a wrong size, a stray segment length ran it off the
+-- end of the file.
+local function jpeg_with_icc(stray)
+    local icc = "ICC_PROFILE\0\1\1" .. string.rep("\0", 20) .. stray .. string.rep("\0", 64)
+    local sof = string.pack(">BBI2BI2I2B", 0xFF, 0xC0, 17, 8, 213, 320, 3)
+        .. "\1\34\0\2\17\1\3\17\1"
+    return "\255\216" .. string.pack(">BBI2", 0xFF, 0xE2, #icc + 2) .. icc .. sof .. "\255\217"
+end
+local function jpeg_info(name, stray)
+    try(name, function()
+        local dir = "/data/" .. APP_ID
+        pc.fs.mkdir(dir)
+        local path = dir .. "/" .. name .. ".jpg"
+        local f = assert(pc.fs.open(path, "w"))
+        pc.fs.write(f, jpeg_with_icc(stray))
+        pc.fs.close(f)
+        local info = gfx.image.getInfo(path)
+        return info.width .. "x" .. info.height, info.format
+    end)
+end
+jpeg_info("JPEGFAKESOF", "\255\192\0\17\8\0\1\0\1")
+jpeg_info("JPEGSTRAY", "\255\108\87\108")
+
 log("GT DONE")
 -- Hold the frame for pixel probes until ESC.
 local input = pc.input

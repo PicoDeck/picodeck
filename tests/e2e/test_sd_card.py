@@ -62,7 +62,7 @@ def test_a_simulator_that_drops_apps_at_the_cap_is_unhealthy(
     """The backstop for a test that stages more than it declared: the
     launcher's drop warning turns into a health problem naming the fix."""
     for i in range(launcher_app_cap() + 1):
-        stage_lua_app(test_sd_card, f"cap_{i:03d}", "return\n")
+        stage_lua_app(test_sd_card, f"cap_{i:03d}", "return\n", hidden=False)
     sim = new_simulator(request.config, simulator_binary, test_sd_card,
                         tmp_path / "crash.log")
     try:
@@ -77,3 +77,14 @@ def test_a_simulator_that_drops_apps_at_the_cap_is_unhealthy(
     # equal the value the harness parsed from the source.
     want = f"app cap ({launcher_app_cap()})"
     assert any("MAX_APPS" in p and want in p for p in problems), problems
+
+
+def test_hidden_roots_do_not_count_against_the_cap(tmp_path):
+    """/apps/.test and /apps/.dev are dot names the launcher skips: a card
+    holding only hidden apps beyond the cap still builds."""
+    sd = build_sd_card(tmp_path / "hid", fixtures=[],
+                       reserve=launcher_app_cap() - 1)
+    for i in range(launcher_app_cap() + 5):
+        stage_lua_app(sd, f"t_{i:03d}", "return\n")
+    (sd / "apps" / ".dev" / "mine").mkdir(parents=True)
+    build_sd_card(sd, fixtures=[], reserve=launcher_app_cap() - 1)

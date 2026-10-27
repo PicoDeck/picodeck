@@ -113,7 +113,10 @@ def build_sd_card(dest: Path, extra: Iterable[SdExtra] = (),
             shutil.copy2(src, target)
 
     cap = launcher_app_cap()
-    count = sum(1 for a in (dest / "apps").iterdir() if a.is_dir())
+    # Listed apps only: the hidden roots (/apps/.test, /apps/.dev) are dot
+    # names the launcher skips, so they never count against the cap.
+    count = sum(1 for a in (dest / "apps").iterdir()
+                if a.is_dir() and not a.name.startswith("."))
     if count + reserve > cap:
         raise RuntimeError(
             f"SD card holds {count} apps"
@@ -160,15 +163,29 @@ def stop_and_check(sim: PicodeckSimulator):
 # ── App staging ─────────────────────────────────────────────────────────────
 
 
-def stage_lua_app(sd: Path, name: str, code: str, requirements=(),
-                  id: Optional[str] = None, files: Optional[dict] = None) -> Path:
-    """Write /apps/<name>/{app.json,main.lua} onto the SD card `sd`.
+HIDDEN_TEST_ROOT = "apps/.test"   # the harness's hidden apps (src/os/launcher.c)
 
-    The simulator rescans /apps when launch_app misses, so an app staged after
-    boot can be launched without a restart. `files` adds more files to the app
-    directory ({relative_path: str | bytes}).
+
+def app_rel_dir(name: str, hidden: bool = True) -> str:
+    """Where an inline app lives on the card, relative to its root:
+    "apps/.test/<name>" (hidden from the launcher UI, launchable by the dev
+    `launch` and the launch_app RPC), or "apps/<name>" (listed)."""
+    return f"{HIDDEN_TEST_ROOT}/{name}" if hidden else f"apps/{name}"
+
+
+def stage_lua_app(sd: Path, name: str, code: str, requirements=(),
+                  id: Optional[str] = None, files: Optional[dict] = None,
+                  hidden: bool = True) -> Path:
+    """Write /apps/.test/<name>/{app.json,main.lua} onto the SD card `sd`
+    (hidden=False: /apps/<name>, for a test that needs the launcher to list
+    the app: those count against MAX_APPS).
+
+    A hidden app never reaches the launcher's list or its MAX_APPS table:
+    launch reads it fresh. A listed one is picked up by the rescan launch_app
+    does on a miss. `files` adds more files to the app directory
+    ({relative_path: str | bytes}).
     """
-    app_dir = Path(sd) / "apps" / name
+    app_dir = Path(sd) / app_rel_dir(name, hidden)
     app_dir.mkdir(parents=True, exist_ok=True)
     manifest = {
         "id": id or f"com.test.{name}",
@@ -191,9 +208,13 @@ def stage_lua_app(sd: Path, name: str, code: str, requirements=(),
 
 
 def app_id_of(sd: Path, name: str) -> str:
-    """The id declared in /apps/<name>/app.json."""
-    manifest = json.loads((Path(sd) / "apps" / name / "app.json").read_text())
-    return manifest["id"]
+    """The id declared in the app's app.json: /apps/<name>, else
+    /apps/.test/<name>, else /apps/.dev/<name>."""
+    for rel in (f"apps/{name}", f"{HIDDEN_TEST_ROOT}/{name}", f"apps/.dev/{name}"):
+        man = Path(sd) / rel / "app.json"
+        if man.exists():
+            return json.loads(man.read_text())["id"]
+    raise FileNotFoundError(f"no app.json for {name!r} under {sd}/apps")
 
 
 # ── Lua test kit ────────────────────────────────────────────────────────────

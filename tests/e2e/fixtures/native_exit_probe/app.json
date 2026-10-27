@@ -1,0 +1,7 @@
+{
+    "id": "com.test.native_exit_probe",
+    "name": "Native Exit Probe",
+    "description": "E2E fixture: ends only on shouldExit() (source: tests/e2e/native/exit_probe.c)",
+    "version": "1.0",
+    "author": "PicoDeck E2E"
+}

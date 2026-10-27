@@ -62,32 +62,7 @@ enum {
     MS_STEREO = 0x2
 };
 
-struct sideinfo {
-    unsigned int main_data_begin;
-    unsigned int private_bits;
-
-    unsigned char scfsi[2];
-
-    struct granule {
-        struct channel {
-            /* from side info */
-            unsigned short part2_3_length;
-            unsigned short big_values;
-            unsigned short global_gain;
-            unsigned short scalefac_compress;
-
-            unsigned char flags;
-            unsigned char block_type;
-            unsigned char table_select[3];
-            unsigned char subblock_gain[3];
-            unsigned char region0_count;
-            unsigned char region1_count;
-
-            /* from main_data */
-            unsigned char scalefac[39];	/* scalefac_l and/or scalefac_s */
-        } ch[2];
-    } gr[2];
-};
+/* struct mad_l3_sideinfo: frame.h (the frame keeps it between granules) */
 
 /*
     scalefactor bit lengths
@@ -526,7 +501,7 @@ mad_fixed_t const is_lsf_table[2][15] PROGMEM = {
 */
 static
 enum mad_error III_sideinfo(struct mad_bitptr *ptr, unsigned int nch,
-                            int lsf, struct sideinfo *si,
+                            int lsf, struct mad_l3_sideinfo *si,
                             unsigned int *data_bitlen,
                             unsigned int *priv_bitlen) {
     unsigned int ngr, gr, ch, i;
@@ -548,10 +523,10 @@ enum mad_error III_sideinfo(struct mad_bitptr *ptr, unsigned int nch,
     }
 
     for (gr = 0; gr < ngr; ++gr) {
-        struct granule *granule = &si->gr[gr];
+        struct mad_l3_granule *granule = &si->gr[gr];
 
         for (ch = 0; ch < nch; ++ch) {
-            struct channel *channel = &granule->ch[ch];
+            struct mad_l3_channel *channel = &granule->ch[ch];
 
             channel->part2_3_length    = mad_bit_read(ptr, 12);
             channel->big_values        = mad_bit_read(ptr, 9);
@@ -623,8 +598,8 @@ enum mad_error III_sideinfo(struct mad_bitptr *ptr, unsigned int nch,
 */
 static
 unsigned int III_scalefactors_lsf(struct mad_bitptr *ptr,
-                                  struct channel *channel,
-                                  struct channel *gr1ch, int mode_extension) {
+                                  struct mad_l3_channel *channel,
+                                  struct mad_l3_channel *gr1ch, int mode_extension) {
     struct mad_bitptr start;
     unsigned int scalefac_compress, index, slen[4], part, n, i;
     unsigned int const *nsfb;
@@ -733,8 +708,8 @@ unsigned int III_scalefactors_lsf(struct mad_bitptr *ptr,
     DESCRIPTION:	decode channel scalefactors of one granule from a bitstream
 */
 static
-unsigned int III_scalefactors(struct mad_bitptr *ptr, struct channel *channel,
-                              struct channel const *gr0ch, unsigned int scfsi) {
+unsigned int III_scalefactors(struct mad_bitptr *ptr, struct mad_l3_channel *channel,
+                              struct mad_l3_channel const *gr0ch, unsigned int scfsi) {
     struct mad_bitptr start;
     unsigned int slen1, slen2, sfbi;
 
@@ -836,7 +811,7 @@ unsigned int III_scalefactors(struct mad_bitptr *ptr, struct channel *channel,
     DESCRIPTION:	calculate scalefactor exponents
 */
 static
-void III_exponents(struct channel const *channel,
+void III_exponents(struct mad_l3_channel const *channel,
                    unsigned int const *sfbwidth, signed int exponents[39]) {
     signed int gain;
     unsigned int scalefac_multiplier, sfbi;
@@ -957,7 +932,7 @@ mad_fixed_t III_requantize(unsigned int value, signed int exp) {
 */
 static
 enum mad_error III_huffdecode(struct mad_bitptr *ptr, mad_fixed_t xr[576],
-                              struct channel *channel,
+                              struct mad_l3_channel *channel,
                               unsigned int const *sfbwidth,
                               unsigned int part2_length) {
     signed int exponents[39], exp;
@@ -1308,7 +1283,7 @@ y_final:
     DESCRIPTION:	reorder frequency lines of a short block into subband order
 */
 static
-enum mad_error III_reorder(mad_fixed_t xr[576], struct channel const *channel,
+enum mad_error III_reorder(mad_fixed_t xr[576], struct mad_l3_channel const *channel,
                            unsigned int const sfbwidth[39], mad_fixed_t tmp[576]) {
     unsigned int sb, l, f, w, sbw[3], sw[3];
     //  mad_fixed_t *tmp; // [32][3][6]
@@ -1369,7 +1344,7 @@ enum mad_error III_reorder(mad_fixed_t xr[576], struct channel const *channel,
 */
 static
 enum mad_error III_stereo(mad_fixed_t xr[2][576],
-                          struct granule const *granule,
+                          struct mad_l3_granule const *granule,
                           struct mad_header *header,
                           unsigned int const *sfbwidth) {
     short modes[39];
@@ -1389,7 +1364,7 @@ enum mad_error III_stereo(mad_fixed_t xr[2][576],
     /* intensity stereo */
 
     if (header->mode_extension & I_STEREO) {
-        struct channel const *right_ch = &granule->ch[1];
+        struct mad_l3_channel const *right_ch = &granule->ch[1];
         mad_fixed_t const *right_xr = xr[1];
         unsigned int is_pos;
 
@@ -2400,52 +2375,55 @@ void III_freqinver(mad_fixed_t sample[18][32], unsigned int sb) {
 }
 
 /*
-    NAME:	III_decode()
-    DESCRIPTION:	decode frame main_data
+    NAME:	III_sfreqi()
+    DESCRIPTION:	the sfbwidth_table index of a frame's sampling frequency
 */
 static
-enum mad_error III_decode(struct mad_bitptr *ptr, struct mad_frame *frame,
-                          struct sideinfo *si, unsigned int nch) {
+unsigned int III_sfreqi(struct mad_header const *header) {
+    unsigned int sfreq, sfreqi;
+
+    sfreq = header->samplerate;
+    if (header->flags & MAD_FLAG_MPEG_2_5_EXT) {
+        sfreq *= 2;
+    }
+
+    /*  48000 => 0, 44100 => 1, 32000 => 2,
+        24000 => 3, 22050 => 4, 16000 => 5 */
+    sfreqi = ((sfreq >>  7) & 0x000f) +
+             ((sfreq >> 15) & 0x0001) - 8;
+
+    if (header->flags & MAD_FLAG_MPEG_2_5_EXT) {
+        sfreqi += 3;
+    }
+
+    return sfreqi;
+}
+
+/*
+    NAME:	III_decode_granule()
+    DESCRIPTION:	decode one granule of frame main_data into sbsample
+		(PicoDeck: the granule loop of libmad's III_decode, so that a
+		frame is decoded one granule at a time)
+*/
+static
+enum mad_error III_decode_granule(struct mad_bitptr *ptr, struct mad_frame *frame,
+                                  struct mad_l3_sideinfo *si, unsigned int nch,
+                                  unsigned int sfreqi, unsigned int gr) {
     struct mad_header *header = &frame->header;
     mad_fixed_t *xr[2]; // Moved from stack to dynheap
-    //  mad_fixed_t *xr_raw; // [2][576]
-    unsigned int sfreqi, ngr, gr;
-    //  xr_raw = (mad_fixed_t*)malloc(sizeof(mad_fixed_t) * 2 * 576);
-    //  if (!xr_raw)
-    //    return MAD_ERROR_NOMEM;
     xr[0] = frame->xr_raw; //xr_raw;
     xr[1] = frame->xr_raw + 576; //xr_raw + 576;
 
-    {
-        unsigned int sfreq;
-
-        sfreq = header->samplerate;
-        if (header->flags & MAD_FLAG_MPEG_2_5_EXT) {
-            sfreq *= 2;
-        }
-
-        /*  48000 => 0, 44100 => 1, 32000 => 2,
-            24000 => 3, 22050 => 4, 16000 => 5 */
-        sfreqi = ((sfreq >>  7) & 0x000f) +
-                 ((sfreq >> 15) & 0x0001) - 8;
-
-        if (header->flags & MAD_FLAG_MPEG_2_5_EXT) {
-            sfreqi += 3;
-        }
-    }
-
     /* scalefactors, Huffman decoding, requantization */
 
-    ngr = (header->flags & MAD_FLAG_LSF_EXT) ? 1 : 2;
-
-    for (gr = 0; gr < ngr; ++gr) {
-        struct granule *granule = &si->gr[gr];
+    {
+        struct mad_l3_granule *granule = &si->gr[gr];
         unsigned int const *sfbwidth[2];
         unsigned int ch;
         enum mad_error error;
 
         for (ch = 0; ch < nch; ++ch) {
-            struct channel *channel = &granule->ch[ch];
+            struct mad_l3_channel *channel = &granule->ch[ch];
             unsigned int part2_length;
 
             sfbwidth[ch] = sfbwidth_table[sfreqi].l;
@@ -2465,7 +2443,6 @@ enum mad_error III_decode(struct mad_bitptr *ptr, struct mad_frame *frame,
 
             error = III_huffdecode(ptr, xr[ch], channel, sfbwidth[ch], part2_length);
             if (error) {
-                //        free(xr_raw);
                 return error;
             }
         }
@@ -2476,7 +2453,6 @@ enum mad_error III_decode(struct mad_bitptr *ptr, struct mad_frame *frame,
             // (void*) below just to get rid of warning about passing in a * and not a [2][576]
             error = III_stereo((void*)frame->xr_raw, granule, header, sfbwidth[0]);
             if (error) {
-                //        free(xr_raw);
                 return error;
             }
         }
@@ -2484,15 +2460,14 @@ enum mad_error III_decode(struct mad_bitptr *ptr, struct mad_frame *frame,
         /* reordering, alias reduction, IMDCT, overlap-add, frequency inversion */
 
         for (ch = 0; ch < nch; ++ch) {
-            struct channel const *channel = &granule->ch[ch];
-            mad_fixed_t (*sample)[32] = &frame->sbsample[ch][18 * gr];
+            struct mad_l3_channel const *channel = &granule->ch[ch];
+            mad_fixed_t (*sample)[32] = &frame->sbsample[ch][0];  /* one granule */
             unsigned int sb, l, i, sblimit;
             mad_fixed_t output[36];
 
             if (channel->block_type == 2) {
                 error = III_reorder(xr[ch], channel, sfbwidth[ch], frame->tmp);
                 if (error) {
-                    //          free(xr_raw);
                     return error;
                 }
 
@@ -2582,21 +2557,30 @@ enum mad_error III_decode(struct mad_bitptr *ptr, struct mad_frame *frame,
         }
     }
 
-    //  free(xr_raw);
     return MAD_ERROR_NONE;
 }
 
+/* PicoDeck: what the granules of one frame share between
+   mad_layer_III_begin(), mad_layer_III_granule() and mad_layer_III_end():
+   struct mad_frame's l3 (struct mad_l3_ctx, frame.h). */
+static inline struct mad_l3_ctx *l3_ctx(struct mad_frame *frame) {
+    return &frame->l3;
+}
+
 /*
-    NAME:	layer->III()
-    DESCRIPTION:	decode a single Layer III frame
+    NAME:	layer->III_begin()
+    DESCRIPTION:	begin a Layer III frame: side information and main_data.
+		On success (0) its granules are to be decoded in order with
+		mad_layer_III_granule(), then mad_layer_III_end(); on -1 the
+		frame is done (main_data kept for the next frame).
 */
-int mad_layer_III(struct mad_stream *stream, struct mad_frame *frame) {
+int mad_layer_III_begin(struct mad_stream *stream, struct mad_frame *frame) {
     struct mad_header *header = &frame->header;
+    struct mad_l3_ctx *c = l3_ctx(frame);
     unsigned int nch, priv_bitlen, next_md_begin = 0;
     unsigned int si_len, data_bitlen, md_len;
     unsigned int frame_space, frame_used, frame_free;
     struct mad_bitptr ptr;
-    struct sideinfo si;
     enum mad_error error;
     int result = 0;
 
@@ -2629,14 +2613,14 @@ int mad_layer_III(struct mad_stream *stream, struct mad_frame *frame) {
     /* decode frame side information */
 
     error = III_sideinfo(&stream->ptr, nch, header->flags & MAD_FLAG_LSF_EXT,
-                         &si, &data_bitlen, &priv_bitlen);
+                         &c->si, &data_bitlen, &priv_bitlen);
     if (error && result == 0) {
         stream->error = error;
         result = -1;
     }
 
     header->flags        |= priv_bitlen;
-    header->private_bits |= si.private_bits;
+    header->private_bits |= c->si.private_bits;
 
     /* find main_data of next frame */
 
@@ -2663,36 +2647,36 @@ int mad_layer_III(struct mad_stream *stream, struct mad_frame *frame) {
 
     frame_space = stream->next_frame - mad_bit_nextbyte(&stream->ptr);
 
-    if (next_md_begin > si.main_data_begin + frame_space) {
+    if (next_md_begin > c->si.main_data_begin + frame_space) {
         next_md_begin = 0;
     }
 
-    md_len = si.main_data_begin + frame_space - next_md_begin;
+    md_len = c->si.main_data_begin + frame_space - next_md_begin;
 
     frame_used = 0;
 
-    if (si.main_data_begin == 0) {
+    if (c->si.main_data_begin == 0) {
         ptr = stream->ptr;
         stream->md_len = 0;
 
         frame_used = md_len;
     } else {
-        if (si.main_data_begin > stream->md_len) {
+        if (c->si.main_data_begin > stream->md_len) {
             if (result == 0) {
                 stream->error = MAD_ERROR_BADDATAPTR;
                 result = -1;
             }
         } else {
             mad_bit_init(&ptr,
-                         stream->main_data + stream->md_len - si.main_data_begin);
+                         stream->main_data + stream->md_len - c->si.main_data_begin);
 
-            if (md_len > si.main_data_begin) {
+            if (md_len > c->si.main_data_begin) {
                 assert(stream->md_len + md_len -
-                       si.main_data_begin <= MAD_BUFFER_MDLEN);
+                       c->si.main_data_begin <= MAD_BUFFER_MDLEN);
 
                 memcpy(stream->main_data + stream->md_len,
                        mad_bit_nextbyte(&stream->ptr),
-                       frame_used = md_len - si.main_data_begin);
+                       frame_used = md_len - c->si.main_data_begin);
                 stream->md_len += frame_used;
             }
         }
@@ -2700,28 +2684,60 @@ int mad_layer_III(struct mad_stream *stream, struct mad_frame *frame) {
 
     frame_free = frame_space - frame_used;
 
-    /* decode main_data */
-
+    c->nch = nch;
+    c->ngr = (header->flags & MAD_FLAG_LSF_EXT) ? 1 : 2;
+    c->sfreqi = III_sfreqi(header);
+    c->md_len = md_len;
+    c->data_bitlen = data_bitlen;
+    c->frame_free = frame_free;
+    c->next_md_begin = next_md_begin;
+    c->result = result;
     if (result == 0) {
-        error = III_decode(&ptr, frame, &si, nch);
-        if (error) {
-            stream->error = error;
-            result = -1;
-        }
-
-        /* designate ancillary bits */
-
-        stream->anc_ptr    = ptr;
-        stream->anc_bitlen = md_len * CHAR_BIT - data_bitlen;
+        c->ptr = ptr;
+    } else {
+        mad_layer_III_end(stream, frame);
     }
 
-# if 0 && defined(DEBUG)
-    fprintf(stderr,
-            "main_data_begin:%u, md_len:%u, frame_free:%u, "
-            "data_bitlen:%u, anc_bitlen: %u\n",
-            si.main_data_begin, md_len, frame_free,
-            data_bitlen, stream->anc_bitlen);
-# endif
+    return result;
+}
+
+/*
+    NAME:	layer->III_granule()
+    DESCRIPTION:	decode granule gr of the frame mad_layer_III_begin() began
+		(into sbsample, which holds one granule); -1 on an error (the
+		frame then ends with mad_layer_III_end())
+*/
+int mad_layer_III_granule(struct mad_stream *stream, struct mad_frame *frame,
+                          unsigned int gr) {
+    struct mad_l3_ctx *c = l3_ctx(frame);
+    enum mad_error error;
+
+    error = III_decode_granule(&c->ptr, frame, &c->si, c->nch, c->sfreqi, gr);
+    if (error) {
+        stream->error = error;
+        c->result = -1;
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
+    NAME:	layer->III_end()
+    DESCRIPTION:	end the frame: designate the ancillary bits and keep the
+		main_data the next frame draws on; the frame's result
+*/
+int mad_layer_III_end(struct mad_stream *stream, struct mad_frame *frame) {
+    struct mad_l3_ctx *c = l3_ctx(frame);
+    unsigned int md_len = c->md_len, frame_free = c->frame_free;
+    unsigned int next_md_begin = c->next_md_begin;
+
+    /* designate ancillary bits */
+
+    if (c->result == 0) {
+        stream->anc_ptr    = c->ptr;
+        stream->anc_bitlen = md_len * CHAR_BIT - c->data_bitlen;
+    }
 
     /* preload main_data buffer with up to 511 bytes for next frame(s) */
 
@@ -2730,10 +2746,10 @@ int mad_layer_III(struct mad_stream *stream, struct mad_frame *frame) {
                stream->next_frame - next_md_begin, next_md_begin);
         stream->md_len = next_md_begin;
     } else {
-        if (md_len < si.main_data_begin) {
+        if (md_len < c->si.main_data_begin) {
             unsigned int extra;
 
-            extra = si.main_data_begin - md_len;
+            extra = c->si.main_data_begin - md_len;
             if (extra + frame_free > next_md_begin) {
                 extra = next_md_begin - frame_free;
             }
@@ -2752,5 +2768,10 @@ int mad_layer_III(struct mad_stream *stream, struct mad_frame *frame) {
         stream->md_len += frame_free;
     }
 
-    return result;
+    return c->result;
+}
+
+/* PicoDeck: the granules in the frame mad_layer_III_begin() began. */
+unsigned int mad_layer_III_granules(struct mad_frame const *frame) {
+    return (frame->header.flags & MAD_FLAG_LSF_EXT) ? 1 : 2;
 }

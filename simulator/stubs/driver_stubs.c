@@ -11,6 +11,7 @@
 #include <string.h>
 #include <dirent.h>
 #include <stdatomic.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include "../hal/hal_display.h"
@@ -282,6 +283,32 @@ void display_set_pixel(int x, int y, uint16_t color) {
 uint16_t display_get_pixel(int x, int y) {
     if (x < 0 || x >= 320 || y < 0 || y >= 320) return 0;
     return display_get_back_buffer()[y * 320 + x];
+}
+
+// Mirrors display_set_pixels_block / display_get_pixels_block in
+// src/drivers/display.c (both call the shared disp_set/get_pixels). This framebuffer is already
+// host order, so no byte swap happens here — the firmware swaps, and the Lua
+// contract ("host-order RGB565 either way") is the same.
+bool display_set_pixels_block(int x, int y, int w, int h,
+                              const void *rgb565_host, size_t len) {
+    if (w <= 0 || h <= 0) return false;
+    if (x < 0 || y < 0 || x + w > 320 || y + h > 320) return false;
+    if (len != (size_t)w * (size_t)h * 2u) return false;
+
+    disp_clip_t c = cur_clip();
+    return disp_set_pixels(display_get_back_buffer(), 320, &c, x, y, w, h,
+                           (const uint8_t *)rgb565_host, false);
+}
+
+bool display_get_pixels_block(int x, int y, int w, int h,
+                              void *rgb565_host, size_t len) {
+    if (w <= 0 || h <= 0) return false;
+    if (x < 0 || y < 0 || x + w > 320 || y + h > 320) return false;
+    if (len != (size_t)w * (size_t)h * 2u) return false;
+
+    disp_get_pixels(display_get_back_buffer(), 320, x, y, w, h,
+                    (uint8_t *)rgb565_host, false);
+    return true;
 }
 
 void display_draw_line(int x0, int y0, int x1, int y1, uint16_t color) {
@@ -649,8 +676,12 @@ int sdcard_list_dir(const char* path,
     int count = 0;
     struct dirent* entry;
     while ((entry = readdir(dir)) != NULL) {
-        // Skip dotfiles (FAT32 doesn't have them; filters .DS_Store, .git, etc.)
-        if (entry->d_name[0] == '.') {
+        // Skip dotfiles (filters ., .., .DS_Store, .git, etc. that a host
+        // directory has and a FAT volume does not), except the hidden app
+        // roots, which firmware lists like any directory.
+        if (entry->d_name[0] == '.' &&
+            strcmp(entry->d_name, ".test") != 0 &&
+            strcmp(entry->d_name, ".dev") != 0) {
             continue;
         }
         
@@ -676,10 +707,8 @@ int sdcard_list_dir(const char* path,
             sdc_entry.ftime = 0;
         }
         
-        printf("[SDCARD] Found: %s (is_dir=%d)\n", sdc_entry.name, sdc_entry.is_dir);
-        fflush(stdout);
-        
-        // Call the callback
+        // Call the callback (no line per entry: the launcher scan lists every
+        // app's directory, and they buried the rest of the log)
         if (callback) {
             callback(&sdc_entry, user);
         }
@@ -702,8 +731,41 @@ int sdcard_list_dir(const char* path,
 sdfile_t sdcard_fopen(const char* path, const char* mode) { return hal_sdcard_open(path, mode); }
 void sdcard_fclose(sdfile_t f) { hal_sdcard_close(f); }
 int sdcard_fread(sdfile_t f, void* buf, int len) { return (int)hal_sdcard_read(f, buf, (size_t)len); }
-// No cross-core SD mutex in the simulator: the try-read never finds it busy.
+// No cross-core SD mutex in the simulator: the try-read finds the card busy
+// only when a test asks (the `set_sd_busy` RPC: for `ms` once `after_reads`
+// more try-reads have gone through, as if Core 0 then held the card that
+// long, e.g. loading a sample). The window is Core 1's (the only thread
+// that try-reads).
+static _Atomic uint32_t s_sd_busy_arm_ms;
+static _Atomic uint32_t s_sd_busy_after;
+static uint64_t s_sd_busy_until_us;
+
+void sim_sd_set_busy(uint32_t ms, uint32_t after_reads) {
+    atomic_store(&s_sd_busy_after, after_reads);
+    atomic_store(&s_sd_busy_arm_ms, ms);
+}
+
+static uint64_t sd_busy_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
 int sdcard_try_fread_at(sdfile_t f, uint32_t offset, void* buf, int len) {
+    uint32_t arm = atomic_load(&s_sd_busy_arm_ms);
+    if (arm) {
+        if (atomic_load(&s_sd_busy_after) > 0) {
+            atomic_fetch_sub(&s_sd_busy_after, 1);  // this one goes through
+        } else {
+            atomic_store(&s_sd_busy_arm_ms, 0);
+            s_sd_busy_until_us = sd_busy_now_us() + (uint64_t)arm * 1000u;
+        }
+    }
+    if (s_sd_busy_until_us) {
+        if (sd_busy_now_us() < s_sd_busy_until_us)
+            return SDCARD_BUSY;
+        s_sd_busy_until_us = 0;
+    }
     if (!f) return -1;
     if (hal_sdcard_seek(f, (long)offset) != 0) return -1;
     return len > 0 ? sdcard_fread(f, buf, len) : 0;
@@ -752,6 +814,38 @@ bool sdcard_delete_recursive(const char* path) {
     char full[1024];
     if (!hal_sdcard_resolve(path, full, sizeof(full))) return false;
     return nftw(full, nftw_remove_cb, 64, FTW_DEPTH | FTW_PHYS) == 0;
+}
+// Same directory, or below it: by device and inode of each ancestor, as the
+// firmware compares FatFS directory clusters (src/drivers/fat_within.c).
+sdcard_within_t sdcard_path_within(const char* root, const char* path) {
+    char full[1024];
+    struct stat rs;
+    if (!hal_sdcard_resolve(root, full, sizeof(full))) return SDCARD_WITHIN_UNKNOWN;
+    if (stat(full, &rs) != 0)
+        return (errno == ENOENT || errno == ENOTDIR) ? SDCARD_WITHIN_NO
+                                                     : SDCARD_WITHIN_UNKNOWN;
+    if (!S_ISDIR(rs.st_mode)) return SDCARD_WITHIN_NO;
+    char prefix[256];
+    size_t n = strlen(path);
+    if (n >= sizeof(prefix)) return SDCARD_WITHIN_UNKNOWN;
+    memcpy(prefix, path, n + 1);
+    for (size_t i = 1; i <= n; i++) {
+        if (prefix[i] != '/' && prefix[i] != '\\' && prefix[i] != '\0') continue;
+        char saved = prefix[i];
+        prefix[i] = '\0';
+        struct stat ps;
+        bool resolved = hal_sdcard_resolve(prefix, full, sizeof(full));
+        int rc = resolved ? stat(full, &ps) : -1;
+        int err = errno;
+        prefix[i] = saved;
+        if (!resolved) return SDCARD_WITHIN_UNKNOWN;
+        if (rc != 0)
+            return (err == ENOENT || err == ENOTDIR) ? SDCARD_WITHIN_NO
+                                                     : SDCARD_WITHIN_UNKNOWN;
+        if (S_ISDIR(ps.st_mode) && ps.st_dev == rs.st_dev && ps.st_ino == rs.st_ino)
+            return SDCARD_WITHIN_YES;
+    }
+    return SDCARD_WITHIN_NO;
 }
 bool sdcard_rename(const char* oldpath, const char* newpath) {
     char full_old[1024], full_new[1024];

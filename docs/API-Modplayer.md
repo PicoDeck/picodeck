@@ -6,7 +6,7 @@ Tracker module music playback: **MOD files only**, the ProTracker family. Suppor
 
 The player renders the module on Core 1 at 22,050 Hz. Its output shares one PCM stream with the FilePlayer and `picocalc.audio.startStream`, so stop whichever of them is playing before you start another; starting one does not stop the others. SamplePlayers, tones and the MP3Player mix with it, so sound effects play over the music.
 
-**Performance.** The player renders on the second core, but it reads the module's samples from PSRAM through the cache it shares with your app, so it slows your app's own code. Measured in a gfx3d game at 200 MHz with busy test modules (every channel starting a note on every row, 16 KB looping samples): a 4-channel module made each frame about 14% slower, an 8-channel one about 24%. A looping WAV through a FilePlayer cost 2.5%, and MP3 music far more (see [Audio and Sound](API-Audio-and-Sound.md)). A module's whole soundtrack is tens of KB, against about 2.6 MB per minute of 22.05 kHz mono WAV.
+**Performance.** The player renders on the second core, but it reads the module's samples from PSRAM through the cache it shares with your app, so it slows your app's own code. Measured in a gfx3d game at 200 MHz with busy test modules (every channel starting a note on every row, 16 KB looping samples): a 4-channel module made each frame about 14% slower, an 8-channel one about 24%. A looping WAV through a FilePlayer cost 2.5%; 44.1 kHz stereo MP3 music cost nothing in a game that paces itself with time to spare and about 21% in one that does not (see [Audio and Sound](API-Audio-and-Sound.md)). A module's whole soundtrack is tens of KB, against about 2.6 MB per minute of 22.05 kHz mono WAV.
 
 ## picocalc.modplayer
 

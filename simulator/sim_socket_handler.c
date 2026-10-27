@@ -13,6 +13,8 @@
 #include "drivers/keyboard.h"
 #include "drivers/audio_mix.h"
 #include "drivers/sound.h"
+#include "drivers/mp3_player.h"
+#include "os/core0_idle.h"
 #include "os/launcher.h"
 #include "os/lua_psram_alloc.h"
 #include "os/screenshot.h"
@@ -142,6 +144,50 @@ static bool sandbox_path(const char *path, char *out_resolved, size_t max) {
 
 // ── JSON helpers ─────────────────────────────────────────────────────────────
 
+// The four hex digits at p as a number, or -1.
+static long json_hex4(const char *p) {
+    long v = 0;
+    for (int k = 0; k < 4; k++) {
+        char c = p[k];
+        int d = (c >= '0' && c <= '9') ? c - '0'
+              : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+              : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+        if (d < 0) return -1;
+        v = v * 16 + d;
+    }
+    return v;
+}
+
+// Code point cp as UTF-8 at out[i]; returns the new length, or i unchanged
+// when it would not fit before out[max - 1] (the value is cut there, as a
+// long string is).
+static size_t json_put_utf8(char *out, size_t i, size_t max, unsigned long cp) {
+    unsigned char b[4];
+    size_t n;
+    if (cp < 0x80) {
+        b[0] = (unsigned char)cp; n = 1;
+    } else if (cp < 0x800) {
+        b[0] = (unsigned char)(0xC0 | (cp >> 6));
+        b[1] = (unsigned char)(0x80 | (cp & 0x3F)); n = 2;
+    } else if (cp < 0x10000) {
+        b[0] = (unsigned char)(0xE0 | (cp >> 12));
+        b[1] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+        b[2] = (unsigned char)(0x80 | (cp & 0x3F)); n = 3;
+    } else {
+        b[0] = (unsigned char)(0xF0 | (cp >> 18));
+        b[1] = (unsigned char)(0x80 | ((cp >> 12) & 0x3F));
+        b[2] = (unsigned char)(0x80 | ((cp >> 6) & 0x3F));
+        b[3] = (unsigned char)(0x80 | (cp & 0x3F)); n = 4;
+    }
+    if (i + n > max - 1) return i;
+    memcpy(out + i, b, n);
+    return i + n;
+}
+
+// A string member, decoded: the escapes JSON allows (\" \\ \/ \b \f \n \r \t
+// \uXXXX, surrogate pairs included) become their chars, so a client's
+// json.dumps round-trips: inject_char {"char": "\n"} types Enter's '\n', and
+// a quote or backslash in a path survives. Cut at max - 1 bytes.
 static bool json_get_str(const char *obj, const char *key, char *out, size_t max) {
     char search[128];
     snprintf(search, sizeof(search), "\"%s\"", key);
@@ -152,7 +198,43 @@ static bool json_get_str(const char *obj, const char *key, char *out, size_t max
     if (*p != '"') return false;
     p++;
     size_t i = 0;
-    while (*p && *p != '"' && i < max - 1) out[i++] = *p++;
+    while (*p && *p != '"' && i < max - 1) {
+        if (*p != '\\') {
+            out[i++] = *p++;
+            continue;
+        }
+        p++;  // the backslash
+        char e = *p;
+        if (!e) break;
+        p++;
+        switch (e) {
+        case 'b': out[i++] = '\b'; break;
+        case 'f': out[i++] = '\f'; break;
+        case 'n': out[i++] = '\n'; break;
+        case 'r': out[i++] = '\r'; break;
+        case 't': out[i++] = '\t'; break;
+        case 'u': {
+            long u = json_hex4(p);
+            if (u < 0) { out[i++] = 'u'; break; }  // malformed: keep it literal
+            p += 4;
+            unsigned long cp = (unsigned long)u;
+            if (u >= 0xD800 && u <= 0xDBFF && p[0] == '\\' && p[1] == 'u') {
+                long lo = json_hex4(p + 2);
+                if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                    cp = 0x10000 + (((unsigned long)u - 0xD800) << 10) +
+                         ((unsigned long)lo - 0xDC00);
+                    p += 6;
+                }
+            }
+            size_t before = i;
+            i = json_put_utf8(out, i, max, cp);
+            if (i == before) goto done;  // no room for the whole char
+            break;
+        }
+        default: out[i++] = e; break;  // \" \\ \/ (and anything else) is itself
+        }
+    }
+done:
     out[i] = '\0';
     return true;
 }
@@ -383,8 +465,8 @@ static char *h_exit_app(const char *params) {
 }
 
 // Run one dev-command line on Core 0 (see dev_commands_stub.c): the
-// launcher loop or a running app's Lua pump executes it, like a line on the
-// firmware's serial console. params: {"cmd": "...", "timeout_ms": N}.
+// launcher loop, a running Lua app's pump or a native app's sys->poll()
+// executes it, like a line on the firmware's serial console. params: {"cmd": "...", "timeout_ms": N}.
 static char *h_dev_command(const char *params) {
     char cmd[300] = {0};
     if (!json_get_str(params, "cmd", cmd, sizeof(cmd)) || !cmd[0])
@@ -802,6 +884,22 @@ static char *h_get_audio_state(const char *params) {
     return strdup(buf);
 }
 
+// {"ms": N, "after_reads": K}: once K more of Core 1's SD try-reads have
+// gone through (default 0), they report the card busy for N ms, as if Core
+// 0 held it that long (driver_stubs.c). The audio tests stall the
+// fileplayer with it (tests/e2e/test_fileplayer.py).
+static char *h_set_sd_busy(const char *params) {
+    int ms = 0, after = 0;
+    if (!json_get_int(params, "ms", &ms) || ms < 0 || ms > 60000)
+        return strdup("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"ms (0-60000) required\"}}");
+    json_get_int(params, "after_reads", &after);
+    if (after < 0)
+        after = 0;
+    extern void sim_sd_set_busy(uint32_t ms, uint32_t after_reads);
+    sim_sd_set_busy((uint32_t)ms, (uint32_t)after);
+    return strdup("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true}}");
+}
+
 static char *h_get_wifi_state(const char *params) {
     (void)params;
     wifi_status_t st = wifi_get_status();
@@ -1014,6 +1112,30 @@ static char *h_shutdown(const char *params) {
 #define SIM_ASAN_BUILD 1
 #endif
 #endif
+
+// The MP3 decoder's schedule and output since boot (issue #28): output
+// frames the mixer found no MP3 data for, frames decoded because the PCM
+// ring was low or ahead in Core 0's idle windows (perf pacing), and those
+// windows. tests/e2e/test_mp3_pacing.py.
+static char *h_get_mp3_stats(const char *params) {
+    (void)params;
+    mp3_sched_stats_t m;
+    mp3_player_get_sched_stats(&m);
+    uint32_t windows;
+    uint64_t idle_us;
+    core0_idle_stats(&windows, &idle_us);
+    static char buf[256];
+    snprintf(buf, sizeof(buf),
+             "{\"jsonrpc\":\"2.0\",\"result\":{\"underruns\":%u,"
+             "\"low_frames\":%u,\"idle_frames\":%u,\"overran\":%u,"
+             "\"frame_us\":%u,\"decode_ahead\":%s,\"idle_windows\":%u,"
+             "\"idle_ms\":%llu}}",
+             (unsigned)mp3_player_staging_underruns(), (unsigned)m.low_frames,
+             (unsigned)m.idle_frames, (unsigned)m.overran,
+             (unsigned)m.frame_us, m.decode_ahead ? "true" : "false",
+             (unsigned)windows, (unsigned long long)(idle_us / 1000u));
+    return strdup(buf);
+}
 
 static char *h_sanitizer_selftest(const char *params) {
     (void)params;
@@ -1297,6 +1419,7 @@ static struct {
     { "get_button_state",   h_get_button_state },
     { "get_heap_info",      h_get_heap_info },
     { "get_audio_state",     h_get_audio_state },
+    { "set_sd_busy",         h_set_sd_busy },
     { "get_wifi_state",     h_get_wifi_state },
     { "set_wifi_state",     h_set_wifi_state },
     { "set_battery",        h_set_battery },
@@ -1316,6 +1439,7 @@ static struct {
     { "subscribe",          h_subscribe },
     { "get_input_state",    h_get_input_state },
     { "sanitizer_selftest", h_sanitizer_selftest },
+    { "get_mp3_stats",      h_get_mp3_stats },
     { NULL, NULL },
 };
 

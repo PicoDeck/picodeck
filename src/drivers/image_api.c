@@ -225,9 +225,13 @@ const char *image_probe(const char *path, int *out_w, int *out_h) {
         return "gif";
     }
 
-    // JPEG: walk markers to the first SOF (0xC0-0xCF except DHT/DAC/RST)
+    // JPEG: walk markers to the first SOF (0xC0-0xCF except DHT/DAC/RST),
+    // from just after SOI. The header read left the file 33 bytes in, which
+    // can be inside a segment (an APP2 ICC profile) whose bytes look like
+    // markers.
     if (header[0] == 0xFF && header[1] == 0xD8) {
         uint8_t seg[7];
+        sdcard_fseek(f, 2);
         for (int guard = 0; guard < 256; guard++) {
             // Find 0xFF marker prefix (skip fill bytes)
             uint8_t b = 0;

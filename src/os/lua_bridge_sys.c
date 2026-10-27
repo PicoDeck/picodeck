@@ -149,6 +149,16 @@ static void lua_menu_trampoline(void *user) {
   lua_call(cb->L, 0, 0); // propagates errors (including sys.exit() sentinel)
 }
 
+// value is the row's own copy (system_menu.c): pushed, so copied into Lua,
+// before the callback runs and can clear the rows, which frees it.
+static void lua_option_trampoline(void *user, int index, const char *value) {
+  lua_callback_t *cb = (lua_callback_t *)user;
+  lua_rawgeti(cb->L, LUA_REGISTRYINDEX, cb->ref);
+  lua_pushstring(cb->L, value);
+  lua_pushinteger(cb->L, index + 1);
+  lua_call(cb->L, 2, 0); // propagates errors (including sys.exit() sentinel)
+}
+
 // picocalc.sys.getClock() → {synced=bool, hour=int, min=int, sec=int,
 // epoch=int} epoch is UTC Unix seconds; hour/min/sec are UTC + tz_offset.
 static int l_sys_getClock(lua_State *L) {
@@ -230,6 +240,60 @@ static int l_sys_addMenuItem(lua_State *L) {
   cb->ref = ref;
 
   system_menu_add_item(label, lua_menu_trampoline, cb);
+  return 0;
+}
+
+// sys.addMenuOption(label, options, current, callback): a value row. Checks
+// run in an order that gives each bad argument its own message; nothing is
+// registered or referenced until all pass. The values are copied into the
+// row (system_menu_add_option), so the options table is not kept: the
+// callback gets the value as registered.
+static int l_sys_addMenuOption(lua_State *L) {
+  const char *label = luaL_checkstring(L, 1);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  const char *current = luaL_checkstring(L, 3);
+  luaL_checktype(L, 4, LUA_TFUNCTION);
+
+  if (strlen(label) > SYSMENU_OPT_LABEL_MAX)
+    return luaL_error(L, "menu option label too long (max %d)",
+                      SYSMENU_OPT_LABEL_MAX);
+  lua_Integer n = (lua_Integer)lua_rawlen(L, 2);
+  if (n < 1)
+    return luaL_error(L, "menu option needs at least one option");
+  if (n > SYSMENU_OPT_MAX)
+    return luaL_error(L, "too many options (max %d)", SYSMENU_OPT_MAX);
+
+  const char *vals[SYSMENU_OPT_MAX];
+  int cur = -1;
+  for (int i = 0; i < n; i++) {
+    lua_rawgeti(L, 2, i + 1);
+    if (lua_type(L, -1) != LUA_TSTRING)
+      return luaL_error(L, "menu option %d is not a string", i + 1);
+    vals[i] = lua_tostring(L, -1); // stays valid: the table holds the string
+    lua_pop(L, 1);
+    if (strlen(vals[i]) > SYSMENU_OPT_VALUE_MAX)
+      return luaL_error(L, "menu option too long (max %d)",
+                        SYSMENU_OPT_VALUE_MAX);
+    if (cur < 0 && strcmp(vals[i], current) == 0)
+      cur = i;
+  }
+  if (cur < 0)
+    return luaL_error(L, "current value not in options");
+  if (s_lua_callback_count >= SYSMENU_MAX_APP_ITEMS)
+    return luaL_error(L, "too many menu items (max %d)", SYSMENU_MAX_APP_ITEMS);
+
+  lua_pushvalue(L, 4);
+  int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+  lua_callback_t *cb = &s_lua_callbacks[s_lua_callback_count];
+  cb->L = L;
+  cb->ref = ref;
+  if (!system_menu_add_option(label, vals, (int)n, cur, lua_option_trampoline,
+                              cb)) {
+    luaL_unref(L, LUA_REGISTRYINDEX, ref);
+    return luaL_error(L, "out of memory for menu option");
+  }
+  s_lua_callback_count++;
   return 0;
 }
 
@@ -371,10 +435,10 @@ static int l_sys_pio_psram_read(lua_State *L) {
   lua_Integer len  = luaL_checkinteger(L, 2);
   pio_check_app_range(L, "pioPsramRead", addr, len);
   if (!pio_psram_available() || len == 0) { lua_pushnil(L); return 1; }
-  luaL_Buffer buf;
-  char *p = luaL_buffinitsize(L, &buf, (size_t)len);
+  picodeck_lua_strbuf_t sb;  // read straight into the result string
+  char *p = picodeck_lua_strbuf_init(L, &sb, (size_t)len);
   pio_psram_read((uint32_t)addr, (uint8_t *)p, (uint32_t)len);
-  luaL_pushresultsize(&buf, (size_t)len);
+  picodeck_lua_strbuf_push(L, &sb, (size_t)len);
   return 1;
 }
 
@@ -417,7 +481,7 @@ static void qmi_buf_release(qmi_buf_t *b) {
 
 // The buffer's bytes [off, off+len), or a Lua error.
 static uint8_t *qmi_buf_span(lua_State *L, lua_Integer off, lua_Integer len) {
-  qmi_buf_t *b = (qmi_buf_t *)luaL_checkudata(L, 1, QMI_BUF_MT);
+  qmi_buf_t *b = (qmi_buf_t *)lb_checkudata(L, 1, QMI_BUF_MT);
   if (!b->p)
     luaL_error(L, "qmiPsram: buffer freed");
   int64_t o = (int64_t)off, n = (int64_t)len, size = (int64_t)b->size;
@@ -443,7 +507,7 @@ static int l_sys_qmi_psram_alloc(lua_State *L) {
 
 // sys.qmiPsramFree(handle) — idempotent
 static int l_sys_qmi_psram_free(lua_State *L) {
-  qmi_buf_release((qmi_buf_t *)luaL_checkudata(L, 1, QMI_BUF_MT));
+  qmi_buf_release((qmi_buf_t *)lb_checkudata(L, 1, QMI_BUF_MT));
   return 0;
 }
 
@@ -468,7 +532,7 @@ static int l_sys_qmi_psram_read(lua_State *L) {
 }
 
 static int l_qmi_buf_gc(lua_State *L) {
-  qmi_buf_release((qmi_buf_t *)luaL_checkudata(L, 1, QMI_BUF_MT));
+  qmi_buf_release((qmi_buf_t *)lb_checkudata(L, 1, QMI_BUF_MT));
   return 0;
 }
 
@@ -494,6 +558,7 @@ static const luaL_Reg l_sys_lib[] = {{"getMemInfo", l_sys_getMemInfo},
                                      {"getClock", l_sys_getClock},
                                      {"getVersion", l_sys_getVersion},
                                      {"addMenuItem", l_sys_addMenuItem},
+                                     {"addMenuOption", l_sys_addMenuOption},
                                      {"clearMenuItems", l_sys_clearMenuItems},
                                      {"pauseBackground", l_sys_pauseBackground},
                                      {"resumeBackground", l_sys_resumeBackground},

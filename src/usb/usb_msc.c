@@ -130,6 +130,7 @@ void usb_msc_enter_mode(void) {
   // See: reference/uf2loader-main/ui/text_directory_ui.c (no I2C during USB)
   printf("[USB MSC] Waiting for host or ESC key (hold to exit)...\n");
 
+  kbd_consume_menu_press();  // a stale press was not made here
   uint32_t last_kbd_poll_ms = 0;
   uint32_t loop_start_ms = to_ms_since_boot(get_absolute_time());
   const uint32_t KBD_POLL_INTERVAL_MS = 50;  // kbd_poll() only drains what the engine read: cheap
@@ -147,6 +148,10 @@ void usb_msc_enter_mode(void) {
         printf("[USB MSC] ESC key pressed, exiting\n");
         break;
       }
+      // The menu key is ignored: Esc ("Hold escape") stays the one labelled
+      // exit, so the disk is not pulled from a host mid-write. It is still
+      // taken, or it would open the system menu once this screen has closed.
+      kbd_consume_menu_press();
     }
 
     // Check for ESC via CDC serial (for automated workflows)

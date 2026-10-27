@@ -224,6 +224,30 @@ static void test_sprintf_passthrough(void) {
   CHECK_STR(o, "0.10000000149012");  // the float32 nearest 0.1
 }
 
+// The "%d" fast path (every Lua integer-to-text conversion) against glibc:
+// edge values, a sample, and snprintf's truncation and return.
+static void test_int_d(void) {
+  const int edge[] = {0, 1, -1, 9, 10, -10, 99, 100, 123456789, -123456789,
+                      2147483647, -2147483647 - 1, 1000000000, -1000000000};
+  char o[32], want[32];
+  int bad = 0;
+  for (int i = 0; i < (int)(sizeof edge / sizeof edge[0]) + 20000; i++) {
+    int v = i < (int)(sizeof edge / sizeof edge[0]) ? edge[i] : (int)rnd() >> (rnd() & 31);
+    int r = picodeck_lua_sprintf(o, sizeof o, "%d", v);
+    int w = snprintf(want, sizeof want, "%d", v);
+    if (r != w || strcmp(o, want) != 0) bad++;
+  }
+  CHECK_EQ_INT(bad, 0);
+  for (size_t size = 0; size <= 12; size++) {
+    memset(o, 'Z', sizeof o);
+    memset(want, 'Z', sizeof want);
+    int r = picodeck_lua_sprintf(o, size, "%d", -2147483647 - 1);
+    int w = snprintf(want, size, "%d", -2147483647 - 1);
+    CHECK_EQ_INT(r, w);
+    CHECK(memcmp(o, want, sizeof o) == 0);
+  }
+}
+
 static void test_truncation(void) {
   char o[8];
   memset(o, 'Z', sizeof o);
@@ -251,6 +275,7 @@ int main(void) {
   test_hex_ties();
   test_sprintf_passthrough();
   test_truncation();
+  test_int_d();
   printf("test_numfmt: %ld mismatches vs glibc (+%ld known glibc %%#g bugs)\n",
          s_mismatch, s_glibc_bug);
   return check_report("test_numfmt");
