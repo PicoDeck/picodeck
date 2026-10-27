@@ -166,3 +166,90 @@ def test_option_callbacks_run_before_the_action_callback(target):
              for k in ("MO:focus=25 min,3", "MO:mode=B,2", "MO:item3")]
     assert order == sorted(order), got
     _quit(target)
+
+
+def test_exit_app_runs_changed_option_callbacks_first(target):
+    """Exit App used to clear the rows inside the menu loop, which dropped
+    the changed options before their callbacks could run."""
+    cur = _launch(target)
+    _open(target)
+    target.keypress("right")  # Focus 20 min -> 25 min
+    time.sleep(0.1)
+    target.keypress("up")  # wraps to Exit App, the last row
+    time.sleep(0.1)
+    target.keypress("enter")
+    target.wait_for_log(r"MO:focus=25 min,3", timeout=10, since=cur)
+    out = target.wait_for_exit(timeout=15)
+    assert out["result"] in ("exit_sentinel", "returned"), out
+    # The Enter that chose Exit App does not reach the launcher.
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        assert target.status()["app"] == "launcher"
+        time.sleep(0.1)
+
+
+APP2 = "menu_option_reset"
+APP2_ID = "net.picodeck.menu_option_reset"
+
+# Rows, top to bottom: "Reset rows" (clears and re-adds Focus at 15 min plus
+# the Reset item), then after the reset Focus and "Reset rows". The Quit row
+# is an option whose callback calls sys.exit().
+FIXTURE2 = r"""
+local sys, input = picocalc.sys, picocalc.input
+sys.resetIdleTimer()
+local function rows(current)
+    sys.addMenuOption("Focus", {"15 min", "20 min", "25 min"}, current,
+        function(v, i) sys.log("MO:focus=" .. v .. "," .. i) end)
+    sys.addMenuOption("Quit", {"stay", "go"}, "stay",
+        function(v, i) sys.log("MO:quit=" .. v); if v == "go" then sys.exit() end end)
+    sys.addMenuItem("Reset rows", function()
+        sys.clearMenuItems()
+        rows("15 min")
+        sys.log("MO:RESET")
+    end)
+end
+rows("20 min")
+sys.log("MO:READY")
+while true do
+    sys.resetIdleTimer()
+    input.update()
+    if input.getButtonsPressed() & input.BTN_ESC ~= 0 then return end
+    sys.sleep(20)
+end
+"""
+
+
+def _launch2(target):
+    target.stage_lua_app(APP2, FIXTURE2, id=APP2_ID)
+    cur = target.log_cursor()
+    r = target.launch_app(APP2)
+    assert r["launched"], r
+    target.wait_for_log(r"MO:READY", timeout=15, since=cur)
+    return cur
+
+
+def test_clear_and_re_add_rows_shows_the_new_values(target):
+    cur = _launch2(target)
+    _open(target)
+    _keys(target, "down", "down", "enter")  # "Reset rows"
+    target.wait_for_log(r"MO:RESET", timeout=10, since=cur)
+    cur = target.log_cursor()
+    _open(target)
+    _keys(target, "right")  # the new Focus row starts at 15 min
+    target.keypress("esc")
+    target.wait_for_log(r"MO:focus=20 min,2", timeout=10, since=cur)
+    _quit(target)
+
+
+def test_option_callback_that_exits_leaves_cleanly(target):
+    cur = _launch2(target)
+    _open(target)
+    _keys(target, "down", "right")  # Quit: stay -> go
+    target.keypress("esc")
+    target.wait_for_log(r"MO:quit=go", timeout=10, since=cur)
+    out = target.wait_for_exit(timeout=15)
+    assert out["result"] in ("exit_sentinel", "returned"), out
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        assert target.status()["app"] == "launcher"
+        time.sleep(0.1)

@@ -232,7 +232,8 @@ wraps from the last value to the first. Stepping does not close the menu.
 The callback runs after the menu has closed (like an `addMenuItem` callback),
 only for rows whose value differs from the one the row had when the menu
 opened. Callbacks of changed option rows run in row order, before the callback
-of an action row chosen with Enter. The row keeps its value between visits.
+of an action row chosen with Enter. The row keeps its value between visits. Choosing Exit App also runs the
+callbacks of changed rows, before the app exits.
 A bad argument raises an error and uses no slot.
 
 ```lua

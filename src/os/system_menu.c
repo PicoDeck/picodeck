@@ -1365,7 +1365,6 @@ static bool menu_loop(lua_State *L, int context) {
         need_redraw = true;
         break;
       case ITEM_EXIT:
-        system_menu_clear_items();
         exit_requested = true;
         running = false;
         break;
@@ -1417,6 +1416,9 @@ static bool menu_loop(lua_State *L, int context) {
   }
   if (app_cb)
     app_cb(app_cb_user);
+  // Exit App drops the rows only now, so the changed options above ran first.
+  if (exit_requested)
+    system_menu_clear_items();
   return exit_requested;
 }
 
