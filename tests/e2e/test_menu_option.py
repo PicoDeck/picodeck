@@ -56,7 +56,11 @@ local many = {} for i = 1, 17 do many[i] = tostring(i) end
 try("many", function() sys.addMenuOption("X", many, "1", function() end) end)
 sys.addMenuOption("Focus", {"15 min", "20 min", "25 min"}, "20 min",
     function(v, i) sys.log("MO:focus=" .. v .. "," .. i) end)
-sys.addMenuOption("Mode", {"A", "B"}, "A", function(v, i) sys.log("MO:mode=" .. v .. "," .. i) end)
+-- The callback gets the value as registered: changing the table afterwards
+-- changes nothing.
+local modes = {"A", "B"}
+sys.addMenuOption("Mode", modes, "A", function(v, i) sys.log("MO:mode=" .. v .. "," .. i) end)
+modes[2] = "Z"
 sys.addMenuItem("Item3", function() sys.log("MO:item3") end)
 -- The widest row the checks accept: a 12-byte label, 14-byte values.
 sys.addMenuOption("TwelveBytesX", {"FourteenBytesA", "FourteenBytesB"}, "FourteenBytesA",
@@ -241,6 +245,8 @@ def test_option_callbacks_run_before_the_action_callback(target):
     target.keypress("enter")
     target.wait_for_log(r"MO:item3", timeout=10, since=cur)
     got = [l for l in _mo_lines(target, cur)]
+    # Mode's table was changed to {"A", "Z"} after it was registered: the
+    # callback still gets "B".
     order = [next((i for i, l in enumerate(got) if k in l), None)
              for k in ("MO:focus=25 min,3", "MO:mode=B,2", "MO:item3")]
     assert None not in order and order == sorted(order), got
@@ -355,6 +361,99 @@ def test_option_callback_that_exits_leaves_cleanly(target):
     assert after >= before - LEAK_TOLERANCE, (
         f"PSRAM free fell from {before} to {after} bytes across an option "
         "callback that called sys.exit()")
+    _quit(target)
+
+
+APP3 = "menu_option_rebuild"
+APP3_ID = "net.picodeck.menu_option_rebuild"
+
+# Rows, top to bottom: Rebuild (its callback clears the rows and adds them
+# again without Act), Wait (its callback services the app with sys.sleep
+# until Act has run, so the menu can open again from inside it), Focus, Act.
+# Every callback logs what it was called with, so a call through a replaced
+# slot shows (as "nil" arguments, or the wrong row).
+FIXTURE3 = PROLOGUE + r"""
+local acted = false
+local rows
+rows = function(full)
+    sys.addMenuOption("Rebuild", {"no", "yes"}, "no", function(v, i)
+        sys.log("MO:rebuild=" .. tostring(v) .. "," .. tostring(i))
+        if v == "yes" then
+            sys.clearMenuItems()
+            rows(false)
+            sys.log("MO:REBUILT")
+        end
+    end)
+    sys.addMenuOption("Wait", {"no", "yes"}, "no", function(v, i)
+        sys.log("MO:wait=" .. tostring(v) .. "," .. tostring(i))
+        if v == "yes" then
+            acted = false
+            sys.log("MO:WAITING")
+            while not acted do sys.resetIdleTimer(); sys.sleep(20) end
+            sys.log("MO:WAITED")
+        end
+    end)
+    sys.addMenuOption("Focus", {"15 min", "20 min", "25 min"}, "20 min",
+        function(v, i) sys.log("MO:focus=" .. tostring(v) .. "," .. tostring(i)) end)
+    if full then
+        sys.addMenuItem("Act", function() acted = true; sys.log("MO:act") end)
+    end
+end
+rows(true)
+""" + MAIN_LOOP
+
+
+def _mo3_lines(target, since):
+    return [l[l.index("MO:"):] for l in target.get_log_lines(since)
+            if "MO:" in l and "MO:READY" not in l]
+
+
+def test_callback_that_rebuilds_the_rows_ends_the_visit(target):
+    """An option callback clears and re-adds the rows. The callbacks still
+    pending from that visit (a later changed row, the chosen action row)
+    would run on slots that now hold other rows, so none of them runs, and
+    the app goes on with its new rows."""
+    cur = _stage_and_launch(target, APP3, FIXTURE3, APP3_ID)
+    _open(target)
+    # Rebuild no -> yes, Focus 20 -> 25 min, then Enter on Act.
+    _keys(target, "right", "down", "down", "right", "down")
+    target.keypress("enter")
+    _wait_pixel(target, OUTSIDE, lambda px: _near(px, BLUE),
+                "the system menu did not close")
+    target.wait_for_log(r"MO:REBUILT", timeout=10, since=cur)
+    time.sleep(1.0)
+    assert _mo3_lines(target, cur) == ["MO:rebuild=yes,2", "MO:REBUILT"], (
+        "a callback ran after the rows were rebuilt")
+    assert target.status()["app"] != "launcher", (
+        "the app did not survive the rebuild")
+
+    # The rebuilt rows work: Focus (third row) at 20 min steps to 25 min.
+    cur = target.log_cursor()
+    _open(target)
+    _keys(target, "down", "down", "right")
+    _close(target)
+    target.wait_for_log(r"MO:focus=25 min,3", timeout=10, since=cur)
+    _quit(target)
+
+
+def test_menu_opened_from_a_callback_keeps_the_pending_callbacks(target):
+    """An option callback services the app and the menu opens again from
+    inside it. That inner visit takes its own opening values; the outer
+    visit's changed rows still call back once it has closed."""
+    cur = _stage_and_launch(target, APP3, FIXTURE3, APP3_ID)
+    _open(target)
+    # Wait no -> yes, Focus 20 -> 25 min, Esc.
+    _keys(target, "down", "right", "down", "right")
+    target.keypress("esc")
+    target.wait_for_log(r"MO:WAITING", timeout=10, since=cur)
+    _open(target)  # from Wait's callback (its sys.sleep)
+    _keys(target, "down", "down", "down")
+    target.keypress("enter")  # Act: ends the wait
+    target.wait_for_log(r"MO:WAITED", timeout=10, since=cur)
+    target.wait_for_log(r"MO:focus=25 min,3", timeout=10, since=cur)
+    assert _mo3_lines(target, cur) == [
+        "MO:wait=yes,2", "MO:WAITING", "MO:act", "MO:WAITED",
+        "MO:focus=25 min,3"], "callbacks ran out of order or twice"
     _quit(target)
 
 

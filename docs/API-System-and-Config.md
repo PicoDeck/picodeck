@@ -181,7 +181,8 @@ picocalc.sys.log(string.format("PSRAM: %dKB free / %dKB total",
 ---
 
 #### `picocalc.sys.addMenuItem(label, callback)`
-Adds a custom item to the system menu overlay (Menu key). Maximum **4 items per app**.
+Adds a custom item to the system menu overlay (Menu key). Maximum **4 items
+per app**, counting the option rows of `addMenuOption` too.
 
 - **Parameters:**
   - `label` (string): Menu item text
@@ -219,11 +220,24 @@ The menu also resets a hardware scroll offset (see
 Adds a value row to the system menu overlay, shown as `Label: value <>`.
 It shares the limit of **4 items per app** with `addMenuItem`.
 
+On firmware older than this function, `picocalc.sys.addMenuOption` is `nil`.
+Check before calling:
+
+```lua
+if picocalc.sys.addMenuOption then
+    picocalc.sys.addMenuOption("Focus", { "20 min", "25 min" }, "25 min", set_focus)
+else
+    -- older firmware: offer the setting in the app instead
+end
+```
+
 - **Parameters:**
   - `label` (string): Row text, at most 12 bytes
-  - `options` (table): 1 to 16 strings, each at most 14 bytes
+  - `options` (table): 1 to 16 strings, each at most 14 bytes. The values are
+    copied: changing the table afterwards changes nothing.
   - `current` (string): The value shown first; must be one of `options`
-  - `callback` (function): `callback(value, index)`, with the new value and its 1-based index
+  - `callback` (function): `callback(value, index)`, with the new value and
+    its 1-based index
 - **Returns:** None
 
 Left and Right step the value (they stop at the ends); Enter steps forward and
@@ -232,9 +246,13 @@ wraps from the last value to the first. Stepping does not close the menu.
 The callback runs after the menu has closed (like an `addMenuItem` callback),
 only for rows whose value differs from the one the row had when the menu
 opened. Callbacks of changed option rows run in row order, before the callback
-of an action row chosen with Enter. The row keeps its value between visits. Choosing Exit App also runs the
-callbacks of changed rows, before the app exits.
-A bad argument raises an error and uses no slot.
+of an action row chosen with Enter. The row keeps its value between visits.
+Choosing Exit App also runs the callbacks of changed rows, before the app
+exits. A bad argument raises an error and uses no slot.
+
+If a callback clears the menu (`clearMenuItems`), the callbacks still pending
+from that visit do not run. To rebuild rows, set a flag and rebuild from your
+main loop.
 
 ```lua
 picocalc.sys.addMenuOption("Focus", { "20 min", "25 min", "30 min" }, "25 min",
@@ -244,7 +262,9 @@ picocalc.sys.addMenuOption("Focus", { "20 min", "25 min", "30 min" }, "25 min",
 ---
 
 #### `picocalc.sys.clearMenuItems()`
-Removes all app-registered menu items, action rows and option rows alike. Called automatically on app exit.
+Removes all app-registered menu items, action rows and option rows alike.
+Called automatically on app exit. Called from a menu callback, it also cancels
+the callbacks still pending from that menu visit (see `addMenuOption`).
 
 - **Parameters:** None
 - **Returns:** None

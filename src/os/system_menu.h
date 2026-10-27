@@ -30,15 +30,20 @@ void system_menu_add_item(const char *label,
 #define SYSMENU_OPT_MAX 16
 
 // Register an option row (shares the SYSMENU_MAX_APP_ITEMS slots). Copies
-// label and options. current is 0-based. callback(user, index) runs after the
-// menu closes when the row's value changed during that visit. Returns false
-// when no slot is free, an argument is out of range, or memory is short.
+// label and options. current is 0-based. callback(user, index, value) runs
+// after the menu closes when the row's value changed during that visit; value
+// is the row's own copy, valid only until the callback clears the rows (copy
+// it before calling anything that might). Returns false when no slot is free,
+// an argument is out of range (a label over SYSMENU_OPT_LABEL_MAX bytes
+// included), or memory is short.
 bool system_menu_add_option(const char *label, const char *const *options,
                             int n, int current,
-                            void (*callback)(void *user, int index),
+                            void (*callback)(void *user, int index,
+                                             const char *value),
                             void *user);
 
-// Remove all app-registered items.
+// Remove all app-registered items. A callback that calls it after the menu
+// closed ends that visit's callbacks: the ones still pending do not run.
 // Called automatically by launcher.c after each app exits.
 void system_menu_clear_items(void);
 

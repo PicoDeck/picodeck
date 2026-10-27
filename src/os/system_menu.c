@@ -44,18 +44,27 @@ static uint16_t *s_saved_bg = NULL;
 // ── App-registered items
 // ──────────────────────────────────────────────────────
 
+// 48 bytes: the callback is one word either way (is_option says which), and
+// the flag and the three indexes share the last word.
 typedef struct {
   char label[32];
-  void (*callback)(void *user);
+  union {
+    void (*callback)(void *user);                                // action row
+    void (*opt_cb)(void *user, int index, const char *value);    // option row
+  };
   void *user;
-  bool is_option;
   char *opts; // option rows: n * (SYSMENU_OPT_VALUE_MAX + 1) bytes, umm_malloc
-  uint8_t n, cur, entry;
-  void (*opt_cb)(void *user, int index);
+  bool is_option;
+  uint8_t n, cur, entry; // option rows: value count, value shown, at menu entry
 } app_item_t;
 
 static app_item_t s_app_items[SYSMENU_MAX_APP_ITEMS];
-static int s_app_item_count = 0;
+static uint8_t s_app_item_count = 0;
+// Bumped by every system_menu_clear_items(): the callbacks after a menu visit
+// stop as soon as one of them has cleared (and maybe re-added) the rows. Only
+// 256 clears inside one visit's callbacks would wrap it back unnoticed.
+static uint8_t s_clear_gen = 0;
+_Static_assert(SYSMENU_MAX_APP_ITEMS <= 8, "changed rows are a uint8_t mask");
 static uint8_t s_brightness = 128;
 static bool s_dev_mode = false;
 static bool s_wifi_auto_disconnect = true;
@@ -1407,14 +1416,25 @@ static bool menu_loop(lua_State *L, int context) {
   // app's own screen and clip rect, from a clean keyboard, and free to leave
   // by longjmp (a Lua error, sys.exit()) with nothing of the menu's left
   // allocated.
-  // Changed option rows report first, in row order. A callback may longjmp
-  // out (an error, sys.exit()), so the rows are re-read each time.
-  for (int i = 0; i < s_app_item_count; i++) {
-    const app_item_t *ai = &s_app_items[i];
-    if (ai->is_option && ai->cur != ai->entry && ai->opt_cb)
-      ai->opt_cb(ai->user, ai->cur);
+  // Changed option rows report first, in row order, then the chosen action
+  // row. Which rows changed is read once, before the first callback: one may
+  // open the menu again (a service pass), which takes `entry` afresh. One
+  // that clears the rows (clearMenuItems) bumps s_clear_gen: the slots then
+  // hold other rows or none, so nothing more of this visit runs. A callback
+  // may also leave by longjmp (an error, sys.exit()).
+  uint8_t changed = 0;
+  for (int i = 0; i < s_app_item_count; i++)
+    if (s_app_items[i].is_option && s_app_items[i].cur != s_app_items[i].entry)
+      changed |= (uint8_t)(1u << i);
+  const uint8_t gen = s_clear_gen;
+  for (int i = 0; i < SYSMENU_MAX_APP_ITEMS && s_clear_gen == gen; i++) {
+    if (changed & (1u << i)) {
+      const app_item_t *ai = &s_app_items[i];
+      ai->opt_cb(ai->user, ai->cur,
+                 ai->opts + ai->cur * (SYSMENU_OPT_VALUE_MAX + 1));
+    }
   }
-  if (app_cb)
+  if (app_cb && s_clear_gen == gen)
     app_cb(app_cb_user);
   // Exit App drops the rows only now, so the changed options above ran first.
   if (exit_requested)
@@ -1446,15 +1466,16 @@ void system_menu_add_item(const char *label, void (*callback)(void *user),
   it->is_option = false;
   it->opts = NULL;
   it->n = it->cur = it->entry = 0;
-  it->opt_cb = NULL;
 }
 
 bool system_menu_add_option(const char *label, const char *const *options,
                             int n, int current,
-                            void (*callback)(void *user, int index),
+                            void (*callback)(void *user, int index,
+                                             const char *value),
                             void *user) {
-  if (s_app_item_count >= SYSMENU_MAX_APP_ITEMS || !label || !options ||
-      !callback || n < 1 || n > SYSMENU_OPT_MAX || current < 0 || current >= n)
+  if (s_app_item_count >= SYSMENU_MAX_APP_ITEMS || !label ||
+      strlen(label) > SYSMENU_OPT_LABEL_MAX || !options || !callback ||
+      n < 1 || n > SYSMENU_OPT_MAX || current < 0 || current >= n)
     return false;
   for (int i = 0; i < n; i++)
     if (!options[i] || strlen(options[i]) > SYSMENU_OPT_VALUE_MAX)
@@ -1467,13 +1488,12 @@ bool system_menu_add_option(const char *label, const char *const *options,
   app_item_t *it = &s_app_items[s_app_item_count++];
   strncpy(it->label, label, sizeof(it->label) - 1);
   it->label[sizeof(it->label) - 1] = '\0';
-  it->callback = NULL;
+  it->opt_cb = callback;
   it->user = user;
   it->is_option = true;
   it->opts = opts;
   it->n = (uint8_t)n;
   it->cur = it->entry = (uint8_t)current;
-  it->opt_cb = callback;
   return true;
 }
 
@@ -1484,6 +1504,7 @@ void system_menu_clear_items(void) {
     memset(&s_app_items[i], 0, sizeof(s_app_items[i]));
   }
   s_app_item_count = 0;
+  s_clear_gen++;
 }
 
 bool system_menu_get_wifi_auto_disconnect(void) { return s_wifi_auto_disconnect; }
