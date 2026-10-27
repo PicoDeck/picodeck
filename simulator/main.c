@@ -613,9 +613,10 @@ int main(int argc, char** argv) {
     }
     // The host's game controllers as a gamepad source (hal_pad.c). Off in
     // --test-mode unless asked for, so a test never sees whatever controller
-    // the host has; the web build has none.
+    // the host has. The web build has no command line: always on there, for
+    // the pads the browser lists (SDL's Emscripten joystick driver).
 #ifdef __EMSCRIPTEN__
-    hal_pad_init(false);
+    hal_pad_init(true);
 #else
     hal_pad_init(g_host_gamepad < 0 ? !sim_test_mode() : g_host_gamepad != 0);
 #endif
