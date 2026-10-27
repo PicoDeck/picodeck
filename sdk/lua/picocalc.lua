@@ -561,7 +561,8 @@ function picocalc.sys.getVersion() end
 ---@return string? error
 function picocalc.sys.applyUpdate(path) end
 
----Register a custom item in the system-menu overlay (max 4 per app).
+---Register a custom item in the system-menu overlay (max 4 per app, counting
+---`addMenuOption` rows too).
 ---The callback runs after the menu has closed and given the app its screen back
 ---(both framebuffers, when memory for the copy is available); what it draws
 ---shows at the app's next flush, and it may call `sys.exit()`.
@@ -569,7 +570,21 @@ function picocalc.sys.applyUpdate(path) end
 ---@param callback fun() Called when the item is selected
 function picocalc.sys.addMenuItem(label, callback) end
 
----Remove all app-registered menu items. Called automatically on app exit.
+---Register a value row in the system-menu overlay, shown as `Label: value <>`
+---(shares the 4 slots with `addMenuItem`). Left/Right step the value (stopping
+---at the ends), Enter steps forward and wraps; the menu stays open. After the
+---menu closes, the callback of each row whose value changed runs, in row
+---order, before a chosen item's callback (also when the user picks Exit App).
+---A bad argument raises an error. `nil` on firmware older than this function.
+---@param label string Row text, at most 12 bytes
+---@param options string[] 1 to 16 values, each at most 14 bytes (copied: changing the table later changes nothing)
+---@param current string The value shown first; one of `options`
+---@param callback fun(value: string, index: integer) The new value and its 1-based index
+function picocalc.sys.addMenuOption(label, options, current, callback) end
+
+---Remove all app-registered menu rows, items and option rows alike. Called
+---automatically on app exit. Called from a menu callback, it also cancels the
+---callbacks still pending from that menu visit.
 function picocalc.sys.clearMenuItems() end
 
 ---Deliberately trigger a HardFault for crash-handler testing. **Never call in production.**
