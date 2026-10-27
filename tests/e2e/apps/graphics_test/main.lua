@@ -113,6 +113,34 @@ try("EASELINEAR", function()
            string.format("%.1f/%.1f/%.1f", va, vb, vq)
 end)
 
+-- image.getInfo reads a JPEG's size from its SOF segment, walking the segments
+-- from the start of the file. Both headers (320x213, no scan data: getInfo
+-- decodes nothing) open with an APP2 ICC profile, as cameras and ffmpeg write
+-- one, whose payload holds bytes that read as markers 40 bytes in. The probe
+-- once began its walk 33 bytes in, inside the profile, and took them for
+-- real: a stray SOF gave a wrong size, a stray segment length ran it off the
+-- end of the file.
+local function jpeg_with_icc(stray)
+    local icc = "ICC_PROFILE\0\1\1" .. string.rep("\0", 20) .. stray .. string.rep("\0", 64)
+    local sof = string.pack(">BBI2BI2I2B", 0xFF, 0xC0, 17, 8, 213, 320, 3)
+        .. "\1\34\0\2\17\1\3\17\1"
+    return "\255\216" .. string.pack(">BBI2", 0xFF, 0xE2, #icc + 2) .. icc .. sof .. "\255\217"
+end
+local function jpeg_info(name, stray)
+    try(name, function()
+        local dir = "/data/" .. APP_ID
+        pc.fs.mkdir(dir)
+        local path = dir .. "/" .. name .. ".jpg"
+        local f = assert(pc.fs.open(path, "w"))
+        pc.fs.write(f, jpeg_with_icc(stray))
+        pc.fs.close(f)
+        local info = gfx.image.getInfo(path)
+        return info.width .. "x" .. info.height, info.format
+    end)
+end
+jpeg_info("JPEGFAKESOF", "\255\192\0\17\8\0\1\0\1")
+jpeg_info("JPEGSTRAY", "\255\108\87\108")
+
 log("GT DONE")
 -- Hold the frame for pixel probes until ESC.
 local input = pc.input
