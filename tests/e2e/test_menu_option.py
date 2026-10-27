@@ -10,6 +10,11 @@ The fixtures clear the screen blue and never draw again, so a test sees the
 menu open (the pixel left of its panel darkens) and close (blue again) instead
 of sleeping and hoping the keys reached it.
 
+Callback results are the lines each fixture appends to mo.txt in its data
+directory (note() also logs them). The serial log is not evidence here: on
+the device, a screenshot and the log monitor share the port and swallow each
+other's bytes, and the callbacks run just as _close() polls screenshots.
+
 Runs on the simulator and on the device. The fixture resets the idle timer on
 every pass (see test_menu_restore.py for why).
 """
@@ -31,13 +36,19 @@ APP_ID = "net.picodeck.menu_option"
 PROLOGUE = r"""
 local pc = picocalc
 local sys, input, d = pc.sys, pc.input, pc.display
+local function note(s)
+    sys.log(s)
+    local f = pc.fs.open(pc.fs.appPath("mo.txt"), "a")
+    pc.fs.write(f, s .. "\n")
+    pc.fs.close(f)
+end
 sys.resetIdleTimer()
 d.clear(d.BLUE)
 d.flush()
 """
 
 MAIN_LOOP = r"""
-sys.log("MO:READY")
+note("MO:READY")
 while true do
     sys.resetIdleTimer()
     input.update()
@@ -47,7 +58,7 @@ end
 """
 
 FIXTURE = PROLOGUE + r"""
-local function try(tag, f) local ok, err = pcall(f); sys.log("MO:" .. tag .. "=" .. (ok and "ok" or tostring(err))) end
+local function try(tag, f) local ok, err = pcall(f); note("MO:" .. tag .. "=" .. (ok and "ok" or tostring(err))) end
 try("empty", function() sys.addMenuOption("X", {}, "a", function() end) end)
 try("notin", function() sys.addMenuOption("X", {"a", "b"}, "c", function() end) end)
 try("longlabel", function() sys.addMenuOption("ThirteenChars", {"a"}, "a", function() end) end)
@@ -55,24 +66,22 @@ try("longvalue", function() sys.addMenuOption("X", {"FifteenCharsXYZ"}, "Fifteen
 local many = {} for i = 1, 17 do many[i] = tostring(i) end
 try("many", function() sys.addMenuOption("X", many, "1", function() end) end)
 sys.addMenuOption("Focus", {"15 min", "20 min", "25 min"}, "20 min",
-    function(v, i) sys.log("MO:focus=" .. v .. "," .. i) end)
+    function(v, i) note("MO:focus=" .. v .. "," .. i) end)
 -- The callback gets the value as registered: changing the table afterwards
 -- changes nothing.
 local modes = {"A", "B"}
-sys.addMenuOption("Mode", modes, "A", function(v, i) sys.log("MO:mode=" .. v .. "," .. i) end)
+sys.addMenuOption("Mode", modes, "A", function(v, i) note("MO:mode=" .. v .. "," .. i) end)
 modes[2] = "Z"
-sys.addMenuItem("Item3", function() sys.log("MO:item3") end)
+sys.addMenuItem("Item3", function() note("MO:item3") end)
 -- The widest row the checks accept: a 12-byte label, 14-byte values.
 sys.addMenuOption("TwelveBytesX", {"FourteenBytesA", "FourteenBytesB"}, "FourteenBytesA",
-    function(v, i) sys.log("MO:wide=" .. v .. "," .. i) end)
+    function(v, i) note("MO:wide=" .. v .. "," .. i) end)
 try("fifth", function() sys.addMenuOption("X", {"a"}, "a", function() end) end)
 """ + MAIN_LOOP
 
 BLUE = (0, 0, 255)
 # Left of the 200 px menu panel, which is centred (as in test_menu_restore).
 OUTSIDE = (20, 40)
-# Below any text of the Lua error screen, right of its footer.
-LOWER_RIGHT = (300, 250)
 TOLERANCE = 40
 
 # An earlier run that leaked the menu's framebuffer copy (2 x 200 KB) would
@@ -102,13 +111,47 @@ def _wait_pixel(target, xy, pred, what: str, timeout: float = 10.0):
         time.sleep(0.05)
 
 
+def _mo_path(app_id):
+    return f"/data/{app_id}/mo.txt"
+
+
+def _lines(target, app_id):
+    """The lines the fixture has noted so far."""
+    try:
+        data = target.read_file(_mo_path(app_id))
+    except FileNotFoundError:
+        return []
+    return data.decode("utf-8", errors="replace").splitlines()
+
+
+def _mark(target, app_id) -> int:
+    """How many lines are noted so far (the `since` of the helpers below)."""
+    return len(_lines(target, app_id))
+
+
+def _wait_line(target, app_id, pattern, since=0, timeout=10.0):
+    """Poll the results file until a line past the first `since` matches."""
+    import re
+    deadline = time.monotonic() + timeout
+    while True:
+        lines = _lines(target, app_id)
+        for l in lines[since:]:
+            if re.search(pattern, l):
+                return l
+        if time.monotonic() >= deadline:
+            pytest.fail(f"no line matching {pattern!r} in {lines[since:]}")
+        time.sleep(0.1)
+
+
 def _stage_and_launch(target, name, code, app_id):
+    """Start the fixture with an empty results file; returns the line count
+    (READY included) to count from."""
     target.stage_lua_app(name, code, id=app_id)
-    cur = target.log_cursor()
+    target.delete_file(_mo_path(app_id))
     r = target.launch_app(name)
     assert r["launched"], r
-    target.wait_for_log(r"MO:READY", timeout=15, since=cur)
-    return cur
+    _wait_line(target, app_id, r"^MO:READY$", timeout=15)
+    return _mark(target, app_id)
 
 
 def _launch(target):
@@ -129,8 +172,8 @@ def _close(target):
                 "the system menu did not close")
 
 
-def _mo_lines(target, since):
-    return [l for l in target.get_log_lines(since)
+def _mo_lines(target, since, app_id=APP_ID):
+    return [l for l in _lines(target, app_id)[since:]
             if any(k in l for k in ("MO:focus", "MO:mode", "MO:item3",
                                     "MO:wide"))]
 
@@ -156,7 +199,7 @@ def _stays_at_launcher(target, what: str):
 
 def test_bad_arguments_raise(target):
     cur = _launch(target)
-    lines = target.get_log_lines(cur)
+    lines = _lines(target, APP_ID)
 
     def line(tag):
         return next(l for l in lines if f"MO:{tag}=" in l)
@@ -177,7 +220,7 @@ def test_right_steps_and_calls_back_only_after_close(target):
     time.sleep(0.5)
     assert not _mo_lines(target, cur)
     target.keypress("esc")
-    target.wait_for_log(r"MO:focus=25 min,3", timeout=10, since=cur)
+    _wait_line(target, APP_ID, r"MO:focus=25 min,3", since=cur)
     _quit(target)
 
 
@@ -192,7 +235,7 @@ def test_stepping_back_to_the_opening_value_calls_back_nothing(target):
     _open(target)
     _keys(target, "right")
     _close(target)
-    target.wait_for_log(r"MO:focus=25 min,3", timeout=10, since=cur)
+    _wait_line(target, APP_ID, r"MO:focus=25 min,3", since=cur)
     _quit(target)
 
 
@@ -201,12 +244,12 @@ def test_right_and_left_stop_at_the_ends(target):
     _open(target)
     _keys(target, *["right"] * 5)
     target.keypress("esc")
-    target.wait_for_log(r"MO:focus=25 min,3", timeout=10, since=cur)
-    cur = target.log_cursor()
+    _wait_line(target, APP_ID, r"MO:focus=25 min,3", since=cur)
+    cur = _mark(target, APP_ID)
     _open(target)
     _keys(target, *["left"] * 5)
     target.keypress("esc")
-    target.wait_for_log(r"MO:focus=15 min,1", timeout=10, since=cur)
+    _wait_line(target, APP_ID, r"MO:focus=15 min,1", since=cur)
     _quit(target)
 
 
@@ -215,7 +258,7 @@ def test_enter_steps_forward_and_wraps(target):
     _open(target)
     _keys(target, "enter", "enter")
     target.keypress("esc")
-    target.wait_for_log(r"MO:focus=15 min,1", timeout=10, since=cur)
+    _wait_line(target, APP_ID, r"MO:focus=15 min,1", since=cur)
     _quit(target)
 
 
@@ -224,8 +267,8 @@ def test_row_keeps_its_value_between_visits(target):
     _open(target)
     _keys(target, "right")
     _close(target)
-    target.wait_for_log(r"MO:focus=25 min,3", timeout=10, since=cur)
-    cur = target.log_cursor()
+    _wait_line(target, APP_ID, r"MO:focus=25 min,3", since=cur)
+    cur = _mark(target, APP_ID)
     _open(target)
     _close(target)
     time.sleep(1.0)
@@ -234,7 +277,7 @@ def test_row_keeps_its_value_between_visits(target):
     _open(target)
     _keys(target, "left")
     _close(target)
-    target.wait_for_log(r"MO:focus=20 min,2", timeout=10, since=cur)
+    _wait_line(target, APP_ID, r"MO:focus=20 min,2", since=cur)
     _quit(target)
 
 
@@ -243,7 +286,7 @@ def test_option_callbacks_run_before_the_action_callback(target):
     _open(target)
     _keys(target, "right", "down", "right", "down")
     target.keypress("enter")
-    target.wait_for_log(r"MO:item3", timeout=10, since=cur)
+    _wait_line(target, APP_ID, r"MO:item3", since=cur)
     got = [l for l in _mo_lines(target, cur)]
     # Mode's table was changed to {"A", "Z"} after it was registered: the
     # callback still gets "B".
@@ -260,7 +303,7 @@ def test_widest_row_steps_and_calls_back(target):
     _open(target)
     _keys(target, "down", "down", "down", "right")
     _close(target)
-    target.wait_for_log(r"MO:wide=FourteenBytesB,2", timeout=10, since=cur)
+    _wait_line(target, APP_ID, r"MO:wide=FourteenBytesB,2", since=cur)
     got = _mo_lines(target, cur)
     assert len(got) == 1 and "MO:wide=FourteenBytesB,2" in got[0], got
     _quit(target)
@@ -276,7 +319,7 @@ def test_exit_app_runs_changed_option_callbacks_first(target):
     target.keypress("up")  # wraps to Exit App, the last row
     time.sleep(0.1)
     target.keypress("enter")
-    target.wait_for_log(r"MO:focus=25 min,3", timeout=10, since=cur)
+    _wait_line(target, APP_ID, r"MO:focus=25 min,3", since=cur)
     out = target.wait_for_exit(timeout=15)
     assert out["result"] in ("exit_sentinel", "returned"), out
     # The Enter that chose Exit App does not reach the launcher.
@@ -299,13 +342,13 @@ pc.fs.write(f, tostring(sys.getMemInfo().psram_free))
 pc.fs.close(f)
 local function rows(current)
     sys.addMenuOption("Focus", {"15 min", "20 min", "25 min"}, current,
-        function(v, i) sys.log("MO:focus=" .. v .. "," .. i) end)
+        function(v, i) note("MO:focus=" .. v .. "," .. i) end)
     sys.addMenuOption("Quit", {"stay", "go"}, "stay",
-        function(v, i) sys.log("MO:quit=" .. v); if v == "go" then sys.exit() end end)
+        function(v, i) note("MO:quit=" .. v); if v == "go" then sys.exit() end end)
     sys.addMenuItem("Reset rows", function()
         sys.clearMenuItems()
         rows("15 min")
-        sys.log("MO:RESET")
+        note("MO:RESET")
     end)
 end
 rows("20 min")
@@ -332,12 +375,12 @@ def test_clear_and_re_add_rows_shows_the_new_values(target):
     cur = _launch2(target)
     _open(target)
     _keys(target, "down", "down", "enter")  # "Reset rows"
-    target.wait_for_log(r"MO:RESET", timeout=10, since=cur)
-    cur = target.log_cursor()
+    _wait_line(target, APP2_ID, r"MO:RESET", since=cur)
+    cur = _mark(target, APP2_ID)
     _open(target)
     _keys(target, "right")  # the new Focus row starts at 15 min
     target.keypress("esc")
-    target.wait_for_log(r"MO:focus=20 min,2", timeout=10, since=cur)
+    _wait_line(target, APP2_ID, r"MO:focus=20 min,2", since=cur)
     _quit(target)
 
 
@@ -349,7 +392,7 @@ def test_option_callback_that_exits_leaves_cleanly(target):
     _open(target)
     _keys(target, "down", "right")  # Quit: stay -> go
     target.keypress("esc")
-    target.wait_for_log(r"MO:quit=go", timeout=10, since=cur)
+    _wait_line(target, APP2_ID, r"MO:quit=go", since=cur)
     out = target.wait_for_exit(timeout=15)
     assert out["result"] in ("exit_sentinel", "returned"), out
     _stays_at_launcher(target, "the app did not leave, or a key reached the "
@@ -377,26 +420,26 @@ local acted = false
 local rows
 rows = function(full)
     sys.addMenuOption("Rebuild", {"no", "yes"}, "no", function(v, i)
-        sys.log("MO:rebuild=" .. tostring(v) .. "," .. tostring(i))
+        note("MO:rebuild=" .. tostring(v) .. "," .. tostring(i))
         if v == "yes" then
             sys.clearMenuItems()
             rows(false)
-            sys.log("MO:REBUILT")
+            note("MO:REBUILT")
         end
     end)
     sys.addMenuOption("Wait", {"no", "yes"}, "no", function(v, i)
-        sys.log("MO:wait=" .. tostring(v) .. "," .. tostring(i))
+        note("MO:wait=" .. tostring(v) .. "," .. tostring(i))
         if v == "yes" then
             acted = false
-            sys.log("MO:WAITING")
+            note("MO:WAITING")
             while not acted do sys.resetIdleTimer(); sys.sleep(20) end
-            sys.log("MO:WAITED")
+            note("MO:WAITED")
         end
     end)
     sys.addMenuOption("Focus", {"15 min", "20 min", "25 min"}, "20 min",
-        function(v, i) sys.log("MO:focus=" .. tostring(v) .. "," .. tostring(i)) end)
+        function(v, i) note("MO:focus=" .. tostring(v) .. "," .. tostring(i)) end)
     if full then
-        sys.addMenuItem("Act", function() acted = true; sys.log("MO:act") end)
+        sys.addMenuItem("Act", function() acted = true; note("MO:act") end)
     end
 end
 rows(true)
@@ -404,8 +447,7 @@ rows(true)
 
 
 def _mo3_lines(target, since):
-    return [l[l.index("MO:"):] for l in target.get_log_lines(since)
-            if "MO:" in l and "MO:READY" not in l]
+    return [l for l in _lines(target, APP3_ID)[since:] if l != "MO:READY"]
 
 
 def test_callback_that_rebuilds_the_rows_ends_the_visit(target):
@@ -420,7 +462,7 @@ def test_callback_that_rebuilds_the_rows_ends_the_visit(target):
     target.keypress("enter")
     _wait_pixel(target, OUTSIDE, lambda px: _near(px, BLUE),
                 "the system menu did not close")
-    target.wait_for_log(r"MO:REBUILT", timeout=10, since=cur)
+    _wait_line(target, APP3_ID, r"MO:REBUILT", since=cur)
     time.sleep(1.0)
     assert _mo3_lines(target, cur) == ["MO:rebuild=yes,2", "MO:REBUILT"], (
         "a callback ran after the rows were rebuilt")
@@ -428,11 +470,11 @@ def test_callback_that_rebuilds_the_rows_ends_the_visit(target):
         "the app did not survive the rebuild")
 
     # The rebuilt rows work: Focus (third row) at 20 min steps to 25 min.
-    cur = target.log_cursor()
+    cur = _mark(target, APP3_ID)
     _open(target)
     _keys(target, "down", "down", "right")
     _close(target)
-    target.wait_for_log(r"MO:focus=25 min,3", timeout=10, since=cur)
+    _wait_line(target, APP3_ID, r"MO:focus=25 min,3", since=cur)
     _quit(target)
 
 
@@ -445,12 +487,12 @@ def test_menu_opened_from_a_callback_keeps_the_pending_callbacks(target):
     # Wait no -> yes, Focus 20 -> 25 min, Esc.
     _keys(target, "down", "right", "down", "right")
     target.keypress("esc")
-    target.wait_for_log(r"MO:WAITING", timeout=10, since=cur)
+    _wait_line(target, APP3_ID, r"MO:WAITING", since=cur)
     _open(target)  # from Wait's callback (its sys.sleep)
     _keys(target, "down", "down", "down")
     target.keypress("enter")  # Act: ends the wait
-    target.wait_for_log(r"MO:WAITED", timeout=10, since=cur)
-    target.wait_for_log(r"MO:focus=25 min,3", timeout=10, since=cur)
+    _wait_line(target, APP3_ID, r"MO:WAITED", since=cur)
+    _wait_line(target, APP3_ID, r"MO:focus=25 min,3", since=cur)
     assert _mo3_lines(target, cur) == [
         "MO:wait=yes,2", "MO:WAITING", "MO:act", "MO:WAITED",
         "MO:focus=25 min,3"], "callbacks ran out of order or twice"
@@ -468,6 +510,27 @@ sys.addMenuItem("Bang", function() error("MO action bang") end)
 """ + MAIN_LOOP
 
 
+def _error_log(target) -> str:
+    try:
+        return target.read_file("/system/error.log").decode(
+            "utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
+
+
+def _wait_error_log(target, before: str, message: str, timeout: float = 10.0):
+    """Poll /system/error.log until an entry past `before` holds `message`."""
+    deadline = time.monotonic() + timeout
+    while True:
+        now = _error_log(target)
+        new = now[len(before):] if now.startswith(before) else now
+        if message in new:
+            return new
+        if time.monotonic() >= deadline:
+            pytest.fail(f"{message!r} not in /system/error.log: {new!r}")
+        time.sleep(0.2)
+
+
 @pytest.mark.parametrize("row, keys, message", [
     ("option", ("right", "esc"), "MO option boom"),
     ("action", ("down", "enter"), "MO action bang"),
@@ -478,13 +541,16 @@ def test_callback_that_raises_shows_the_error_and_ends_the_app(
     the Lua error ends the app (the error screen), and the launcher comes
     back and starts apps."""
     _stage_and_launch(target, APP4, FIXTURE4, APP4_ID)
+    errlog0 = _error_log(target)
     _open(target)
     _keys(target, *keys)
+    # The error text in /system/error.log is the evidence that the callback
+    # raised: the serial log can lose lines, and a screenshot of the device's
+    # error screen shares the port with the log monitor.
+    _wait_error_log(target, errlog0, message)
     if target.kind == "hw":
-        # The device's error screen (black) waits for Esc; the simulator's
-        # test mode returns from it at once.
-        _wait_pixel(target, LOWER_RIGHT, lambda px: _near(px, (0, 0, 0)),
-                    "the error screen did not show")
+        # The device's error screen waits for Esc; the simulator's test mode
+        # returns from it at once.
         target.keypress("esc")
     out = target.wait_for_exit(timeout=15)
     assert out["result"] == "error", out
@@ -509,7 +575,14 @@ APP5_ID = "net.picodeck.menu_option_probe"
 #         once (a 4 KB small-object slab and the like, ~9 KB on the
 #         simulator) does not grow with the rounds.
 FIXTURE5 = r"""
-local sys = picocalc.sys
+local pc = picocalc
+local sys = pc.sys
+local function note(s)
+    sys.log(s)
+    local f = pc.fs.open(pc.fs.appPath("mo.txt"), "a")
+    pc.fs.write(f, s .. "\n")
+    pc.fs.close(f)
+end
 local MODE = "@MODE@"
 local function full_gc() collectgarbage("collect"); collectgarbage("collect") end
 if MODE == "refs" then
@@ -526,7 +599,7 @@ if MODE == "refs" then
     local held = weak.f ~= nil
     sys.clearMenuItems()
     full_gc()
-    sys.log("MO:REFS held=" .. tostring(held) ..
+    note("MO:REFS held=" .. tostring(held) ..
             " f=" .. (weak.f == nil and "freed" or "kept") ..
             " t=" .. (weak.t == nil and "freed" or "kept"))
 else
@@ -545,7 +618,7 @@ else
     for _ = 1, 200 do round() end
     full_gc()
     local after = sys.getMemInfo().psram_free
-    sys.log("MO:UMM before=" .. before .. " after=" .. after)
+    note("MO:UMM before=" .. before .. " after=" .. after)
 end
 """
 
@@ -554,10 +627,11 @@ def _probe(target, mode, pattern):
     name = f"{APP5}_{mode}"
     target.stage_lua_app(name, FIXTURE5.replace("@MODE@", mode),
                          id=f"{APP5_ID}_{mode}")
-    cur = target.log_cursor()
+    app_id = f"{APP5_ID}_{mode}"
+    target.delete_file(_mo_path(app_id))
     r = target.launch_app(name)
     assert r["launched"], r
-    line = target.wait_for_log(pattern, timeout=30, since=cur)
+    line = _wait_line(target, app_id, pattern, timeout=30)
     out = target.wait_for_exit(timeout=30)
     assert out["result"] == "returned", out
     print(line)
