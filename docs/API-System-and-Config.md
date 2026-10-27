@@ -215,8 +215,35 @@ The menu also resets a hardware scroll offset (see
 
 ---
 
+#### `picocalc.sys.addMenuOption(label, options, current, callback)`
+Adds a value row to the system menu overlay, shown as `Label: value <>`.
+It shares the limit of **4 items per app** with `addMenuItem`.
+
+- **Parameters:**
+  - `label` (string): Row text, at most 12 bytes
+  - `options` (table): 1 to 16 strings, each at most 14 bytes
+  - `current` (string): The value shown first; must be one of `options`
+  - `callback` (function): `callback(value, index)`, with the new value and its 1-based index
+- **Returns:** None
+
+Left and Right step the value (they stop at the ends); Enter steps forward and
+wraps from the last value to the first. Stepping does not close the menu.
+
+The callback runs after the menu has closed (like an `addMenuItem` callback),
+only for rows whose value differs from the one the row had when the menu
+opened. Callbacks of changed option rows run in row order, before the callback
+of an action row chosen with Enter. The row keeps its value between visits.
+A bad argument raises an error and uses no slot.
+
+```lua
+picocalc.sys.addMenuOption("Focus", { "20 min", "25 min", "30 min" }, "25 min",
+    function(value, index) focus_minutes = tonumber(value:match("%d+")) end)
+```
+
+---
+
 #### `picocalc.sys.clearMenuItems()`
-Removes all app-registered menu items. Called automatically on app exit.
+Removes all app-registered menu items, action rows and option rows alike. Called automatically on app exit.
 
 - **Parameters:** None
 - **Returns:** None

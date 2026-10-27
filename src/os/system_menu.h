@@ -24,6 +24,20 @@ void system_menu_init(void);
 void system_menu_add_item(const char *label,
                           void (*callback)(void *user), void *user);
 
+// Option rows: "Label: value <>" with Left/Right/Enter stepping the value.
+#define SYSMENU_OPT_LABEL_MAX 12
+#define SYSMENU_OPT_VALUE_MAX 14
+#define SYSMENU_OPT_MAX 16
+
+// Register an option row (shares the SYSMENU_MAX_APP_ITEMS slots). Copies
+// label and options. current is 0-based. callback(user, index) runs after the
+// menu closes when the row's value changed during that visit. Returns false
+// when no slot is free, an argument is out of range, or memory is short.
+bool system_menu_add_option(const char *label, const char *const *options,
+                            int n, int current,
+                            void (*callback)(void *user, int index),
+                            void *user);
+
 // Remove all app-registered items.
 // Called automatically by launcher.c after each app exits.
 void system_menu_clear_items(void);

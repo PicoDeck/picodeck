@@ -138,6 +138,7 @@ static int l_sys_exit(lua_State *L) {
 typedef struct {
   lua_State *L;
   int ref; // LUA_REGISTRYINDEX reference to the Lua function
+  int opts_ref; // option rows: reference to the options table, else LUA_NOREF
 } lua_callback_t;
 
 static lua_callback_t s_lua_callbacks[SYSMENU_MAX_APP_ITEMS];
@@ -147,6 +148,16 @@ static void lua_menu_trampoline(void *user) {
   lua_callback_t *cb = (lua_callback_t *)user;
   lua_rawgeti(cb->L, LUA_REGISTRYINDEX, cb->ref);
   lua_call(cb->L, 0, 0); // propagates errors (including sys.exit() sentinel)
+}
+
+static void lua_option_trampoline(void *user, int index) {
+  lua_callback_t *cb = (lua_callback_t *)user;
+  lua_rawgeti(cb->L, LUA_REGISTRYINDEX, cb->ref);
+  lua_rawgeti(cb->L, LUA_REGISTRYINDEX, cb->opts_ref);
+  lua_rawgeti(cb->L, -1, index + 1);
+  lua_remove(cb->L, -2);
+  lua_pushinteger(cb->L, index + 1);
+  lua_call(cb->L, 2, 0); // propagates errors (including sys.exit() sentinel)
 }
 
 // picocalc.sys.getClock() → {synced=bool, hour=int, min=int, sec=int,
@@ -228,8 +239,65 @@ static int l_sys_addMenuItem(lua_State *L) {
   lua_callback_t *cb = &s_lua_callbacks[s_lua_callback_count++];
   cb->L = L;
   cb->ref = ref;
+  cb->opts_ref = LUA_NOREF;
 
   system_menu_add_item(label, lua_menu_trampoline, cb);
+  return 0;
+}
+
+// sys.addMenuOption(label, options, current, callback): a value row. Checks
+// run in an order that gives each bad argument its own message; nothing is
+// registered or referenced until all pass.
+static int l_sys_addMenuOption(lua_State *L) {
+  const char *label = luaL_checkstring(L, 1);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  const char *current = luaL_checkstring(L, 3);
+  luaL_checktype(L, 4, LUA_TFUNCTION);
+
+  if (strlen(label) > SYSMENU_OPT_LABEL_MAX)
+    return luaL_error(L, "menu option label too long (max %d)",
+                      SYSMENU_OPT_LABEL_MAX);
+  lua_Integer n = (lua_Integer)lua_rawlen(L, 2);
+  if (n < 1)
+    return luaL_error(L, "menu option needs at least one option");
+  if (n > SYSMENU_OPT_MAX)
+    return luaL_error(L, "too many options (max %d)", SYSMENU_OPT_MAX);
+
+  const char *vals[SYSMENU_OPT_MAX];
+  int cur = -1;
+  for (int i = 0; i < n; i++) {
+    lua_rawgeti(L, 2, i + 1);
+    if (lua_type(L, -1) != LUA_TSTRING)
+      return luaL_error(L, "menu option %d is not a string", i + 1);
+    vals[i] = lua_tostring(L, -1); // stays valid: the table holds the string
+    lua_pop(L, 1);
+    if (strlen(vals[i]) > SYSMENU_OPT_VALUE_MAX)
+      return luaL_error(L, "menu option too long (max %d)",
+                        SYSMENU_OPT_VALUE_MAX);
+    if (cur < 0 && strcmp(vals[i], current) == 0)
+      cur = i;
+  }
+  if (cur < 0)
+    return luaL_error(L, "current value not in options");
+  if (s_lua_callback_count >= SYSMENU_MAX_APP_ITEMS)
+    return luaL_error(L, "too many menu items (max %d)", SYSMENU_MAX_APP_ITEMS);
+
+  lua_pushvalue(L, 4);
+  int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+  lua_pushvalue(L, 2);
+  int opts_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+  lua_callback_t *cb = &s_lua_callbacks[s_lua_callback_count];
+  cb->L = L;
+  cb->ref = ref;
+  cb->opts_ref = opts_ref;
+  if (!system_menu_add_option(label, vals, (int)n, cur, lua_option_trampoline,
+                              cb)) {
+    luaL_unref(L, LUA_REGISTRYINDEX, ref);
+    luaL_unref(L, LUA_REGISTRYINDEX, opts_ref);
+    return luaL_error(L, "out of memory for menu option");
+  }
+  s_lua_callback_count++;
   return 0;
 }
 
@@ -274,8 +342,11 @@ static int l_sys_applyUpdate(lua_State *L) {
 }
 
 static int l_sys_clearMenuItems(lua_State *L) {
-  for (int i = 0; i < s_lua_callback_count; i++)
+  for (int i = 0; i < s_lua_callback_count; i++) {
     luaL_unref(L, LUA_REGISTRYINDEX, s_lua_callbacks[i].ref);
+    if (s_lua_callbacks[i].opts_ref != LUA_NOREF)
+      luaL_unref(L, LUA_REGISTRYINDEX, s_lua_callbacks[i].opts_ref);
+  }
   s_lua_callback_count = 0;
   system_menu_clear_items();
   return 0;
@@ -494,6 +565,7 @@ static const luaL_Reg l_sys_lib[] = {{"getMemInfo", l_sys_getMemInfo},
                                      {"getClock", l_sys_getClock},
                                      {"getVersion", l_sys_getVersion},
                                      {"addMenuItem", l_sys_addMenuItem},
+                                     {"addMenuOption", l_sys_addMenuOption},
                                      {"clearMenuItems", l_sys_clearMenuItems},
                                      {"pauseBackground", l_sys_pauseBackground},
                                      {"resumeBackground", l_sys_resumeBackground},

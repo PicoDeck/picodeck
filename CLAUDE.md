@@ -132,6 +132,7 @@ Everything from `splash_start()` to `splash_finish()` runs while Core 1 plays th
 - Triggered by the Sym key; detected via `kbd_consume_menu_press()` in the Lua count hook.
 - Overlays the current framebuffer (darkened with `display_darken()`) and gives the app both framebuffers back when it closes; app item callbacks run after that (`src/os/CLAUDE.md`).
 - Apps and OS register items with `system_menu_add_item()` / `picocalc.sys.addMenuItem()`.
+- Option rows (`system_menu_add_option()` / `picocalc.sys.addMenuOption()`) share the 4 slots; Left/Right/Enter step the value and the callback of each changed row runs after the menu closes (`src/os/CLAUDE.md`).
 
 ### Memory Map
 - **SRAM heap**: ~4.3 KB (4308 B: `__end__`=0x2007ef2c to `__HeapLimit`=0x20080000, of which the SDK reserves 2 KB; the 400 KB double framebuffer is BSS), so effectively none: scratch buffers go through `umm_malloc`.

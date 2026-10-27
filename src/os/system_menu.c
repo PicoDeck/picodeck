@@ -48,6 +48,10 @@ typedef struct {
   char label[32];
   void (*callback)(void *user);
   void *user;
+  bool is_option;
+  char *opts; // option rows: n * (SYSMENU_OPT_VALUE_MAX + 1) bytes, umm_malloc
+  uint8_t n, cur, entry;
+  void (*opt_cb)(void *user, int index);
 } app_item_t;
 
 static app_item_t s_app_items[SYSMENU_MAX_APP_ITEMS];
@@ -74,6 +78,7 @@ static bool s_wifi_auto_disconnect = true;
 
 typedef enum {
   ITEM_APP_CB = 0,
+  ITEM_APP_OPT,
   ITEM_BRIGHTNESS,
   ITEM_BATTERY,
   ITEM_WIFI,
@@ -99,7 +104,7 @@ typedef enum {
 
 typedef struct {
   item_type_t type;
-  int app_idx; // valid only when type == ITEM_APP_CB
+  int app_idx; // valid when type is ITEM_APP_CB or ITEM_APP_OPT
 } flat_item_t;
 
 typedef enum {
@@ -150,7 +155,8 @@ static int build_items(flat_item_t *items, menu_page_t page, bool has_exit,
 
   if (page == PAGE_MAIN) {
     for (int i = 0; i < s_app_item_count; i++) {
-      items[count].type = ITEM_APP_CB;
+      items[count].type =
+          s_app_items[i].is_option ? ITEM_APP_OPT : ITEM_APP_CB;
       items[count].app_idx = i;
       count++;
     }
@@ -241,6 +247,12 @@ static void draw_panel(const flat_item_t *items, int count, int sel, int px,
     case ITEM_APP_CB:
       snprintf(label, sizeof(label), "%s", s_app_items[items[i].app_idx].label);
       break;
+    case ITEM_APP_OPT: {
+      const app_item_t *ai = &s_app_items[items[i].app_idx];
+      snprintf(label, sizeof(label), "%s: %s <>", ai->label,
+               ai->opts + ai->cur * (SYSMENU_OPT_VALUE_MAX + 1));
+      break;
+    }
     case ITEM_BRIGHTNESS:
       snprintf(label, sizeof(label), "Brightness: %d <>", s_brightness);
       break;
@@ -1120,6 +1132,8 @@ static bool menu_loop(lua_State *L, int context) {
   bool need_redraw = true;
   bool need_bg_restore = false;
   bool exit_requested = false;
+  for (int i = 0; i < s_app_item_count; i++)
+    s_app_items[i].entry = s_app_items[i].cur;
   // The app item chosen, if any: its callback runs after the menu has closed.
   void (*app_cb)(void *user) = NULL;
   void *app_cb_user = NULL;
@@ -1166,6 +1180,15 @@ static bool menu_loop(lua_State *L, int context) {
       need_redraw = true;
     }
 
+    if ((pressed & (BTN_LEFT | BTN_RIGHT)) && items[sel].type == ITEM_APP_OPT) {
+      app_item_t *ai = &s_app_items[items[sel].app_idx];
+      if (pressed & BTN_LEFT)
+        ai->cur = ai->cur > 0 ? ai->cur - 1 : 0;
+      if (pressed & BTN_RIGHT)
+        ai->cur = ai->cur + 1 < ai->n ? ai->cur + 1 : ai->n - 1;
+      need_redraw = true;
+    }
+
     // Left / Right: adjust brightness when on Brightness item
     if ((pressed & BTN_LEFT) && items[sel].type == ITEM_BRIGHTNESS) {
       s_brightness = (s_brightness >= 16) ? s_brightness - 16 : 0;
@@ -1187,6 +1210,12 @@ static bool menu_loop(lua_State *L, int context) {
         app_cb_user = s_app_items[items[sel].app_idx].user;
         running = false;
         break;
+      case ITEM_APP_OPT: {
+        app_item_t *ai = &s_app_items[items[sel].app_idx];
+        ai->cur = (ai->cur + 1) % ai->n;
+        need_redraw = true;
+        break;
+      }
       case ITEM_BRIGHTNESS:
         s_brightness = (s_brightness <= 239) ? s_brightness + 16 : 0;
         kbd_set_backlight(s_brightness);
@@ -1379,6 +1408,13 @@ static bool menu_loop(lua_State *L, int context) {
   // app's own screen and clip rect, from a clean keyboard, and free to leave
   // by longjmp (a Lua error, sys.exit()) with nothing of the menu's left
   // allocated.
+  // Changed option rows report first, in row order. A callback may longjmp
+  // out (an error, sys.exit()), so the rows are re-read each time.
+  for (int i = 0; i < s_app_item_count; i++) {
+    const app_item_t *ai = &s_app_items[i];
+    if (ai->is_option && ai->cur != ai->entry && ai->opt_cb)
+      ai->opt_cb(ai->user, ai->cur);
+  }
   if (app_cb)
     app_cb(app_cb_user);
   return exit_requested;
@@ -1405,9 +1441,48 @@ void system_menu_add_item(const char *label, void (*callback)(void *user),
   it->label[sizeof(it->label) - 1] = '\0';
   it->callback = callback;
   it->user = user;
+  it->is_option = false;
+  it->opts = NULL;
+  it->n = it->cur = it->entry = 0;
+  it->opt_cb = NULL;
 }
 
-void system_menu_clear_items(void) { s_app_item_count = 0; }
+bool system_menu_add_option(const char *label, const char *const *options,
+                            int n, int current,
+                            void (*callback)(void *user, int index),
+                            void *user) {
+  if (s_app_item_count >= SYSMENU_MAX_APP_ITEMS || !label || !options ||
+      !callback || n < 1 || n > SYSMENU_OPT_MAX || current < 0 || current >= n)
+    return false;
+  for (int i = 0; i < n; i++)
+    if (!options[i] || strlen(options[i]) > SYSMENU_OPT_VALUE_MAX)
+      return false;
+  char *opts = (char *)umm_malloc((size_t)n * (SYSMENU_OPT_VALUE_MAX + 1));
+  if (!opts)
+    return false;
+  for (int i = 0; i < n; i++)
+    strcpy(opts + i * (SYSMENU_OPT_VALUE_MAX + 1), options[i]);
+  app_item_t *it = &s_app_items[s_app_item_count++];
+  strncpy(it->label, label, sizeof(it->label) - 1);
+  it->label[sizeof(it->label) - 1] = '\0';
+  it->callback = NULL;
+  it->user = user;
+  it->is_option = true;
+  it->opts = opts;
+  it->n = (uint8_t)n;
+  it->cur = it->entry = (uint8_t)current;
+  it->opt_cb = callback;
+  return true;
+}
+
+void system_menu_clear_items(void) {
+  for (int i = 0; i < s_app_item_count; i++) {
+    if (s_app_items[i].opts)
+      umm_free(s_app_items[i].opts);
+    memset(&s_app_items[i], 0, sizeof(s_app_items[i]));
+  }
+  s_app_item_count = 0;
+}
 
 bool system_menu_get_wifi_auto_disconnect(void) { return s_wifi_auto_disconnect; }
 
