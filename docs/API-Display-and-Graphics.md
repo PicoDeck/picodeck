@@ -920,6 +920,8 @@ Image loading, drawing, and state management. Images are stored in PSRAM and sup
 
 ### State Functions
 
+Every app starts with white text on a black background and no global colour key: an app's `setColor`, `setBackgroundColor` and `setTransparentColor` do not reach the next one.
+
 #### `picocalc.graphics.setColor(color)`
 Sets the current drawing color for graphics operations.
 

@@ -4473,6 +4473,11 @@ static const luaL_Reg l_font_lib[] = {
 void lua_bridge_graphics_init(lua_State *L) {
   sprite_list_clear(L);  // reset on each app launch (a fresh lua_State)
   s_blinker_count = 0;  // reset blinkers on each app launch
+  // Nor do drawing colours and the global key reach the next app.
+  s_graphics_color = COLOR_WHITE;
+  s_graphics_bg_color = COLOR_BLACK;
+  s_graphics_bg_transparent = false;
+  display_set_transparent_color(0);
   s_has_global_stencil = false;
   memset(s_global_stencil, 0, sizeof(s_global_stencil));
 

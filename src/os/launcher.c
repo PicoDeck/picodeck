@@ -903,6 +903,7 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   // hardware-scroll registers can't leak into the next one.
   display_clear_clip_rect();
   display_set_scroll_offset(0);
+  display_set_transparent_color(0);  // nor its global colour key
   display_set_font(0);            // nor the previous app's font selection
   font_registry_unload_all();     // nor its loaded fonts
   perf_init();                    // nor its setTargetFPS pacing and frame history
@@ -928,6 +929,7 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   // ── Shared post-exit cleanup ──────────────────────────────────────────────
   display_clear_clip_rect();      // don't let an app's clip rect leak back to the launcher
   display_set_scroll_offset(0);   // nor its hardware-scroll offset
+  display_set_transparent_color(0);  // nor its global colour key (launcher icons)
   display_set_font(0);            // nor the previous app's font selection
   font_registry_unload_all();     // nor its loaded fonts
   perf_init();                    // nor its perf pacing target
