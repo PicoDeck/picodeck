@@ -10,8 +10,8 @@
 -- tools/check_lua_stub.py (run by `pytest tests/unit`) compares every signature
 -- here with the C function behind it: parameter count, optional parameters and
 -- return count.
--- Note: only base/table/string/math stdlib is available (no utf8, no coroutine,
--- no io/os/package/debug).
+-- Note: the stdlib is base, table, string, math, coroutine and utf8 (no io, os,
+-- package or debug; `require` is PicoDeck's own, for an app's own modules).
 
 -- =============================================================================
 -- App globals (injected by launcher before app starts)
@@ -346,23 +346,23 @@ function picocalc.display.rgb(r, g, b) end
 ---@field BTN_RIGHT     integer D-pad right
 ---@field BTN_ENTER     integer Enter / OK
 ---@field BTN_ESC       integer Escape / back
----@field BTN_MENU      integer System menu (Sym key)
+---@field BTN_MENU      integer The menu key (Shift+F5, reported as F10): the OS's, never set in any mask
 ---@field BTN_F1        integer Function key 1
 ---@field BTN_F2        integer Function key 2
 ---@field BTN_F3        integer Function key 3
 ---@field BTN_F4        integer Function key 4
 ---@field BTN_F5        integer Function key 5
----@field BTN_F6        integer Function key 6
----@field BTN_F7        integer Function key 7
----@field BTN_F8        integer Function key 8
----@field BTN_F9        integer Function key 9
+---@field BTN_F6        integer Function key 6 (Shift+F1)
+---@field BTN_F7        integer Function key 7 (Shift+F2)
+---@field BTN_F8        integer Function key 8 (Shift+F3)
+---@field BTN_F9        integer Function key 9 (Shift+F4)
 ---@field BTN_BACKSPACE integer Backspace
 ---@field BTN_TAB       integer Tab
 ---@field BTN_DEL       integer Delete key
 ---@field BTN_SHIFT     integer Shift modifier
 ---@field BTN_CTRL      integer Ctrl modifier
 ---@field BTN_ALT       integer Alt modifier
----@field BTN_FN        integer Fn / Symbol modifier
+---@field BTN_FN        integer Sym (Fn) modifier
 picocalc.input = {}
 
 ---Poll the keyboard and trigger the system menu if Menu is pressed.
@@ -386,12 +386,14 @@ function picocalc.input.getButtonsReleased() end
 ---Return the character typed this frame, or `nil` if none. One char per
 ---`update()`: when several keys arrive in one poll, the rest are returned by
 ---the following frames in order (up to 4 are kept). Holding a key repeats it.
----Enter returns `"\n"`, Backspace `"\b"`, Ctrl+letter a control code.
----Includes full keyboard layout; use for text input.
+---Enter returns `"\n"`, Backspace `"\b"`, Ctrl+letter a control code; Tab,
+---Delete, arrows and function keys none. The value stays until the next
+---`update()`: never loop on it (`while c do c = getChar() end` does not end).
 ---@return string|nil
 function picocalc.input.getChar() end
 
----Return the raw hardware key code for the last key event.
+---Return the code of the last key to go down or repeat during the last
+---`update()`, or 0 if none. It stays until the next `update()`.
 ---@return integer
 function picocalc.input.getRawKey() end
 
@@ -406,7 +408,9 @@ function picocalc.input.clearState() end
 function picocalc.input.setRepeat(delay_ms, rate_ms) end
 
 ---Like `getButtonsPressed()`, but held buttons also produce synthetic repeat
----edges according to `setRepeat()`. Use this for menu navigation.
+---edges according to `setRepeat()` (by default after 200 ms, then every 80 ms).
+---Use this for menu navigation. Call it at most once per frame: a second call
+---takes the next repeat early.
 ---@return integer bitmask
 function picocalc.input.getButtonsRepeated() end
 
@@ -436,9 +440,10 @@ function picocalc.input.pollEvent() end
 
 ---True while a key is held. `k` is a one-character string (`"w"`; letters
 ---ignore case) or an integer keycode as `pollEvent` reports it. Updated by
----`update()`. Reliable for buttons (arrows, Enter, Esc, F-keys, modifiers);
----letters and shifted symbols rely on the keyboard reporting their release and
----are pending hardware confirmation. `clearState()` clears a key that sticks.
+---`update()`. A key pressed before Shift or Alt and released under it stays set
+---until its next press and release, as its `BTN_*` bit does: see API Input.
+---`clearState()` clears a key that sticks. Raises on a longer string or a code
+---outside 0-255.
 ---@param k string|integer
 ---@return boolean
 function picocalc.input.isKeyDown(k) end
@@ -532,10 +537,14 @@ function picocalc.sys.log(message) end
 ---@param ms integer
 function picocalc.sys.sleep(ms) end
 
----Exit the app cleanly and return to the launcher. Never returns.
+---Exit the app and return to the launcher, from any call depth. Never returns,
+---and cannot be caught: `pcall` catches the raise, and the next instruction raises
+---it again. No code of yours runs at exit except `__gc` handlers: a `__close`
+---handler does not finish.
 function picocalc.sys.exit() end
 
----Reboot the device via the watchdog timer. Never returns.
+---Reboot the device via the watchdog timer. Never returns. In the simulator the
+---app ends and the launcher takes over.
 function picocalc.sys.reboot() end
 
 ---Return `true` if USB power is connected (GP24 VBUS sense). Not reliable on
@@ -545,7 +554,8 @@ function picocalc.sys.reboot() end
 ---@return boolean
 function picocalc.sys.isUSBPowered() end
 
----Return a table with charging/percentage info.
+---Return a table with charging/percentage info, as the keyboard controller
+---reports it. `percent` is -1 before the first reading, as `getBattery()`.
 ---@return { charging: boolean, percent: integer }
 function picocalc.sys.getPowerStatus() end
 
@@ -559,7 +569,7 @@ function picocalc.sys.getClock() end
 ---fields describe the Lua small-object pools (objects of up to 128 B live in
 ---4 KB slabs carved from the PSRAM heap): slab count, slab bytes, live objects
 ---and their bytes. `pio_psram_*` describe the mainboard PIO PSRAM.
----@return { psram_free: integer, psram_used: integer, psram_total: integer, psram_largest_block: integer, psram_fragmentation: integer, small_pool_slabs: integer, small_pool_bytes: integer, small_pool_objects: integer, small_pool_object_bytes: integer, sram_free: integer, sram_used: integer, pio_psram_available: boolean, pio_psram_size: integer }
+---@return { psram_free: integer, psram_used: integer, psram_total: integer, psram_largest_block: integer, psram_fragmentation: integer, small_pool_slabs: integer, small_pool_bytes: integer, small_pool_objects: integer, small_pool_object_bytes: integer, sram_free: integer, sram_used: integer, pio_psram_available: boolean, pio_psram_size: integer, xip_cache_hit_rate: integer }
 function picocalc.sys.getMemInfo() end
 
 ---Return the OS firmware version string.
@@ -611,16 +621,18 @@ function picocalc.sys.triggerFault() end
 ---An app starts with the timer fresh and the screen lit.
 function picocalc.sys.resetIdleTimer() end
 
----Pause Core 1 background work (network polling, audio updates).
----@return boolean was_paused Previous state
+---Pause Core 1 background work (network polling, audio updates). Waits up to
+---500 ms for Core 1 to stop.
+---@return boolean paused `true` if Core 1 is paused now
 function picocalc.sys.pauseBackground() end
 
 ---Resume Core 1 background work after `pauseBackground()`.
 function picocalc.sys.resumeBackground() end
 
----Load and run a Lua library file from the SD card (like `require` for a path).
----Returns the chunk's return value, or `nil, error`.
----@param name string Module path or name
+---Load and run `/system/lib/<name>.lua` and return its result, every call (unlike
+---`require`, which caches). `nil, error` if the file cannot be opened or is empty;
+---a syntax or runtime error in it raises.
+---@param name string Library name, no extension and no `/`
 ---@return any
 function picocalc.sys.loadlib(name) end
 

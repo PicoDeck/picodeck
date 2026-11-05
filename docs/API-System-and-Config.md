@@ -111,7 +111,7 @@ picocalc.sys.log("Debug info: x=" .. tostring(x))
 ---
 
 #### `picocalc.sys.exit()`
-Exits the current app cleanly and returns to the launcher. Works from any call depth.
+Ends the app and returns to the launcher, from any call depth. It does the same as `return` at the top level of `main.lua`.
 
 - **Parameters:** None
 - **Returns:** Never returns
@@ -119,6 +119,29 @@ Exits the current app cleanly and returns to the launcher. Works from any call d
 ```lua
 picocalc.sys.exit()
 ```
+
+**An exit cannot be caught.** `sys.exit()`, the system menu's Exit App and the dev `exit` command all raise an error that keeps coming back: `pcall`, `xpcall` and `coroutine.resume` catch the raise, and the next Lua instruction after them raises it again.
+
+**What runs at exit.** Nothing of yours is called when the app exits, Exit App included, so an app that means to save on the way out does not get to. Save when the value changes:
+
+```lua
+volume = 80
+picocalc.config.set("volume", volume)
+picocalc.config.save()
+```
+
+- A `__close` handler (a `local x <close>` variable) does not finish: the exit raises again at its first instruction. It runs in full on a normal return and on an ordinary error.
+- A `__gc` handler does run, as the VM closes, however the app ended. So a last write can be done from one, if the object stays referenced until then:
+
+  ```lua
+  level = 1
+  saver = setmetatable({}, { __gc = function()  -- a global, so it lives to the end
+      picocalc.config.set("level", level)
+      picocalc.config.save()
+  end })
+  ```
+- Choosing Exit App first runs the callbacks of `addMenuOption` rows that changed. `addMenuItem` callbacks do not run; add your own "Save and quit" item if you want one.
+- An app that hangs or faults runs none of this. See [Crash Logging and Watchdog](Crash-Logging-and-Watchdog.md).
 
 ---
 
@@ -167,7 +190,7 @@ Returns a snapshot of heap memory usage.
   - `psram_fragmentation` (number): 0-100
   - `small_pool_slabs`, `small_pool_bytes` (number): Lua small-object pool slabs (4 KB each, carved from the PSRAM heap) and their bytes
   - `small_pool_objects`, `small_pool_object_bytes` (number): live objects of up to 128 B in those pools and their bytes
-  - `sram_free` (number): Free bytes in the system SRAM heap (via `mallinfo`; the SRAM heap is only ~2.6 KB)
+  - `sram_free` (number): Free bytes in the system SRAM heap (via `mallinfo`; the SRAM heap is only a few KB)
   - `sram_used` (number): Used bytes in the system SRAM heap
   - `pio_psram_available` (boolean), `pio_psram_size` (number): mainboard PIO PSRAM
   - `xip_cache_hit_rate` (number): the flash/PSRAM cache's hit rate in percent (0-100) since the previous `getMemInfo()` call, or `-1` when nothing was counted, when the hardware counters filled up meanwhile (a busy app fills them in about 40 s), or in the simulator. Call `getMemInfo()` once to start a measurement and again to read it.
@@ -181,11 +204,10 @@ picocalc.sys.log(string.format("PSRAM: %dKB free / %dKB total",
 ---
 
 #### `picocalc.sys.addMenuItem(label, callback)`
-Adds a custom item to the system menu overlay (Menu key). Maximum **4 items
-per app**, counting the option rows of `addMenuOption` too.
+Adds a custom item to the system menu overlay (the menu key: Shift+F5, reported as F10). Maximum **4 items per app**, counting the option rows of `addMenuOption` too; a fifth raises `too many menu items (max 4)`.
 
 - **Parameters:**
-  - `label` (string): Menu item text
+  - `label` (string): Menu item text, cut to 31 bytes
   - `callback` (function): Function to call when the item is selected
 - **Returns:** None
 
@@ -295,7 +317,7 @@ picocalc.sys.triggerFault()
 Get the PicoDeck firmware version string.
 
 - **Parameters:** None
-- **Returns:** (string) Version string (e.g. "1.2.0")
+- **Returns:** (string) Version string: `"0.6.0"` on a release, and on a development build what `git describe` gives (`"0.6.0-12-g272bb8c"`)
 
 ```lua
 local version = picocalc.sys.getVersion()
@@ -325,6 +347,8 @@ end
 Flash a firmware image (`picodeck.bin`) from the SD card. **Only present**
 for apps that declare `"system-update"` AND are OS apps (id
 `net.picodeck.updater` / `net.picodeck.store`, or installed under `/system/`).
+`path` goes through the sandbox like any other: to read `/system/update.bin` the
+app also needs `"root-filesystem"`, or the call returns `false, "access denied"`.
 
 Before anything is flashed:
 - `/system/update.sha256` (exactly 64 hex digits + optional newline) must match
@@ -469,9 +493,11 @@ by `qmiPsramFree` (idempotent) or when garbage-collected; `qmiPsramRead/Write`
 raise on an out-of-range offset/length or a freed handle. The handle can be
 passed to `picocalc.graphics.image.loadFromBuffer(handle [, len])`.
 
+The block's contents start uninitialised: write before you read.
+
 - **Parameters:**
-  - `size` (number): Bytes to allocate
-- **Returns:** (userdata) Handle, or `nil` on failure
+  - `size` (integer): Bytes to allocate. Zero or less raises `size must be positive`.
+- **Returns:** (userdata) Handle, or `nil` when the heap has no block that large
 
 ```lua
 local buf = picocalc.sys.qmiPsramAlloc(4096)

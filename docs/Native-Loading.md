@@ -34,7 +34,7 @@ Place these files in `/apps/<your_app_name>/` on the SD card.
 }
 ```
 
-See [Global Variables and Permissions](Global-Variables-and-Permissions.md) for available requirements (`filesystem`, `root-filesystem`, `http`, `audio`).
+See [Global Variables and Permissions](Global-Variables-and-Permissions.md) for available requirements (`filesystem`, `root-filesystem`, `http`, `audio`). The filesystem ones do not bind a native app: `api->fs` has no sandbox, so a native app can read and write the whole card, `/system/config.json` included.
 
 ## Development Environment
 

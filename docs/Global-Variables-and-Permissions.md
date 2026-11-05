@@ -33,8 +33,8 @@ Apps can request elevated requirements via the `requirements` array in `app.json
 
 | Requirement | Description |
 |------------|-------------|
-| `filesystem` | Default sandbox access: read `/apps/<appname>/`, read/write `/data/<appid>/` |
-| `root-filesystem` | Full SD card read/write access (bypasses sandbox) |
+| `filesystem` | Default sandbox access: read `/apps/<dir>/` and `/system/lib/`, read/write `/data/<appid>/` |
+| `root-filesystem` | Full SD card read/write access (bypasses sandbox, though relative paths and `..` are still refused) |
 | `http` | App needs WiFi/network connectivity (WiFi stays connected after boot time sync) |
 | `audio` | App needs audio output |
 | `clipboard` | Reserved for future use |
@@ -57,8 +57,10 @@ end
 
 ### Default Sandbox
 
+This applies to Lua apps. A native app's `api->fs` goes straight to the card: it has full access whatever its requirements say.
+
 Without `root-filesystem`, the filesystem API restricts access to:
-- **Read**: `/apps/<appname>/` (your app's directory) and `/system/lib/`
+- **Read**: `/apps/<dir>/` (your app's directory, by its directory name) and `/system/lib/`
 - **Read/Write**: `/data/<appid>/` (auto-created app data directory)
 
 Relative paths and any `..` are refused. The same check guards the image,
