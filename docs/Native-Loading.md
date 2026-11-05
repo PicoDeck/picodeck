@@ -63,7 +63,7 @@ A native app runs at the same privilege as the OS. The sandbox and the requireme
 ## Development Environment
 
 ### Prerequisites
-- **GNU Arm Embedded Toolchain**: `arm-none-eabi-gcc`
+- **GNU Arm Embedded Toolchain**: `arm-none-eabi-gcc` with newlib, which on Fedora and Ubuntu is a separate package ([`sdk/README.md`](https://github.com/PicoDeck/picodeck/blob/master/sdk/README.md#native-apps) has the install commands)
 - **PicoDeck SDK Headers**: `app_abi.h`, `os.h` and `terminal.h` (found in [`sdk/native/`](https://github.com/PicoDeck/picodeck/tree/master/sdk/native))
 - **Linker Script**: `linker.ld` (found in the same folder)
 - **`stubs.c`** (also there), if your app uses the [C library](#c-library)

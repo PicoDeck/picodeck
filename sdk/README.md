@@ -34,7 +34,14 @@ A path in `workspace.library` is relative to your project (an absolute path into
 
 ## Native apps
 
-Copy the whole of `native/`, since `os.h` includes `terminal.h`. You need `arm-none-eabi-gcc` (Fedora: `arm-none-eabi-gcc-cs`; Debian/Ubuntu: `gcc-arm-none-eabi`).
+Copy the whole of `native/`, since `os.h` includes `terminal.h`. Install the same packages as the [firmware build](../README.md#build-setup):
+
+```sh
+sudo dnf install cmake curl unzip arm-none-eabi-gcc-cs arm-none-eabi-gcc-cs-c++ arm-none-eabi-newlib  # Fedora
+sudo apt install cmake curl unzip gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib  # Debian/Ubuntu
+```
+
+An app uses only the compiler and newlib, whose `stdint.h` the template's headers need even with no C library linked, and the C++ package if you [write C++](https://picodeck.net/docs/native-loading/#c). The compiler package alone does not bring newlib in. Then:
 
 ```sh
 cp -r sdk/native myapp
