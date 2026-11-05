@@ -8,22 +8,6 @@ local ui = pc.ui
 local fs = pc.fs
 local sys = pc.sys
 
--- ── Module loader ───────────────────────────────────────────────────────────
-
-local _loaded = {}
-function require(name)
-    if _loaded[name] then return _loaded[name] end
-    local path = APP_DIR .. "/" .. name:gsub("%.", "/") .. ".lua"
-    local src = fs.readFile(path)
-    if not src then error("require: file not found: " .. path) end
-    local fn, err = load(src, "@" .. path)
-    if not fn then error("require: " .. err) end
-    local result = fn()
-    if result == nil then result = true end
-    _loaded[name] = result
-    return result
-end
-
 -- ── Load modules ────────────────────────────────────────────────────────────
 
 local Engine = require("calc_engine")
