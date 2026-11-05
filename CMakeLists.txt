@@ -302,6 +302,7 @@ add_executable(picodeck
     src/os/lua_bridge_3d.c
     src/os/gfx3d.c
     src/os/lua_bridge_gfx3d.c
+    src/os/color256.c
     src/os/chargrid.c
     src/os/chargrid_shapes.c
     src/os/chargrid_text.c

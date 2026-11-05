@@ -145,7 +145,7 @@ target_link_libraries(test_gfx3d PRIVATE m)
 target_compile_options(test_gfx3d PRIVATE -ffp-contract=off -Wdouble-promotion)
 # picocalc.chargrid core (src/os/chargrid*.c) over host malloc.
 picodeck_unit_test(test_chargrid SOURCES ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c
-                   ${SRC}/os/chargrid_text.c ${SRC}/os/text_wrap.c
+                   ${SRC}/os/color256.c ${SRC}/os/chargrid_text.c ${SRC}/os/text_wrap.c
                    ${SRC}/fonts/font_6x8.c ${SRC}/fonts/font.c
                    INCLUDES ${SRC}/fonts
                    DEFINES CG_MALLOC=malloc CG_FREE=free)
@@ -153,7 +153,17 @@ target_compile_options(test_chargrid PRIVATE -ffp-contract=off -Wdouble-promotio
 # The chargrid renderer: fast pair stores and the per-pixel path vs a reference.
 picodeck_unit_test(test_chargrid_render
                    SOURCES ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c ${SRC}/os/chargrid_render.c
+                   ${SRC}/os/color256.c
                    DEFINES CG_MALLOC=malloc CG_FREE=free)
+# The 256-colour table through its two readers: a new grid's palette and the
+# terminal's ANSI codes (simulator/stubs first: umm_malloc.h for terminal.c).
+picodeck_unit_test(test_color256
+                   SOURCES ${SRC}/os/color256.c ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c
+                   ${SRC}/os/terminal.c ${SRC}/os/terminal_parser.c
+                   ${CMAKE_CURRENT_SOURCE_DIR}/fakes/umm_fake.c
+                   INCLUDES ${PICODECK_ROOT}/simulator/stubs
+                   DEFINES CG_MALLOC=malloc CG_FREE=free)
+target_compile_options(test_color256 PRIVATE -Wno-unused-parameter)  # terminal.c
 # Lattice hash, value noise and fBm (src/os/noise.h, header-only).
 picodeck_unit_test(test_noise)
 target_compile_options(test_noise PRIVATE -ffp-contract=off -Wdouble-promotion)
@@ -362,7 +372,7 @@ endif()
 # The chargrid shader: compiler (Task 4), VM and outputs (Tasks 5-6). Its
 # allocations go through cg_test_alloc.h, so a test can refuse them.
 picodeck_unit_test(test_charshader SOURCES ${SRC}/os/charshader_compile.c ${SRC}/os/charshader_vm.c
-                   ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c)
+                   ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c ${SRC}/os/color256.c)
 target_compile_options(test_charshader PRIVATE -ffp-contract=off -Wdouble-promotion
                        -include ${CMAKE_CURRENT_SOURCE_DIR}/cg_test_alloc.h)
 target_link_libraries(test_charshader PRIVATE m)
@@ -383,7 +393,7 @@ target_link_libraries(test_splash_render PRIVATE m)
 # arm-none-eabi-gcc (with newlib's rdimon) or qemu-arm.
 set(XCHECK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/charshader_xcheck.c
     ${SRC}/os/charshader_compile.c ${SRC}/os/charshader_vm.c
-    ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c)
+    ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c ${SRC}/os/color256.c)
 add_executable(charshader_xcheck ${XCHECK_SOURCES})
 target_include_directories(charshader_xcheck PRIVATE ${SRC}/os)
 target_compile_definitions(charshader_xcheck PRIVATE CG_MALLOC=malloc CG_FREE=free)
@@ -411,7 +421,7 @@ if(XCHECK_SKIP)
     add_test(NAME test_charshader_m33 COMMAND ${CMAKE_COMMAND} -E echo "SKIPPED: ${XCHECK_SKIP}")
     set_tests_properties(test_charshader_m33 PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
 else()
-    file(GLOB XCHECK_HEADERS ${SRC}/os/charshader*.h ${SRC}/os/chargrid.h ${SRC}/os/noise.h
+    file(GLOB XCHECK_HEADERS ${SRC}/os/charshader*.h ${SRC}/os/chargrid.h ${SRC}/os/color256.h ${SRC}/os/noise.h
          ${SRC}/fonts/font.h)
     set(XCHECK_ELFS "")
     foreach(opt O2 Os)

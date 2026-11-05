@@ -102,13 +102,31 @@ end)
 
 T.case("palette", function()
     local g = CG.new(1, 1, 0)
-    T.eq(g:getColor(1), 0x8000); T.eq(g:getColor(15), 0xFFFF); T.eq(g:getColor(196), 0xF800)
+    T.eq(g:getColor(1), 0xA800); T.eq(g:getColor(15), 0xFFFF); T.eq(g:getColor(196), 0xF800)
     g:setColor(3, 0x1234); T.eq(g:getColor(3), 0x1234)
     g:setPalette({ 1, 2 }, 254); T.eq(g:getColor(254), 1); T.eq(g:getColor(255), 2)
     T.raises(function() g:setPalette({ 1, 2, 3 }, 254) end, "256")
     T.raises(function() g:setColor(256, 0) end, "index must be 0%-255")
     T.raises(function() g:setColor(0, 0x10000) end, "colour must be 0%-65535")
     T.raises(function() g:setPalette({ 1, "x" }) end, "colour")
+end)
+
+-- One colour table: a colour number is the same colour in a grid and a terminal.
+T.case("palette_matches_terminal", function()
+    local g, term = CG.new(1, 1, 0), picocalc.terminal.new(8, 2)
+    for i = 0, 255 do
+        term:write(string.format("\27[38;5;%d;48;5;%dm", i, i))
+        local fg, bg = term:getColors()
+        T.eq(fg, g:getColor(i)); T.eq(bg, g:getColor(i))
+    end
+    for i = 0, 7 do
+        term:write(string.format("\27[%d;%dm", 30 + i, 40 + i))
+        local fg, bg = term:getColors()
+        T.eq(fg, g:getColor(i)); T.eq(bg, g:getColor(i))
+        term:write(string.format("\27[%d;%dm", 90 + i, 100 + i))
+        fg, bg = term:getColors()
+        T.eq(fg, g:getColor(8 + i)); T.eq(bg, g:getColor(8 + i))
+    end
 end)
 
 T.case("ramps_and_shadeRow", function()

@@ -399,6 +399,7 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_bridge_3d.c
     ${PICODECK_ROOT}/src/os/gfx3d.c
     ${PICODECK_ROOT}/src/os/lua_bridge_gfx3d.c
+    ${PICODECK_ROOT}/src/os/color256.c
     ${PICODECK_ROOT}/src/os/chargrid.c
     ${PICODECK_ROOT}/src/os/chargrid_shapes.c
     ${PICODECK_ROOT}/src/os/chargrid_text.c
