@@ -2,6 +2,8 @@
 
 A cross-platform SDL2-based simulator for PicoDeck that runs on desktop computers for development, debugging, and testing.
 
+App authors: start with [Simulator and Testing](../docs/Simulator-and-Testing.md), which has the download, the card layout, the keys, the control port and the full list of differences from the device. This file is the contributor's view. [`CLAUDE.md`](CLAUDE.md) has the implementation notes behind those differences, and the test control channel.
+
 ## Features
 
 - **3x Scale Display**: 960×960 window simulating the 320×320 LCD
@@ -15,29 +17,31 @@ A cross-platform SDL2-based simulator for PicoDeck that runs on desktop computer
 - **Browser build**: the same sources build to WASM for [picodeck.net/try](https://picodeck.net/try/) (see below)
 - **Debuggable**: Use GDB/LLDB, printf debugging, IDE breakpoints
 
-See [`CLAUDE.md`](CLAUDE.md) for where the simulator diverges from the device and for the control protocol, and [Simulator and Testing](../docs/Simulator-and-Testing.md) for the test commands.
-
 ## Building
 
 ### Prerequisites
 
+- A clone with its submodules: `git clone --recurse-submodules https://github.com/PicoDeck/picodeck.git` (in an existing clone, `git submodule update --init --recursive`). `make simulator` stops and says so if they are missing.
 - CMake 3.13+
-- SDL2 development libraries
-- C/C++ compiler (GCC, Clang, MSVC)
+- C and C++ compilers (GCC or Clang)
+- SDL2, SDL2_image and libcurl development libraries
+- Network access at the first configure: CMake fetches mbedTLS and Unicorn, and `make simulator` fetches Lua. The Pico SDK is not needed.
 
-**Fedora/Linux:**
+CI builds and tests on Ubuntu; other systems are not tested.
+
+**Fedora:**
 ```bash
-sudo dnf install cmake SDL2-devel
+sudo dnf install cmake gcc gcc-c++ SDL2-devel SDL2_image-devel libcurl-devel
+```
+
+**Debian/Ubuntu:**
+```bash
+sudo apt install cmake build-essential libsdl2-dev libsdl2-image-dev libcurl4-openssl-dev
 ```
 
 **macOS:**
 ```bash
-brew install cmake sdl2
-```
-
-**Windows (MSYS2):**
-```bash
-pacman -S mingw-w64-x86_64-cmake mingw-w64-x86_64-SDL2
+brew install cmake sdl2 sdl2_image curl
 ```
 
 ### Build Commands
@@ -46,32 +50,35 @@ From the repository root:
 
 ```bash
 make simulator          # Release build -> build_sim/picodeck_simulator
-make simulator-run      # Build and run
+make simulator-run      # Build and run, with this checkout as the SD card
 make simulator-asan     # ASan + UBSan (build_sim_asan/); also simulator-tsan, simulator-net
 ```
 
-or by hand:
+or by hand (`make download-lua` first: it fetches and patches Lua):
 
 ```bash
+make download-lua
 mkdir build_sim && cd build_sim
 cmake ../simulator -DCMAKE_BUILD_TYPE=Release
 make -j4
-./picodeck_simulator --sd-card ../apps
+./picodeck_simulator
 ```
 
 ## Usage
 
+`--sd-card` names the card's root, not the apps folder: the launcher scans `<root>/apps/<name>/`. The simulator stops with a message if the path is not a folder, or if it holds app folders but no `apps/`.
+
 ```bash
-# Run with default SD card path (.)
+# The source tree it was built from is the card (its apps/ and system/lib/)
 ./picodeck_simulator
 
-# Run with custom SD card path
-./picodeck_simulator --sd-card /path/to/apps
+# A card of your own: a folder with each app in mycard/apps/<name>/
+./picodeck_simulator --sd-card mycard
 
 # Play the boot splash animation, then its status steps (for screencasting)
 ./picodeck_simulator --show-splash
 
-# Launch an app at startup
+# Launch an app at startup (by id, display name or folder name)
 ./picodeck_simulator --launch hello
 
 # Deterministic runs for tests (fixed clock and random seed, error screens return at once)
@@ -84,6 +91,8 @@ make -j4
 ./picodeck_simulator --help
 ```
 
+A binary moved off the computer it was built on (the published `picodeck-simulator-linux`, say) has no source tree to fall back on, so it needs `--sd-card`.
+
 ## Keyboard Mapping
 
 | PC Key | PicoDeck Button |
@@ -91,7 +100,9 @@ make -j4
 | Arrow Keys | BTN_UP/DOWN/LEFT/RIGHT |
 | Enter | BTN_ENTER |
 | Escape | BTN_ESC |
-| F1-F4 | BTN_F1-F4 |
+| F1-F5 | BTN_F1-F5 |
+| F10 | BTN_MENU, the system menu key (Shift+F5, reported as F10, on the device) |
+| F12 | Save a screenshot to `/screenshots` on the card (Shift+Esc on the device) |
 | Tab | BTN_TAB |
 | Backspace | BTN_BACKSPACE |
 | Delete | BTN_DEL |
@@ -123,22 +134,12 @@ simulator/
 ├── sim_wifi.c, sim_http.c, sim_tcp.c, sim_bt.c, sim_audio.c  # Scripted radios and host-backed I/O
 ├── stubs/                  # Pico SDK, driver and keyboard stubs
 └── assets/
-    └── sd_card/            # Simulated SD card
-        ├── apps/           # Lua apps
-        ├── data/           # App data
-        └── system/         # System config
+    └── sd_card/            # A small card the E2E harness defaults to
 ```
 
 ## Differences from Hardware
 
-1. **No actual GPIO**: Hardware drivers are stubbed
-2. **WiFi, HTTP and TCP use the host's network** (or a scripted radio under test); Bluetooth is a scripted radio
-3. **No `picocalc.crypto`**: mbedTLS is firmware-only
-4. **Faster execution**: PC is faster than RP2350, and native apps run under an emulator, not on a real core
-5. **More memory**: Uses host RAM instead of limited PSRAM (`--real-umm` uses the firmware's heap allocator for realistic fragmentation)
-6. **Different timing**: SDL2 timing vs hardware timers (`--virtual-time` makes it deterministic)
-
-The full list is in [`CLAUDE.md`](CLAUDE.md).
+The list app authors should read is in [Simulator and Testing](../docs/Simulator-and-Testing.md#simulator-vs-device). The implementation notes behind it are in [`CLAUDE.md`](CLAUDE.md).
 
 ## Browser Build
 
@@ -150,6 +151,7 @@ CI builds the simulator and drives it with the pytest suite in [`tests/e2e`](../
 
 ```bash
 make simulator
+pip install -r tests/e2e/requirements.txt
 SDL_VIDEODRIVER=dummy pytest tests/e2e -n auto
 ```
 
@@ -160,7 +162,3 @@ Host unit tests (`make test-unit`) and the nightly fuzzers (`make fuzz`) do not 
 - [ ] GDB remote debugging support
 - [ ] Video capture for regression testing
 - [ ] Network passthrough to host for every network API
-
-## License
-
-Same as PicoDeck (see main project LICENSE)
