@@ -46,7 +46,7 @@ Other board values: `pico2` (no PSRAM/WiFi), `pico_w`, `pico`. Note: the board n
 Output: `build/picodeck.uf2` — drag-and-drop to Pico in BOOTSEL mode.
 
 ### Debug
-USB serial at 115200 baud. App log calls appear as `[APP] message`. Lua errors display on-screen with stack trace (dismiss with **Esc**).
+USB serial at 115200 baud. App log calls appear as `[APP] message`. Lua errors display on-screen, as `/apps/<dir>/main.lua:3: message` with no stack trace (dismiss with **Esc**); the simulator's `app.exited` outcome carries one.
 
 **Serial transfers.** `screenshot` (binary), `screenshot64`, `getb64`, `putb64`, `get` and `put` share the port with the log, so each reports its FNV-1a (`screenshot`'s trailer: `src/os/serial_frame.h`). The host's readers (`tools/scrn_frame.py`, `tools/picodeck_mcp.py`; no host tool uses `get` or `put`) check it, read a damaged transfer to its end, retry, and raise rather than return one that failed (`_retry_transfer`). While one runs, the console gate (`src/console_gate.h`) drops, and counts, every other log write at the stdio drivers, from Core 1 and from Core 0's interrupts; the count prints as `[DEV] Console: N bytes of log output dropped during a transfer` when it ends, and HardFault and `panic()` open the gate first. So a line missing from the serial log may be a line the gate dropped. `lognoise <ms>` makes the noise that stresses this (`tests/e2e/test_screenshot_integrity.py`).
 

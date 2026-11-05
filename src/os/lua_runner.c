@@ -172,8 +172,11 @@ static void lua_vm_body(void *arg) {
   display_clear(C_BG);
   display_flush();
 
-  // Text only: app bundles must not smuggle in unverified bytecode.
-  int load_err = luaL_loadbufferx(L, ctx->lua_src, ctx->lua_len, app->name, "t");
+  // Text only: app bundles must not smuggle in unverified bytecode. The chunk
+  // name is the file's, so errors read /apps/x/main.lua:3: as a module's do.
+  char chunk_name[sizeof(app->path) + 12];
+  snprintf(chunk_name, sizeof(chunk_name), "@%s/main.lua", app->path);
+  int load_err = luaL_loadbufferx(L, ctx->lua_src, ctx->lua_len, chunk_name, "t");
   umm_free(ctx->lua_src);
 
   if (load_err != LUA_OK) {

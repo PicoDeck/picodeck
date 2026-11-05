@@ -363,3 +363,30 @@ class TestReboot:
         while not simulator.call("get_running_app")["running"]:
             assert time.monotonic() < deadline, "the launcher did not come back"
             time.sleep(0.05)
+
+
+class TestErrorPositions:
+    """main.lua's errors name the file, as a module's do."""
+
+    def test_runtime_error_names_main_lua(self, simulator):
+        stage_lua_app(simulator.sd_card_path, "err_pos",
+                      "local x = nil\n\nreturn x.field\n")
+        simulator.launch_app("err_pos")
+        out = simulator.wait_for_exit(timeout=10)
+        assert out.get("result") == "error", out
+        assert "/apps/.test/err_pos/main.lua:3: attempt to index" in out["error"], out
+
+    def test_load_error_names_main_lua(self, simulator):
+        sd = Path(simulator.sd_card_path)
+        stage_lua_app(sd, "err_syntax", "local x =\n")
+        simulator.launch_app("err_syntax")
+        simulator.wait_for_exit(timeout=10)
+        log = (sd / "system" / "error.log").read_text()
+        assert "/apps/.test/err_syntax/main.lua:" in log, log
+
+    def test_module_error_is_unchanged(self, simulator):
+        stage_lua_app(simulator.sd_card_path, "err_mod", 'require("mod")\n',
+                      files={"mod.lua": "local x = nil\nreturn x.field\n"})
+        simulator.launch_app("err_mod")
+        out = simulator.wait_for_exit(timeout=10)
+        assert "/apps/.test/err_mod/mod.lua:2: " in out["error"], out
