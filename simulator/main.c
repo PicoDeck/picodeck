@@ -538,6 +538,7 @@ static const picocalc_appconfig_t s_appconfig_impl = {
 static const picocalc_gamepad_t s_gamepad_impl = {
     .getButtons = kbd_get_pad, .getButtonsPressed = kbd_get_pad_pressed,
     .getButtonsReleased = kbd_get_pad_released, .getLabel = gamepad_get_label,
+    .getAxis = kbd_get_pad_axis,
 };
 
 static void sim_wire_g_api(void) {
@@ -546,7 +547,7 @@ static void sim_wire_g_api(void) {
     g_api.soundplayer = &s_soundplayer_impl;
     g_api.http        = &s_http_impl;
     g_api.appconfig   = &s_appconfig_impl;
-    g_api.version     = 9;  // 9 = gamepad; 8 = http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts (matches src/main.c)
+    g_api.version     = 10; // 10 = gamepad->getAxis; 9 = gamepad; 8 = http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts (matches src/main.c)
     g_api.gamepad     = &s_gamepad_impl;
 }
 

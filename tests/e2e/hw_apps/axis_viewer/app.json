@@ -1,0 +1,2 @@
+{ "id": "com.test.axis_viewer", "name": "Axis viewer", "version": "1.0",
+  "description": "picocalc.gamepad axes and buttons on screen, for checking a real controller (issue #68)", "author": "PicoDeck" }

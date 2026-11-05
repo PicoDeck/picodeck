@@ -2,7 +2,7 @@
 title: "API Gamepad"
 ---
 
-A logical gamepad with 12 buttons. Read it instead of raw keys and your game gets rebinding without writing any code for it: each button is an alias for keys, and players choose those keys in the system menu ([Controls](#controls-settings), below).
+A logical gamepad with 12 buttons, two analog sticks and two analog triggers. Read it instead of raw keys and your game gets rebinding without writing any code for it: each button is an alias for keys, and players choose those keys in the system menu ([Controls](#controls-settings), below). A driving game can [read the sticks and triggers](#analog-sticks-and-triggers) alone and still work on the keyboard.
 
 ## How it works
 
@@ -74,9 +74,31 @@ Each button has a row with a **Primary** and an **Alt** cell. Each cell shows it
 - A bindings file that is there but cannot be read (a read error, or too little free memory) keeps the page shut with "Could not read the bindings", so its bindings are never replaced by what the page could not see. A corrupt file, which launches ignore too, opens as the defaults ("Ignored a corrupt bindings file"), and saving replaces it.
 - The global file lists only the buttons that differ from the defaults (with none it is deleted); the override lists the buttons it overrides.
 
+## Analog sticks and triggers
+
+`getAxis` reads a stick as `-1.0` to `1.0`, right and down positive like screen coordinates, and a trigger as `0.0` to `1.0`. They are separate from the `PAD_*` buttons, which behave as they always have. API version 10.
+
+```lua
+local gp = picocalc.gamepad
+picocalc.input.update()
+local steer = gp.getAxis(gp.AXIS_LX)
+local throttle = gp.getAxis(gp.AXIS_RT)
+if gp.getButtons() & gp.PAD_A ~= 0 then throttle = 1 end -- for the keyboard
+```
+
+- **It works without a controller.** With no stick in use, `AXIS_LX` and `AXIS_LY` read the D-pad, `-1`, `0` or `+1`, whether that is the keyboard's bound keys or the controller's own D-pad. So a game can read only the axes for movement and still work on the keyboard. The right stick and the triggers have no such fallback: they read `0`, so a game with a trigger for the throttle needs a button as well, as above.
+- **A stick in use wins over the D-pad.** A stick past half way also holds `PAD_LEFT` and the rest, so a game reading buttons can use it as a D-pad, but `getAxis` still reads how far it is pushed, not `-1`. While the left stick is in use both of its axes read the stick, whatever the D-pad holds.
+- **The dead zone is done for you.** A stick within about 12% of its centre reads `0` on both axes (the distance counts, not each axis on its own), and the rest of the travel is rescaled to start at `0`, so there is no jump as the stick leaves the middle. From about 95% it reads full, so a worn stick still reaches `1`. Past the dead zone the direction is kept, so a square-gated stick pushed into a corner reads about `0.7` on each axis. A trigger reads `0` under about 3% and full from about 97%.
+- **Several controllers.** Each axis reads the largest value among the controllers connected.
+- **Same polling as the buttons.** `picocalc.input.update()` updates the axes too, and every read until the next one gives the same value. An axis is a level, not an event: nothing latches a short movement. Moving a stick or trigger keeps the screen from dimming, as a key does, but a stick or trigger held dead still does not.
+- **Resolution.** 127 steps each side of a stick's centre and 255 along a trigger, whatever the controller sends.
+- **The keyboard has no analog input.** There the left stick's axes are only ever `-1`, `0` or `+1`.
+
+Which controllers have what is under [Bluetooth controllers](#bluetooth-controllers). In the simulator a controller plugged into the computer gives all six axes. In the browser demo at [picodeck.net/try](https://picodeck.net/try/) the sticks are analog, but the browser's triggers reach the game as `0` or `1`.
+
 ## Bluetooth controllers
 
-A Bluetooth game controller drives the same 12 buttons, so every game that reads `picocalc.gamepad` or `api->gamepad` works with one and needs no code for it. One controller at a time; the keyboard keeps working alongside it.
+A Bluetooth game controller drives the same 12 buttons and the analog axes, so every game that reads `picocalc.gamepad` or `api->gamepad` works with one and needs no code for it. One controller at a time; the keyboard keeps working alongside it.
 
 ### Turning it on
 
@@ -106,9 +128,12 @@ The controller is remembered (up to 4; pairing a fifth forgets the oldest). Next
 | Start / Select | Options / Share (Create) | + / − (Start / Select) | Start / Back |
 | Up/Down/Left/Right | D-pad, left stick | D-pad, left stick | D-pad, left stick |
 | System menu | PS | Home | Home / Guide |
+| `AXIS_LX` / `AXIS_LY` | Left stick | Left stick | Left stick |
+| `AXIS_RX` / `AXIS_RY` | Right stick | Right stick | Right stick |
+| `AXIS_LT` / `AXIS_RT` | L2 / R2 | 8BitDo: its triggers. Switch Pro: none, read `0` | LT / RT |
 
 - **By position, not by label.** A is always the bottom face button and B the right one, as on an Xbox pad. On a Nintendo-style pad (Switch Pro, 8BitDo) that means A is the button labelled **B**.
-- The left stick works as the D-pad once pushed past half way. Triggers, the right stick and the stick clicks are not used.
+- The left stick works as the D-pad once pushed past half way, and [`getAxis`](#analog-sticks-and-triggers) reads how far. The stick clicks are not used, and neither are the buttons that stand in for a trigger: the Switch Pro's ZL and ZR are digital, so they do nothing, and its triggers read `0`. A controller without a right stick reads `0` there.
 - **Home (or PS) opens the system menu**, where the D-pad and A/B move: a player with only a controller can always leave a game.
 - A controller that drops (switched off, out of range, flat battery) releases every button it held: nothing stays stuck.
 
@@ -124,6 +149,8 @@ if not gp then
     -- older firmware: read picocalc.input instead
 end
 ```
+
+`getAxis` and the `AXIS_*` constants are `nil` on firmware older than API version 10: check `gp.getAxis` before use.
 
 ### Functions
 
@@ -179,6 +206,30 @@ picocalc.display.drawText(10, 300, "Press " .. key .. " to jump", picocalc.displ
 
 Key names: `Up`, `Down`, `Left`, `Right`, `Enter`, `Esc`, `Tab`, `Bksp`, `Del`, `Space`, `F1`–`F5`, `A`–`Z`, `Ctrl`.
 
+---
+
+#### `picocalc.gamepad.getAxis(axis)`
+One analog axis as of the last `picocalc.input.update()`, with the dead zone applied. With no stick in use, `AXIS_LX` and `AXIS_LY` read the D-pad ([Analog sticks and triggers](#analog-sticks-and-triggers), above). API version 10.
+
+- **Parameters:**
+  - `axis` (number): One `AXIS_*` constant
+- **Returns:** (number) `-1.0` to `1.0` for a stick, right and down positive; `0.0` to `1.0` for a trigger
+
+Raises an error when `axis` is not an `AXIS_*` constant.
+
+```lua
+local gp = picocalc.gamepad
+local x, y = 160, 160
+while true do
+    picocalc.input.update()
+    x = x + gp.getAxis(gp.AXIS_LX) * 3
+    y = y + gp.getAxis(gp.AXIS_LY) * 3
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
+    draw(x, y)
+    picocalc.display.flush()
+end
+```
+
 ### Button Constants
 
 | Constant | Button |
@@ -195,6 +246,17 @@ Key names: `Up`, `Down`, `Left`, `Right`, `Enter`, `Esc`, `Tab`, `Bksp`, `Del`, 
 | `picocalc.gamepad.PAD_R` | R |
 | `picocalc.gamepad.PAD_START` | Start |
 | `picocalc.gamepad.PAD_SELECT` | Select |
+
+### Axis Constants
+
+| Constant | Axis | Reads |
+|----------|------|-------|
+| `picocalc.gamepad.AXIS_LX` | Left stick, left to right | `-1.0` to `1.0` |
+| `picocalc.gamepad.AXIS_LY` | Left stick, up to down | `-1.0` to `1.0` |
+| `picocalc.gamepad.AXIS_RX` | Right stick, left to right | `-1.0` to `1.0` |
+| `picocalc.gamepad.AXIS_RY` | Right stick, up to down | `-1.0` to `1.0` |
+| `picocalc.gamepad.AXIS_LT` | Left trigger | `0.0` to `1.0` |
+| `picocalc.gamepad.AXIS_RT` | Right trigger | `0.0` to `1.0` |
 
 ## Bindings files
 
@@ -236,5 +298,16 @@ if (api->version >= 9) {
 | `uint32_t getButtonsPressed(void)` | `PAD_*` pressed this frame |
 | `uint32_t getButtonsReleased(void)` | `PAD_*` released this frame |
 | `const char *getLabel(uint32_t pad_button, int slot)` | The key's name; `NULL` when unbound, or when `pad_button` is not one `PAD_*` bit or `slot` is not 0 or 1 |
+| `float getAxis(int axis)` | API version 10: one `AXIS_*`, as [above](#analog-sticks-and-triggers); `0.0` for anything else |
 
-The masks update when `api->sys->poll()` runs, like `api->input`'s.
+The masks and axes update when `api->sys->poll()` runs, like `api->input`'s.
+
+`getAxis` is at the end of the table, so older firmware does not have it: check for version 10, not 9. It returns the float the way the rest of the API does, in `r0` (the base AAPCS, which `-mcpu=cortex-m33 -mthumb` and `-mfloat-abi=softfp` both use; never build an app with `-mfloat-abi=hard`).
+
+```c
+if (api->version >= 10) {
+    api->sys->poll();
+    float steer = api->gamepad->getAxis(AXIS_LX);
+    float throttle = api->gamepad->getAxis(AXIS_RT);
+}
+```

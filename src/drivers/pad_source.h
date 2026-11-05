@@ -42,11 +42,31 @@
 //   - Home (PAD_SOURCE_HOME) is not a PAD_* button: its press raises the
 //     system menu through kbd_consume_menu_press, like the Sym key.
 //
+// Axes (AXIS_* in os.h; issue #68). A source also reports its sticks and
+// triggers, pad_source_publish_axes, with its raw readings: the dead zone is
+// applied here, once, so no transport or game has its own. They are levels,
+// not edges: no latch, and a poll that catches the button word and the axis
+// words from different reports does not matter. Each source has two words, one
+// atomic store each (four int8 sticks, two uint8 triggers), so a reader never
+// sees half of a stick. At every poll, foreground or background, Core 0
+// combines them into what getAxis reads until the next poll, so reading an axis
+// costs a shift and a division, and takes no lock:
+//   - stick shape: a radial inner dead zone (a stick inside it reads 0 on both
+//     axes), the rest rescaled to start at 0, and an outer clamp, so a worn
+//     stick still reaches +-1. A trigger has the same at either end;
+//   - sources: each axis reads the largest magnitude among the sources;
+//   - with the left stick at rest on every source, AXIS_LX and AXIS_LY read the
+//     D-pad instead, -1, 0 or +1: the keyboard's aliases or a hat. The D-pad
+//     cannot simply win, since a stick past half way sets PAD_LEFT too: every
+//     strong push would snap back to 1. The right stick and triggers read 0.
+//   - a disconnect zeroes the source's axes.
+//
 // A transport now implements: discovery, pairing and the link (a BT HID or
 // USB HID report parser), the physical -> logical mapping (face buttons,
-// shoulders, Start/Select, D-pad, a stick to the D-pad with a deadzone,
-// Home), and one pad_source_publish per report plus pad_source_disconnect
-// on link loss. Nothing in the gamepad core or the apps changes.
+// shoulders, Start/Select, D-pad, a stick to the D-pad past half way, the raw
+// sticks and triggers, Home), and one pad_source_publish and
+// pad_source_publish_axes per report plus pad_source_disconnect on link loss.
+// Nothing in the gamepad core or the apps changes.
 // =============================================================================
 
 #include <stdbool.h>
@@ -64,14 +84,25 @@ typedef enum {
 #define PAD_SOURCE_BUTTONS 0x0FFFu    // PAD_UP .. PAD_SELECT
 #define PAD_SOURCE_HOME (1u << 16)    // the pad's Home/guide: the system menu
 
+// A source's raw axes: right and down positive, as AXIS_* read. No dead zone
+// yet. Full deflection is +-127 (a stray -128 reads as -127) and 255.
+typedef struct {
+  int8_t lx, ly, rx, ry;
+  uint8_t lt, rt;
+} pad_axes_t;
+
 // ── Producer side (any core, task or ISR; one producer per source) ──────────
 
 // The source's whole state now (PAD_* | PAD_SOURCE_HOME; other bits are
 // ignored). Connects the source if it was not.
 void pad_source_publish(pad_source_id_t id, uint32_t state);
 
-// The source went away: its buttons are released at the next poll. A tap it
-// published just before still reads for one poll.
+// The source's sticks and triggers now, raw (the shape above is applied here).
+// Does not connect the source: publish its state as well.
+void pad_source_publish_axes(pad_source_id_t id, const pad_axes_t *axes);
+
+// The source went away: its buttons are released at the next poll, its axes
+// read 0. A tap it published just before still reads for one poll.
 void pad_source_disconnect(pad_source_id_t id);
 
 // ── Either side ─────────────────────────────────────────────────────────────
@@ -83,10 +114,11 @@ uint32_t pad_sources_connected(void);
 
 // ── The test source (the `pad` dev command; Core 0) ─────────────────────────
 
-// Publish `state` on PAD_SOURCE_TEST. hold_ms > 0: publish 0 (released,
-// still connected) once hold_ms have passed, counted from the first
-// foreground poll after this call, so an app that polls late still sees the
-// press. hold_ms 0: held until the next call.
+// Publish `state` on PAD_SOURCE_TEST (its axes: pad_source_publish_axes first).
+// hold_ms > 0: publish 0 and zero its axes (released, still connected) once
+// hold_ms have passed, counted from the first foreground poll after this call,
+// so an app that polls late still sees the press. hold_ms 0: held until the
+// next call.
 void pad_source_test_set(uint32_t state, uint32_t hold_ms);
 
 // Disconnect PAD_SOURCE_TEST (and cancel a timed hold).
@@ -130,6 +162,16 @@ uint32_t pad_sources_combine_released(uint16_t kbd_curr, uint16_t kbd_prev);
 // PAD_* pressed this poll by the sources alone (not the keyboard aliases,
 // whose keys already report as BTN_*).
 uint32_t pad_sources_pressed(void);
+
+// The value of one AXIS_* as of the last poll, -1 to 1 (triggers 0 to 1); 0 for
+// anything else. `held` is the D-pad to fall back on (kbd_get_pad: every source
+// and the keyboard).
+float pad_sources_axis(int axis, uint32_t held);
+
+// A stick or trigger moved at the last poll (after its dead zone, so a stick at
+// rest never does), for the idle dimmer's activity check. There is nothing to
+// swallow on a wake: an axis is a level, and reads on.
+bool pad_sources_axes_moved(void);
 
 // The OS's own menus (launcher, system menu) read a pad as navigation: the
 // BTN_* its PAD_* presses stand for (D-pad = arrows, A = Enter, B = Esc).

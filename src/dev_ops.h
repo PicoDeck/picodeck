@@ -43,11 +43,15 @@ bool dev_op_mv(char *args, char *reply, size_t n);
 // drivers/pad_source.h), which apps read through picocalc.gamepad /
 // api->gamepad ORed with the keyboard and any other pad. <state> is `none`
 // (connected, nothing held), `off` (disconnected: its buttons release), or
-// buttons joined by '+' (`a`, `up+a`, `home`): up down left right a b x y l
-// r start select, and home (opens the system menu). The state holds until
-// the next `pad` command, or for hold_ms from the first poll that sees it.
-// args is modified. Reply "Pad: up+a" / "Pad: up+a for 100 ms" /
-// "Pad: none" / "Pad: off"; errors start "Usage:" or "Error:".
+// buttons and axes joined by '+' (`a`, `up+a`, `home`, `lx=-0.5+rt=1`): up down
+// left right a b x y l r start select, home (opens the system menu), and
+// lx ly rx ry (-1 to 1) lt rt (0 to 1). An axis is what a stick would report,
+// so the dead zone applies, and it sets no button (a real stick past half way
+// also sets the D-pad: `left+lx=-0.6`). The whole state holds until the next
+// `pad` command, or for hold_ms from the first poll that sees it. args is
+// modified. Reply "Pad: up+a" / "Pad: up+a for 100 ms" / "Pad: left+lx=-0.600"
+// (axes to three places, an axis at 0 left out) / "Pad: none" / "Pad: off";
+// errors start "Usage:" or "Error:".
 bool dev_op_pad(char *args, char *reply, size_t n);
 
 // "audiostat [reset]": Core 1's tick cost, the output's refill interrupt,

@@ -209,6 +209,10 @@ uint32_t kbd_get_pad_released(void) {
     return pad_sources_combine_released(s_pad.curr, s_pad.prev);
 }
 
+float kbd_get_pad_axis(int axis) {
+    return pad_sources_axis(axis, kbd_get_pad());
+}
+
 uint32_t kbd_get_pad_nav_pressed(void) {
     return pad_nav_buttons(pad_sources_pressed());
 }

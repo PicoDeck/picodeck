@@ -15,10 +15,23 @@ _Static_assert((PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT | PAD_A | PAD_B |
                    PAD_SOURCE_BUTTONS,
                "PAD_SOURCE_BUTTONS covers every PAD_* button");
 
+_Static_assert(AXIS_LX == 0 && AXIS_LY == 1 && AXIS_RX == 2 && AXIS_RY == 3 &&
+                   AXIS_LT == 4 && AXIS_RT == 5,
+               "the axis words are indexed by AXIS_*");
+
+// The axes' shape, in the units of pad_axes_t (127 and 255 are full).
+#define STICK_INNER 15    // 11.8%: at or under this the stick is at rest
+#define STICK_OUTER 121   // 95.3%: from here on it reads full
+#define TRIGGER_INNER 8   // 3.1%
+#define TRIGGER_OUTER 247 // 96.9%
+
 typedef struct {
   // Written by the producer, read (state) and taken (latch) by Core 0.
   _Atomic uint32_t state; // PAD_* | HOME | LIVE; 0 = disconnected
   _Atomic uint32_t latch; // PAD_* | HOME that went down since the last take
+  // Written by the producer, read by Core 0, after the shape: 0 at rest.
+  _Atomic uint32_t sticks;   // int8 lx | ly << 8 | rx << 16 | ry << 24
+  _Atomic uint32_t triggers; // uint8 lt | rt << 8
   // The producer's own: its previous publish, for the rising edges.
   uint32_t last;
 } pad_slot_t;
@@ -35,6 +48,10 @@ static bool s_fresh_bg;         // s_fresh came from a background poll
 // next foreground poll, released once it has run out.
 static bool s_test_armed, s_test_running;
 static uint32_t s_test_hold_ms, s_test_since_ms;
+// What getAxis reads: the sources' axis words combined at the last poll.
+static uint32_t s_sticks;   // as pad_slot_t.sticks
+static uint16_t s_triggers; // as pad_slot_t.triggers
+static bool s_axes_moved;   // the last poll changed them
 
 // ── Producer side ───────────────────────────────────────────────────────────
 
@@ -53,11 +70,68 @@ void pad_source_publish(pad_source_id_t id, uint32_t state) {
     atomic_fetch_or_explicit(&s->latch, rising, memory_order_release);
 }
 
+static uint32_t isqrt(uint32_t v) {
+  uint32_t r = 0;
+  for (uint32_t bit = 1u << 7; bit; bit >>= 1)
+    if ((r | bit) * (r | bit) <= v)
+      r |= bit;
+  return r;
+}
+
+static int div_round(int n, int d) { // d > 0
+  return (n >= 0 ? n + d / 2 : n - d / 2) / d;
+}
+
+// One stick into one half of a word: its distance from the centre is rescaled,
+// its direction kept. A rescaled length of 1 or more comes out nonzero (the
+// larger component is at least 0.7 of it), so 0 on both axes means at rest,
+// which is what the D-pad fallback asks.
+static uint32_t stick_shape(int x, int y) {
+  uint32_t d2 = (uint32_t)(x * x + y * y);
+  if (d2 <= STICK_INNER * STICK_INNER)
+    return 0;
+  int d = (int)isqrt(d2); // 15..181: no component exceeds it
+  int len = 127;
+  if (d < STICK_OUTER)
+    len = div_round((d - STICK_INNER) * 127, STICK_OUTER - STICK_INNER);
+  x = div_round(x * len, d);
+  y = div_round(y * len, d);
+  return (uint32_t)(uint8_t)x | (uint32_t)(uint8_t)y << 8;
+}
+
+static uint32_t trigger_shape(int v) {
+  if (v <= TRIGGER_INNER)
+    return 0;
+  if (v >= TRIGGER_OUTER)
+    return 255;
+  return (uint32_t)div_round((v - TRIGGER_INNER) * 255,
+                             TRIGGER_OUTER - TRIGGER_INNER);
+}
+
+void pad_source_publish_axes(pad_source_id_t id, const pad_axes_t *a) {
+  if ((unsigned)id >= PAD_SOURCE_COUNT)
+    return;
+  pad_slot_t *s = &s_slot[id];
+  atomic_store_explicit(&s->sticks,
+                        stick_shape(a->lx, a->ly) |
+                            stick_shape(a->rx, a->ry) << 16,
+                        memory_order_release);
+  atomic_store_explicit(&s->triggers,
+                        trigger_shape(a->lt) | trigger_shape(a->rt) << 8,
+                        memory_order_release);
+}
+
+static void axes_zero(pad_slot_t *s) {
+  atomic_store_explicit(&s->sticks, 0, memory_order_release);
+  atomic_store_explicit(&s->triggers, 0, memory_order_release);
+}
+
 void pad_source_disconnect(pad_source_id_t id) {
   if ((unsigned)id >= PAD_SOURCE_COUNT)
     return;
   s_slot[id].last = 0;
   atomic_store_explicit(&s_slot[id].state, 0, memory_order_release);
+  axes_zero(&s_slot[id]);
 }
 
 bool pad_source_is_connected(pad_source_id_t id) {
@@ -98,8 +172,10 @@ static void test_hold_poll(uint32_t now_ms) {
   } else if (s_test_running &&
              (uint32_t)(now_ms - s_test_since_ms) >= s_test_hold_ms) {
     s_test_running = false;
-    if (pad_source_is_connected(PAD_SOURCE_TEST))
+    if (pad_source_is_connected(PAD_SOURCE_TEST)) {
       pad_source_publish(PAD_SOURCE_TEST, 0);
+      axes_zero(&s_slot[PAD_SOURCE_TEST]);
+    }
   }
 }
 
@@ -119,9 +195,32 @@ static void sample(uint32_t *held, uint32_t *taps) {
   *taps = t;
 }
 
+// Each axis's largest magnitude among the sources. A stick at rest is 0 on both
+// its axes, so it never beats one in use. Nearly always every word is 0.
+static void axes_poll(void) {
+  uint32_t sticks = 0, triggers = 0;
+  for (int i = 0; i < PAD_SOURCE_COUNT; i++) {
+    uint32_t w = atomic_load_explicit(&s_slot[i].sticks, memory_order_acquire);
+    for (int shift = 0; shift < 32 && (w >> shift); shift += 8) {
+      int v = (int8_t)(w >> shift), best = (int8_t)(sticks >> shift);
+      if (v * v > best * best)
+        sticks = (sticks & ~(0xFFu << shift)) | (uint32_t)(uint8_t)v << shift;
+    }
+    w = atomic_load_explicit(&s_slot[i].triggers, memory_order_acquire);
+    if ((w & 0xFFu) > (triggers & 0xFFu))
+      triggers = (triggers & 0xFF00u) | (w & 0xFFu);
+    if ((w & 0xFF00u) > (triggers & 0xFF00u))
+      triggers = (triggers & 0xFFu) | (w & 0xFF00u);
+  }
+  s_axes_moved = sticks != s_sticks || triggers != s_triggers;
+  s_sticks = sticks;
+  s_triggers = (uint16_t)triggers;
+}
+
 bool pad_sources_poll(bool bg, uint32_t now_ms) {
   if (!bg)
     test_hold_poll(now_ms);
+  axes_poll();
   uint32_t held, taps;
   sample(&held, &taps);
   bool home = (taps & PAD_SOURCE_HOME) != 0;
@@ -199,6 +298,30 @@ uint32_t pad_sources_pressed(void) {
   return (uint32_t)(s_curr & ~s_prev) & 0xFFFFu;
 }
 
+float pad_sources_axis(int axis, uint32_t held) {
+  switch (axis) {
+  case AXIS_LX:
+    if (!(s_sticks & 0xFFFFu))
+      return (float)(!!(held & PAD_RIGHT) - !!(held & PAD_LEFT));
+    break;
+  case AXIS_LY:
+    if (!(s_sticks & 0xFFFFu))
+      return (float)(!!(held & PAD_DOWN) - !!(held & PAD_UP));
+    break;
+  case AXIS_RX:
+  case AXIS_RY:
+    break;
+  case AXIS_LT:
+  case AXIS_RT:
+    return (float)(uint8_t)(s_triggers >> (8 * (axis - AXIS_LT))) / 255.0f;
+  default:
+    return 0.0f;
+  }
+  return (float)(int8_t)(s_sticks >> (8 * axis)) / 127.0f;
+}
+
+bool pad_sources_axes_moved(void) { return s_axes_moved; }
+
 uint32_t pad_nav_buttons(uint32_t pad) {
   uint32_t btn = 0;
   if (pad & PAD_UP)
@@ -220,10 +343,14 @@ void pad_sources_reset(void) {
   for (int i = 0; i < PAD_SOURCE_COUNT; i++) {
     atomic_store(&s_slot[i].state, 0);
     atomic_store(&s_slot[i].latch, 0);
+    axes_zero(&s_slot[i]);
     s_slot[i].last = 0;
   }
   s_curr = s_prev = s_quiet = s_fresh = s_acc = 0;
   s_fresh_bg = false;
+  s_sticks = 0;
+  s_triggers = 0;
+  s_axes_moved = false;
   s_test_armed = s_test_running = false;
   s_test_hold_ms = s_test_since_ms = 0;
 }

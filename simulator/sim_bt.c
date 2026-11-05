@@ -312,11 +312,13 @@ bool bt_pad_sim_add(const uint8_t addr[6], uint32_t cod, const char *name) {
 
 void bt_pad_sim_clear(void) { s.n_range = 0; }
 
-// The connected pad's state (PAD_* | PAD_SOURCE_HOME), as one HID report.
-bool bt_pad_sim_report(uint32_t state) {
+// The connected pad's state (PAD_* | PAD_SOURCE_HOME) and raw axes, as one HID
+// report.
+bool bt_pad_sim_report(uint32_t state, const pad_axes_t *axes) {
   tick();
   if (s.link != BT_PAD_LINK_CONNECTED)
     return false;
+  pad_source_publish_axes(PAD_SOURCE_BT, axes);
   pad_source_publish(PAD_SOURCE_BT, state);
   s.reports++;
   return true;

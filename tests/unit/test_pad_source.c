@@ -378,6 +378,285 @@ static void test_nav_buttons(void) {
                0);
 }
 
+// ── Axes ────────────────────────────────────────────────────────────────────
+
+static bool near(float got, float want) {
+  float d = got - want;
+  return d > -0.012f && d < 0.012f;
+}
+
+#define CHECK_AXIS(axis, dpad, want)                                          \
+  do {                                                                        \
+    float _v = pad_sources_axis((axis), (dpad));                              \
+    if (!near(_v, (want)))                                                    \
+      printf("  axis %d read %f, want %f\n", (axis), (double)_v,              \
+             (double)(want));                                                 \
+    CHECK(near(_v, (want)));                                                  \
+  } while (0)
+
+static void sticks(pad_source_id_t id, int lx, int ly, int rx, int ry) {
+  pad_axes_t a = {(int8_t)lx, (int8_t)ly, (int8_t)rx, (int8_t)ry, 0, 0};
+  pad_source_publish_axes(id, &a);
+}
+
+static void triggers(pad_source_id_t id, int lt, int rt) {
+  pad_axes_t a = {0, 0, 0, 0, (uint8_t)lt, (uint8_t)rt};
+  pad_source_publish_axes(id, &a);
+}
+
+static void test_axes_rest_and_range(void) {
+  reset();
+  fg();
+  for (int a = AXIS_LX; a <= AXIS_RT; a++)
+    CHECK_AXIS(a, 0, 0.0f);
+  // Not an axis: 0, whatever is held.
+  CHECK_AXIS(-1, PAD_LEFT, 0.0f);
+  CHECK_AXIS(6, PAD_LEFT, 0.0f);
+  // Full deflection reads exactly +-1, right and down positive.
+  sticks(PAD_SOURCE_HOST, 127, 0, 0, -127);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == 1.0f);
+  CHECK(pad_sources_axis(AXIS_LY, 0) == 0.0f);
+  CHECK(pad_sources_axis(AXIS_RY, 0) == -1.0f);
+  // -128 (a raw value nothing should send) stays in range.
+  sticks(PAD_SOURCE_HOST, -128, 0, 0, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == -1.0f);
+  triggers(PAD_SOURCE_HOST, 255, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LT, 0) == 1.0f);
+  CHECK(pad_sources_axis(AXIS_RT, 0) == 0.0f);
+}
+
+static void test_stick_deadzone(void) {
+  reset();
+  // The inner dead zone: nothing at all.
+  sticks(PAD_SOURCE_HOST, 15, 0, 0, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == 0.0f);
+  sticks(PAD_SOURCE_HOST, -10, 10, 0, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == 0.0f);
+  CHECK(pad_sources_axis(AXIS_LY, 0) == 0.0f);
+  // Radial: each axis alone is inside, the stick's distance is not.
+  sticks(PAD_SOURCE_HOST, 14, 14, 0, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) > 0.0f);
+  CHECK(pad_sources_axis(AXIS_LY, 0) > 0.0f);
+  // The rest is rescaled to start at 0: just outside reads next to nothing,
+  // no jump, and it rises with the stick up to the outer clamp.
+  float prev = 0.0f;
+  for (int v = 0; v <= 127; v++) {
+    sticks(PAD_SOURCE_HOST, v, 0, 0, 0);
+    fg();
+    float got = pad_sources_axis(AXIS_LX, 0);
+    CHECK(got >= prev);
+    CHECK(got - prev < 0.03f);
+    prev = got;
+    // Mirror image on the other side.
+    sticks(PAD_SOURCE_HOST, -v, 0, 0, 0);
+    fg();
+    CHECK(pad_sources_axis(AXIS_LX, 0) == -got);
+  }
+  // A worn stick that stops short still reaches full.
+  sticks(PAD_SOURCE_HOST, 122, 0, 0, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == 1.0f);
+  // Past half way it reads what the shape says, not 1.
+  sticks(PAD_SOURCE_HOST, 76, 0, 0, 0);
+  fg();
+  CHECK_AXIS(AXIS_LX, 0, 0.575f);
+  // Square-gated corner: the direction is kept, the length clamped.
+  sticks(PAD_SOURCE_HOST, 127, 127, 0, 0);
+  fg();
+  CHECK_AXIS(AXIS_LX, 0, 0.707f);
+  CHECK_AXIS(AXIS_LY, 0, 0.707f);
+  // The right stick has the same shape, on its own: the left at rest.
+  sticks(PAD_SOURCE_HOST, 0, 0, 10, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_RX, 0) == 0.0f);
+  sticks(PAD_SOURCE_HOST, 10, 0, 122, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == 0.0f);
+  CHECK(pad_sources_axis(AXIS_RX, 0) == 1.0f);
+}
+
+static void test_trigger_shape(void) {
+  reset();
+  // A trigger at rest may not read exactly 0, and a worn one still gets to 1.
+  triggers(PAD_SOURCE_HOST, 7, 8);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LT, 0) == 0.0f);
+  CHECK(pad_sources_axis(AXIS_RT, 0) == 0.0f);
+  triggers(PAD_SOURCE_HOST, 248, 128);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LT, 0) == 1.0f);
+  CHECK_AXIS(AXIS_RT, 0, 0.5f);
+  float prev = 0.0f;
+  for (int v = 0; v <= 255; v++) {
+    triggers(PAD_SOURCE_HOST, 0, v);
+    fg();
+    float got = pad_sources_axis(AXIS_RT, 0);
+    CHECK(got >= prev);
+    CHECK(got - prev < 0.02f);
+    prev = got;
+  }
+  // Triggers have no D-pad fallback, sticks do not reach them.
+  CHECK_AXIS(AXIS_LT, PAD_LEFT | PAD_UP | PAD_A, 0.0f);
+}
+
+static void test_dpad_fallback(void) {
+  reset();
+  fg();
+  // No stick in use: the left stick reads the D-pad (the keyboard's aliases,
+  // a hat), -1 / 0 / +1. The right stick and triggers have no such fallback.
+  CHECK(pad_sources_axis(AXIS_LX, PAD_LEFT) == -1.0f);
+  CHECK(pad_sources_axis(AXIS_LX, PAD_RIGHT) == 1.0f);
+  CHECK(pad_sources_axis(AXIS_LX, PAD_LEFT | PAD_RIGHT) == 0.0f);
+  CHECK(pad_sources_axis(AXIS_LX, PAD_UP | PAD_DOWN | PAD_A) == 0.0f);
+  CHECK(pad_sources_axis(AXIS_LY, PAD_UP) == -1.0f);
+  CHECK(pad_sources_axis(AXIS_LY, PAD_DOWN) == 1.0f);
+  CHECK(pad_sources_axis(AXIS_LY, PAD_UP | PAD_DOWN) == 0.0f);
+  CHECK(pad_sources_axis(AXIS_RX, PAD_RIGHT) == 0.0f);
+  CHECK(pad_sources_axis(AXIS_RY, PAD_DOWN) == 0.0f);
+  CHECK(pad_sources_axis(AXIS_RT, PAD_RIGHT | PAD_A | PAD_R) == 0.0f);
+  // A stick inside its dead zone is not in use: the D-pad still reads.
+  sticks(PAD_SOURCE_BT, 12, 0, 0, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, PAD_LEFT) == -1.0f);
+  // A stick past half way also sets PAD_LEFT: it must not snap back to -1.
+  sticks(PAD_SOURCE_BT, -76, 0, 0, 0);
+  fg();
+  CHECK_AXIS(AXIS_LX, PAD_LEFT, -0.575f);
+  // The rule is per stick: while it is in use its other axis reads the stick
+  // too (0 here), not the D-pad, so the reading never jumps with the noise.
+  CHECK(pad_sources_axis(AXIS_LY, PAD_UP) == 0.0f);
+  // The right stick in use does not hide the D-pad from the left.
+  sticks(PAD_SOURCE_BT, 0, 0, 100, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, PAD_LEFT) == -1.0f);
+}
+
+static void test_axes_combine(void) {
+  reset();
+  // Largest magnitude wins, per axis, across the sources in use.
+  sticks(PAD_SOURCE_TEST, 40, -100, 0, 0);
+  sticks(PAD_SOURCE_BT, -90, 30, 0, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) < -0.5f);
+  CHECK(pad_sources_axis(AXIS_LY, 0) < -0.5f);
+  // A source at rest changes nothing.
+  sticks(PAD_SOURCE_BT, 0, 0, 0, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) > 0.0f);
+  CHECK(pad_sources_axis(AXIS_LY, 0) < -0.5f);
+  // Triggers likewise, each on its own.
+  triggers(PAD_SOURCE_TEST, 200, 40);
+  triggers(PAD_SOURCE_BT, 60, 255);
+  fg();
+  CHECK_AXIS(AXIS_LT, 0, 0.8f);
+  CHECK(pad_sources_axis(AXIS_RT, 0) == 1.0f);
+}
+
+static void test_axes_disconnect(void) {
+  reset();
+  pad_axes_t a = {127, 127, 127, 127, 255, 255};
+  pad_source_publish(PAD_SOURCE_BT, PAD_LEFT);
+  pad_source_publish_axes(PAD_SOURCE_BT, &a);
+  fg();
+  CHECK(pad_sources_axis(AXIS_RX, 0) != 0.0f);
+  CHECK(pad_sources_axis(AXIS_RT, 0) == 1.0f);
+  pad_source_disconnect(PAD_SOURCE_BT);
+  fg();
+  for (int i = AXIS_LX; i <= AXIS_RT; i++)
+    CHECK(pad_sources_axis(i, 0) == 0.0f);
+  // Another source's axes outlive it.
+  pad_source_publish_axes(PAD_SOURCE_BT, &a);
+  sticks(PAD_SOURCE_HOST, 0, 0, -127, 0);
+  fg();
+  pad_source_disconnect(PAD_SOURCE_BT);
+  fg();
+  CHECK(pad_sources_axis(AXIS_RX, 0) == -1.0f);
+  CHECK(pad_sources_axis(AXIS_LT, 0) == 0.0f);
+}
+
+static void test_axes_test_source(void) {
+  reset();
+  pad_axes_t a = {-127, 0, 0, 0, 0, 255};
+  // A timed hold ends for the axes too, and the source stays connected.
+  pad_source_publish_axes(PAD_SOURCE_TEST, &a);
+  pad_source_test_set(0, 100);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == -1.0f);
+  s_now += 99;
+  fg();
+  CHECK(pad_sources_axis(AXIS_RT, 0) == 1.0f);
+  s_now += 1;
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == 0.0f);
+  CHECK(pad_sources_axis(AXIS_RT, 0) == 0.0f);
+  CHECK(pad_source_is_connected(PAD_SOURCE_TEST));
+  // Off: gone at once.
+  pad_source_publish_axes(PAD_SOURCE_TEST, &a);
+  pad_source_test_set(0, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == -1.0f);
+  pad_source_test_off();
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == 0.0f);
+  CHECK(!pad_source_is_connected(PAD_SOURCE_TEST));
+}
+
+// Reads are of the last poll, whatever kind, so a frame sees one value; the
+// buttons' clear, discard and swallow are for edges and leave levels alone.
+static void test_axes_read_at_polls(void) {
+  reset();
+  fg();
+  sticks(PAD_SOURCE_HOST, 127, 0, 0, 0);
+  CHECK(pad_sources_axis(AXIS_LX, 0) == 0.0f);  // not polled yet
+  bg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == 1.0f);
+  sticks(PAD_SOURCE_HOST, -127, 0, 0, 0);
+  fg();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == -1.0f);
+  pad_sources_clear();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == -1.0f);
+  pad_sources_discard();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == -1.0f);
+  pad_sources_swallow();
+  CHECK(pad_sources_axis(AXIS_LX, 0) == -1.0f);
+}
+
+// What the idle dimmer counts: a stick or trigger that moved. A stick at rest
+// (inside its dead zone, however noisy) or held dead still does not.
+static void test_axes_moved(void) {
+  reset();
+  fg();
+  CHECK(!pad_sources_axes_moved());
+  sticks(PAD_SOURCE_BT, 10, -9, 0, 0);
+  fg();
+  CHECK(!pad_sources_axes_moved());
+  sticks(PAD_SOURCE_BT, 70, 0, 0, 0);
+  fg();
+  CHECK(pad_sources_axes_moved());
+  fg();
+  CHECK(!pad_sources_axes_moved());
+  sticks(PAD_SOURCE_BT, 70, 0, 0, 0);
+  bg();
+  CHECK(!pad_sources_axes_moved());
+  sticks(PAD_SOURCE_BT, 72, 0, 0, 0);
+  bg();  // a background poll sees it too
+  CHECK(pad_sources_axes_moved());
+  triggers(PAD_SOURCE_BT, 0, 100);
+  fg();
+  CHECK(pad_sources_axes_moved());  // a trigger, and the stick let go
+  pad_source_disconnect(PAD_SOURCE_BT);
+  fg();
+  CHECK(pad_sources_axes_moved());
+  fg();
+  CHECK(!pad_sources_axes_moved());
+}
+
 int main(void) {
   test_press_hold_release();
   test_tap_between_polls();
@@ -390,5 +669,14 @@ int main(void) {
   test_swallow();
   test_test_source();
   test_nav_buttons();
+  test_axes_rest_and_range();
+  test_stick_deadzone();
+  test_trigger_shape();
+  test_dpad_fallback();
+  test_axes_combine();
+  test_axes_disconnect();
+  test_axes_test_source();
+  test_axes_read_at_polls();
+  test_axes_moved();
   return check_report("test_pad_source");
 }

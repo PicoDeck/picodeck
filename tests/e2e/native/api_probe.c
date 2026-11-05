@@ -12,7 +12,8 @@
 //     (unicorn_build_api_struct), so gap != sizeof means its slot count
 //     drifted from os.h, which shifts every later table and `version`;
 //   - the gamepad table (API version 9, after `version`): read only when
-//     api->version says it is there, as apps must; its buttons (none held)
+//     api->version says it is there, as apps must, and getAxis (API version
+//     10) when that says so; its buttons (none held)
 //     and the labels of A's two slots (default: F4 and unbound), and that a
 //     label kept from startup still reads the same after many more calls
 //     (on the device the names are flash strings).
@@ -82,6 +83,21 @@ void picodeck_main(const PicoCalcAPI *api, const char *app_dir,
         for (int i = 0; i < 10000; i++)
             (void)api->gamepad->getLabel(PAD_Y, 0);
         log("PROBE gamepad kept label_a=%s", a0 ? a0 : "-");
+    }
+    if (api->version >= 10) {
+        // getAxis returns a float (the base AAPCS: in r0). As its bits: this
+        // links no libgcc, and the test sees exactly what the app got.
+        static const int axes[6] = {AXIS_LX, AXIS_LY, AXIS_RX,
+                                    AXIS_RY, AXIS_LT, AXIS_RT};
+        union { float f; uint32_t u; } v[7];
+        api->sys->poll();
+        for (int i = 0; i < 6; i++)
+            v[i].f = api->gamepad->getAxis(axes[i]);
+        v[6].f = api->gamepad->getAxis(6); // not an axis
+        log("PROBE gamepad axes %x %x %x %x %x %x bad=%x",
+            (unsigned)v[0].u, (unsigned)v[1].u, (unsigned)v[2].u,
+            (unsigned)v[3].u, (unsigned)v[4].u, (unsigned)v[5].u,
+            (unsigned)v[6].u);
     }
     log("PROBE done");
 }

@@ -674,7 +674,11 @@ def test_mcp_pad_spec_expansion():
         "pad home 100", "pad up 100", "pad a 100"]
     assert pm._pad_commands("b none off", 50) == [
         "pad b 50", "pad none", "pad off"]
-    for bad in ("", "  ", "a+zz", "menu"):
+    assert pm._pad_commands("LX=-0.5+rt=1") == ["pad lx=-0.5+rt=1"]
+    assert pm._pad_commands("left+lx=-.6", 250) == ["pad left+lx=-.6 250"]
+    assert pm._pad_commands("rx=1, ry=-1") == ["pad rx=1 100", "pad ry=-1 100"]
+    for bad in ("", "  ", "a+zz", "menu", "zz=1", "lx=", "lx=2", "lx=-1.1",
+                "rt=-0.5", "lx=abc", "lx=1e0", "lx=nan", "lx=inf"):
         with pytest.raises(ValueError):
             pm._pad_commands(bad)
     assert pm._pad_reply(["[DEV] Command: pad a", "[DEV] Pad: a"]) == "Pad: a"

@@ -449,7 +449,7 @@ function picocalc.input.isKeyDown(k) end
 ---reports as itself through `picocalc.input`. Players rebind it: the global
 ---map is `/system/gamepad.json`, a per-game override `/data/<APP_ID>/gamepad.json`,
 ---both read when the app starts. Updated by `picocalc.input.update()`. Absent on firmware before API version 9: check
----`if picocalc.gamepad then`.
+---`if picocalc.gamepad then`. `getAxis` and the AXIS_* constants need API version 10: check `if picocalc.gamepad.getAxis then`.
 ---@class picocalc.gamepad
 ---@field PAD_UP     integer Up (default: Up arrow)
 ---@field PAD_DOWN   integer Down (default: Down arrow)
@@ -463,6 +463,12 @@ function picocalc.input.isKeyDown(k) end
 ---@field PAD_R      integer R (default: F3)
 ---@field PAD_START  integer Start (default: F1)
 ---@field PAD_SELECT integer Select (default: Tab)
+---@field AXIS_LX    integer Left stick, left to right
+---@field AXIS_LY    integer Left stick, up to down
+---@field AXIS_RX    integer Right stick, left to right
+---@field AXIS_RY    integer Right stick, up to down
+---@field AXIS_LT    integer Left trigger
+---@field AXIS_RT    integer Right trigger
 picocalc.gamepad = {}
 
 ---Bitmask of held gamepad buttons (PAD_* constants).
@@ -484,6 +490,15 @@ function picocalc.gamepad.getButtonsReleased() end
 ---@param slot? integer 0 = primary (default), 1 = alternate
 ---@return string|nil
 function picocalc.gamepad.getLabel(btn, slot) end
+
+---One analog axis as of the last `picocalc.input.update()`: a stick reads -1.0 to
+---1.0, right and down positive; a trigger 0.0 to 1.0. The dead zone is applied.
+---With no stick in use AXIS_LX and AXIS_LY read the D-pad (-1, 0 or +1: bound keys
+---or a controller's D-pad), so a game can read only these and still work on the
+---keyboard; the right stick and the triggers then read 0. API version 10.
+---@param axis integer One AXIS_* constant
+---@return number value
+function picocalc.gamepad.getAxis(axis) end
 
 -- =============================================================================
 -- picocalc.sys

@@ -341,8 +341,11 @@ static void hid_event(uint8_t *packet) {
     const uint8_t *r = hid_subevent_report_get_report(packet);
     uint16_t n = hid_subevent_report_get_report_len(packet);
     uint32_t st;
+    pad_axes_t axes;
     if (n >= 2 && r[0] == 0xA1 && // DATA | Input
-        hid_pad_decode(&s_bt->layout, s_bt->profile, r + 1, n - 1u, &st)) {
+        hid_pad_decode(&s_bt->layout, s_bt->profile, r + 1, n - 1u, &st,
+                       &axes)) {
+      pad_source_publish_axes(PAD_SOURCE_BT, &axes);
       pad_source_publish(PAD_SOURCE_BT, st);
       s_bt->reports++;
     }

@@ -1426,19 +1426,41 @@ async def keypress(key: str, count: int = 1, delay_ms: int = 100,
 
 # ── Gamepad (the `pad` dev command) ─────────────────────────────────────────
 
-# Button names the firmware's `pad` command takes (src/dev_ops.c), joined by
-# '+'; "none" releases everything (the pad stays connected), "off"
-# disconnects it.
+# Button and axis names the firmware's `pad` command takes (src/dev_ops.c),
+# joined by '+'; "none" releases everything (the pad stays connected), "off"
+# disconnects it. An axis is name=value: sticks -1 to 1, triggers 0 to 1.
 _PAD_BUTTONS = {"up", "down", "left", "right", "a", "b", "x", "y", "l", "r",
                 "start", "select", "home"}
+_PAD_STICKS = {"lx", "ly", "rx", "ry"}
+_PAD_TRIGGERS = {"lt", "rt"}
+
+
+def _pad_token_error(tok: str) -> str | None:
+    """What is wrong with one name of a pad state, or None."""
+    if "=" not in tok:
+        if tok in _PAD_BUTTONS:
+            return None
+        return (f"unknown pad button {tok!r} (buttons: "
+                + ", ".join(sorted(_PAD_BUTTONS)) + ")")
+    name, value = tok.split("=", 1)
+    if name not in _PAD_STICKS | _PAD_TRIGGERS:
+        return (f"unknown pad axis {name!r} (axes: "
+                + ", ".join(sorted(_PAD_STICKS | _PAD_TRIGGERS)) + ")")
+    low = 0.0 if name in _PAD_TRIGGERS else -1.0
+    # The firmware takes plain decimals only (no exponent, inf, nan or '+').
+    if not re.fullmatch(r"-?(\d+\.?\d*|\.\d+)", value) \
+            or not low <= float(value) <= 1.0:
+        return f"bad pad axis value {tok!r} ({name}: {low:g} to 1)"
+    return None
 
 
 def _parse_pad_states(spec: str) -> list[str]:
     """Split a pad spec into the states to set in turn, normalized.
 
-    "A+Right" -> ["a+right"]; "home, up, a" or "home up a" -> ["home", "up",
-    "a"]; "none" and "off" stand alone. Raises ValueError on an unknown
-    button or an empty spec.
+    "A+Right" -> ["a+right"]; "left+lx=-0.5" stays one state; "home, up, a"
+    or "home up a" -> ["home", "up", "a"]; "none" and "off" stand alone.
+    Raises ValueError on an unknown button or axis, a bad axis value or an
+    empty spec.
     """
     states = []
     for tok in re.split(r"[\s,]+", spec.strip()):
@@ -1449,10 +1471,10 @@ def _parse_pad_states(spec: str) -> list[str]:
             states.append(tok)
             continue
         names = tok.split("+")
-        bad = [n for n in names if n not in _PAD_BUTTONS]
-        if bad:
-            raise ValueError(f"unknown pad button {bad[0]!r} (buttons: "
-                             + ", ".join(sorted(_PAD_BUTTONS)) + ")")
+        for n in names:
+            err = _pad_token_error(n)
+            if err:
+                raise ValueError(err)
         states.append("+".join(names))
     if not states:
         raise ValueError("empty pad state")
@@ -1489,11 +1511,15 @@ async def pad(state: str, hold_ms: int = 0, delay_ms: int = 150,
     command): apps read it through picocalc.gamepad / api->gamepad, ORed with
     the keyboard, like a physical controller.
 
-    state: buttons joined by '+' ("a", "up+a"; up down left right a b x y l
-    r start select, and home, which opens or closes the system menu), "none" (release
-    everything, stay connected) or "off" (disconnect). A single state is held
-    until the next call, or for hold_ms. A list ("home, up, a") presses each
-    in turn, each held hold_ms (default 100), delay_ms apart (default 150).
+    state: buttons and axes joined by '+' ("a", "up+a", "lx=-0.5+rt=1"; up
+    down left right a b x y l r start select, home, which opens or closes the
+    system menu, and the axes lx ly rx ry from -1 to 1, lt rt from 0 to 1, read
+    by picocalc.gamepad.getAxis), "none" (release everything, stay connected)
+    or "off" (disconnect). An axis is what a stick would report: the dead zone
+    applies, so lx=-0.6 reads about -0.575, and it sets no button (a real stick
+    past half way also sets the D-pad: "left+lx=-0.6"). A single state is held
+    whole until the next call, or for hold_ms. A list ("home, up, a") presses
+    each in turn, each held hold_ms (default 100), delay_ms apart (default 150).
     """
     try:
         cmds = _pad_commands(state, hold_ms)

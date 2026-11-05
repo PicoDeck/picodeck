@@ -8,10 +8,11 @@
 // descriptor (from SDP). hid_pad_parse() reads the descriptor once, at
 // connect, into a small table of the Input fields a gamepad needs: the
 // buttons (Button page, as ranges or lists), the hat switch, the left stick
-// (Generic Desktop X and Y, the first pair in a report) and a Home button
-// (Generic Desktop System Main Menu, or Consumer AC Home). hid_pad_decode()
-// then turns each input report into the source's PAD_* state
-// (pad_source.h: PAD_* | PAD_SOURCE_HOME).
+// (Generic Desktop X and Y, the first pair in a report), the other analog
+// axes (Generic Desktop Z, Rx, Ry and Rz, Simulation Controls Accelerator and
+// Brake) and a Home button (Generic Desktop System Main Menu, or Consumer AC
+// Home). hid_pad_decode() then turns each input report into the source's PAD_*
+// state (pad_source.h: PAD_* | PAD_SOURCE_HOME) and its raw axes.
 //
 // Which HID button is which PAD_* button depends on the pad (the descriptor
 // only numbers them), so a profile picks the table, by the pad's Bluetooth
@@ -20,15 +21,21 @@
 // bottom button, PAD_B the right one, PAD_X the left one, PAD_Y the top
 // one. On a Nintendo-layout pad that means PAD_A is the button labelled B.
 //
-// The stick drives the D-pad past half way from the centre (the simulator's
-// threshold too); the hat and the stick are ORed.
+// The left stick drives the D-pad past half way from the centre (the
+// simulator's threshold too); the hat and the stick are ORed. Its value is also
+// reported, as are the right stick and the triggers. Which usage is which of
+// those depends on the pad too, so the profile decides at decode time (a name
+// can arrive after the descriptor; hid_pad.c, axis_map). A field past the
+// report's end, or one no profile reads, leaves its axis at 0.
 // =============================================================================
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#define HID_PAD_MAX_FIELDS 24
+#include "pad_source.h" // pad_axes_t
+
+#define HID_PAD_MAX_FIELDS 32 // kept from a descriptor, across its reports
 
 typedef enum {
   HID_PAD_F_BUTTONS = 1, // `count` 1-element buttons from button `usage` up
@@ -37,6 +44,14 @@ typedef enum {
   HID_PAD_F_X,           // left stick X
   HID_PAD_F_Y,           // left stick Y
   HID_PAD_F_HOME,        // Home / guide / System Main Menu (1 bit)
+  // Analog usages, whichever role the profile gives them (axis_map). None
+  // of them makes a report the gamepad's, or a short one refused, on its own.
+  HID_PAD_F_Z,
+  HID_PAD_F_RX,
+  HID_PAD_F_RY,
+  HID_PAD_F_RZ,
+  HID_PAD_F_ACCEL,       // Simulation Controls Accelerator
+  HID_PAD_F_BRAKE,       // Simulation Controls Brake
 } hid_pad_kind_t;
 
 typedef struct {
@@ -56,7 +71,8 @@ typedef struct {
 } hid_pad_layout_t;
 
 // Read a report descriptor. False when it holds no gamepad field (no
-// buttons, hat or stick in any input report): not a pad this can read.
+// buttons, hat or left stick in any input report; the analog extras alone do
+// not count): not a pad this can read.
 bool hid_pad_parse(const uint8_t *desc, size_t len, hid_pad_layout_t *out);
 
 // The parser's working state (~330 B): hid_pad_parse keeps it on the stack;
@@ -111,8 +127,11 @@ const char *hid_pad_profile_label(hid_pad_profile_t p);
 uint32_t hid_pad_button_bit(hid_pad_profile_t p, unsigned button);
 
 // One input report, as the pad sent it (its ID byte first when the layout
-// uses report IDs). Writes the source state and returns true when the report
-// holds any of the layout's fields; false (state untouched) for a report
-// that is not the gamepad's (a vendor report, a short or unknown one).
+// uses report IDs). Writes the source state and raw axes (no dead zone yet;
+// an axis the report does not hold is 0) and returns true when the report
+// holds any of the layout's buttons, hat, left stick or Home; false (state and
+// axes untouched) for a report that is not the gamepad's (a vendor report, a
+// short or unknown one).
 bool hid_pad_decode(const hid_pad_layout_t *l, hid_pad_profile_t p,
-                    const uint8_t *report, size_t len, uint32_t *state);
+                    const uint8_t *report, size_t len, uint32_t *state,
+                    pad_axes_t *axes);

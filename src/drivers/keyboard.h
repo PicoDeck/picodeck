@@ -249,6 +249,10 @@ typedef struct {
 uint32_t kbd_get_pad(void);
 uint32_t kbd_get_pad_pressed(void);
 uint32_t kbd_get_pad_released(void);
+// One AXIS_* as of the last poll: the sources' sticks and triggers, the D-pad
+// (these held buttons, the keyboard's aliases included) with no stick in use
+// (pad_source.h).
+float kbd_get_pad_axis(int axis);
 
 // The OS's own menus (launcher, system menu): the BTN_* navigation that the
 // pad sources' presses of this poll stand for (D-pad = arrows, A = Enter,

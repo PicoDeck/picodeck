@@ -9,11 +9,18 @@
 // ── Descriptor items (HID 1.11, 6.2.2) ──────────────────────────────────────
 
 #define PAGE_GENERIC_DESKTOP 0x01
+#define PAGE_SIMULATION 0x02
 #define PAGE_BUTTON 0x09
 #define PAGE_CONSUMER 0x0C
 #define GD_X 0x30
 #define GD_Y 0x31
+#define GD_Z 0x32
+#define GD_RX 0x33
+#define GD_RY 0x34
+#define GD_RZ 0x35
 #define GD_HAT 0x39
+#define SIM_ACCELERATOR 0xC4
+#define SIM_BRAKE 0xC5
 #define GD_SYSTEM_MAIN_MENU 0x85
 #define CONSUMER_AC_HOME 0x223
 
@@ -23,6 +30,11 @@
 
 typedef hid_pad_parse_globals_t globals_t;
 typedef hid_pad_parser_t parser_t;
+
+// The analog extras are read when they fit and never decide anything: a report
+// ending before them is still read, one holding nothing else is not the
+// gamepad's report, and a descriptor with nothing else is not a gamepad's.
+static bool is_extra(uint8_t kind) { return kind >= HID_PAD_F_Z; }
 
 static uint32_t item_u(const uint8_t *d, int n) {
   uint32_t v = 0;
@@ -133,6 +145,18 @@ static void add_variable(parser_t *p, uint16_t bit) {
       kind = HID_PAD_F_X;
     else if (page == PAGE_GENERIC_DESKTOP && id == GD_Y)
       kind = HID_PAD_F_Y;
+    else if (page == PAGE_GENERIC_DESKTOP && id == GD_Z)
+      kind = HID_PAD_F_Z;
+    else if (page == PAGE_GENERIC_DESKTOP && id == GD_RX)
+      kind = HID_PAD_F_RX;
+    else if (page == PAGE_GENERIC_DESKTOP && id == GD_RY)
+      kind = HID_PAD_F_RY;
+    else if (page == PAGE_GENERIC_DESKTOP && id == GD_RZ)
+      kind = HID_PAD_F_RZ;
+    else if (page == PAGE_SIMULATION && id == SIM_ACCELERATOR)
+      kind = HID_PAD_F_ACCEL;
+    else if (page == PAGE_SIMULATION && id == SIM_BRAKE)
+      kind = HID_PAD_F_BRAKE;
     else if (page == PAGE_GENERIC_DESKTOP && id == GD_HAT)
       kind = HID_PAD_F_HAT;
     else if ((page == PAGE_GENERIC_DESKTOP && id == GD_SYSTEM_MAIN_MENU) ||
@@ -266,7 +290,10 @@ bool hid_pad_parse_with(hid_pad_parser_t *scratch, const uint8_t *desc,
       break;
     }
   }
-  return out->n > 0;
+  for (int f = 0; f < out->n; f++)
+    if (!is_extra(out->f[f].kind))
+      return true;
+  return false;
 }
 
 // ── Profiles ────────────────────────────────────────────────────────────────
@@ -302,6 +329,41 @@ static const uint32_t k_profile[HID_PAD_PROFILE_COUNT][HB_MAX + 1] = {
                                 [11] = PAD_SELECT, [12] = PAD_START,
                                 [13] = PAD_SOURCE_HOME},
 };
+
+// Which usage is the right stick and the triggers, per profile, from the same
+// mappings (rightx, righty, lefttrigger, righttrigger) read through the order
+// SDL numbers a pad's axes in. 0 = the profile has none.
+typedef struct {
+  uint8_t rx, ry, lt, rt;
+} axis_map_t;
+
+// Sony: X Y Z Rz, then Rx and Ry for L2 and R2.
+static const axis_map_t k_axes_sony = {HID_PAD_F_Z, HID_PAD_F_RZ, HID_PAD_F_RX,
+                                       HID_PAD_F_RY};
+// Switch Pro (report 0x3F): X Y Rx Ry. ZL and ZR are digital: buttons 7 and 8.
+static const axis_map_t k_axes_nintendo = {HID_PAD_F_RX, HID_PAD_F_RY, 0, 0};
+// Android, 8BitDo: X Y Z Rz, Brake on the left, Accelerator on the right.
+static const axis_map_t k_axes_android = {HID_PAD_F_Z, HID_PAD_F_RZ,
+                                          HID_PAD_F_BRAKE, HID_PAD_F_ACCEL};
+// A pad with Rx and Ry and no Simulation page: X Y Rx Ry, triggers on Z and Rz
+// (the Xbox shape; a Sony-shaped pad is told by its name first).
+static const axis_map_t k_axes_xbox = {HID_PAD_F_RX, HID_PAD_F_RY, HID_PAD_F_Z,
+                                       HID_PAD_F_RZ};
+
+// `have`: bit `kind` set for each kind of field the report holds.
+static const axis_map_t *axis_map(hid_pad_profile_t p, uint32_t have) {
+  switch (p) {
+  case HID_PAD_PROFILE_SONY:
+    return &k_axes_sony;
+  case HID_PAD_PROFILE_NINTENDO:
+    return &k_axes_nintendo;
+  default:
+    if (!(have & (1u << HID_PAD_F_ACCEL | 1u << HID_PAD_F_BRAKE)) &&
+        (have & 1u << HID_PAD_F_RX) && (have & 1u << HID_PAD_F_RY))
+      return &k_axes_xbox;
+    return &k_axes_android;
+  }
+}
 
 uint32_t hid_pad_button_bit(hid_pad_profile_t p, unsigned button) {
   if ((unsigned)p >= HID_PAD_PROFILE_COUNT || button == 0 || button > HB_MAX)
@@ -394,6 +456,33 @@ static int axis_dir(const hid_pad_field_t *f, int64_t v) {
   return 0;
 }
 
+// A stick's value in the logical range, -127 .. 127 (0 with no usable range).
+static int8_t axis_stick(const hid_pad_field_t *f, int64_t v) {
+  int64_t lo = f->lmin, hi = f->lmax;
+  if (hi <= lo)
+    return 0;
+  if (v < lo)
+    v = lo;
+  if (v > hi)
+    v = hi;
+  int64_t span = hi - lo;
+  int64_t n = (2 * (v - lo) - span) * 127; // -span .. span, x 127
+  return (int8_t)((n >= 0 ? n + span / 2 : n - span / 2) / span);
+}
+
+// A trigger's value in the logical range, 0 .. 255 (0 with no usable range).
+static uint8_t axis_trigger(const hid_pad_field_t *f, int64_t v) {
+  int64_t lo = f->lmin, hi = f->lmax;
+  if (hi <= lo)
+    return 0;
+  if (v < lo)
+    v = lo;
+  if (v > hi)
+    v = hi;
+  int64_t span = hi - lo;
+  return (uint8_t)(((v - lo) * 255 + span / 2) / span);
+}
+
 static uint32_t hat_bits(const hid_pad_field_t *f, int64_t v) {
   static const uint32_t k8[8] = {
       PAD_UP,   PAD_UP | PAD_RIGHT,  PAD_RIGHT, PAD_DOWN | PAD_RIGHT,
@@ -410,7 +499,8 @@ static uint32_t hat_bits(const hid_pad_field_t *f, int64_t v) {
 }
 
 bool hid_pad_decode(const hid_pad_layout_t *l, hid_pad_profile_t p,
-                    const uint8_t *report, size_t len, uint32_t *state) {
+                    const uint8_t *report, size_t len, uint32_t *state,
+                    pad_axes_t *axes) {
   if (!l || !report)
     return false;
   uint8_t id = 0;
@@ -425,23 +515,46 @@ bool hid_pad_decode(const hid_pad_layout_t *l, hid_pad_profile_t p,
   // release the buttons it cut off.
   uint64_t have = (uint64_t)len * 8;
   bool matched = false;
+  uint32_t kinds = 0;
   for (int i = 0; i < l->n; i++) {
     const hid_pad_field_t *f = &l->f[i];
     if (f->report_id != id)
       continue;
-    if (f->size == 0 || f->size > 32 ||
-        (uint64_t)f->bit + (uint64_t)f->size * f->count > have)
+    bool fits = f->size > 0 && f->size <= 32 &&
+                (uint64_t)f->bit + (uint64_t)f->size * f->count <= have;
+    if (is_extra(f->kind)) {
+      if (fits)
+        kinds |= 1u << f->kind;
+      continue;
+    }
+    if (!fits)
       return false;
     matched = true;
   }
   if (!matched)
     return false;
+  const axis_map_t *m = axis_map(p, kinds);
+  pad_axes_t a = {0, 0, 0, 0, 0, 0};
   uint32_t st = 0;
   int x = 0, y = 0;
   for (int i = 0; i < l->n; i++) {
     const hid_pad_field_t *f = &l->f[i];
     if (f->report_id != id)
       continue;
+    if (is_extra(f->kind)) {
+      if (!(kinds & 1u << f->kind))
+        continue;
+      int64_t v = field_value(f, get_bits(report, f->bit, f->size));
+      if (f->kind == m->rx)
+        a.rx = axis_stick(f, v);
+      else if (f->kind == m->ry)
+        a.ry = axis_stick(f, v);
+      else if (f->kind == m->lt)
+        a.lt = axis_trigger(f, v);
+      else if (f->kind == m->rt)
+        a.rt = axis_trigger(f, v);
+      continue;
+    }
     switch (f->kind) {
     case HID_PAD_F_BUTTONS:
       for (unsigned k = 0; k < f->count; k++)
@@ -459,12 +572,18 @@ bool hid_pad_decode(const hid_pad_layout_t *l, hid_pad_profile_t p,
     case HID_PAD_F_HAT:
       st |= hat_bits(f, field_value(f, get_bits(report, f->bit, f->size)));
       break;
-    case HID_PAD_F_X:
-      x = axis_dir(f, field_value(f, get_bits(report, f->bit, f->size)));
+    case HID_PAD_F_X: {
+      int64_t v = field_value(f, get_bits(report, f->bit, f->size));
+      x = axis_dir(f, v);
+      a.lx = axis_stick(f, v);
       break;
-    case HID_PAD_F_Y:
-      y = axis_dir(f, field_value(f, get_bits(report, f->bit, f->size)));
+    }
+    case HID_PAD_F_Y: {
+      int64_t v = field_value(f, get_bits(report, f->bit, f->size));
+      y = axis_dir(f, v);
+      a.ly = axis_stick(f, v);
       break;
+    }
     case HID_PAD_F_HOME:
       if (get_bits(report, f->bit, f->size))
         st |= PAD_SOURCE_HOME;
@@ -482,5 +601,6 @@ bool hid_pad_decode(const hid_pad_layout_t *l, hid_pad_profile_t p,
   if (y > 0)
     st |= PAD_DOWN;
   *state = st;
+  *axes = a;
   return true;
 }
