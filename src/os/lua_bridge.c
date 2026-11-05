@@ -233,11 +233,19 @@ void *lb_testudata(lua_State *L, int idx, const char *tname) {
 // ── Registration
 // ──────────────────────────────────────────────────────────────
 
+// Entries of a luaL_Reg array. A table sized for them up front skips the
+// rehash and the discarded node array of every doubling on the way there.
+static int lb_reg_count(const luaL_Reg *r) {
+  int n = 0;
+  while (r[n].name) n++;
+  return n;
+}
+
 // Create a sub-table from a luaL_Reg and attach it to the `picocalc` table
 // that is already on the stack at index -1.
 void register_subtable(lua_State *L, const char *name,
                               const luaL_Reg *funcs) {
-  lua_newtable(L);
+  lua_createtable(L, 0, lb_reg_count(funcs));
   luaL_setfuncs(L, funcs, 0);
   lua_setfield(L, -2, name);
 }
@@ -254,7 +262,7 @@ void register_subtable(lua_State *L, const char *name,
 void lb_register_type(lua_State *L, const char *mtname,
                       const luaL_Reg *methods, const luaL_Reg *meta) {
   luaL_newmetatable(L, mtname);  // mt
-  lua_newtable(L);               // mt, methods
+  lua_createtable(L, 0, methods ? lb_reg_count(methods) : 0);  // mt, methods
   if (methods)
     luaL_setfuncs(L, methods, 0);
   if (meta) {
@@ -618,14 +626,7 @@ void lua_bridge_register(lua_State *L) {
          (unsigned long)umm_free_heap_size());
 
 
-
-
-
-
-
-
   // Open standard Lua libs. io, os, package and debug stay closed (sandbox).
-  printf("[LUA] registering _G...\n");
   luaL_requiref(L, "_G", luaopen_base, 1);
   lua_pop(L, 1);
   // dofile/loadfile read the host filesystem through C stdio: on firmware
@@ -636,13 +637,10 @@ void lua_bridge_register(lua_State *L) {
   lua_pushnil(L);
   lua_setglobal(L, "loadfile");
   lua_bridge_require_init(L);
-  printf("[LUA] registering table...\n");
   luaL_requiref(L, "table", luaopen_table, 1);
   lua_pop(L, 1);
-  printf("[LUA] registering string...\n");
   luaL_requiref(L, "string", luaopen_string, 1);
   lua_pop(L, 1);
-  printf("[LUA] registering math...\n");
   luaL_requiref(L, "math", luaopen_math, 1);
 #ifdef PICODECK_SIMULATOR
   // Simulator --test-mode: a fixed seed, so math.random repeats run to run.
@@ -653,70 +651,41 @@ void lua_bridge_register(lua_State *L) {
   }
 #endif
   lua_pop(L, 1);
-  printf("[LUA] registering coroutine...\n");
   luaL_requiref(L, LUA_COLIBNAME, luaopen_picodeck_coroutine, 1);
   lua_pop(L, 1);
-  printf("[LUA] registering utf8...\n");
   luaL_requiref(L, LUA_UTF8LIBNAME, luaopen_utf8, 1);
   lua_pop(L, 1);
   // Replace base load with the text-only wrapper.
   lua_getglobal(L, "load");
   lua_pushcclosure(L, l_base_load_text, 1);
   lua_setglobal(L, "load");
-  printf("[LUA] stdlib done, PSRAM free=%lu\n",
-         (unsigned long)umm_free_heap_size());
 
   // Create the top-level `picocalc` table
   lua_newtable(L);
-  printf("[LUA] registering display...\n");
   lua_bridge_display_init(L);
-  printf("[LUA] registering input...\n");
   lua_bridge_input_init(L);
-  printf("[LUA] registering gamepad...\n");
   lua_bridge_gamepad_init(L);
-  printf("[LUA] registering sys...\n");
   lua_bridge_sys_init(L);
-  printf("[LUA] registering fs...\n");
   lua_bridge_fs_init(L);
-  printf("[LUA] registering network...\n");
   lua_bridge_network_init(L);
-  printf("[LUA] registering tcp...\n");
   lua_bridge_tcp_init(L);
-  printf("[LUA] registering config...\n");
   lua_bridge_config_init(L);
-  printf("[LUA] registering appconfig...\n");
   lua_bridge_appconfig_init(L);
-  printf("[LUA] registering perf...\n");
   lua_bridge_perf_init(L);
-  printf("[LUA] registering graphics...\n");
   lua_bridge_graphics_init(L);
-  printf("[LUA] registering 3D extensions...\n");
   lua_bridge_register_3d(L);
-  printf("[LUA] registering gfx3d...\n");
   lua_bridge_gfx3d_init(L);
-  printf("[LUA] registering chargrid...\n");
   lua_bridge_chargrid_init(L);
-  printf("[LUA] registering ui...\n");
   lua_bridge_ui_init(L);
-  printf("[LUA] registering audio...\n");
   lua_bridge_audio_init(L);
-  printf("[LUA] registering sound...\n");
   lua_bridge_sound_init(L);
-  printf("[LUA] registering repl...\n");
   lua_bridge_repl_init(L);
-  printf("[LUA] registering video...\n");
   lua_bridge_video_init(L);
-  printf("[LUA] registering game...\n");
   lua_bridge_game_init(L);
-  printf("[LUA] registering terminal...\n");
   lua_bridge_terminal_init(L);
-  printf("[LUA] registering crypto...\n");
   lua_bridge_crypto_init(L);
-  printf("[LUA] registering modplayer...\n");
   lua_bridge_mod_init(L);
-  printf("[LUA] registering zip...\n");
   lua_bridge_zip_init(L);
-  printf("[LUA] registering json...\n");
   lua_bridge_json_init(L);
   printf("[LUA] all modules done, PSRAM free=%lu\n",
          (unsigned long)umm_free_heap_size());
