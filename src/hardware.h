@@ -67,7 +67,7 @@
 #define AUDIO_PIN_R 27 // GP27 / Right speaker PWM
 
 // --- UART Debug -------------------------------------------------------------
-#define DBG_UART_TX 0 // GP0 / UART0 TX → USB serial on Pico
+#define DBG_UART_TX 0 // GP0 / UART0 TX, 921600 baud (PICO_DEFAULT_UART_BAUD_RATE)
 #define DBG_UART_RX 1 // GP1 / UART0 RX
 
 // --- PIO PSRAM: Mainboard 8MB PSRAM via PIO1 ---------------------------------

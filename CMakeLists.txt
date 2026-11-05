@@ -594,6 +594,9 @@ target_compile_definitions(picodeck PRIVATE
     PICODECK_VERSION="${PICODECK_VERSION}"
     PICO_RP2350=1
     PICO_MALLOC_PANIC=0   # Return NULL on SRAM OOM instead of HardFault
+    # A log line waits for the UART's FIFO: 2.4 ms for 60 bytes at 115200, on
+    # whichever core logged. The USB port is virtual and has no baud rate.
+    PICO_DEFAULT_UART_BAUD_RATE=921600
     PICO_STACK_SIZE=4096  # Reduced to 4KB to fit in SCRATCH_X/Y
     # MSPLIM on both cores; main.c supplies the hook to add a margin.
     PICO_USE_STACK_GUARDS=1

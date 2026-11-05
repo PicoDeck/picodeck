@@ -753,7 +753,7 @@ void launcher_apply_clock(uint32_t khz) {
 
   // 8. Re-init UART baud rate (depends on clk_peri)
 #if LIB_PICO_STDIO_UART
-  uart_init(uart0, 115200);
+  uart_init(uart0, PICO_DEFAULT_UART_BAUD_RATE);
 #endif
 
   // 9. Down-clocking: Lower voltage AFTER decreasing frequency
