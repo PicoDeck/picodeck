@@ -284,7 +284,7 @@ void lua_bridge_set_running(lua_State *L) { s_running_L = L; }
 // Instructions between two count-hook calls of the SYNCHRONOUS count hook
 // (the simulator, the web build, and firmware's rare "no alarm slot"
 // fallback — see lua_bridge_hook_start below). Firmware's normal timer-armed
-// hook always installs a count of 1 (the 1 ms timer re-arms it), so this
+// hook always installs a count of 1 (the timer re-arms it), so this
 // adaptive count never applies there. Each call is a few flag reads unless
 // the full service pass is due (see lua_service below). The count adapts
 // (menu_lua_hook) so the hook fires about every LUA_HOOK_TARGET_US of wall
@@ -318,7 +318,7 @@ static void lua_bridge_install_hook(lua_State *L, int count) {
 // With any count hook installed, Lua 5.4 calls luaG_traceexec before EVERY
 // instruction (vmfetch's `trap`), whatever the count: on the device that
 // tax was ~60% of VM time (P0: an empty loop 491 ns/iter with it, 189
-// without). So on firmware the VM runs hook-free and a 1 ms Core 0 repeating
+// without). So on firmware the VM runs hook-free and a 5 ms Core 0 repeating
 // timer arms a count-1 hook on the running thread; menu_lua_hook services
 // and disarms it. The simulator and the web build have no Core 0 interrupt (a
 // host thread arming the hook would race the VM), so they keep the adaptive
@@ -327,14 +327,18 @@ static void lua_bridge_install_hook(lua_State *L, int count) {
 // The arming is picodeck_lua_arm_hook (lua_hook_arm.h), not lua_sethook:
 // lua_sethook also sets the trap of every frame on the thread's call chain,
 // and ~1000 frames deep (the LUAI_MAXSTACK limit with small frames) that
-// walk of QMI PSRAM outlasts the 1 ms period. Issue #21: the timer then
+// walk of QMI PSRAM outlasted the then 1 ms period. Issue #21: the timer then
 // re-fired inside its own IRQ forever, the VM never ran again and the
 // watchdog reset the device. The period is also counted from the end of
 // each callback (a positive delay), not fixed-rate, so a late or slow
 // callback can never catch up back-to-back and starve the VM.
 #ifndef PICODECK_SIMULATOR
 #define LUA_BRIDGE_ASYNC_HOOK 1
-#define LUA_ARM_PERIOD_US 1000
+// 5 ms, the full service pass's own period: a hook that finds that pass not yet
+// due only feeds the watchdog and looks for the menu key. Each firing is an
+// interrupt through the alarm pool (flash), a trap through the VM and PSRAM
+// writes to the Lua state: ~200 XIP lines, a thousand times a second at 1 ms.
+#define LUA_ARM_PERIOD_US 5000
 static volatile bool s_async_active = false;  // an app's VM is running
 static repeating_timer_t s_arm_timer;
 static bool s_arm_timer_started = false;
@@ -390,7 +394,7 @@ void lua_bridge_raise_exit(lua_State *L) {
   // again whenever its hook is not armed; check the mask too, not just the
   // count: a hook disarmed mid-way (count already 1, but mask 0 — e.g. the
   // async timer's window between menu_lua_hook disarming it and the next
-  // 1 ms re-arm) must be re-armed immediately rather than waiting for the
+  // next re-arm) must be re-armed immediately rather than waiting for the
   // timer. Once installed, a thread's mask and traps stay set until the
   // runner's lua_bridge_exit_reset.
   lua_bridge_install_hook(L, 1);
@@ -424,7 +428,7 @@ void lua_bridge_exit_reset(lua_State *L) {
 // The count hook fires every LUA_HOOK_COUNT instructions on the synchronous
 // hook (simulator, web build, firmware's no-alarm-slot fallback); on
 // firmware's normal timer-armed hook it fires as a count-1 hook about once
-// every 1 ms instead (the arming timer, see lua_bridge_hook_start). Either
+// every LUA_ARM_PERIOD_US instead (the arming timer, see lua_bridge_hook_start). Either
 // way, it always does the cheap part (watchdog, exit request, menu key press:
 // flag reads) and runs the full pass (HTTP/TCP slot scans, sound callbacks,
 // the serial dev-command poll, which takes the stdio mutex and TinyUSB on
@@ -531,13 +535,13 @@ void lua_bridge_service_poll(lua_State *L) { lua_service(L, false); }
 // firmware's no-alarm-slot fallback) it fires every LUA_HOOK_COUNT Lua
 // opcodes, adaptively rescaled (every opcode once an exit was requested). On
 // firmware's normal timer-armed hook it always fires as a count-1 hook: the
-// 1 ms timer (lua_bridge_arm_cb) re-arms it, so it services once and disarms
+// timer (lua_bridge_arm_cb) re-arms it, so it services once and disarms
 // until the next tick.
 static void menu_lua_hook(lua_State *L, lua_Debug *ar) {
   (void)ar;
 #if LUA_BRIDGE_ASYNC_HOOK
   if (s_async_active && !s_exit_requested) {
-    lua_sethook(L, NULL, 0, 0);  // disarm first: the timer re-arms in 1 ms
+    lua_sethook(L, NULL, 0, 0);  // disarm first: the timer re-arms it
     lua_service(L, false);
     return;
   }
