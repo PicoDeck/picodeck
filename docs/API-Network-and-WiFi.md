@@ -4,6 +4,8 @@ title: "API Network and WiFi"
 
 WiFi connectivity and HTTP client.
 
+**Requirements:** declare `"http"` in your `app.json` `requirements` to use the network. It makes the OS connect to the saved network when your app launches and keep the connection up while it runs. Without it nothing refuses your calls, but WiFi may well be off: after the boot's time sync the OS disconnects to save power, and a request then fails at the connection. The simulator is always online, so a missing requirement shows only on the device.
+
 ## picocalc.wifi
 
 WiFi connectivity functions (Pico 2W only).
@@ -52,8 +54,11 @@ Returns the current WiFi connection status.
 - **Parameters:** None
 - **Returns:** (number) Status code (see constants below)
 
+A working link moves on from `STATUS_CONNECTED` to `STATUS_ONLINE` once the connectivity check has passed, so test for both. To ask only "can I make a request?", use [`picocalc.network.getStatus()`](#which-status-to-use).
+
 ```lua
-if picocalc.wifi.getStatus() == picocalc.wifi.STATUS_CONNECTED then
+local st = picocalc.wifi.getStatus()
+if st == picocalc.wifi.STATUS_CONNECTED or st == picocalc.wifi.STATUS_ONLINE then
     print("Connected! IP: " .. picocalc.wifi.getIP())
 end
 ```
@@ -102,9 +107,16 @@ An app whose `app.json` sets `system_clock_khz` and does not declare the `"http"
 |----------|-------------|
 | `picocalc.wifi.STATUS_DISCONNECTED` | Not connected |
 | `picocalc.wifi.STATUS_CONNECTING` | Connection in progress |
-| `picocalc.wifi.STATUS_CONNECTED` | Connected successfully |
+| `picocalc.wifi.STATUS_CONNECTED` | Joined, with an IP address. Internet access not confirmed yet |
 | `picocalc.wifi.STATUS_FAILED` | Connection failed |
-| `picocalc.wifi.STATUS_ONLINE` | Internet connectivity confirmed |
+| `picocalc.wifi.STATUS_ONLINE` | Joined, and internet connectivity confirmed |
+
+### Which status to use
+
+There are two status calls, and their numbers are not the same (`wifi.STATUS_CONNECTED` is not `network.kStatusConnected`):
+
+- **`picocalc.network.getStatus()`** folds the states into three, and `kStatusConnected` covers both `STATUS_CONNECTED` and `STATUS_ONLINE`. Use this one to decide whether to make a request.
+- **`picocalc.wifi.getStatus()`** tells the five states apart. Use it to show the user what WiFi is doing, such as a "connecting" indicator.
 
 ---
 
@@ -117,7 +129,7 @@ name). Failures read `"TLS: certificate not trusted …"`, `"… expired"` or
 verifying connection is refused with an error starting `"clock not set"` until
 SNTP has set the time; retry a few seconds later.
 
-HTTP connections are objects with method syntax (`conn:get(...)`, `conn:read()`, etc.). Callbacks are fired automatically — you do not need to poll manually.
+HTTP connections are objects with method syntax (`conn:get(...)`, `conn:read()`, etc.). Callbacks are fired automatically — you do not need to poll manually. The receive ring holds 4 KB by default: read as data arrives. A device has no brake on the sender, so a response whose unread part passes the ring plus 32 KB fails with `receive buffer overflow (the app is not reading)`.
 
 ### picocalc.network functions
 
@@ -170,7 +182,7 @@ end
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `picocalc.network.kStatusNotConnected` | 0 | WiFi present but not connected |
-| `picocalc.network.kStatusConnected` | 1 | Connected and ready |
+| `picocalc.network.kStatusConnected` | 1 | Connected and ready to make requests |
 | `picocalc.network.kStatusNotAvailable` | 2 | No WiFi hardware, or connection failed |
 
 ---
@@ -213,8 +225,7 @@ Returns `false` ("a request is already in progress") unless the connection is id
 
 - **Parameters:**
   - `path` (string): URL path (e.g., `"/api/data"`)
-  - `headers` (string or table, optional): Extra headers. Can be a raw `"Key: Value
-"` string, a flat array of `"Key: Value"` strings, or a `{key=value}` table.
+  - `headers` (string or table, optional): Extra headers. Can be a raw string (`"Key: Value"`, or several lines joined with `"\r\n"`), a flat array of `"Key: Value"` strings, or a `{key=value}` table.
 - **Returns:** (boolean) `true` if request started, or `false, errstr` on immediate failure
 
 ```lua
@@ -276,7 +287,7 @@ conn:get("/files/big.bin")
 ---
 
 #### `conn:setConnectTimeout(seconds)`
-Sets the TCP connection timeout. Default is 10 seconds.
+Sets the connection timeout for the next request. Default is 10 seconds.
 
 - **Parameters:**
   - `seconds` (number): Timeout in seconds. Fractions are allowed (`0.5`). `0` turns it off.
@@ -298,7 +309,7 @@ Resizes the receive ring buffer. Must be called before `get`/`post`. Defaults to
 
 - **Parameters:**
   - `bytes` (number): Buffer size in bytes
-- **Returns:** None
+- **Returns:** (boolean) `true` on success. `false` for 0, a negative size, a size over the maximum or too little memory, and the old buffer stays.
 
 ---
 
@@ -396,7 +407,7 @@ Called once when all response headers have been received. Use `conn:getResponseS
 Called when the response body is fully received. This is the Lua replacement for the native `http->isComplete()`; the connection stays open afterwards, so you can still `read()` what is buffered, then call `conn:close()`.
 
 #### `conn:setConnectionClosedCallback(fn)`
-Called when the request fails (connect error, timeout, reset, a body cut short, out of memory). It does not fire after a successful response. Read `conn:getError()` inside the callback: once it returns, the connection is released (`conn:get`, `post` and the `set*` methods raise `http: connection is closed`; `getError`, `getResponseStatus`, `getResponseHeaders` and `read` return `nil`, `getBytesAvailable` returns `0`, `getProgress` returns `0, -1`).
+Called when the request fails (connect error, timeout, reset, a body cut short, out of memory). It does not fire after a successful response. Read `conn:getError()` inside the callback: once it returns, the connection is released (`conn:get`, `post` and the configuration methods `setKeepAlive`, `setInsecure`, `setByteRange`, `setConnectTimeout`, `setReadTimeout` and `setReadBufferSize` raise `http: connection is closed`; the callback setters are accepted and do nothing; `getError`, `getResponseStatus`, `getResponseHeaders` and `read` return `nil`, `getBytesAvailable` returns `0`, `getProgress` returns `0, -1`).
 
 ---
 
