@@ -123,7 +123,7 @@ picocalc.sys.exit()
 ---
 
 #### `picocalc.sys.reboot()`
-Triggers a system reboot via the watchdog timer.
+Triggers a system reboot via the watchdog timer. The simulator has no reset to model: there the app ends and the launcher takes over.
 
 - **Parameters:** None
 - **Returns:** Never returns

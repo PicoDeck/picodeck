@@ -71,6 +71,13 @@ static int l_sys_sleep(lua_State *L) {
 }
 
 static int l_sys_reboot(lua_State *L) {
+#ifdef PICODECK_SIMULATOR
+  // No reset to model and no watchdog to fire: the app ends, as the native
+  // sys->reboot does there, and the launcher takes over.
+  printf("[SIM] sys.reboot(): back to the launcher\n");
+  lua_bridge_raise_exit(L);
+  return 0;
+#else
   (void)L;
   crashlog_clear_running(); // intentional — not an unclean exit
   kbd_prepare_reset();
@@ -78,6 +85,7 @@ static int l_sys_reboot(lua_State *L) {
   for (;;)
     tight_loop_contents();
   return 0;
+#endif
 }
 
 // Pause Core 1 (WiFi, audio, HTTP) for safe batch SD writes.

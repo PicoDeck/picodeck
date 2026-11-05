@@ -304,3 +304,62 @@ class TestAppIds:
         assert not any(t.startswith("ID_RAN") for t in texts), texts
         log = (sd / "system" / "error.log").read_text()
         assert "invalid app id" in log, log
+
+
+class TestReboot:
+    """The simulator has no reset to model: a reboot ends the app, as the native
+    sys->reboot does, and the launcher takes over. It used to hang for good."""
+
+    def test_sys_reboot_ends_the_app(self, simulator):
+        code = """
+        picocalc.sys.log("BEFORE")
+        pcall(picocalc.sys.reboot)
+        picocalc.sys.log("AFTER")
+        """
+        stage_lua_app(simulator.sd_card_path, "sys_reboot", code)
+        seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+        simulator.launch_app("sys_reboot")
+        out = simulator.wait_for_exit(timeout=10)
+        assert out.get("result") == "exit_sentinel", out
+        texts = log_texts(simulator.get_log_lines(seq))
+        assert "BEFORE" in texts and "AFTER" not in texts, texts
+        assert not simulator.call("get_running_app")["running"]
+
+    def test_menu_reboot_from_an_app(self, simulator):
+        code = """
+        picocalc.display.clear(picocalc.display.BLUE)
+        picocalc.display.flush()
+        picocalc.sys.log("MENU_READY")
+        while true do
+            picocalc.input.update()
+            picocalc.sys.sleep(20)
+        end
+        """
+        stage_lua_app(simulator.sd_card_path, "menu_reboot", code)
+        seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+        simulator.launch_app("menu_reboot")
+        simulator.wait_for_log(r"^MENU_READY$", timeout=10, since_seq=seq)
+        simulator.keypress("menu")
+        time.sleep(0.3)
+        # Up wraps from the first row to Exit App, and once more to Reboot.
+        for _ in range(2):
+            simulator.keypress("up")
+            time.sleep(0.2)
+        simulator.keypress("enter")
+        out = simulator.wait_for_exit(timeout=10)
+        assert out.get("result") == "exit_sentinel", out
+        assert not simulator.call("get_running_app")["running"]
+
+    def test_menu_reboot_at_the_launcher(self, simulator):
+        simulator.keypress("menu")
+        time.sleep(0.3)
+        simulator.keypress("up")  # wraps from the first row to Reboot
+        time.sleep(0.2)
+        simulator.keypress("enter")
+        time.sleep(0.3)
+        # The launcher's loop is what starts an app: it is running again.
+        simulator.launch_app("hello")
+        deadline = time.monotonic() + 10
+        while not simulator.call("get_running_app")["running"]:
+            assert time.monotonic() < deadline, "the launcher did not come back"
+            time.sleep(0.05)

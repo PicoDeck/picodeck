@@ -1323,12 +1323,20 @@ static bool menu_loop(lua_State *L, int context) {
         break;
       case ITEM_REBOOT:
         save_brightness_if_changed(entry_brightness);
+#ifdef PICODECK_SIMULATOR
+        // No reset to model: leave as Exit App does (sys.reboot, the same),
+        // and at the launcher just close the menu.
+        printf("[SIM] Reboot: back to the launcher\n");
+        exit_requested = !is_launcher;
+        running = false;
+#else
         crashlog_clear_running(); // intentional — not an unclean exit
         kbd_prepare_reset();
         watchdog_enable(1, true);
         for (;;)
           tight_loop_contents();
-        break; /* unreachable */
+#endif
+        break;
       case ITEM_REBOOT_FLASH:
         save_brightness_if_changed(entry_brightness);
         crashlog_clear_running();
