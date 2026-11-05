@@ -13,8 +13,6 @@
 
 // ── Boot and Core 1 ─────────────────────────────────────────────────────────
 void audio_init(void);
-// Must be called from Core 1 before any audio playback: creates an alarm
-// pool whose timer ISRs fire on Core 1 (Core 1's tick timer uses it).
 // Core 1's tick gate (core1_tick_idle in main.c): true when the output is off
 // and no start is pending. Runs from RAM, as do the other *_core1_idle.
 bool audio_core1_idle(void);

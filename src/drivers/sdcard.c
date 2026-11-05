@@ -299,6 +299,7 @@ sdfile_t sdcard_fopen(const char *path, const char *mode) {
      * runs the full card recovery sequence, then retry the open once. */
     if (res == FR_DISK_ERR || res == FR_NOT_READY) {
         printf("[SD] fopen failed (%d), attempting remount+retry...\n", (int)res);
+        s_apps_generation++;  // this may be another card: the launcher rescans
         f_unmount("");
         s_mounted = false;
         sleep_ms(50);

@@ -313,6 +313,10 @@ void lua_bridge_set_running(lua_State *L) { s_running_L = L; }
 #define LUA_HOOK_TARGET_US 1000u
 // Longest gap between two full service passes while the hook fires.
 #define LUA_SERVICE_PERIOD_US 5000u
+// When a full pass is due. A little under the period: the timer arms the hook
+// once a period, so a firing a long C call delayed would otherwise leave the
+// next one short of a whole period, and the pass would wait for a third.
+#define LUA_SERVICE_DUE_US (LUA_SERVICE_PERIOD_US - 1000u)
 
 // Wall time of the last hook call, any thread (Core 0). Only maintained by
 // the synchronous count hook's adaptive rescale below: firmware's normal
@@ -447,7 +451,7 @@ void lua_bridge_exit_reset(lua_State *L) {
 // flag reads) and runs the full pass (HTTP/TCP slot scans, sound callbacks,
 // the serial dev-command poll, which takes the stdio mutex and TinyUSB on
 // firmware, reboot flags, screenshots, low-memory GC) only when work was
-// flagged pending or LUA_SERVICE_PERIOD_US has passed since the last full
+// flagged pending or LUA_SERVICE_DUE_US has passed since the last full
 // pass. The period is the latency bound for anything that does not flag
 // itself (HTTP/TCP events, serial dev commands on firmware).
 volatile bool g_lua_service_pending = false;
@@ -540,7 +544,7 @@ static void lua_service(lua_State *L, bool force) {
   if (s_exit_requested || dev_commands_wants_exit())
     lua_bridge_raise_exit(L);  // new, or an earlier one that was swallowed
   if (force || g_lua_service_pending ||
-      (uint32_t)(service_now_us() - s_last_full_pass_us) >= LUA_SERVICE_PERIOD_US)
+      (uint32_t)(service_now_us() - s_last_full_pass_us) >= LUA_SERVICE_DUE_US)
     lua_service_full(L);
   if (kbd_consume_menu_press())
     system_menu_show(L);

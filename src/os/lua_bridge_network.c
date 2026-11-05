@@ -499,8 +499,8 @@ static int l_http_read(lua_State *L) {
   // Straight into the result string: a chunk used to be written to a scratch
   // block and then again to the string, twice the PSRAM lines and two blocks
   // of the heap at once. No room for it stays a nil, not a Lua error, and the
-  // data stays in the ring.
-  void *probe = umm_malloc(want);
+  // data stays in the ring. The probe allows for the string's header.
+  void *probe = umm_malloc(want + 32);
   if (!probe) {
     lua_pushnil(L);
     return 1;

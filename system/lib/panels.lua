@@ -375,7 +375,12 @@ function Cache:evictOutside(keep)
     end
     if dropped then
         self.missing = {}   -- a load that failed for memory may work now
-        collectgarbage("step")
+        -- Free the dropped images now, so the next prefetch sees the memory.
+        -- One basic step is small (the OS sets a 128 B step), so run them to
+        -- the end of the cycle, at most what one 8 KB step did.
+        for _ = 1, 64 do
+            if collectgarbage("step") then break end
+        end
     end
 end
 

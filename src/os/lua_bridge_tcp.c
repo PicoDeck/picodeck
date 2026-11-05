@@ -150,9 +150,10 @@ static int l_tcp_read(lua_State *L) {
     // What is there, straight into the result string: a scratch block of the
     // whole max_len (4 KB for every 100-byte message), then a second copy,
     // cost a heap search and twice the PSRAM lines. No room for it stays a
-    // nil, not a Lua error, and the data stays in the ring.
+    // nil, not a Lua error, and the data stays in the ring. The probe allows
+    // for the string's header.
     size_t want = avail < (uint32_t)max_len ? avail : (size_t)max_len;
-    void *probe = umm_malloc(want);
+    void *probe = umm_malloc(want + 32);
     if (!probe) {
         lua_pushnil(L);
         return 1;

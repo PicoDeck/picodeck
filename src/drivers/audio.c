@@ -10,9 +10,6 @@
 
 #include <stdio.h>
 
-// Alarm pool created on Core 1 — all audio timer ISRs fire on Core 1,
-// keeping Core 0 free for the app/game loop.
-
 // audio_init's idle setup of the slice; the output replaces it.
 #define IDLE_PWM_WRAP 255
 
