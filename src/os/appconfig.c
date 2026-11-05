@@ -205,9 +205,12 @@ static void load_members(const char *json, size_t size) {
                 printf("[APPCONFIG] ERROR: no memory to keep what the file holds\n");
                 return;
             }
+            // A comma between every two members is also what keeps s_kept, with
+            // the commas it adds, within the file's size.
             p = skip_ws(q);
-            if (*p == ',')
-                p = skip_ws(p + 1);
+            if (*p != ',')
+                break;
+            p = skip_ws(p + 1);
         }
         if (*p == '}')
             return;

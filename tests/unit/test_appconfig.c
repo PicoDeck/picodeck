@@ -6,6 +6,7 @@
 #include "appconfig.h"
 #include "fakes/sdcard_fake.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -238,6 +239,50 @@ static void test_malformed_files(void) {
   appconfig_unbind();
 }
 
+// Members with no comma between them stop the load: what is kept must fit the
+// block sized for the file, and the commas it adds are the file's own.
+static void test_members_without_commas(void) {
+  const char *P = "/data/com.test.c/config.json";
+  const char *file = "{\"a\":[1]\"b\":[2]\"c\":[3]\"d\":[4]\"e\":[5]\"f\":[6]}";
+  sdfake_reset();
+  sdfake_put(P, file, strlen(file));
+  CHECK(appconfig_load("com.test.c"));
+  CHECK(appconfig_save());
+  CHECK_STR(sdfake_get(P, NULL), "{\"a\":[1]}");
+  appconfig_unbind();
+}
+
+// Any bytes at all load, save and load again without a memory error (ASan's job
+// here) and without losing what the first load held.
+static void test_random_files(void) {
+  static const char k_alphabet[] = "{}[]\",:\\ \n\tab19.-e";
+  const char *P = "/data/com.test.r/config.json";
+  uint32_t x = 0x12345678u;
+  for (int round = 0; round < 3000; round++) {
+    char file[300];
+    int n = 0;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    int len = (int)(x % sizeof(file));
+    if (round % 2)
+      file[n++] = '{';  // half start like the real thing
+    while (n < len) {
+      x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+      file[n++] = k_alphabet[x % (sizeof(k_alphabet) - 1)];
+    }
+    sdfake_reset();
+    sdfake_put(P, file, (size_t)n);
+    appconfig_load("com.test.r");
+    appconfig_put("a", "x");
+    appconfig_put("b", "");
+    if (!appconfig_save())
+      continue;
+    appconfig_load("com.test.r");
+    CHECK_STR(appconfig_get("a", NULL), "x");
+    CHECK(appconfig_save());
+  }
+  appconfig_unbind();
+}
+
 // A repeated key keeps its last copy, as JSON readers do.
 static void test_repeated_key(void) {
   const char *P = "/data/com.test.d/config.json";
@@ -397,6 +442,8 @@ int main(void) {
   test_load_save_keeps_the_rest();
   test_unreadable_file_is_not_overwritten();
   test_malformed_files();
+  test_members_without_commas();
+  test_random_files();
   test_repeated_key();
   test_round_trip();
   test_switch_app();
