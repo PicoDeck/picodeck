@@ -8,7 +8,9 @@ Graphics and display functions. The display is **320×320 pixels** with RGB565 c
 
 Coordinates and sizes may be floats: they round to nearest (`fillRect(10.5, …)`
 draws at x = 11). NaN, inf and values beyond ±2^24 are argument errors.
-Colour components, brightness and effect factors clamp to their range.
+Colour components, brightness and effect factors clamp to their range. An
+optional argument can be left out or passed as `nil`, here and throughout
+`picocalc.graphics`.
 
 Every primitive clips to the clip rect (`setClipRect`, default the screen)
 once, before drawing, so huge or off-screen shapes (a line to 1e7, a
@@ -944,7 +946,7 @@ Sets the background color for graphics operations. `false` makes the background 
 Sets the global colour key for image and sprite drawing. Pixels exactly equal to this colour are not drawn, by every image draw call (see [`img:setTransparentColor`](#imgsettransparentcolorcolor)). It is a colour key, not alpha, and applies only to images and sprites that have no key of their own.
 
 - **Parameters:**
-  - `color` (number or nil): RGB565 color value, or `nil` (or `0`) to disable the key.
+  - `color` (number or nil): RGB565 color value, or `nil`, `0` or nothing to disable the key.
 - **Returns:** None
 
 ---
@@ -1803,9 +1805,10 @@ Queries all sprites that intersect a line segment, returning detailed intersecti
 All methods are called on sprite objects with colon syntax.
 
 #### `sprite:add()` / `sprite:addSprite()`
-Adds the sprite to the global sprite manager.
+Adds the sprite to the global sprite manager. Also available as `picocalc.graphics.sprite.addSprite(sprite)`.
 
 - **Returns:** None
+- **Errors:** `max sprites reached` when the manager is full
 
 ```lua
 mySprite:add()
@@ -1814,7 +1817,7 @@ mySprite:add()
 ---
 
 #### `sprite:remove()` / `sprite:removeSprite()`
-Removes the sprite from the global sprite manager.
+Removes the sprite from the global sprite manager. Also available as `picocalc.graphics.sprite.removeSprite(sprite)`.
 
 - **Returns:** None
 
@@ -2474,19 +2477,24 @@ local zone = picocalc.graphics.sprite.addEmptyCollisionSprite(0, 200, 320, 8)
 ---
 
 #### `picocalc.graphics.sprite.addWallSprites(tilemap, wallIDs [, xOffset [, yOffset]])`
-Creates invisible collision sprites for each tile whose index appears in the `wallIDs` table. Useful for tile-based collision detection with the sprite system.
+Creates one invisible collision sprite for each tile whose index appears in the `wallIDs` table. Useful for tile-based collision detection with the sprite system.
+
+Each wall takes a slot of the manager's 256, and a map can hold far more wall tiles than that. Walls that do not fit are not made and raise no error, which leaves holes in the level, so check the second return value. Afterwards, `add()` raises if the manager is full.
 
 - **Parameters:**
   - `tilemap` (userdata): Tilemap object
   - `wallIDs` (table): Array of tile indices that are solid/collidable
   - `xOffset` (number, optional): X offset applied to all wall sprite positions
   - `yOffset` (number, optional): Y offset applied to all wall sprite positions
-- **Returns:** (number) Count of wall sprites created
+- **Returns:** (number, number) `count, skipped`: wall sprites created, and wall tiles left out because the manager was full
 
 ```lua
+local tilemap = picocalc.graphics.tilemap.new(picocalc.graphics.image.new(16, 16), 16, 16)
+tilemap:setSize(4, 4)
+tilemap:setTileAtPosition(0, 0, 1)
 -- Create wall collision sprites for tile indices 1, 2, and 5
-local wallCount = picocalc.graphics.sprite.addWallSprites(tilemap, {1, 2, 5})
-print("Created " .. wallCount .. " wall sprites")
+local wallCount, skipped = picocalc.graphics.sprite.addWallSprites(tilemap, {1, 2, 5})
+print("Created " .. wallCount .. " wall sprites, " .. skipped .. " did not fit")
 ```
 
 ---
@@ -2523,7 +2531,7 @@ sprite.height = 64 -- Set height
 sprite.z = 10      -- Set Z-index
 sprite.visible = true   -- Show/hide
 sprite.scale = 2.0      -- Set uniform scale
-sprite.scale_nn = 1     -- Get/set integer NN scale
+sprite.scale_nn = 2     -- Set integer NN scale, as setScaleNN does
 sprite.rotation = 0.5   -- Set rotation (radians)
 sprite.tag = 123        -- Set tag
 sprite.image            -- Get image (userdata or nil)
@@ -3095,7 +3103,7 @@ for x = 0, 39 do
 end
 
 -- Create wall collision sprites for tile index 2
-local wallCount = picocalc.graphics.sprite.addWallSprites(tilemap, {2})
+local wallCount, skipped = picocalc.graphics.sprite.addWallSprites(tilemap, {2})
 
 -- Scroll camera
 local scrollX, scrollY = 0, 0

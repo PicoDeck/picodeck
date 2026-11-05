@@ -1622,7 +1622,7 @@ function picocalc.graphics.setColor(color) end
 function picocalc.graphics.setBackgroundColor(color) end
 
 ---Set a global transparent colour for image blitting (`nil` to disable).
----@param color integer|nil RGB565
+---@param color? integer RGB565; nil, 0 or nothing disables the key
 function picocalc.graphics.setTransparentColor(color) end
 
 ---Return the current global transparent colour, or `nil`.
@@ -1993,9 +1993,19 @@ function picocalc.graphics.sprite.clearClipRectsInRange(z_start, z_end) end
 ---@return PicoDeckSprite
 function picocalc.graphics.sprite.addEmptyCollisionSprite(x, y, w, h) end
 
+---One invisible collision sprite per tile whose index is in wallIDs. Walls past
+---the manager's 256 sprites are not made.
+---@param tilemap PicoDeckTilemap
+---@param wallIDs integer[]
+---@param xOffset? integer
+---@param yOffset? integer
+---@return integer count Wall sprites created
+---@return integer skipped Wall tiles left out because the manager was full
+function picocalc.graphics.sprite.addWallSprites(tilemap, wallIDs, xOffset, yOffset) end
+
 -- PicoDeckSprite methods
 
----@param image PicoDeckImage|nil `nil` clears the image
+---@param image? PicoDeckImage `nil` or nothing clears the image
 ---@param flip? boolean Horizontal flip
 ---@param scale? number Only applied when given
 ---@param scale_y? number Stored when given, not applied: sprites draw at one factor
@@ -2007,8 +2017,14 @@ function PicoDeckSprite:getImage() end
 ---Add this sprite to the global sprite list.
 function PicoDeckSprite:add() end
 
+---The same as add().
+function PicoDeckSprite:addSprite() end
+
 ---Remove this sprite from the global sprite list.
 function PicoDeckSprite:remove() end
+
+---The same as remove().
+function PicoDeckSprite:removeSprite() end
 
 ---@param x integer
 ---@param y integer
@@ -2062,11 +2078,11 @@ function PicoDeckSprite:setScale(scale, scale_y) end
 ---@return number scale_y
 function PicoDeckSprite:getScale() end
 
----Enable nearest-neighbour scaling.
----@param nn boolean
+---Scale by a whole number, nearest-neighbour. Also `sprite.scale_nn = n`.
+---@param nn integer Positive
 function PicoDeckSprite:setScaleNN(nn) end
 
----@param color integer|nil RGB565
+---@param color? integer RGB565; nil or nothing uses the global key
 function PicoDeckSprite:setTransparentColor(color) end
 
 ---Set the rotation. The angle is in radians.

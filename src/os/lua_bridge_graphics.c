@@ -90,7 +90,7 @@ static int l_graphics_setBackgroundColor(lua_State *L) {
 
 static int l_graphics_setTransparentColor(lua_State *L) {
   uint16_t color = 0;
-  if (!lua_isnil(L, 1))
+  if (!lua_isnoneornil(L, 1))
     color = l_checkcolor(L, 1);
   display_set_transparent_color(color);
   return 0;
@@ -107,7 +107,7 @@ static int l_graphics_getTransparentColor(lua_State *L) {
 
 static int l_graphics_clear(lua_State *L) {
   uint16_t color =
-      (lua_gettop(L) >= 1) ? l_checkcolor(L, 1) : s_graphics_bg_color;
+      lua_isnoneornil(L, 1) ? s_graphics_bg_color : l_checkcolor(L, 1);
   display_clear(color);
   return 0;
 }
@@ -184,27 +184,62 @@ static int l_graphics_image_copy(lua_State *L) {
   return 1;
 }
 
-// Reads the srcRect table at stack index idx into sx, sy, sw, sh. It is either
-// named {x=, y=, w=, h=} or positional {x, y, w, h}; a named field wins over the
-// same array slot, and a missing one defaults to 0, 0, image width, image
-// height. Errors name the field as "srcRect.x". Used by img:draw and
-// img:drawStretched.
-static void read_src_rect(lua_State *L, int idx, const lua_image_t *img,
-                          int *sx, int *sy, int *sw, int *sh) {
-  static const char *const names[4] = {"x", "y", "w", "h"};
-  static const char *const whats[4] = {"srcRect.x", "srcRect.y", "srcRect.w",
-                                       "srcRect.h"};
-  int def[4] = {0, 0, img->w, img->h};
-  int v[4];
-  for (int i = 0; i < 4; i++) {
+// Reads n integer fields of the table at stack index idx into out. Each is the
+// named field or, when that is nil, the array slot of the same position, so
+// {x=, y=, w=, h=} and {x, y, w, h} are the same table and a named field wins.
+// A missing field takes def[i]; with def NULL it raises. A field that is not a
+// number raises naming whats[i].
+static void read_table_ints(lua_State *L, int idx, const char *const *names,
+                            const char *const *whats, int n, const int *def,
+                            int *out) {
+  idx = lua_absindex(L, idx);
+  for (int i = 0; i < n; i++) {
     lua_getfield(L, idx, names[i]);
     if (lua_isnil(L, -1)) {  // not named: fall back to the array slot
       lua_pop(L, 1);
       lua_rawgeti(L, idx, i + 1);
     }
-    v[i] = (int)lb_optint_at(L, -1, idx, whats[i], def[i]);
+    out[i] = def ? (int)lb_optint_at(L, -1, idx, whats[i], def[i])
+                 : (int)lb_checkint_at(L, -1, idx, whats[i]);
     lua_pop(L, 1);
   }
+}
+
+static const char *const k_xywh[4] = {"x", "y", "w", "h"};
+static const char *const k_xywh_what[4] = {"field 'x'", "field 'y'", "field 'w'",
+                                           "field 'h'"};
+
+// {x, y, w, h} in either form (read_table_ints); def NULL makes all four required.
+static void read_rect(lua_State *L, int idx, const int *def, int *out) {
+  read_table_ints(L, idx, k_xywh, k_xywh_what, 4, def, out);
+}
+
+// {x, y} in either form.
+static void read_point(lua_State *L, int idx, int def_x, int def_y, int *x, int *y) {
+  const int def[2] = {def_x, def_y};
+  int v[2];
+  read_table_ints(L, idx, k_xywh, k_xywh_what, 2, def, v);
+  *x = v[0];
+  *y = v[1];
+}
+
+// {x1, y1, x2, y2} in either form, all required.
+static void read_line(lua_State *L, int idx, int *out) {
+  static const char *const names[4] = {"x1", "y1", "x2", "y2"};
+  static const char *const whats[4] = {"field 'x1'", "field 'y1'", "field 'x2'",
+                                       "field 'y2'"};
+  read_table_ints(L, idx, names, whats, 4, NULL, out);
+}
+
+// The srcRect table of img:draw and img:drawStretched: a missing field defaults
+// to 0, 0, image width, image height, and errors name it as "srcRect.x".
+static void read_src_rect(lua_State *L, int idx, const lua_image_t *img,
+                          int *sx, int *sy, int *sw, int *sh) {
+  static const char *const whats[4] = {"srcRect.x", "srcRect.y", "srcRect.w",
+                                       "srcRect.h"};
+  int def[4] = {0, 0, img->w, img->h};
+  int v[4];
+  read_table_ints(L, idx, k_xywh, whats, 4, def, v);
   *sx = v[0]; *sy = v[1]; *sw = v[2]; *sh = v[3];
 }
 
@@ -973,8 +1008,8 @@ static int l_graphics_draw3DWireframe(lua_State *L) {
   int   scy = lb_checkint(L, 7);
   float fov = (float)luaL_checknumber(L, 8);
   uint16_t edge_color = l_checkcolor(L, 9);
-  uint16_t vert_color = (lua_gettop(L) >= 10) ? l_checkcolor(L, 10) : 0;
-  int vert_size       = (lua_gettop(L) >= 11) ? (int)lb_checkint(L, 11) : 3;
+  uint16_t vert_color = lua_isnoneornil(L, 10) ? 0 : l_checkcolor(L, 10);
+  int vert_size       = (int)lb_optint(L, 11, 3);
 
   // Build combined rotation matrix M = Rz(aZ) * Ry(aY) * Rx(aX).
   // Applying M*v is equivalent to rotateX then rotateY then rotateZ.
@@ -1614,7 +1649,7 @@ static int l_sprite_setImage(lua_State *L) {
     s->frame_w = 0;
     s->frame_h = 0;
   }
-  if (lua_isnil(L, 2)) {
+  if (lua_isnoneornil(L, 2)) {
     s->image = NULL;
     s->width = 0;
     s->height = 0;
@@ -1755,20 +1790,23 @@ static int l_sprite_getRotation(lua_State *L) {
   return 1;
 }
 
-static int l_sprite_setScaleNN(lua_State *L) {
-  lua_sprite_t *s = check_sprite(L, 1);
-  int scale = lb_checkint(L, 2);
+// Value at idx: setScaleNN's argument and the sprite.scale_nn field.
+static void sprite_set_scale_nn(lua_State *L, lua_sprite_t *s, int idx) {
+  int scale = lb_checkint(L, idx);
   if (scale <= 0)
-    return luaL_error(L, "scale must be positive integer");
-  
+    luaL_error(L, "scale must be positive integer");
   s->scale_nn = scale;
   s->use_nn_scaling = true;
+}
+
+static int l_sprite_setScaleNN(lua_State *L) {
+  sprite_set_scale_nn(L, check_sprite(L, 1), 2);
   return 0;
 }
 
 static int l_sprite_setTransparentColor(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
-  if (lua_isnil(L, 2)) {
+  if (lua_isnoneornil(L, 2)) {
     s->transparent_color = 0;  // use global setting
   } else {
     s->transparent_color = l_checkcolor(L, 2);
@@ -1903,15 +1941,13 @@ static int l_sprite_setBounds(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
   
   if (lua_istable(L, 2)) {
-    lua_getfield(L, 2, "x");
-    lua_getfield(L, 2, "y");
-    lua_getfield(L, 2, "w");
-    lua_getfield(L, 2, "h");
-    s->bounds_x = lb_optint_at(L, -4, 2, "field 'x'", 0);
-    s->bounds_y = lb_optint_at(L, -3, 2, "field 'y'", 0);
-    s->bounds_w = lb_optint_at(L, -2, 2, "field 'w'", 0);
-    s->bounds_h = lb_optint_at(L, -1, 2, "field 'h'", 0);
-    lua_pop(L, 4);
+    static const int def[4] = {0, 0, 0, 0};
+    int v[4];
+    read_rect(L, 2, def, v);
+    s->bounds_x = v[0];
+    s->bounds_y = v[1];
+    s->bounds_w = v[2];
+    s->bounds_h = v[3];
   } else {
     s->bounds_x = lb_checkint(L, 2);
     s->bounds_y = lb_checkint(L, 3);
@@ -2037,6 +2073,8 @@ static int l_sprite_newindex(lua_State *L) {
     s->rotation = (float)luaL_checknumber(L, 3);
   } else if (!strcmp(key, "tag")) {
     s->tag = luaL_checkinteger(L, 3);
+  } else if (!strcmp(key, "scale_nn")) {
+    sprite_set_scale_nn(L, s, 3);
   }
   return 0;
 }
@@ -2050,7 +2088,9 @@ static const luaL_Reg l_sprite_methods[] = {
     {"setImage", l_sprite_setImage},
     {"getImage", l_sprite_getImage},
     {"add", l_sprite_add},
+    {"addSprite", l_sprite_add},
     {"remove", l_sprite_remove},
+    {"removeSprite", l_sprite_remove},
     {"moveTo", l_sprite_moveTo},
     {"moveBy", l_sprite_moveBy},
     {"getPosition", l_sprite_getPosition},
@@ -2193,15 +2233,13 @@ static int l_sprite_setCollideRect(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
   
   if (lua_istable(L, 2)) {
-    lua_getfield(L, 2, "x");
-    lua_getfield(L, 2, "y");
-    lua_getfield(L, 2, "w");
-    lua_getfield(L, 2, "h");
-    s->collide_x = lb_optint_at(L, -4, 2, "field 'x'", 0);
-    s->collide_y = lb_optint_at(L, -3, 2, "field 'y'", 0);
-    s->collide_w = lb_optint_at(L, -2, 2, "field 'w'", s->width);
-    s->collide_h = lb_optint_at(L, -1, 2, "field 'h'", s->height);
-    lua_pop(L, 4);
+    const int def[4] = {0, 0, s->width, s->height};
+    int v[4];
+    read_rect(L, 2, def, v);
+    s->collide_x = v[0];
+    s->collide_y = v[1];
+    s->collide_w = v[2];
+    s->collide_h = v[3];
   } else {
     s->collide_x = lb_checkint(L, 2);
     s->collide_y = lb_checkint(L, 3);
@@ -2370,11 +2408,7 @@ static int l_sprite_checkCollisions(lua_State *L) {
   int px, py;
   
   if (lua_istable(L, 2)) {
-    lua_getfield(L, 2, "x");
-    lua_getfield(L, 2, "y");
-    px = lb_optint_at(L, -2, 2, "field 'x'", 0);
-    py = lb_optint_at(L, -1, 2, "field 'y'", 0);
-    lua_pop(L, 2);
+    read_point(L, 2, 0, 0, &px, &py);
   } else {
     px = lb_checkint(L, 2);
     py = lb_checkint(L, 3);
@@ -2393,11 +2427,7 @@ static int l_sprite_querySpritesAtPoint(lua_State *L) {
   int px, py;
   
   if (lua_istable(L, 1)) {
-    lua_getfield(L, 1, "x");
-    lua_getfield(L, 1, "y");
-    px = lb_optint_at(L, -2, 1, "field 'x'", 0);
-    py = lb_optint_at(L, -1, 1, "field 'y'", 0);
-    lua_pop(L, 2);
+    read_point(L, 1, 0, 0, &px, &py);
   } else {
     px = lb_checkint(L, 1);
     py = lb_checkint(L, 2);
@@ -2424,15 +2454,13 @@ static int l_sprite_querySpritesInRect(lua_State *L) {
   int rx, ry, rw, rh;
   
   if (lua_istable(L, 1)) {
-    lua_getfield(L, 1, "x");
-    lua_getfield(L, 1, "y");
-    lua_getfield(L, 1, "w");
-    lua_getfield(L, 1, "h");
-    rx = lb_optint_at(L, -4, 1, "field 'x'", 0);
-    ry = lb_optint_at(L, -3, 1, "field 'y'", 0);
-    rw = lb_optint_at(L, -2, 1, "field 'w'", 320);
-    rh = lb_optint_at(L, -1, 1, "field 'h'", 320);
-    lua_pop(L, 4);
+    static const int def[4] = {0, 0, 320, 320};
+    int v[4];
+    read_rect(L, 1, def, v);
+    rx = v[0];
+    ry = v[1];
+    rw = v[2];
+    rh = v[3];
   } else {
     rx = lb_checkint(L, 1);
     ry = lb_checkint(L, 2);
@@ -2511,11 +2539,7 @@ static int l_sprite_moveWithCollisions(lua_State *L) {
   int goalX, goalY;
 
   if (lua_istable(L, 2)) {
-    lua_getfield(L, 2, "x");
-    lua_getfield(L, 2, "y");
-    goalX = lb_optint_at(L, -2, 2, "field 'x'", s->x);
-    goalY = lb_optint_at(L, -1, 2, "field 'y'", s->y);
-    lua_pop(L, 2);
+    read_point(L, 2, s->x, s->y, &goalX, &goalY);
   } else {
     goalX = lb_checkint(L, 2);
     goalY = lb_checkint(L, 3);
@@ -2658,15 +2682,13 @@ static int l_sprite_setClipRect(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
   
   if (lua_istable(L, 2)) {
-    lua_getfield(L, 2, "x");
-    lua_getfield(L, 2, "y");
-    lua_getfield(L, 2, "w");
-    lua_getfield(L, 2, "h");
-    s->clip_x = lb_optint_at(L, -4, 2, "field 'x'", 0);
-    s->clip_y = lb_optint_at(L, -3, 2, "field 'y'", 0);
-    s->clip_w = lb_optint_at(L, -2, 2, "field 'w'", s->width);
-    s->clip_h = lb_optint_at(L, -1, 2, "field 'h'", s->height);
-    lua_pop(L, 4);
+    const int def[4] = {0, 0, s->width, s->height};
+    int v[4];
+    read_rect(L, 2, def, v);
+    s->clip_x = v[0];
+    s->clip_y = v[1];
+    s->clip_w = v[2];
+    s->clip_h = v[3];
     s->has_clip = true;
   } else if (lua_gettop(L) >= 5) {
     s->clip_x = lb_checkint(L, 2);
@@ -2752,10 +2774,12 @@ static bool sprite_line_intersect(int x1, int y1, int x2, int y2,
 static int l_sprite_querySpritesAlongLine(lua_State *L) {
   int x1, y1, x2, y2;
   if (lua_istable(L, 1)) {
-    lua_getfield(L, 1, "x1"); x1 = lb_checkint_at(L, -1, 1, "field 'x1'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "y1"); y1 = lb_checkint_at(L, -1, 1, "field 'y1'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "x2"); x2 = lb_checkint_at(L, -1, 1, "field 'x2'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "y2"); y2 = lb_checkint_at(L, -1, 1, "field 'y2'"); lua_pop(L, 1);
+    int v[4];
+    read_line(L, 1, v);
+    x1 = v[0];
+    y1 = v[1];
+    x2 = v[2];
+    y2 = v[3];
   } else {
     x1 = lb_checkint(L, 1);
     y1 = lb_checkint(L, 2);
@@ -2826,10 +2850,12 @@ static bool sprite_line_rect_intersection(int x1, int y1, int x2, int y2,
 static int l_sprite_querySpriteInfoAlongLine(lua_State *L) {
   int x1, y1, x2, y2;
   if (lua_istable(L, 1)) {
-    lua_getfield(L, 1, "x1"); x1 = lb_checkint_at(L, -1, 1, "field 'x1'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "y1"); y1 = lb_checkint_at(L, -1, 1, "field 'y1'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "x2"); x2 = lb_checkint_at(L, -1, 1, "field 'x2'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "y2"); y2 = lb_checkint_at(L, -1, 1, "field 'y2'"); lua_pop(L, 1);
+    int v[4];
+    read_line(L, 1, v);
+    x1 = v[0];
+    y1 = v[1];
+    x2 = v[2];
+    y2 = v[3];
   } else {
     x1 = lb_checkint(L, 1);
     y1 = lb_checkint(L, 2);
@@ -3023,10 +3049,12 @@ static int l_sprite_setClipRectsInRange(lua_State *L) {
 
   if (lua_istable(L, 1)) {
     // Table variant: ({x, y, w, h}, startz, endz)
-    lua_getfield(L, 1, "x"); clip_x = lb_checkint_at(L, -1, 1, "field 'x'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "y"); clip_y = lb_checkint_at(L, -1, 1, "field 'y'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "w"); clip_w = lb_checkint_at(L, -1, 1, "field 'w'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "h"); clip_h = lb_checkint_at(L, -1, 1, "field 'h'"); lua_pop(L, 1);
+    int v[4];
+    read_rect(L, 1, NULL, v);
+    clip_x = v[0];
+    clip_y = v[1];
+    clip_w = v[2];
+    clip_h = v[3];
     startz = lb_checkint(L, 2);
     endz   = lb_checkint(L, 3);
   } else {
@@ -3071,10 +3099,12 @@ static int l_sprite_addEmptyCollisionSprite(lua_State *L) {
   int x, y, w, h;
 
   if (lua_istable(L, 1)) {
-    lua_getfield(L, 1, "x"); x = lb_checkint_at(L, -1, 1, "field 'x'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "y"); y = lb_checkint_at(L, -1, 1, "field 'y'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "w"); w = lb_checkint_at(L, -1, 1, "field 'w'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "h"); h = lb_checkint_at(L, -1, 1, "field 'h'"); lua_pop(L, 1);
+    int v[4];
+    read_rect(L, 1, NULL, v);
+    x = v[0];
+    y = v[1];
+    w = v[2];
+    h = v[3];
   } else {
     x = lb_checkint(L, 1);
     y = lb_checkint(L, 2);
@@ -3437,17 +3467,22 @@ static int l_sprite_setTilemap(lua_State *L) {
   return 0;
 }
 
-// sprite.addWallSprites(tilemap, wallIDs, [xOffset], [yOffset])
-// wallIDs is a table of tile indices that should have collision
+// sprite.addWallSprites(tilemap, wallIDs, [xOffset], [yOffset]) -> count, skipped
+// wallIDs is a table of tile indices that should have collision; skipped counts
+// the wall tiles past MAX_SPRITES, which got no sprite.
 static int l_sprite_addWallSprites(lua_State *L) {
   lua_tilemap_t *tm = check_tilemap(L, 1);
   luaL_checktype(L, 2, LUA_TTABLE);
   int x_off = (int)lb_optint(L, 3, 0);
   int y_off = (int)lb_optint(L, 4, 0);
 
-  if (!tm->tiles) return 0;
+  if (!tm->tiles) {
+    lua_pushinteger(L, 0);
+    lua_pushinteger(L, 0);
+    return 2;
+  }
 
-  int count = 0;
+  int count = 0, skipped = 0;
   for (int row = 0; row < tm->map_h; row++) {
     for (int col = 0; col < tm->map_w; col++) {
       uint16_t tile = tm->tiles[row * tm->map_w + col];
@@ -3463,7 +3498,9 @@ static int l_sprite_addWallSprites(lua_State *L) {
         if (is_wall) break;
       }
 
-      if (is_wall && s_sprite_count < MAX_SPRITES) {
+      if (is_wall && s_sprite_count >= MAX_SPRITES) {
+        skipped++;
+      } else if (is_wall) {
         // Create an invisible collision sprite at this tile position
         lua_sprite_t *ws = new_sprite_ud(L);
         ws->x = col * tm->tile_w + x_off;
@@ -3472,6 +3509,7 @@ static int l_sprite_addWallSprites(lua_State *L) {
         ws->height = tm->tile_h;
         ws->scale = 1.0f;
         ws->scale_y = 1.0f;
+        ws->scale_nn = 1;
         ws->visible = false;
         ws->updates_enabled = false;
         ws->collisions_enabled = true;
@@ -3491,7 +3529,8 @@ static int l_sprite_addWallSprites(lua_State *L) {
   }
 
   lua_pushinteger(L, count);
-  return 1;
+  lua_pushinteger(L, skipped);
+  return 2;
 }
 
 // Defined with the other text renderers below; used by spriteWithText here.
@@ -3531,6 +3570,7 @@ static int l_sprite_spriteWithText(lua_State *L) {
   s->height = max_h;
   s->scale = 1.0f;
   s->scale_y = 1.0f;
+  s->scale_nn = 1;
   s->visible = true;
   s->updates_enabled = true;
   s->opaque = true;
@@ -3654,7 +3694,7 @@ static int l_animation_loop_new(lua_State *L) {
   if (top >= 2 && lua_istable(L, 2))
     loop_set_frames(L, loop, -1, 2);
 
-  if (top >= 3) {
+  if (top >= 3 && !lua_isnil(L, 3)) {
     loop->looping = lua_toboolean(L, 3);
   }
 
