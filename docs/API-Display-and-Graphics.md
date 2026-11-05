@@ -374,7 +374,7 @@ picocalc.display.fillTriangle(160, 40, 60, 280, 260, 280, picocalc.display.RED)
 ---
 
 #### `picocalc.display.fillVLineGradient(x, y0, y1, colorTop, colorBottom)`
-Draw a vertical line with gradient between two colors.
+Draw a vertical line with gradient between two colors. The gradient belongs to the whole line: where the clip rect cuts the line off, the part that shows is the same as without the clip.
 
 - **Parameters:**
   - `x` (number): X coordinate
@@ -698,7 +698,7 @@ picocalc.display.applyEffect("darken", 64)   -- heavy darken
 Brightens the framebuffer by blending each pixel toward white.
 
 - **Parameters:**
-  - `factor` (number, optional): 0 = no change, 255 = fully white. Default: 128. Cumulative, like `darken`.
+  - `factor` (number, optional): 0 = no change, 255 = fully white. Default: 128. Cumulative, like `darken`. Between the two the result truncates, so a factor just under 255 can stop short of white.
 
 ```lua
 picocalc.display.applyEffect("brighten", 80)

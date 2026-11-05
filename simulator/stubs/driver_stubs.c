@@ -416,8 +416,9 @@ void display_fill_vline(int x, int y0, int y1, uint16_t color) {
     display_draw_line(x, y0, x, y1, color);
 }
 void display_fill_vline_gradient(int x, int y0, int y1, uint16_t color_top, uint16_t color_bottom) {
-    (void)color_bottom;
-    display_draw_line(x, y0, x, y1, color_top);
+    disp_clip_t c = cur_clip();
+    disp_fill_vline_gradient(display_get_back_buffer(), 320, &c, x, y0, y1,
+                             color_top, color_bottom, false);
 }
 // ── Clip rect API (state declared at top of file) ────────────────────────────
 
@@ -978,6 +979,8 @@ void display_effect_brighten(uint8_t factor) {
     uint16_t *fb = display_get_back_buffer();
     size_t n = SIM_FB_W * SIM_FB_H;
 
+    if (factor == 255) { memset(fb, 0xFF, n * sizeof(uint16_t)); return; }
+
     for (size_t i = 0; i < n; i++) {
         uint16_t p = fb[i];
         uint8_t r = blend8((p >> 11) & 0x1F, 31, factor);  // max 5-bit
@@ -997,6 +1000,11 @@ void display_effect_tint(uint8_t r_tint, uint8_t g_tint, uint8_t b_tint,
     uint8_t tr = r_tint >> 3;  // 5-bit
     uint8_t tg = g_tint >> 2;  // 6-bit
     uint8_t tb = b_tint >> 3;  // 5-bit
+
+    if (strength == 255) {
+        display_clear((uint16_t)((tr << 11) | (tg << 5) | tb));
+        return;
+    }
 
     for (size_t i = 0; i < n; i++) {
         uint16_t p = fb[i];
@@ -1034,6 +1042,12 @@ void display_effect_blend(const uint16_t *src, int w, int h, uint8_t alpha) {
 
     int max_h = (h < SIM_FB_H) ? h : SIM_FB_H;
     int max_w = (w < SIM_FB_W) ? w : SIM_FB_W;
+
+    if (alpha == 255) {
+        for (int y = 0; y < max_h; y++)
+            memcpy(&fb[y * SIM_FB_W], &src[y * w], (size_t)max_w * sizeof(uint16_t));
+        return;
+    }
 
     for (int y = 0; y < max_h; y++) {
         for (int x = 0; x < max_w; x++) {
