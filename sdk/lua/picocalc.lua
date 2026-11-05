@@ -1673,7 +1673,7 @@ function picocalc.graphics.drawPlayfield(playfield, ox, oy, block_size, cols, ro
 ---@return integer live_count Particles still alive
 function picocalc.graphics.updateDrawParticles(particles, dt) end
 
----Set a global stencil pattern (8 bytes, checkerboard phase).
+---Accepted but not applied: stores a global stencil pattern no drawing call reads.
 ---@param pattern integer[] 8 bytes
 function picocalc.graphics.setStencilPattern(pattern) end
 
@@ -2134,7 +2134,8 @@ function PicoDeckSprite:getImageFlip() end
 ---@param ignore boolean
 function PicoDeckSprite:setIgnoresDrawOffset(ignore) end
 
----Set the sprite bounding box.
+---Accepted but not applied: stores a rectangle getBounds returns. Also takes one
+---table, `{x, y, w, h}` or `{x=, y=, w=, h=}`.
 ---@param x integer
 ---@param y integer
 ---@param w integer
@@ -2150,6 +2151,7 @@ function PicoDeckSprite:getBounds() end
 ---@return { x: integer, y: integer, w: integer, h: integer }
 function PicoDeckSprite:getBoundsRect() end
 
+---Accepted but not applied: stores a flag isOpaque returns.
 ---@param opaque boolean
 function PicoDeckSprite:setOpaque(opaque) end
 
