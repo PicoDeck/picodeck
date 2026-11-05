@@ -2650,15 +2650,19 @@ picocalc.video = {}
 local PicoDeckVideoPlayer = {}
 
 ---Create a new video player. Freed by the garbage collector when unreferenced.
----@return PicoDeckVideoPlayer
+---Not in the simulator, which has no decoder: it returns `nil, errstr` there.
+---@return PicoDeckVideoPlayer? player
+---@return string? error
 function picocalc.video.player() end
 
----Load an MJPEG AVI file. Returns `true` on success.
+---Load an MJPEG AVI file.
 ---@param path string
----@return boolean ok
+---@return boolean ok `false` if the file cannot be used
+---@return string? error `"access denied"` outside the sandbox; otherwise none
 function PicoDeckVideoPlayer:load(path) end
 
----Start playback. Raises clock to 300 MHz and disconnects WiFi for decode performance.
+---Start playback. Raises the clock to 300 MHz and disconnects WiFi until `stop()`
+---or the player is collected.
 function PicoDeckVideoPlayer:play() end
 
 ---Pause playback.
@@ -2667,12 +2671,12 @@ function PicoDeckVideoPlayer:pause() end
 ---Resume after pause.
 function PicoDeckVideoPlayer:resume() end
 
----Stop playback and restore system clock / reconnect WiFi.
+---Stop playback, put the clock back as it was and reconnect WiFi if it was up.
 function PicoDeckVideoPlayer:stop() end
 
----Advance one frame and decode it to the display. Call once per loop iteration.
----Returns `true` while still playing.
----@return boolean playing
+---Decode the next frame if one is due. Call it on every pass of your loop. With
+---auto-flush on, do not also call `display.flush()`: that flickers.
+---@return boolean decoded `true` only on a pass that decoded a frame; `false` between frames too, so use `isPlaying()` to see whether it still plays
 function PicoDeckVideoPlayer:update() end
 
 ---Seek to a specific frame index. Clamps to the file and never wraps: seeking
@@ -2761,7 +2765,9 @@ function PicoDeckVideoPlayer:isMuted() end
 ---@param loop boolean
 function PicoDeckVideoPlayer:setLoop(loop) end
 
----If `true` (default), `update()` calls `display.flush()` automatically after each frame.
+---If `true` (default), the player presents each frame itself, at the next
+---`update()`. If `false`, call `display.flush()` once per decoded frame: only
+---when `update()` returned `true`.
 ---@param af boolean
 function PicoDeckVideoPlayer:setAutoFlush(af) end
 
