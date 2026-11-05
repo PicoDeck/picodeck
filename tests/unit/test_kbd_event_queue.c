@@ -253,6 +253,38 @@ static void test_key_renamed_under_shift_sticks(void) {
   CHECK_EV(pop(), KBD_EV_UP, KEY_F1, 0, 0);
 }
 
+// Tab under Shift is Home: no BTN_TAB and no BTN_* bit of its own, so
+// W.FocusGroup (system/lib/widgets.lua) reads it from the raw key and the
+// key-down set, and each of those misses a case the other sees.
+static void test_shift_tab_is_home(void) {
+  reset();
+  begin_poll();
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, KEY_MOD_SHL);
+  kbd_evq_clear(&in.q);
+  begin_poll();
+  CHECK_EQ_INT(kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, KEY_HOME), KEY_HOME);
+  CHECK_EQ_INT(kbd_keycode_to_button(KEY_HOME), 0);
+  CHECK_EQ_INT(btn.curr, BTN_SHIFT);
+  CHECK_EQ_INT(pressed(), 0);
+  CHECK(kbd_keyset_test(&in.down, KEY_HOME));
+  CHECK_EV(pop(), KBD_EV_DOWN, KEY_HOME, 0, KBD_MOD_SHIFT);
+  CHECK_EQ_INT(in.q.count, 0);  // and no char
+  // Shift's own repeat, later in that poll, is what kbd_poll keeps as the raw
+  // key (the last non-zero return); the key-down set still has Home.
+  CHECK_EQ_INT(kbd_fifo_apply(&in, &btn, KBD_FIFO_HOLD, KEY_MOD_SHL), KEY_MOD_SHL);
+  CHECK(kbd_keyset_test(&in.down, KEY_HOME));
+  // Shift let go first: Tab comes up as Tab, and Home stays in the set...
+  kbd_evq_clear(&in.q);
+  begin_poll();
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_RELEASED, KEY_MOD_SHL);
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_RELEASED, KEY_TAB);
+  CHECK(kbd_keyset_test(&in.down, KEY_HOME));
+  // ...so the next Shift+Tab is no edge in the set, but is the raw key.
+  begin_poll();
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, KEY_MOD_SHL);
+  CHECK_EQ_INT(kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, KEY_HOME), KEY_HOME);
+}
+
 static void test_tap_inside_one_poll(void) {
   reset();
   begin_poll();
@@ -670,6 +702,7 @@ int main(void) {
   test_repeated_hold_after_clear_stays_quiet();
   test_pressed_repeat_is_flagged();
   test_key_renamed_under_shift_sticks();
+  test_shift_tab_is_home();
   test_tap_inside_one_poll();
   test_tap_then_press_again();
   test_ctrl_letter();

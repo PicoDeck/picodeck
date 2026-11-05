@@ -268,7 +268,7 @@ Methods: `getSelected()` returns `index, item`; `setItems(t)` (back to the first
 
 Moves focus between widgets and hands keys to the focused one. `widgets` is an array; those that take no input stay in it harmlessly. The first focusable one starts focused. A group draws nothing: keep drawing the widgets yourself.
 
-- `group:handleInput(btns, ch)`: Tab moves to the next focusable widget and Shift+Tab to the previous, wrapping; anything else goes to the focused widget. Returns `true` if it was used.
+- `group:handleInput(btns, ch)`: Tab moves to the next focusable widget and Shift+Tab to the previous, wrapping; anything else goes to the focused widget. Returns `true` if it was used. Call it once per `input.update()`. On the device Shift+Tab reports as Home, which has no `BTN_*` bit, so the group reads it from the keyboard itself, whatever `btns` holds. Held, Shift+Tab goes on moving at the keyboard's repeat rate.
 - `group:getFocused()`: the focused widget, or `nil`.
 - `group:getFocusIndex()`: its index in the array, 0 if none.
 - `group:setFocus(index)`: move focus to that widget.

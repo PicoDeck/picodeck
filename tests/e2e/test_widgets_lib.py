@@ -225,6 +225,38 @@ g:setFocus(2); check("setFocus", g:getFocused(), a)
 check("unused", g:handleInput(UP), false)
 check("empty", W.FocusGroup({}):getFocused(), nil)
 """,
+    # On the device Tab under Shift reports as Home (0xD2), with no BTN_* bit
+    # (test_shift_tab_is_home in tests/unit/test_kbd_event_queue.c runs that
+    # decode), and the simulator's Tab stays Tab, so the keyboard is faked here.
+    "focus_group_shift_tab_as_home": r"""
+local a, b, c = W.Checkbox({}), W.Checkbox({}), W.Checkbox({})
+local g = W.FocusGroup({ a, b, c })
+local raw, down = 0, false
+input.getRawKey = function() return raw end
+input.isKeyDown = function(k) return down and k == 0xD2 end
+check("idle", g:handleInput(0), false); check("idle stays", g:getFocused(), a)
+raw, down = 0xD2, true
+check("press used", g:handleInput(0), true); check("back, wrapping", g:getFocused(), c)
+raw = 0
+check("held, no report", g:handleInput(0), false); check("stays", g:getFocused(), c)
+raw = 0xD2
+g:handleInput(0); check("a repeat moves", g:getFocused(), b)
+raw, down = 0, false
+g:handleInput(0); check("released", g:getFocused(), b)
+-- Shift's own repeat took the raw key in the press's poll: the key-down set has it.
+raw, down = 0xA2, true
+check("under a Shift repeat", g:handleInput(0), true); check("still seen", g:getFocused(), a)
+-- Shift let go first, so Home stays in the key-down set: nothing moves...
+raw = 0
+g:handleInput(0); g:handleInput(0); check("stuck is quiet", g:getFocused(), a)
+-- ...and the next press is only the raw key.
+raw = 0xD2
+g:handleInput(0); check("press after stuck", g:getFocused(), c)
+-- A key already stuck when the group was made is not a press.
+raw = 0
+local g2 = W.FocusGroup({ a, b })
+g2:handleInput(0); check("no press at start", g2:getFocused(), a)
+""",
     "toasts": r"""
 d.clear(0)
 W.toast("first"); W.toast("second", 5)
