@@ -1084,7 +1084,8 @@ function PicoDeckSamplePlayer:getSample() end
 
 ---Start playback. `repeat_count` = number of plays (0 = loop until stopped).
 ---@param repeat_count? integer
----@return boolean ok
+---@return boolean? ok `true` if started, `nil` with nothing to play
+---@return string? error
 function PicoDeckSamplePlayer:play(repeat_count) end
 
 ---Stop playback.
@@ -1131,6 +1132,14 @@ function PicoDeckSamplePlayer:setRate(rate) end
 ---@return number
 function PicoDeckSamplePlayer:getRate() end
 
+---Register a callback called when playback finishes; `nil` clears it.
+---@param fn fun()|nil
+function PicoDeckSamplePlayer:setFinishCallback(fn) end
+
+---Register a callback called each time the player loops; `nil` clears it.
+---@param fn fun()|nil
+function PicoDeckSamplePlayer:setLoopCallback(fn) end
+
 -- ── PicoDeckFilePlayer methods ──────────────────────────────────────────────────
 
 ---Open a WAV (16-bit PCM, 1-2 channels) or QOA file for streaming. A file
@@ -1144,7 +1153,8 @@ function PicoDeckFilePlayer:load(path) end
 
 ---Start streaming playback.
 ---@param repeat_count? integer 0 = infinite
----@return boolean ok
+---@return boolean? ok `true` if started, `nil` with no file loaded
+---@return string? error
 function PicoDeckFilePlayer:play(repeat_count) end
 
 ---Stop playback.
@@ -1196,9 +1206,13 @@ function PicoDeckFilePlayer:setLoopRange(start_sec, end_sec) end
 ---@return boolean
 function PicoDeckFilePlayer:didUnderrun() end
 
----Register a callback called when playback finishes.
----@param fn fun()
+---Register a callback called when playback finishes; `nil` clears it.
+---@param fn fun()|nil
 function PicoDeckFilePlayer:setFinishCallback(fn) end
+
+---Register a callback called each time the file loops; `nil` clears it.
+---@param fn fun()|nil
+function PicoDeckFilePlayer:setLoopCallback(fn) end
 
 ---If `true`, stop automatically on buffer underrun rather than filling with silence.
 ---@param flag boolean
@@ -1215,7 +1229,8 @@ function PicoDeckMp3Player:load(path) end
 ---Start playback from the beginning of the file (also after it finished).
 ---A `play()` while playing fades out first (~1.5 ms, no click).
 ---@param repeat_count? integer 0 = loop until stopped; any other count plays once
----@return boolean ok
+---@return boolean? ok `true` if started, `nil` with no file loaded
+---@return string? error
 function PicoDeckMp3Player:play(repeat_count) end
 
 ---Stop playback (fades out over ~1.5 ms).

@@ -372,6 +372,11 @@ static int l_sound_sampleplayer_setSample(lua_State *L) {
 static int l_sound_sampleplayer_play(lua_State *L) {
     sound_player_t *player = check_player(L, 1);
     uint8_t repeat = (uint8_t)lb_clamp_int(lb_optint(L, 2, 1), 0, 255);
+    if (!player->sample || !player->sample->loaded) {
+        lua_pushnil(L);
+        lua_pushstring(L, "no sample to play");
+        return 2;
+    }
     g_api.soundplayer->playerPlay(player, repeat);
     lua_pushboolean(L, true);
     return 1;
@@ -534,7 +539,12 @@ static int l_sound_fileplayer_load(lua_State *L) {
 static int l_sound_fileplayer_play(lua_State *L) {
     fileplayer_t *player = check_fileplayer(L, 1);
     uint8_t repeat = (uint8_t)lb_clamp_int(lb_optint(L, 2, 1), 0, 255);
-    g_api.soundplayer->filePlayerPlay(player, repeat);
+    // Not through the void native filePlayerPlay: Lua gets the result.
+    if (!fileplayer_play(player, repeat)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "no file loaded");
+        return 2;
+    }
     lua_pushboolean(L, true);
     return 1;
 }
@@ -661,17 +671,16 @@ static sound_lua_cb_t *find_or_alloc_cb(sound_lua_cb_t *arr, int count,
     return NULL;
 }
 
-// Helper: register a Lua callback into a slot array.
+// Helper: register the Lua function at fn_idx into a slot array.
 // Returns the slot pointer (for wiring the C callback), or NULL on failure.
 static sound_lua_cb_t *register_lua_cb(lua_State *L, sound_lua_cb_t *arr,
-                                        int count, void *match_arg) {
-    luaL_checktype(L, 2, LUA_TFUNCTION);
+                                        int count, void *match_arg, int fn_idx) {
     sound_lua_cb_t *cb = find_or_alloc_cb(arr, count, match_arg);
     if (!cb)
         return NULL;
     if (cb->ref != 0)
         luaL_unref(L, LUA_REGISTRYINDEX, cb->ref);
-    lua_pushvalue(L, 2);
+    lua_pushvalue(L, fn_idx);
     cb->ref = luaL_ref(L, LUA_REGISTRYINDEX);
     cb->L = L;
     cb->pending = 0;
@@ -713,46 +722,6 @@ void lua_bridge_sound_poll(lua_State *L) {
         fire_sound_cb(L, &s_sp_loop_cbs[i], "sampleplayer loop");
 }
 
-// ── Fileplayer callbacks ────────────────────────────────────────────────────
-
-static int l_sound_fileplayer_setFinishCallback(lua_State *L) {
-    fileplayer_t *player = check_fileplayer(L, 1);
-    sound_lua_cb_t *cb = register_lua_cb(L, s_fp_finish_cbs, MAX_FILEPLAYER_CBS,
-                                          player->finish_callback_arg);
-    if (!cb) return luaL_error(L, "too many fileplayer finish callbacks");
-    fileplayer_set_finish_callback(player, trampoline_set_pending, cb);
-    return 0;
-}
-
-static int l_sound_fileplayer_setLoopCallback(lua_State *L) {
-    fileplayer_t *player = check_fileplayer(L, 1);
-    sound_lua_cb_t *cb = register_lua_cb(L, s_fp_loop_cbs, MAX_FILEPLAYER_CBS,
-                                          player->loop_callback_arg);
-    if (!cb) return luaL_error(L, "too many fileplayer loop callbacks");
-    fileplayer_set_loop_callback(player, trampoline_set_pending, cb);
-    return 0;
-}
-
-// ── Sampleplayer callbacks ──────────────────────────────────────────────────
-
-static int l_sound_sampleplayer_setFinishCallback(lua_State *L) {
-    sound_player_t *player = check_player(L, 1);
-    sound_lua_cb_t *cb = register_lua_cb(L, s_sp_finish_cbs, MAX_SAMPLEPLAYER_CBS,
-                                          player->finish_callback_arg);
-    if (!cb) return luaL_error(L, "too many sampleplayer finish callbacks");
-    sound_player_set_finish_callback(player, trampoline_set_pending, cb);
-    return 0;
-}
-
-static int l_sound_sampleplayer_setLoopCallback(lua_State *L) {
-    sound_player_t *player = check_player(L, 1);
-    sound_lua_cb_t *cb = register_lua_cb(L, s_sp_loop_cbs, MAX_SAMPLEPLAYER_CBS,
-                                          player->loop_callback_arg);
-    if (!cb) return luaL_error(L, "too many sampleplayer loop callbacks");
-    sound_player_set_loop_callback(player, trampoline_set_pending, cb);
-    return 0;
-}
-
 // A collected sampleplayer gives its callback slots back (they used to stay
 // taken, so the ninth player ever given a callback failed).
 static void release_cb(lua_State *L, sound_lua_cb_t *arr, int count, void *arg) {
@@ -763,6 +732,75 @@ static void release_cb(lua_State *L, sound_lua_cb_t *arr, int count, void *arg) 
             arr[i].pending = 0;
         }
     }
+}
+
+// ── Fileplayer callbacks ────────────────────────────────────────────────────
+// nil clears a callback, as for HTTP and TCP: detached first, as in __gc.
+
+static int l_sound_fileplayer_setFinishCallback(lua_State *L) {
+    fileplayer_t *player = check_fileplayer(L, 1);
+    if (lua_isnoneornil(L, 2)) {
+        void *old = player->finish_callback_arg;
+        fileplayer_set_finish_callback(player, NULL, NULL);
+        release_cb(L, s_fp_finish_cbs, MAX_FILEPLAYER_CBS, old);
+        return 0;
+    }
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    sound_lua_cb_t *cb = register_lua_cb(L, s_fp_finish_cbs, MAX_FILEPLAYER_CBS,
+                                          player->finish_callback_arg, 2);
+    if (!cb) return luaL_error(L, "too many fileplayer finish callbacks");
+    fileplayer_set_finish_callback(player, trampoline_set_pending, cb);
+    return 0;
+}
+
+static int l_sound_fileplayer_setLoopCallback(lua_State *L) {
+    fileplayer_t *player = check_fileplayer(L, 1);
+    if (lua_isnoneornil(L, 2)) {
+        void *old = player->loop_callback_arg;
+        fileplayer_set_loop_callback(player, NULL, NULL);
+        release_cb(L, s_fp_loop_cbs, MAX_FILEPLAYER_CBS, old);
+        return 0;
+    }
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    sound_lua_cb_t *cb = register_lua_cb(L, s_fp_loop_cbs, MAX_FILEPLAYER_CBS,
+                                          player->loop_callback_arg, 2);
+    if (!cb) return luaL_error(L, "too many fileplayer loop callbacks");
+    fileplayer_set_loop_callback(player, trampoline_set_pending, cb);
+    return 0;
+}
+
+// ── Sampleplayer callbacks ──────────────────────────────────────────────────
+
+typedef void (*player_cb_setter_t)(sound_player_t *, int (*)(void *), void *);
+
+// setFinishCallback / setLoopCallback on the player at index 1.
+static int set_player_cb(lua_State *L, sound_player_t *player, sound_lua_cb_t *arr,
+                         void *old_arg, player_cb_setter_t set,
+                         const char *too_many) {
+    if (lua_isnoneornil(L, 2)) {
+        set(player, NULL, NULL);
+        release_cb(L, arr, MAX_SAMPLEPLAYER_CBS, old_arg);
+        return 0;
+    }
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    sound_lua_cb_t *cb = register_lua_cb(L, arr, MAX_SAMPLEPLAYER_CBS, old_arg, 2);
+    if (!cb) return luaL_error(L, "%s", too_many);
+    set(player, trampoline_set_pending, cb);
+    return 0;
+}
+
+static int l_sound_sampleplayer_setFinishCallback(lua_State *L) {
+    sound_player_t *player = check_player(L, 1);
+    return set_player_cb(L, player, s_sp_finish_cbs, player->finish_callback_arg,
+                         sound_player_set_finish_callback,
+                         "too many sampleplayer finish callbacks");
+}
+
+static int l_sound_sampleplayer_setLoopCallback(lua_State *L) {
+    sound_player_t *player = check_player(L, 1);
+    return set_player_cb(L, player, s_sp_loop_cbs, player->loop_callback_arg,
+                         sound_player_set_loop_callback,
+                         "too many sampleplayer loop callbacks");
 }
 
 static void release_player_cbs(lua_State *L, sound_player_t *player) {
@@ -871,7 +909,12 @@ static int l_sound_mp3player_play(lua_State *L) {
     mp3_player_t *player = check_mp3player(L, 1);
     uint8_t repeat = (uint8_t)lb_clamp_int(lb_optint(L, 2, 1), 0, 255);
     g_api.soundplayer->mp3PlayerSetLoop(player, repeat == 0);
-    g_api.soundplayer->mp3PlayerPlay(player, repeat);
+    // Not through the void native mp3PlayerPlay: Lua gets the result.
+    if (!mp3_player_play(player, repeat)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "no file loaded");
+        return 2;
+    }
     lua_pushboolean(L, true);
     return 1;
 }

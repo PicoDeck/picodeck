@@ -332,11 +332,11 @@ Sets the sample to play.
 ---
 
 #### `player:play([repeat])`
-Starts playback.
+Starts playback from the beginning of the play range.
 
 - **Parameters:**
-  - `repeat` (number, optional): Number of times to repeat. `0` loops indefinitely.
-- **Returns:** `true` if started
+  - `repeat` (number, optional): Number of times to play. `0` loops until stopped. Default `1`.
+- **Returns:** `true` if started, or `nil, errstr` if there is nothing to play (no sample, or an empty one)
 
 ---
 
@@ -432,7 +432,7 @@ player:setRate(1.5)  -- play at 150% speed
 Sets a callback fired when playback finishes (all repeats completed). Each SamplePlayer can have one. The callback fires on Core 0 via the Lua instruction hook (slight delay of up to ~256 opcodes).
 
 - **Parameters:**
-  - `fn` (function): Callback function (called with no arguments)
+  - `fn` (function or nil): Callback function (called with no arguments), or `nil` to clear it
 
 ```lua
 player:setFinishCallback(function()
@@ -446,7 +446,7 @@ end)
 Sets a callback fired each time the player loops back to the start. Each SamplePlayer can have one. Same cross-core delivery mechanism as `setFinishCallback`.
 
 - **Parameters:**
-  - `fn` (function): Callback function (called with no arguments)
+  - `fn` (function or nil): Callback function (called with no arguments), or `nil` to clear it
 
 ```lua
 player:setLoopCallback(function()
@@ -487,7 +487,7 @@ file cut short (an interrupted copy) plays the whole frames it holds.
 ---
 
 #### `player:play([repeat])` / `player:stop()` / `player:pause()` / `player:resume()` / `player:isPlaying()`
-Standard playback controls. `repeat` works the same as SamplePlayer: `n` plays the file `n` times and `0` loops until stopped (see Repeat counts). A player with a loop range (`setLoopRange`) loops until stopped whatever `repeat` says. `pause()` halts playback at once, keeping the position and the audio already buffered; `resume()` continues from the same sample, or from the new position after a `setOffset()` while paused (the seek drops the buffered audio).
+Standard playback controls. `play()` returns `true`, or `nil, errstr` with no file loaded. `repeat` works the same as SamplePlayer: `n` plays the file `n` times and `0` loops until stopped (see Repeat counts). A player with a loop range (`setLoopRange`) loops until stopped whatever `repeat` says. `pause()` halts playback at once, keeping the position and the audio already buffered; `resume()` continues from the same sample, or from the new position after a `setOffset()` while paused (the seek drops the buffered audio).
 
 `play()` fills the stream's buffer before the sound starts: about 10-60 ms after the call, depending on the format and the SD card (QOA is quickest, 44.1 kHz stereo WAV slowest) (the buffer holds 93 ms of 44.1 kHz audio, 186 ms of 22.05 kHz). Starting full means the SD card can be busy right after `play()` (your app loading a sample or a level, say) without a gap in the music; it just starts once the buffer is full.
 
@@ -529,7 +529,7 @@ end
 Sets a callback function to be called when playback finishes. Maximum 2 finish callbacks across all FilePlayer instances.
 
 - **Parameters:**
-  - `fn` (function): Callback function (called with no arguments)
+  - `fn` (function or nil): Callback function (called with no arguments), or `nil` to clear it
 
 ```lua
 player:setFinishCallback(function()
@@ -543,7 +543,7 @@ end)
 Sets a callback fired each time the file loops back to the start. Maximum 2 loop callbacks across all FilePlayer instances.
 
 - **Parameters:**
-  - `fn` (function): Callback function (called with no arguments)
+  - `fn` (function or nil): Callback function (called with no arguments), or `nil` to clear it
 
 ```lua
 player:setLoopCallback(function()
@@ -612,7 +612,7 @@ Opens an MP3 file for streaming. ID3v2 tags at the start of the file (title, art
 ---
 
 #### `player:play([repeat])` / `player:stop()` / `player:pause()` / `player:resume()` / `player:isPlaying()`
-Standard playback controls. `play(repeat)` here only chooses between looping and not: `0` loops until stopped, any other value plays once (the count is not honoured; `setLoop()` sets the same flag). `play()` starts from the beginning of the file (also after it finished). `stop()`, `pause()` and a `play()` while playing fade out over ~1.5 ms (no click); `resume()` fades back in. `isPlaying()` stays `true` until the last decoded audio has played.
+Standard playback controls. `play()` returns `true`, or `nil, errstr` with no file loaded. `play(repeat)` here only chooses between looping and not: `0` loops until stopped, any other value plays once (the count is not honoured; `setLoop()` sets the same flag). `play()` starts from the beginning of the file (also after it finished). `stop()`, `pause()` and a `play()` while playing fade out over ~1.5 ms (no click); `resume()` fades back in. `isPlaying()` stays `true` until the last decoded audio has played.
 
 ---
 
