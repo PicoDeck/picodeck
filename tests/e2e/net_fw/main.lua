@@ -696,6 +696,40 @@ case_fw("tcp_connect_timeout", function()
     T.ok(now() - t0 < 3000, "took too long")
 end)
 
+-- ── The documented contract, on both network stacks ─────────────────────────
+-- test_network_contract.py runs these against the libcurl simulator too.
+
+-- setByteRange reaches the wire: a 206 with the slice, for the next request.
+case_fw("http_range_next_request", function()
+    local conn = net.http.new(HOST, cfg.http, false, "range")
+    conn:setByteRange(10, 19)
+    local r = request("/range", { conn = conn })
+    T.ok(wait(function() return r.complete or r.closed end, 3000), "no answer")
+    T.eq(r.status, 206, "status of the ranged request")
+    T.eq(#body(r), 10, "slice length")
+    -- The same connection's next request is a plain one again.
+    r.chunks = {}
+    local again = false
+    conn:setRequestCompleteCallback(function() again = true end)
+    T.ok(conn:get("/range"), "second get")
+    T.ok(wait(function() return again end, 3000), "second request")
+    r.drain()
+    T.eq(conn:getResponseStatus(), 200, "status of the next request")
+    T.eq(#body(r), 1000, "whole body on the next request")
+    conn:close()
+end)
+
+-- A negative `to` is open-ended, to the end of the file.
+case_fw("http_range_open_ended", function()
+    local conn = net.http.new(HOST, cfg.http, false, "range")
+    conn:setByteRange(990, -1)
+    local r = request("/range", { conn = conn })
+    T.ok(wait(function() return r.complete or r.closed end, 3000), "no answer")
+    T.eq(r.status, 206, "status")
+    T.eq(#body(r), 10, "slice to the end")
+    conn:close()
+end)
+
 -- ── Run the one selected case ───────────────────────────────────────────────
 
 local fn = cases[cfg.case]

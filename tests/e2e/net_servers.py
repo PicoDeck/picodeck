@@ -18,6 +18,17 @@ threads, and records what it saw so a test can assert on the server side too
     /reset     headers (Content-Length 1000), 10 body bytes, then RST
     /echo      POST: 200 with the request body echoed back; the raw body is
                recorded in .posts
+    /range     RANGE_BODY (1000 bytes); honours a Range header with a 206 and
+               the slice. The header seen by each request is in .ranges
+    /slowok    200, OK_BODY, after 1 s of silence
+    /short     headers (Content-Length 1000), 3 body bytes, then a clean close
+    /empty     200 with an empty body
+    /notfound  404 with a body
+    /redir-abs, /redir-root, /redir-rel, /redir-rel-up, /redir-scheme,
+    /sub/dir/redir-rel-up, /sub/dir/redir-rel: 302 to /ok by an absolute URL
+               and each relative form a Location can take
+    /redir-none 302 with no Location
+    /redir-loop 302 to itself
 - TcpEchoServer: echoes every byte. A line "FLOOD\\n" switches the
   connection to a steady stream (1 KiB every 5 ms) until the peer goes;
   "BURST\\n" sends BURST_BODY (20000 bytes) once, then nothing.
@@ -33,6 +44,7 @@ threads, and records what it saw so a test can assert on the server side too
 
 from __future__ import annotations
 
+import re
 import socket
 import struct
 import threading
@@ -44,6 +56,12 @@ CHUNKS = [b"alpha", b"beta", b"gamma"]
 BIG_SIZE = 1 << 20
 DRIP_SIZE = 400
 DRIP_INTERVAL_S = 0.05
+RANGE_SIZE = 1000
+
+
+def range_body() -> bytes:
+    """The /range payload: 1000 bytes that differ at every offset of interest."""
+    return bytes((i * 3 + (i >> 4)) & 0xFF for i in range(RANGE_SIZE))
 
 
 def big_body() -> bytes:
@@ -62,6 +80,10 @@ def _big() -> bytes:
     return _BIG
 
 
+REDIRECTS = {"/redir-abs", "/redir-root", "/redir-rel", "/redir-rel-up",
+             "/redir-scheme", "/redir-none", "/redir-loop"}
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # keep-alive unless the client says close
 
@@ -77,12 +99,46 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _range(self):
+        """Serve range_body(), honouring `Range: bytes=from-[to]`."""
+        body = range_body()
+        rng = self.headers.get("Range")
+        self.server.ranges.append(rng)
+        m = re.fullmatch(r"bytes=(\d+)-(\d*)", rng or "")
+        if not m:
+            self._send(body)
+            return
+        first = int(m.group(1))
+        last = int(m.group(2)) if m.group(2) else len(body) - 1
+        last = min(last, len(body) - 1)
+        self._send(body[first:last + 1], status=206,
+                   extra=[("Content-Range",
+                           f"bytes {first}-{last}/{len(body)}")])
+
+    def _redirect(self, path):
+        host = self.headers.get("Host", "")
+        location = {
+            "/redir-abs": f"http://{host}/ok",
+            "/redir-root": "/ok",
+            "/redir-rel": "ok",
+            "/redir-rel-up": "../ok",
+            "/redir-scheme": f"//{host}/ok",
+            "/redir-loop": path,
+            "/sub/dir/redir-rel": "./target",
+            "/sub/dir/redir-rel-up": "../../ok",
+        }.get(path)
+        self.send_response(302)
+        if location is not None:
+            self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         srv = self.server
         srv.hits.append(self.path)
         path = self.path.split("?", 1)[0]
         try:
-            if path == "/ok":
+            if path == "/ok" or path == "/sub/dir/target":
                 self._send(OK_BODY)
             elif path == "/big":
                 self._send(_big())
@@ -112,6 +168,25 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
                 time.sleep(0.3)
                 self.close_connection = True
+            elif path == "/range":
+                self._range()
+            elif path == "/slowok":
+                time.sleep(1.0)
+                self._send(OK_BODY)
+            elif path == "/short":
+                self.send_response(200)
+                self.send_header("Content-Length", "1000")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(b"abc")
+                self.wfile.flush()
+                self.close_connection = True
+            elif path == "/empty":
+                self._send(b"")
+            elif path == "/notfound":
+                self._send(b"nope", status=404)
+            elif path in REDIRECTS or path.startswith("/sub/dir/redir-"):
+                self._redirect(path)
             elif path == "/drip":
                 self.send_response(200)
                 self.send_header("Content-Length", str(DRIP_SIZE))
@@ -188,6 +263,7 @@ class HttpTestServer:
         self._srv.hits = []
         self._srv.posts = []
         self._srv.hang_closed = []
+        self._srv.ranges = []
         self._srv.stopping = threading.Event()
         self.port = self._srv.server_address[1]
         self._thread = threading.Thread(target=self._srv.serve_forever,
@@ -201,6 +277,11 @@ class HttpTestServer:
     @property
     def posts(self) -> list:
         return self._srv.posts
+
+    @property
+    def ranges(self) -> list:
+        """The Range header of each /range request (None if it had none)."""
+        return self._srv.ranges
 
     @property
     def hang_closed(self) -> list:

@@ -259,12 +259,19 @@ Enables HTTP keep-alive (`Connection: keep-alive`). Must be called before `get`/
 ---
 
 #### `conn:setByteRange(from, to)`
-Adds a `Range: bytes=from-to` header to the next request (for partial content / resumable downloads). Must be called before `get`/`post`.
+Adds a `Range: bytes=from-to` header to the next request only (for partial content / resumable downloads). Must be called before `get`/`post`.
+
+A server is free to ignore the header and send the whole body with status 200. Check for `206` with `conn:getResponseStatus()` before appending to a partial file.
 
 - **Parameters:**
-  - `from` (number): Start byte (inclusive)
-  - `to` (number): End byte (inclusive)
+  - `from` (number): Start byte (inclusive). A negative value sends no header.
+  - `to` (number): End byte (inclusive), or `-1` for the rest of the file
 - **Returns:** None
+
+```lua
+conn:setByteRange(1024, -1)    -- everything from byte 1024 on
+conn:get("/files/big.bin")
+```
 
 ---
 

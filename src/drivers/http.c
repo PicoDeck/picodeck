@@ -853,6 +853,22 @@ bool http_set_recv_buf(http_conn_t *c, uint32_t bytes) {
   return true;
 }
 
+// The extra headers plus `Range: bytes=from-to` (`to` < 0: to the end).
+static char *headers_with_range(const char *extra_hdr, int32_t from,
+                                int32_t to) {
+  size_t cap = (extra_hdr ? strlen(extra_hdr) : 0) + 48;
+  char *h = umm_malloc(cap);
+  if (!h)
+    return NULL;
+  int off = snprintf(h, cap, "%s", extra_hdr ? extra_hdr : "");
+  if (to >= 0)
+    snprintf(h + off, cap - off, "Range: bytes=%ld-%ld\r\n", (long)from,
+             (long)to);
+  else
+    snprintf(h + off, cap - off, "Range: bytes=%ld-\r\n", (long)from);
+  return h;
+}
+
 static bool start_request(http_conn_t *c, const char *method, const char *path,
                           const char *extra_hdr, const char *body,
                           size_t body_len) {
@@ -871,15 +887,19 @@ static bool start_request(http_conn_t *c, const char *method, const char *path,
 
   // Request buffers: Core 0 allocates and frees them; Core 1 only reads
   // them between CONN_REQ_HTTP_START and sending.  The body is binary.
+  // setByteRange's range goes out as one more extra header, for this request.
+  bool has_range = c->range_from >= 0;
   char *new_path = http_strdup(path);
-  char *new_hdrs = extra_hdr ? http_strdup(extra_hdr) : NULL;
+  char *new_hdrs = has_range ? headers_with_range(extra_hdr, c->range_from,
+                                                  c->range_to)
+                             : http_strdup(extra_hdr);
   char *new_tx = NULL;
   if (body && body_len > 0) {
     new_tx = umm_malloc(body_len);
     if (new_tx)
       memcpy(new_tx, body, body_len);
   }
-  if (!new_path || (extra_hdr && !new_hdrs) ||
+  if (!new_path || ((extra_hdr || has_range) && !new_hdrs) ||
       (body && body_len > 0 && !new_tx)) {
     umm_free(new_path);
     umm_free(new_hdrs);
@@ -896,6 +916,7 @@ static bool start_request(http_conn_t *c, const char *method, const char *path,
   c->extra_hdrs = new_hdrs;
   c->tx_buf = new_tx;
   c->tx_len = new_tx ? (uint32_t)body_len : 0;
+  c->range_from = c->range_to = -1;  // setByteRange is for the next request
   strncpy(c->method, method, sizeof(c->method) - 1);
   c->method[sizeof(c->method) - 1] = '\0';
 
