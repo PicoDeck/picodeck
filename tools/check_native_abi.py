@@ -12,6 +12,7 @@ as garbage (this has happened). The checks:
 
   - every picocalc_*_t, pczip_stat_t and PicoCalcAPI declaration is the same
     in (1) and (2), member by member (comments and spacing ignored);
+  - PICODECK_API_VERSION in sdk/native/os.h equals g_api.version in src/main.c;
   - g_api.version in src/main.c equals the version the trampolines write, and
     they write it at offsetof(PicoCalcAPI, version) with api_struct_size ==
     sizeof(PicoCalcAPI), and a table pointer at every other offset (tables
@@ -144,6 +145,16 @@ def check_headers() -> list[str]:
     return problems
 
 
+def check_sdk_version(version: int) -> list[str]:
+    m = re.search(r"#define\s+PICODECK_API_VERSION\s+(\d+)", (SDK_DIR / "os.h").read_text())
+    if not m:
+        return ["sdk/native/os.h: no PICODECK_API_VERSION define"]
+    if int(m.group(1)) != version:
+        return [f"sdk/native/os.h: PICODECK_API_VERSION is {m.group(1)}; "
+                f"src/main.c sets g_api.version = {version}"]
+    return []
+
+
 def check_trampolines(layout: dict, version: int) -> list[str]:
     text = TRAMPOLINES_C.read_text()
     problems = []
@@ -226,7 +237,8 @@ def main() -> int:
 
     layout = api_layout()
     version = api_version()
-    problems = check_headers() + check_trampolines(layout, version)
+    problems = (check_headers() + check_sdk_version(version)
+                + check_trampolines(layout, version))
     if args.cc:
         if not shutil.which(args.cc):
             problems.append(f"compiler not found: {args.cc}")

@@ -5,7 +5,9 @@
 # (drawfps.c: perf->drawFPS under Show FPS) and native_exit_probe
 # (exit_probe.c: ends only on shouldExit), native_level_probe (level_probe.c:
 # logs every change of the held masks) and native_fidelity (fidelity_probe.c:
-# one API or emulated-machine behaviour per mode, chosen by the app name).
+# one API or emulated-machine behaviour per mode, chosen by the app name),
+# native_libc (libc_probe.c, sdk/native/stubs.c: the C library recipe) and
+# native_cpp (cpp_probe.cpp: the C++ the docs describe).
 # The outputs are committed so the E2E job needs no ARM toolchain; rebuild
 # and commit them whenever sdk/native/os.h changes, and the pad probe also
 # whenever apps/gbc/input.[ch] or apps/c64/pad_input.h changes:
@@ -24,8 +26,11 @@ DRAWFPS  ?= ../fixtures/native_drawfps
 EXITPROBE ?= ../fixtures/native_exit_probe
 LEVELPROBE ?= ../fixtures/native_level_probe
 FIDELITY ?= ../fixtures/native_fidelity
+LIBC     ?= ../fixtures/native_libc
+CPPPROBE ?= ../fixtures/native_cpp
 GAMES  ?= ../../../apps
 CC       = arm-none-eabi-gcc
+CXX      = arm-none-eabi-g++
 CFLAGS   = -mcpu=cortex-m33 -mthumb -fpie -fno-plt \
            -ffunction-sections -fdata-sections -Os \
            -Wall -Wextra -Werror -I$(SDK)
@@ -36,7 +41,7 @@ LDFLAGS  = -T $(SDK)/linker.ld -Wl,--entry=picodeck_main -Wl,-pie \
 .PHONY: all clean
 all: $(OUT)/main.elf $(LEAKY)/main.elf $(PADPROBE)/main.elf $(NOPOLL)/main.elf \
      $(DRAWFPS)/main.elf $(EXITPROBE)/main.elf $(LEVELPROBE)/main.elf \
-     $(FIDELITY)/main.elf
+     $(FIDELITY)/main.elf $(LIBC)/main.elf $(CPPPROBE)/main.elf
 
 $(OUT)/main.elf: api_probe.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker.ld
 	@mkdir -p $(OUT)
@@ -73,7 +78,17 @@ $(FIDELITY)/main.elf: fidelity_probe.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linke
 	@mkdir -p $(FIDELITY)
 	$(CC) $(CFLAGS) -fno-delete-null-pointer-checks -Wno-array-bounds fidelity_probe.c $(LDFLAGS) -o $@
 
+# -Wl,--gc-sections keeps only the newlib functions the probe reaches.
+$(LIBC)/main.elf: libc_probe.c $(SDK)/stubs.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker.ld
+	@mkdir -p $(LIBC)
+	$(CC) $(CFLAGS) -fno-builtin libc_probe.c $(SDK)/stubs.c $(LDFLAGS) -lc -lm -lgcc -o $@
+
+$(CPPPROBE)/main.elf: cpp_probe.cpp $(SDK)/os.h $(SDK)/terminal.h $(SDK)/app_abi.h $(SDK)/linker.ld
+	@mkdir -p $(CPPPROBE)
+	$(CXX) $(CFLAGS) -fno-exceptions -fno-rtti -fno-threadsafe-statics -fno-use-cxa-atexit \
+	    cpp_probe.cpp $(LDFLAGS) -o $@
+
 clean:
 	rm -f $(OUT)/main.elf $(LEAKY)/main.elf $(PADPROBE)/main.elf $(NOPOLL)/main.elf \
 	      $(DRAWFPS)/main.elf $(EXITPROBE)/main.elf $(LEVELPROBE)/main.elf \
-	      $(FIDELITY)/main.elf
+	      $(FIDELITY)/main.elf $(LIBC)/main.elf $(CPPPROBE)/main.elf

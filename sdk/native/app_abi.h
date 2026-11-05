@@ -24,15 +24,14 @@
 //   arm-none-eabi-gcc -mcpu=cortex-m33 -mthumb -fpie -fno-plt
 //       -T linker.ld -Wl,--entry=picodeck_main -Wl,-pie -nostartfiles
 //       -o main.elf main.c
-//
-// TinyGo:
-//   //export picodeck_main
-//   func picoMain(api *C.PicoCalcAPI, dir, id, name *C.char) { ... }
-//   tinygo build -target=picodeck -buildmode=pie -o main.elf .
 // =============================================================================
 
 #include <stdint.h>
 #include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef struct PicoCalcAPI PicoCalcAPI;
 
@@ -42,10 +41,9 @@ typedef void (*picodeck_app_entry_t)(const PicoCalcAPI *api,
                                    const char        *app_id,
                                    const char        *app_name);
 
-// Optional context struct for CGo / TinyGo interop.
-typedef struct {
-    const PicoCalcAPI *api;
-    const char        *app_dir;
-    const char        *app_id;
-    const char        *app_name;
-} picodeck_app_context_t;
+#ifdef __cplusplus
+// So that a C++ app's definition gets C linkage and the symbol keeps its name.
+void picodeck_main(const PicoCalcAPI *api, const char *app_dir,
+                   const char *app_id, const char *app_name);
+}  // extern "C"
+#endif

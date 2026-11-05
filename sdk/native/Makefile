@@ -18,6 +18,9 @@ LDFLAGS = -T linker.ld \
           -Wl,--no-warn-rwx-segments \
           -nostartfiles -nodefaultlibs
 
+# This sample uses no C library. To use one (malloc, snprintf, memcpy, float
+# maths, 64-bit division), add stubs.c to SRCS and link with -lc -lm -lgcc after
+# the sources, as docs/Native-Loading.md describes under "C library".
 SRCS    = main.c
 TARGET  = main.elf
 
@@ -25,7 +28,7 @@ TARGET  = main.elf
 
 all: $(TARGET)
 
-$(TARGET): $(SRCS) linker.ld app_abi.h os.h
+$(TARGET): $(SRCS) linker.ld app_abi.h os.h terminal.h
 	$(CC) $(CFLAGS) $(SRCS) $(LDFLAGS) -o $@
 	arm-none-eabi-size $@
 
