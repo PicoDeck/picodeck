@@ -513,7 +513,11 @@ static void lua_service_full(lua_State *L) {
   // Low-memory GC trigger: when the PSRAM heap drops below PSRAM_LOW_WATERMARK,
   // force a full GC cycle to reclaim dead Lua objects before allocations start
   // failing.  s_gc_triggered prevents hammering GC on every pass while
-  // memory stays low; it resets once the heap recovers above the watermark.
+  // memory stays low; it resets once the heap recovers well above the
+  // watermark, since a heap hovering at it would otherwise cross it again
+  // with the next small allocation, and a full cycle (tens of ms on a large
+  // heap) could then run every 5 ms pass. An allocation that fails still
+  // collects first, in Lua's emergency path and in gc_umm_malloc.
   static bool s_gc_triggered = false;
   if (lua_psram_alloc_is_low()) {
     if (!s_gc_triggered) {
@@ -524,7 +528,8 @@ static void lua_service_full(lua_State *L) {
       printf("[LUA] After GC: %zu KB free\n",
              lua_psram_alloc_free_size() / 1024);
     }
-  } else {
+  } else if (lua_psram_alloc_free_size() >=
+             PSRAM_LOW_WATERMARK + PSRAM_LOW_WATERMARK / 4) {
     s_gc_triggered = false;
   }
 }
