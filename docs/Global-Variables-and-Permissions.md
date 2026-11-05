@@ -74,9 +74,10 @@ back to your data directory when `start` is not readable.
 
 The `id` in `app.json` names your data directory (`/data/<id>`), so it must be
 1-79 characters of `[A-Za-z0-9._-]`, with no `..` and no trailing `.`. It is
-compared case-insensitively (the SD card is), so `com.Example.App` and
-`com.example.app` share one directory. The launcher refuses an app with an
-invalid id (on-screen reason and an `/system/error.log` entry). A missing id
-defaults to `local.<dir>`.
+folded to lower case (the SD card ignores case), so `com.Example.App` and
+`com.example.app` share one directory and `APP_ID` reads `com.example.app` for
+both. The launcher refuses an app with an invalid id, a longer one included
+(on-screen reason and an `/system/error.log` entry). A missing id defaults to
+`local.<dir>`.
 
 Use `picocalc.fs.appPath("filename")` to get paths within your app's data directory.
