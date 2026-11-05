@@ -161,4 +161,3 @@ Host unit tests (`make test-unit`) and the nightly fuzzers (`make fuzz`) do not 
 
 - [ ] GDB remote debugging support
 - [ ] Video capture for regression testing
-- [ ] Network passthrough to host for every network API

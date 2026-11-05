@@ -130,7 +130,7 @@ for line in call("get_log_buffer", tail=20)["lines"]:
 | `read_file`, `write_file`, `delete_file`, `list_dir`, `disk_info` | Files on the card |
 | `dev_command {cmd}` | Runs a [dev command](#dev-commands) |
 | `get_heap_info`, `get_audio_state`, `get_mp3_stats`, `get_terminal_buffer`, `get_crash_log` | Reads state |
-| `set_wifi_state`, `set_battery` | Pretend the WiFi or the battery changed |
+| `set_wifi_state`, `set_battery`, `get_backlight` | Pretend the WiFi or the battery changed; read the backlight level |
 | `set_time_multiplier`, `step_time {ms}` | Drive the virtual clock (below) |
 | `shutdown` | Quits the simulator |
 
@@ -150,7 +150,9 @@ It picks a running simulator if one answers, and otherwise a connected device, w
 
 ## Simulator vs device
 
-Checked against the firmware and simulator from the same source, at firmware API version 10 (commit `272bb8c`, after v0.6.0). Where a row gives what the device does, that comes from reading the firmware's source unless the page for that API says it has been measured. Some of these may have been closed since. **Colour, timing and performance are only ever right on the device.**
+Checked by running the simulator, at firmware API version 10. Where a row gives what the device does, that comes from reading the firmware's source unless the page for that API says it has been measured. **Colour, timing and performance are only ever right on the device.**
+
+This is what is known to differ. The Lua bridge is the firmware's own code; the file, network and display layers under it are the simulator's, written to follow the firmware's rules.
 
 ### Missing
 
@@ -158,55 +160,49 @@ Checked against the firmware and simulator from the same source, at firmware API
 |---|---|---|
 | `picocalc.crypto` | `nil` in Lua. Native: stubs that return 0 or NULL and write nothing, except `randomBytes`, which works | Present |
 | `picocalc.video` | `player()` returns `nil, "failed to create video player"`. Native: `newPlayer` returns NULL, the rest do nothing | Decodes MJPEG |
-| PIO PSRAM | `pioPsramSize()` is 0, writes return 0, reads return nil. Native: `pioAvailable()` is false and the other `pio*` calls are unimplemented | 8 MB, apps from `0x48000` |
+| PIO PSRAM | `pioPsramSize()` is 0, writes return 0, reads return nil. Native: `pioAvailable()` is false and the other `pio*` calls do nothing | 8 MB, apps from `0x48000` |
 | Bluetooth pads | A scripted radio (`bt sim ...`, below) | Real pads |
 | USB Disk Mode | Does nothing | [Works](Getting-started-on-a-device.md#5-copy-your-own-apps) |
 | `system_clock_khz` | Accepted, with no effect on speed | Changes the clock, and can [drop WiFi](App-Json-Reference.md#system_clock_khz) |
 | Watchdog | None | Resets a stuck app |
-| Idle dim | Off, unless `--idle-dim`. Then nothing draws dim | Dims after 60 s, and the waking key is swallowed |
+| Backlight | `display.setBrightness` and idle dim change a level nothing draws (the `get_backlight` method reads it). Idle dim is off unless `--idle-dim` | The real backlight. Dims after 60 s, and the waking key is swallowed |
 
 ### Memory
+
+A Lua app has more memory here than on the device. A native app has the device's heap size, with less competing for it.
 
 | What | Simulator | Device |
 |---|---|---|
 | Lua heap | Host memory, reported as 8 MB. `psram_largest_block` is roughly the free total and fragmentation is always 0. `--real-umm` gives the firmware's allocator, though objects are about twice their device size on a 64-bit host | About 6 MB, shared with images, and it fragments |
-| Native `qmiAlloc` | 4 MB bump allocator: `qmiFree` frees nothing, so recycling buffers runs out here and not on the device. `--real-umm` does not change this | The same heap as Lua |
-| Native image size | Anything under 8 MB loads | About 6 MB in practice, shared with the stack; 7 MB is a hard limit |
-| Native stack | 256 KB, and pages below it are mapped on demand, so deep recursion passes | 64 KB; overflowing it faults |
-| Native bad pointers | NULL and wild reads and writes succeed. A wild call hangs | Fault |
+| Native `qmiAlloc` | The device's 6,160,384 bytes and 200-byte blocks, less the image and the stack, and an image that cannot fit is refused the same way. Images, samples and the OS's own allocations come from elsewhere | One heap holds all of those too |
+| Native stack | 256 KB, with pages below it mapped on demand, so deep recursion passes. The first write past 64 KB logs `stack passed 64 KB at PC=...` and the app goes on | 64 KB; overflowing it faults |
+| Native direct register access | Reads or writes emulated memory (the heap sits at `0x40000000`, the framebuffer at `0xD0000000`) | The peripheral |
+
+A native app's wild access, write through NULL, bad instruction or call through NULL stops it here as on the device, with a report on screen and in `/system/error.log`. A read through NULL does not fault on either. The device then reboots; the simulator returns to the launcher.
 
 ### Network
 
-The default build uses your computer's network through libcurl, not the firmware's stack, and is always online. So the `http` requirement, a dropped link and the boot's auto-disconnect never show. `make simulator-net` builds the firmware's own stack, without TLS.
+The default build uses your computer's network through libcurl, not the firmware's stack, and is always online. So the `http` requirement, a dropped link and the boot's auto-disconnect never show. What an app may rely on is the same: requests refused while one runs, timeouts, a body cut short failing and large bodies arriving whole. `make simulator-net` builds the firmware's own stack, without TLS.
 
 | Case | Simulator | Device |
 |---|---|---|
 | Missing `"http"` requirement | Works | WiFi may be off, and the connection fails |
-| HTTP body larger than the receive ring (4 KB by default) | **Silently cut**: 100 KB delivers 4096 bytes, reports complete, no error | All delivered, or fails with `receive buffer overflow` if you don't read it |
-| Body cut short (`Content-Length: 1000`, 3 bytes sent) | Complete, no error | Fails: `connection closed after 3 of 1000 bytes` |
-| `get` while a request runs | Returns `true` | `false, "a request is already in progress..."` |
-| `conn:setByteRange` | Sends the `Range` header | Sends no header |
-| `setReadTimeout` | Ignored, on HTTP and TCP | Fails at the timeout |
-| TCP `connect()` while connecting or connected | `true` | `false, err` |
-| HTTP `setInsecure(true)` | Ignored: a self-signed server still fails | Skips verification |
+| A reader far behind | The transfer pauses once the ring plus 32 KB is waiting, and nothing is lost | Fails: `receive buffer overflow` (HTTP), `receive overflow` (TCP) |
 | Certificates and the clock | Your system's, through libcurl; no wait | The bundled CA list; waits for SNTP to set the clock |
-| Error text | `curl error: ...`, `connect: Connection refused` | `Mongoose error: socket error`, and others |
+| Connection error text | `curl error: ...`, `connect: Connection refused` | `Mongoose error: socket error`, and others |
 
 ### Files
+
+Open modes and `rename` follow the device's rules. These do not:
 
 | Case | Simulator | Device |
 |---|---|---|
 | Path case | Case-sensitive, on a case-sensitive host: `/SYSTEM/LIB/x.lua` is not found | FAT: not case-sensitive |
-| `"r+"` | Reads and writes | Read-only, and a write returns -1 |
-| `"w+"` | Reads and writes | Write-only, and reads fail |
-| `rename` onto an existing file | Overwrites | Fails: `false, "rename failed"`. A write-temp-then-rename save works here and fails there |
-| `write` on a read handle | Returns 0 | Returns -1 |
 | `seek` past the end | Neither clamps nor extends the file before a write | Grows the file at once, with undefined data in the gap |
-| `fs.stat`, `fs.listDir` dates | `stat` has none; `listDir` says 2020-01-01 for everything | The file's real date |
-| `fs.deleteRecursive("/")` with `root-filesystem` | **Deletes the whole card folder**, and the folder itself | Refused |
+| A file open for writing, opened again | Allowed | Refused. Both allow 16 open files in all |
+| `fs.setSlowMode` | Accepted, with no effect on speed | Drops the card to 1 MHz |
 | `fs.diskInfo` | The host's disk, capped at 32 GB | The card |
 | Directory order | The host's: tmpfs newest first, ext4 hashed | FAT order. With more than 64 apps, which ones list differs |
-| A file open for writing, opened again | Allowed | Refused. Both allow 16 open files in all |
 
 ### Display and graphics
 
@@ -215,22 +211,15 @@ The simulator has its own display code, so it can differ in any primitive. These
 | What | Simulator | Device |
 |---|---|---|
 | Colour | RGB on your monitor | The panel's: check colour on hardware |
-| `fillVLineGradient` | Solid in the top colour | A gradient |
-| `img:drawScaled(x, y, scale, angle)`, `sprite:setRotation` | Angle ignored, nearest-neighbour | Rotates |
-| `graphics.setTransparentColor` (global) | Does nothing; `getTransparentColor` is always nil | Applies |
-| `graphics.image.preload` | Always `false` | Decodes on Core 1 |
 | Native `effect*` post-effects | Do nothing (Lua's work) | Work |
-| Native `getBackBuffer` writes | Lost in any frame that also uses a draw call; a `clear` then raw pixels shows only the clear. Raw-only frames are right | Draw calls and raw writes mix |
-| Native `getBackBuffer` pointer | One fixed address | Changes at every `flush()`; fetch it each frame |
+| Native `getBackBuffer` pointer | One fixed address, whose buffer never swaps | Changes at every `flush()`; fetch it each frame |
+| Native `flushRows`, `flushRegion` | Present the whole buffer | Send just those rows |
 | Native `graphics->pixels` | NULL for a valid image | The pixels |
 
 ### Input
 
 | What | Simulator | Device |
 |---|---|---|
-| `input.getChar`, `input.getRawKey` | Consume the value: a second call in a frame gives nil or 0 | The same value until the next `update()`. A `while c do ... c = getChar() end` loop ends here and never ends there |
-| `input.getRawKey` for Delete, F5, Shift | 0 | The keycode |
-| `pollEvent`'s `repeat` for held arrows, letters, Enter, Tab, Backspace, Delete | `true` | Absent: the keyboard repeats these as fresh presses, about every 100 ms |
 | Menu key | F10 | Shift+F5 |
 | Typing with Shift | Gives the unshifted character | Capitals and symbols |
 | Native `ui->textInput`, `textInputSimple`, `confirm` | Return false at once, with no dialog | Dialogs |
@@ -239,14 +228,13 @@ The simulator has its own display code, so it can differ in any primitive. These
 
 | What | Simulator | Device |
 |---|---|---|
-| `sys.reboot()` | Hangs (Lua); stops the app and returns to the launcher (native) | Reboots |
+| `sys.reboot()`, native `sys->reboot`, the menu's Reboot | Ends the app and returns to the launcher. The config and app list from boot stay | Reboots |
 | `sys.triggerFault()` | The simulator crashes (exit status 139), leaving `running.txt` | HardFault, crash record, reboot |
 | Battery | 100%, not charging, unless `set_battery` | Real |
-| Tracebacks | Sent to the test log | None |
+| Tracebacks | Sent to the test log (source `err`) | None |
 | Speed | Faster for Lua, far slower for native | Much of the time goes to PSRAM cache misses |
-| Native `sys->log` | Adds `[APP]`. No width or precision (`%5d` prints `2`), `%f` prints `<float>` and misaligns what follows, `%lld` misaligns too, and it stops after 7 arguments | `vprintf`, with no prefix |
+| Native `sys->log` | Adds `[APP]`. No width or precision (`%5d` prints `2`), `%f` prints `<float>` and misaligns what follows, `%lld` misaligns too, and arguments past the seventh print `?` | `vprintf`, with no prefix |
 | Native `sys->setAudioCallback` | Ignored | Calls back on Core 1 |
-| Native `soundplayer->playerSetLoop` | Does nothing | Sets the loop |
 
 ## Dev commands
 
