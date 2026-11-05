@@ -19,8 +19,10 @@ Encode a Lua value as a JSON string.
 
 ```lua
 local text = picocalc.json.encode({ name = "pico", score = 42 })
--- '{"name":"pico","score":42}'
+-- '{"name":"pico","score":42}', or with the keys the other way round
 ```
+
+An object's keys come out in the order of the Lua table, which is not fixed: it can change from one run of the app to the next. Compare decoded values, not encoded text.
 
 Lua tables and JSON do not line up exactly, so some shapes change without an error:
 
