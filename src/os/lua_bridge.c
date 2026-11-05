@@ -87,7 +87,9 @@ static lua_Integer lb_toint(lua_State *L, int idx, int arg, const char *what) {
   if (picodeck_lua_tointeger_strict(L, idx, &v))  // integers: one stack read
     return v;
   lua_Number n;
-  if (!what) {
+  if (picodeck_lua_tonumber_strict(L, idx, &n)) {
+    // A float in one stack read: its rules are below.
+  } else if (!what) {
     n = luaL_checknumber(L, idx);  // positional: the standard type error
   } else {
     int isnum;
@@ -130,7 +132,9 @@ lua_Integer lb_optint_at(lua_State *L, int idx, int arg, const char *what,
 // Real-valued arguments (world coordinates, angles, scales): any finite
 // number; NaN and infinities are argument errors.
 float lb_checkfloat(lua_State *L, int idx) {
-  lua_Number n = luaL_checknumber(L, idx);
+  lua_Number n;
+  if (!picodeck_lua_tonumber_strict(L, idx, &n))
+    n = luaL_checknumber(L, idx);  // numeric strings, and the type error
   if (!isfinite(n)) lb_argfail(L, idx, NULL, "number is NaN or infinite");
   return (float)n;
 }
