@@ -1,4 +1,4 @@
-// picodeck_lua_arm_hook (src/os/lua_hook_arm.c): the firmware's 1 ms timer
+// picodeck_lua_arm_hook (src/os/lua_hook_arm.c): the firmware's service timer
 // arms the Lua service hook with it from an interrupt (lua_bridge.c), so it
 // must cost the same at any call depth and still make the hook fire soon.
 // Stock lua_sethook walked every frame on every tick, and ~1000 frames deep
