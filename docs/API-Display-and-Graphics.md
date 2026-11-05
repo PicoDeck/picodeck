@@ -1533,7 +1533,7 @@ Sets this image's colour key. Pixels that exactly equal `color` are skipped when
 
 `0` (or `nil`) means no key, so black (`0x0000`) can never be keyed. An image with no key falls back to the global key set with [`graphics.setTransparentColor`](#picocalcgraphicssettransparentcolorcolor); an image key overrides it.
 
-The key is honoured by every image draw call: `img:draw`, `drawAnchored`, `drawTiled`, `drawScaled`, `drawScaledNN` and `drawStretched`. Sprites have their own key (`sprite:setTransparentColor`) with the same fall-back to the global one. `applyEffect("blend", img)` ignores it.
+The key is honoured by every image draw call: `img:draw`, `drawAnchored`, `drawTiled`, `drawScaled`, `drawScaledNN` and `drawStretched`, and by what draws an image for you: `spritesheet:drawFrame`, `tilemap:draw` (the tileset's key) and `loop:draw` (each frame's key). Sprites have their own key (`sprite:setTransparentColor`) with the same fall-back to the global one, and do not read the image's. `applyEffect("blend", img)` ignores it.
 
 - **Parameters:**
   - `color` (number or nil): RGB565 value, or `nil`/`0` to clear
@@ -2619,7 +2619,7 @@ Returns the base image.
 ---
 
 #### `spritesheet:drawFrame(frameIndex, x, y [, flip])`
-Draws a specific frame to the screen.
+Draws a specific frame to the screen, honouring the sheet image's colour key.
 
 - **Parameters:**
   - `frameIndex` (number): Which frame to draw
@@ -2675,7 +2675,7 @@ Creates an animation loop.
 ### Loop Methods
 
 - `loop:update()` advances to the next frame if the interval has elapsed. Does nothing if the loop is not valid. Without looping, it stays on the last frame.
-- `loop:draw(x, y [, flip])` draws the current frame at `x, y`, horizontally flipped if `flip` is true. Does nothing if the loop is not valid.
+- `loop:draw(x, y [, flip])` draws the current frame at `x, y`, horizontally flipped if `flip` is true, honouring that image's colour key. Does nothing if the loop is not valid.
 - `loop:image()` returns the current frame's image, or nothing if the loop is not valid.
 - `loop:reset()` goes back to frame 0 and restarts the interval timer.
 - `loop:isValid()` returns `true` if the loop has at least one frame.
@@ -3061,8 +3061,8 @@ local pw, ph = tilemap:getPixelSize()
 
 ---
 
-#### `tilemap:draw(scrollX, scrollY)`
-Draws visible tiles to the framebuffer with scroll offset. Only draws tiles visible on the 320x320 screen.
+#### `tilemap:draw([scrollX [, scrollY]])`
+Draws visible tiles to the framebuffer with scroll offset. Only draws tiles visible on the 320x320 screen. Pixels equal to the tileset image's colour key are skipped, as with the image's own draw calls.
 
 - **Parameters:**
   - `scrollX` (number): Horizontal scroll offset in pixels

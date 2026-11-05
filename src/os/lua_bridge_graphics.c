@@ -1085,7 +1085,7 @@ static void tilemap_draw(lua_tilemap_t *tm, int scroll_x, int scroll_y) {
       display_draw_image_partial(dst_x, dst_y, tm->tileset->w, tm->tileset->h,
                                   tm->tileset->data, src_x, src_y,
                                   tw, th,
-                                  false, false, 0);
+                                  false, false, tm->tileset->transparent_color);
     }
   }
 }
@@ -3221,7 +3221,7 @@ static int l_spritesheet_drawFrame(lua_State *L) {
                             ss->image->data,
                             ss->frame_x[frame_idx], ss->frame_y[frame_idx],
                             ss->frame_w[frame_idx], ss->frame_h[frame_idx],
-                            flip, false, 0);
+                            flip, false, ss->image->transparent_color);
   return 0;
 }
 
@@ -3623,7 +3623,8 @@ static int l_animation_loop_draw(lua_State *L) {
   if (!img->data)
     return luaL_error(L, "attempt to use a freed image");
   display_draw_image_partial(x, y, img->w, img->h, img->data,
-                            0, 0, img->w, img->h, flip, false, 0);
+                            0, 0, img->w, img->h, flip, false,
+                            img->transparent_color);
   return 0;
 }
 
