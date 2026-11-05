@@ -39,17 +39,21 @@ static int l_ui_drawTabs(lua_State *L) {
     return 2;
   }
 
+  // Raises here, before there is a block to leak.
+  luaL_checkstack(L, count, "too many tabs");
+
   // Allocate tab strings array
   const char **tabs = (const char **)umm_malloc(sizeof(char *) * count);
   if (!tabs) {
     return luaL_error(L, "Failed to allocate memory for tabs");
   }
 
-  // Extract tab strings from Lua table
+  // Extract tab strings from Lua table. They stay on the stack until drawn: a
+  // number's string belongs to nothing else, and the next conversion can
+  // collect it.
   for (int i = 0; i < count; i++) {
     lua_rawgeti(L, 2, i + 1);  // Lua arrays are 1-indexed
     tabs[i] = lua_tostring(L, -1);
-    lua_pop(L, 1);
   }
 
   // Check for key presses if keys specified

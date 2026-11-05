@@ -45,7 +45,11 @@ void ui_widget_textfield(int x, int y, int w,
     // Text area with 4px left padding
     int text_x = x + 4;
     int text_y = y + 3;  // vertically center 8px font in 13px row
+    // Negative for a field narrower than its padding; every length below is
+    // clamped by it, so it must not be.
     int max_chars = (w - 8) / FW;
+    if (max_chars < 0) max_chars = 0;
+    if (scroll_offset < 0) scroll_offset = 0;
 
     // Visible slice of text
     if (text && text_len > 0) {
@@ -89,12 +93,15 @@ void ui_widget_textarea(int x, int y, int w, int h,
     int text_x = x + 4;
     int text_y = y + 3;
     int max_chars = (w - 8) / FW;
+    if (scroll_y < 0) scroll_y = 0;
 
     // Draw visible rows
     for (int vi = 0; vi < visible_rows; vi++) {
         int seg_idx = scroll_y + vi;
         if (seg_idx >= num_segments) break;
 
+        // The offsets come from the app's table: only what is inside the text
+        // may be read.
         int seg_start = wrap_segments[seg_idx];
         int seg_end;
         if (seg_idx + 1 < num_segments) {
@@ -102,6 +109,9 @@ void ui_widget_textarea(int x, int y, int w, int h,
         } else {
             seg_end = text_len;
         }
+        if (seg_start < 0) seg_start = 0;
+        if (seg_start > text_len) seg_start = text_len;
+        if (seg_end > text_len) seg_end = text_len;
 
         int seg_len = seg_end - seg_start;
         if (seg_len > max_chars) seg_len = max_chars;
@@ -141,7 +151,9 @@ void ui_widget_textarea(int x, int y, int w, int h,
 
         int thumb_h = sb_h * visible_rows / num_segments;
         if (thumb_h < 4) thumb_h = 4;
-        int thumb_y = sb_y + (sb_h - thumb_h) * scroll_y / (num_segments - visible_rows);
+        int thumb_pos = scroll_y;
+        if (thumb_pos > num_segments - visible_rows) thumb_pos = num_segments - visible_rows;
+        int thumb_y = sb_y + (sb_h - thumb_h) * thumb_pos / (num_segments - visible_rows);
         display_fill_rect(sb_x, thumb_y, 2, thumb_h, COLOR_WHITE);
     }
 }
@@ -162,6 +174,7 @@ void ui_widget_list_item(int x, int y, int w,
 
     if (text && text[0]) {
         int max_chars = (w - 8) / FW;
+        if (max_chars < 0) max_chars = 0;  // an item narrower than its padding
         char buf[54];
         int len = (int)strlen(text);
         if (len > max_chars) len = max_chars;
