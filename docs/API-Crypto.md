@@ -58,7 +58,7 @@ Compute the SHA-256 hash of a file, streamed from the SD card in small chunks (t
 
 - **Parameters:**
   - `path` (string): Path to the file to hash
-- **Returns:** (string or nil, string) 64-character lowercase hex digest, or `nil, errorString` if the file cannot be read
+- **Returns:** (string or nil, string) 64-character lowercase hex digest, or `nil, errorString`: `"access denied"` (the sandbox refused the path) or `"cannot read file"` (it cannot be opened, or a read failed part way: you never get the hash of part of a file)
 
 ```lua
 local hex, err = picocalc.crypto.sha256File("/data/com.example.mygame/levels.zip")

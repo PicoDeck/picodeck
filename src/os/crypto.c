@@ -354,6 +354,10 @@ bool crypto_sha256_file(const char *path, uint8_t out_hash[32]) {
     }
 
     sdcard_fclose(f);
+    if (n < 0) {  // a read error mid-file: never the hash of a part of it
+        mbedtls_sha256_free(&ctx);
+        return false;
+    }
     mbedtls_sha256_finish(&ctx, out_hash);
     mbedtls_sha256_free(&ctx);
     return true;
