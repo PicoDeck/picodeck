@@ -125,24 +125,13 @@ static void ota_show_status(const char *line1, const char *line2, uint16_t color
 //
 // This function does NOT return.
 
-#if defined(PICODECK_SRAM_LEAF_STACK)
-#include "leaf_stack.h"
-_Static_assert(LEAF_STACK_BYTES == FLASH_SECTOR_SIZE, "the leaf stack is this buffer");
-uint8_t g_ota_staging[FLASH_SECTOR_SIZE] __attribute__((aligned(8)));
-#endif
-
 static void __no_inline_not_in_flash_func(ota_write_and_reboot)(
     const uint8_t *fw_data, uint32_t fw_size) {
 
     // SRAM staging buffer — flash_range_program reads from this during
     // erase/program when the QMI bus is locked to CS0 (flash), so the
     // source must be in SRAM, not PSRAM.
-#if defined(PICODECK_SRAM_LEAF_STACK)
-    // Also the leaf stack's memory, while no flash write runs (leaf_stack.c).
-    uint8_t *const staging = g_ota_staging;
-#else
     static uint8_t staging[FLASH_SECTOR_SIZE];
-#endif
 
     // Point of no return: mask all interrupts for the entire write (see
     // header comment).  Never restored — we hard-reset at the end.

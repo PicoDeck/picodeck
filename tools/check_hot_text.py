@@ -33,6 +33,10 @@ GROUPS = {
 }
 
 
+# What src/hot_gfx.ld must hold. raster_scene is not here: it runs from SRAM.
+HOT_GFX = ["gfx3d_draw", "gfx3d_draw_xf", "gfx3d_end", "l_gfx3d_draw", "l_gfx3d_endScene",
+           "display_flush"]
+
 # libgcc the SDK's script would copy to SRAM for nothing (src/hot_text.ld).
 COLD_LIBGCC = ["__aeabi_unwind_cpp_pr0", "_Unwind_VRS_Pop", "__gnu_unwind_execute",
                "_Unwind_Backtrace", "__aeabi_f2d"]
@@ -77,9 +81,19 @@ def main():
             break
         if addr is not None and not lo <= addr < hi:
             errors.append(f"{f} at {addr:#x} is outside .cold_libgcc: it costs SRAM again")
-    gfx = syms.get("__hot_gfx_start__")  # PICODECK_HOT_GFX, src/hot_gfx.ld
-    if gfx is not None and (gfx % SET_PERIOD or gfx < syms["__cold_libgcc_end__"]):
-        errors.append(f".hot_gfx at {gfx:#x}: not 8 KB aligned after .cold_libgcc")
+    gfx, gfx_end = syms.get("__hot_gfx_start__"), syms.get("__hot_gfx_end__")  # src/hot_gfx.ld
+    if gfx is None or gfx_end is None:
+        errors.append("no .hot_gfx: is src/hot_gfx.ld linked?")
+    else:
+        if gfx % SET_PERIOD or gfx < syms["__cold_libgcc_end__"]:
+            errors.append(f".hot_gfx at {gfx:#x}: not 8 KB aligned after .cold_libgcc")
+        for f in HOT_GFX:
+            addr = syms.get(f)
+            if addr is None:
+                errors.append(f"gfx: no symbol {f} (renamed? update HOT_GFX)")
+            elif not gfx <= addr < gfx_end:
+                errors.append(f"gfx: {f} at {addr:#x} is outside {gfx:#x}-{gfx_end:#x}")
+        sizes.append(f"gfx {gfx_end - gfx} B")
     if errors:
         print("check_hot_text: FAILED\n  " + "\n  ".join(errors), file=sys.stderr)
         return 1
