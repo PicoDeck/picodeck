@@ -5,6 +5,7 @@
 #include "check.h"
 #include "small_alloc.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -198,6 +199,53 @@ static void test_free_routing(void) {
   CHECK(small_alloc(h, 0) == NULL);
   CHECK_EQ_INT(s_allocs, allocs);
   end_heap(h);
+}
+
+// A backing heap that hands a released slab's memory straight out again, as umm
+// does, with the new block starting inside what was the slab.
+static uint8_t s_rb_arena[1 << 18] __attribute__((aligned(16)));
+static size_t s_rb_used;
+static uint8_t *s_rb_last_slab;
+static int s_rb_frees;
+static void *rb_alloc(size_t n) {
+  if (n != SMALL_SLAB_BYTES && s_rb_last_slab) {
+    void *p = s_rb_last_slab + 64;
+    s_rb_last_slab = NULL;
+    return p;
+  }
+  void *p = s_rb_arena + s_rb_used;
+  s_rb_used += (n + 15) & ~(size_t)15;
+  CHECK(s_rb_used <= sizeof(s_rb_arena));
+  return p;
+}
+static void *rb_realloc(void *p, size_t n) {
+  void *q = s_rb_arena + s_rb_used;
+  s_rb_used += (n + 15) & ~(size_t)15;
+  if (p) memcpy(q, p, n);
+  return q;
+}
+static void rb_free(void *p) {
+  s_rb_last_slab = (uint8_t *)p;
+  s_rb_frees++;
+}
+
+// The routing's last-slab hint must not outlive its slab: a plain block now at
+// those addresses has to reach the backing free, not the slab's free list.
+static void test_hint_forgets_a_released_slab(void) {
+  enum { N = 200 };  // 128-byte objects: over 6 slabs
+  static const small_backing_t rb = {rb_alloc, rb_realloc, rb_free};
+  small_heap_t *h = small_create(&rb);
+  void *p[N];
+  for (int i = 0; i < N; i++) p[i] = small_alloc(h, 128);
+  for (int i = 0; i < N; i++) small_free(h, p[i], 128);  // the last slab goes back
+  CHECK(small_live_objects(h) == 0);
+  void *plain = small_alloc(h, 1000);
+  CHECK(!small_owns(h, plain));
+  int frees = s_rb_frees;
+  small_free(h, plain, 1000);
+  CHECK(s_rb_frees == frees + 1);
+  CHECK(small_live_objects(h) == 0);
+  small_destroy(h);
 }
 
 static void test_realloc_same_class(void) {
@@ -438,6 +486,7 @@ int main(void) {
   test_small_is_pooled();
   test_large_passes_through();
   test_free_routing();
+  test_hint_forgets_a_released_slab();
   test_realloc_same_class();
   test_realloc_across_classes();
   test_realloc_to_and_from_backing();

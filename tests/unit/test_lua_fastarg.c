@@ -1,10 +1,13 @@
-// picodeck_lua_udata_with_mt / picodeck_lua_tointeger_strict
+// picodeck_lua_udata_with_mt / picodeck_lua_tointeger_strict /
+// picodeck_lua_tonumber_strict
 // (src/os/lua_fastarg.c): the bridge's one-call argument checks. Each must
 // answer exactly the common case it claims (a full userdata with that
 // metatable; a Lua integer) and say "no" to everything else, including
 // indices it does not handle, so the caller's standard path decides. Built
 // against the real Lua core with the device's VM configuration.
 #include "check.h"
+
+#include <math.h>
 
 #include "lauxlib.h"
 #include "lua.h"
@@ -114,6 +117,36 @@ static void test_integers(void) {
 // Each array-part getter agrees with lua_rawgeti + lua_tonumber/tointeger
 // wherever it answers, and declines (0) for strings, booleans, nil, keys
 // outside the array part and keys in the hash part.
+// What the float fast path of lb_toint and lb_checkfloat rests on: floats and
+// integers converted as lua_tonumberx does, anything else (numeric strings
+// too) left to the standard path and its error.
+static void test_numbers(void) {
+  lua_State *L = luaL_newstate();
+  lua_pushnumber(L, 1.5f);          // 1
+  lua_pushinteger(L, 16777217);     // 2: float rounds it, as lua_tonumber
+  lua_pushnumber(L, -0.0f);         // 3
+  lua_pushstring(L, "2.5");         // 4
+  lua_pushnil(L);                   // 5
+  lua_pushboolean(L, 1);            // 6
+  lua_newtable(L);                  // 7
+
+  lua_Number n = 99.0f;
+  CHECK(picodeck_lua_tonumber_strict(L, 1, &n) && n == 1.5f);
+  CHECK(picodeck_lua_tonumber_strict(L, -7, &n) && n == 1.5f);
+  CHECK(picodeck_lua_tonumber_strict(L, 2, &n) && n == lua_tonumber(L, 2));
+  CHECK(picodeck_lua_tonumber_strict(L, 3, &n) && n == 0.0f && signbit(n));
+  n = 99.0f;
+  for (int i = 4; i <= 7; i++) {
+    CHECK(!picodeck_lua_tonumber_strict(L, i, &n));
+    CHECK(n == 99.0f);  // untouched
+  }
+  CHECK(!picodeck_lua_tonumber_strict(L, 8, &n));   // past the top
+  CHECK(!picodeck_lua_tonumber_strict(L, 0, &n));
+  CHECK(!picodeck_lua_tonumber_strict(L, LUA_REGISTRYINDEX, &n));
+  CHECK(!picodeck_lua_tonumber_strict(L, lua_upvalueindex(1), &n));
+  lua_close(L);
+}
+
 static void test_array_reads(void) {
   lua_State *L = luaL_newstate();
   luaL_openlibs(L);
@@ -184,5 +217,6 @@ int main(void) {
   test_array_writes();
   test_in_c_frame();
   test_integers();
+  test_numbers();
   return check_report("test_lua_fastarg");
 }

@@ -87,7 +87,9 @@ static lua_Integer lb_toint(lua_State *L, int idx, int arg, const char *what) {
   if (picodeck_lua_tointeger_strict(L, idx, &v))  // integers: one stack read
     return v;
   lua_Number n;
-  if (!what) {
+  if (picodeck_lua_tonumber_strict(L, idx, &n)) {
+    // A float in one stack read: its rules are below.
+  } else if (!what) {
     n = luaL_checknumber(L, idx);  // positional: the standard type error
   } else {
     int isnum;
@@ -130,7 +132,9 @@ lua_Integer lb_optint_at(lua_State *L, int idx, int arg, const char *what,
 // Real-valued arguments (world coordinates, angles, scales): any finite
 // number; NaN and infinities are argument errors.
 float lb_checkfloat(lua_State *L, int idx) {
-  lua_Number n = luaL_checknumber(L, idx);
+  lua_Number n;
+  if (!picodeck_lua_tonumber_strict(L, idx, &n))
+    n = luaL_checknumber(L, idx);  // numeric strings, and the type error
   if (!isfinite(n)) lb_argfail(L, idx, NULL, "number is NaN or infinite");
   return (float)n;
 }
@@ -229,11 +233,19 @@ void *lb_testudata(lua_State *L, int idx, const char *tname) {
 // ── Registration
 // ──────────────────────────────────────────────────────────────
 
+// Entries of a luaL_Reg array. A table sized for them up front skips the
+// rehash and the discarded node array of every doubling on the way there.
+static int lb_reg_count(const luaL_Reg *r) {
+  int n = 0;
+  while (r[n].name) n++;
+  return n;
+}
+
 // Create a sub-table from a luaL_Reg and attach it to the `picocalc` table
 // that is already on the stack at index -1.
 void register_subtable(lua_State *L, const char *name,
                               const luaL_Reg *funcs) {
-  lua_newtable(L);
+  lua_createtable(L, 0, lb_reg_count(funcs));
   luaL_setfuncs(L, funcs, 0);
   lua_setfield(L, -2, name);
 }
@@ -250,7 +262,7 @@ void register_subtable(lua_State *L, const char *name,
 void lb_register_type(lua_State *L, const char *mtname,
                       const luaL_Reg *methods, const luaL_Reg *meta) {
   luaL_newmetatable(L, mtname);  // mt
-  lua_newtable(L);               // mt, methods
+  lua_createtable(L, 0, methods ? lb_reg_count(methods) : 0);  // mt, methods
   if (methods)
     luaL_setfuncs(L, methods, 0);
   if (meta) {
@@ -284,8 +296,8 @@ void lua_bridge_set_running(lua_State *L) { s_running_L = L; }
 // Instructions between two count-hook calls of the SYNCHRONOUS count hook
 // (the simulator, the web build, and firmware's rare "no alarm slot"
 // fallback — see lua_bridge_hook_start below). Firmware's normal timer-armed
-// hook always installs a count of 1 (the 1 ms timer re-arms it), so this
-// adaptive count never applies there. Each call is a few flag reads unless
+// hook always installs a count of 1 (the timer re-arms it), so this adaptive
+// count never applies there. Each call is a few flag reads unless
 // the full service pass is due (see lua_service below). The count adapts
 // (menu_lua_hook) so the hook fires about every LUA_HOOK_TARGET_US of wall
 // time: up to LUA_HOOK_COUNT_MAX in compute-bound code (the old fixed 256
@@ -318,23 +330,29 @@ static void lua_bridge_install_hook(lua_State *L, int count) {
 // With any count hook installed, Lua 5.4 calls luaG_traceexec before EVERY
 // instruction (vmfetch's `trap`), whatever the count: on the device that
 // tax was ~60% of VM time (P0: an empty loop 491 ns/iter with it, 189
-// without). So on firmware the VM runs hook-free and a 1 ms Core 0 repeating
-// timer arms a count-1 hook on the running thread; menu_lua_hook services
-// and disarms it. The simulator and the web build have no Core 0 interrupt (a
+// without). So on firmware the VM runs hook-free and a Core 0 repeating timer
+// (LUA_ARM_PERIOD_US) arms a count-1 hook on the running thread; menu_lua_hook
+// services and disarms it. The simulator and the web build have no Core 0 interrupt (a
 // host thread arming the hook would race the VM), so they keep the adaptive
 // synchronous count hook.
 //
 // The arming is picodeck_lua_arm_hook (lua_hook_arm.h), not lua_sethook:
 // lua_sethook also sets the trap of every frame on the thread's call chain,
 // and ~1000 frames deep (the LUAI_MAXSTACK limit with small frames) that
-// walk of QMI PSRAM outlasts the 1 ms period. Issue #21: the timer then
+// walk of QMI PSRAM outlasted the timer's then 1 ms period. Issue #21: the timer then
 // re-fired inside its own IRQ forever, the VM never ran again and the
 // watchdog reset the device. The period is also counted from the end of
 // each callback (a positive delay), not fixed-rate, so a late or slow
 // callback can never catch up back-to-back and starve the VM.
+//
+// The period matches LUA_SERVICE_PERIOD_US: all a tick between two full passes
+// could do is feed the watchdog and look at the exit flag and the menu key,
+// and each tick is an interrupt, the alarm pool and two luaG_traceexec calls,
+// ~1.2 KB of code the XIP cache has mostly evicted since the last one, and it
+// evicts as much of the app's. At 1 kHz that was 33 ticks in a 30 fps frame.
 #ifndef PICODECK_SIMULATOR
 #define LUA_BRIDGE_ASYNC_HOOK 1
-#define LUA_ARM_PERIOD_US 1000
+#define LUA_ARM_PERIOD_US LUA_SERVICE_PERIOD_US
 static volatile bool s_async_active = false;  // an app's VM is running
 static repeating_timer_t s_arm_timer;
 static bool s_arm_timer_started = false;
@@ -423,8 +441,8 @@ void lua_bridge_exit_reset(lua_State *L) {
 // ── Service pass (see lua_bridge.h) ─────────────────────────────────────────
 // The count hook fires every LUA_HOOK_COUNT instructions on the synchronous
 // hook (simulator, web build, firmware's no-alarm-slot fallback); on
-// firmware's normal timer-armed hook it fires as a count-1 hook about once
-// every 1 ms instead (the arming timer, see lua_bridge_hook_start). Either
+// firmware's normal timer-armed hook it fires as a count-1 hook once per
+// LUA_ARM_PERIOD_US instead (the arming timer, see lua_bridge_hook_start). Either
 // way, it always does the cheap part (watchdog, exit request, menu key press:
 // flag reads) and runs the full pass (HTTP/TCP slot scans, sound callbacks,
 // the serial dev-command poll, which takes the stdio mutex and TinyUSB on
@@ -495,7 +513,11 @@ static void lua_service_full(lua_State *L) {
   // Low-memory GC trigger: when the PSRAM heap drops below PSRAM_LOW_WATERMARK,
   // force a full GC cycle to reclaim dead Lua objects before allocations start
   // failing.  s_gc_triggered prevents hammering GC on every pass while
-  // memory stays low; it resets once the heap recovers above the watermark.
+  // memory stays low; it resets once the heap recovers well above the
+  // watermark, since a heap hovering at it would otherwise cross it again
+  // with the next small allocation, and a full cycle (tens of ms on a large
+  // heap) could then run every 5 ms pass. An allocation that fails still
+  // collects first, in Lua's emergency path and in gc_umm_malloc.
   static bool s_gc_triggered = false;
   if (lua_psram_alloc_is_low()) {
     if (!s_gc_triggered) {
@@ -506,7 +528,8 @@ static void lua_service_full(lua_State *L) {
       printf("[LUA] After GC: %zu KB free\n",
              lua_psram_alloc_free_size() / 1024);
     }
-  } else {
+  } else if (lua_psram_alloc_free_size() >=
+             PSRAM_LOW_WATERMARK + PSRAM_LOW_WATERMARK / 4) {
     s_gc_triggered = false;
   }
 }
@@ -531,13 +554,13 @@ void lua_bridge_service_poll(lua_State *L) { lua_service(L, false); }
 // firmware's no-alarm-slot fallback) it fires every LUA_HOOK_COUNT Lua
 // opcodes, adaptively rescaled (every opcode once an exit was requested). On
 // firmware's normal timer-armed hook it always fires as a count-1 hook: the
-// 1 ms timer (lua_bridge_arm_cb) re-arms it, so it services once and disarms
-// until the next tick.
+// timer (lua_bridge_arm_cb) re-arms it, so it services once and disarms until
+// the next tick.
 static void menu_lua_hook(lua_State *L, lua_Debug *ar) {
   (void)ar;
 #if LUA_BRIDGE_ASYNC_HOOK
   if (s_async_active && !s_exit_requested) {
-    lua_sethook(L, NULL, 0, 0);  // disarm first: the timer re-arms in 1 ms
+    lua_sethook(L, NULL, 0, 0);  // disarm first: the timer re-arms it
     lua_service(L, false);
     return;
   }
@@ -602,20 +625,24 @@ static int l_base_load_text(lua_State *L) {
   return lua_gettop(L);
 }
 
+// log2 of the bytes allocated between two incremental collector steps. Lua's
+// default, 8 KB, is 102,400 work units a step (stepsize / sizeof(TValue) *
+// stepmul; a unit is about one TValue marked or one object swept, each its own
+// 8-byte PSRAM line), so on this device a step finishes a whole cycle of any
+// heap up to ~800 KB: one long pause, nothing incremental. At 128 B a step is
+// 1,600 units; the collector does the same work per byte allocated. It does
+// not bound one object: a table is marked in one go. Apps that choose
+// generational mode do not use it.
+#define LB_GC_STEPSIZE_LOG2 7
+
 void lua_bridge_register(lua_State *L) {
+  lua_gc(L, LUA_GCINC, 0, 0, LB_GC_STEPSIZE_LOG2);
   lb_mt_reset(L);  // a new VM: no metatable address from the last one holds
   printf("[LUA] lua_bridge_register start, PSRAM free=%lu\n",
          (unsigned long)umm_free_heap_size());
 
 
-
-
-
-
-
-
   // Open standard Lua libs. io, os, package and debug stay closed (sandbox).
-  printf("[LUA] registering _G...\n");
   luaL_requiref(L, "_G", luaopen_base, 1);
   lua_pop(L, 1);
   // dofile/loadfile read the host filesystem through C stdio: on firmware
@@ -626,13 +653,10 @@ void lua_bridge_register(lua_State *L) {
   lua_pushnil(L);
   lua_setglobal(L, "loadfile");
   lua_bridge_require_init(L);
-  printf("[LUA] registering table...\n");
   luaL_requiref(L, "table", luaopen_table, 1);
   lua_pop(L, 1);
-  printf("[LUA] registering string...\n");
   luaL_requiref(L, "string", luaopen_string, 1);
   lua_pop(L, 1);
-  printf("[LUA] registering math...\n");
   luaL_requiref(L, "math", luaopen_math, 1);
 #ifdef PICODECK_SIMULATOR
   // Simulator --test-mode: a fixed seed, so math.random repeats run to run.
@@ -643,70 +667,41 @@ void lua_bridge_register(lua_State *L) {
   }
 #endif
   lua_pop(L, 1);
-  printf("[LUA] registering coroutine...\n");
   luaL_requiref(L, LUA_COLIBNAME, luaopen_picodeck_coroutine, 1);
   lua_pop(L, 1);
-  printf("[LUA] registering utf8...\n");
   luaL_requiref(L, LUA_UTF8LIBNAME, luaopen_utf8, 1);
   lua_pop(L, 1);
   // Replace base load with the text-only wrapper.
   lua_getglobal(L, "load");
   lua_pushcclosure(L, l_base_load_text, 1);
   lua_setglobal(L, "load");
-  printf("[LUA] stdlib done, PSRAM free=%lu\n",
-         (unsigned long)umm_free_heap_size());
 
   // Create the top-level `picocalc` table
   lua_newtable(L);
-  printf("[LUA] registering display...\n");
   lua_bridge_display_init(L);
-  printf("[LUA] registering input...\n");
   lua_bridge_input_init(L);
-  printf("[LUA] registering gamepad...\n");
   lua_bridge_gamepad_init(L);
-  printf("[LUA] registering sys...\n");
   lua_bridge_sys_init(L);
-  printf("[LUA] registering fs...\n");
   lua_bridge_fs_init(L);
-  printf("[LUA] registering network...\n");
   lua_bridge_network_init(L);
-  printf("[LUA] registering tcp...\n");
   lua_bridge_tcp_init(L);
-  printf("[LUA] registering config...\n");
   lua_bridge_config_init(L);
-  printf("[LUA] registering appconfig...\n");
   lua_bridge_appconfig_init(L);
-  printf("[LUA] registering perf...\n");
   lua_bridge_perf_init(L);
-  printf("[LUA] registering graphics...\n");
   lua_bridge_graphics_init(L);
-  printf("[LUA] registering 3D extensions...\n");
   lua_bridge_register_3d(L);
-  printf("[LUA] registering gfx3d...\n");
   lua_bridge_gfx3d_init(L);
-  printf("[LUA] registering chargrid...\n");
   lua_bridge_chargrid_init(L);
-  printf("[LUA] registering ui...\n");
   lua_bridge_ui_init(L);
-  printf("[LUA] registering audio...\n");
   lua_bridge_audio_init(L);
-  printf("[LUA] registering sound...\n");
   lua_bridge_sound_init(L);
-  printf("[LUA] registering repl...\n");
   lua_bridge_repl_init(L);
-  printf("[LUA] registering video...\n");
   lua_bridge_video_init(L);
-  printf("[LUA] registering game...\n");
   lua_bridge_game_init(L);
-  printf("[LUA] registering terminal...\n");
   lua_bridge_terminal_init(L);
-  printf("[LUA] registering crypto...\n");
   lua_bridge_crypto_init(L);
-  printf("[LUA] registering modplayer...\n");
   lua_bridge_mod_init(L);
-  printf("[LUA] registering zip...\n");
   lua_bridge_zip_init(L);
-  printf("[LUA] registering json...\n");
   lua_bridge_json_init(L);
   printf("[LUA] all modules done, PSRAM free=%lu\n",
          (unsigned long)umm_free_heap_size());
