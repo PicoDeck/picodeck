@@ -323,7 +323,7 @@ The application is expected to return control to the OS by returning from `picod
 ## Memory
 
 - **Stack**: 64 KB in PSRAM (PSPLIM-guarded, runs on PSP).
-- **SRAM heap**: effectively none, and no API call reaches it. Use `api->psram->qmiAlloc()`.
+- **SRAM heap**: a few KB, so treat it as none. No API call reaches it. Use `api->psram->qmiAlloc()`.
 - **PSRAM heap**: about 6 MB in all (6,160,384 bytes), one heap shared by your app's image (code, data and BSS), its stack, its `api->psram->qmiAlloc()`/`api->psram->qmiFree()` blocks, the images, samples and other objects the API allocates for it, and what the OS itself holds. An image of nearly 6 MB leaves almost nothing for the rest. The image and each block need one contiguous free block, and every block costs at least 200 bytes. Set `"min_psram_kb"` in `app.json` to have the launcher refuse to start the app, with a reason on screen, unless the largest free block is at least that large.
 - **PIO PSRAM**: 8MB secondary PSRAM available via `api->psram->pioRead()`/`api->psram->pioWrite()` for bulk data. Only addresses `0x48000` and up are yours; `pioRead/pioWrite/pioBulkRead/pioBulkWrite` refuse anything overlapping the OS region (the call does nothing and logs `[NATIVE] psram->… refused`).
 

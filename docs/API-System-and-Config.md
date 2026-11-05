@@ -190,7 +190,7 @@ Returns a snapshot of heap memory usage.
   - `psram_fragmentation` (number): 0-100
   - `small_pool_slabs`, `small_pool_bytes` (number): Lua small-object pool slabs (4 KB each, carved from the PSRAM heap) and their bytes
   - `small_pool_objects`, `small_pool_object_bytes` (number): live objects of up to 128 B in those pools and their bytes
-  - `sram_free` (number): Free bytes in the system SRAM heap (via `mallinfo`; the SRAM heap is only a few KB)
+  - `sram_free` (number): Free bytes in the system SRAM heap (via `mallinfo`; the SRAM heap is a few KB, so treat it as none)
   - `sram_used` (number): Used bytes in the system SRAM heap
   - `pio_psram_available` (boolean), `pio_psram_size` (number): mainboard PIO PSRAM
   - `xip_cache_hit_rate` (number): the flash/PSRAM cache's hit rate in percent (0-100) since the previous `getMemInfo()` call, or `-1` when nothing was counted, when the hardware counters filled up meanwhile (a busy app fills them in about 40 s), or in the simulator. Call `getMemInfo()` once to start a measurement and again to read it.

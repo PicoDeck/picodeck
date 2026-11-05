@@ -211,7 +211,7 @@ Measured on the device (RP2350 at 200 MHz, a 320×240 viewport with sky and fog,
 | 804 | 449 | 17406 µs | 7997 µs | 4836 µs |
 | 1602 | 855 | 29171 µs | 15238 µs | 6346 µs |
 
-A full-screen `display.flush()` takes 17.4 ms of DMA (overlapped with the next frame's work), so 30 fps leaves about 33 ms of CPU per frame.
+A full-screen `display.flush()` takes about 16.4 ms of DMA (overlapped with the next frame's work), so 30 fps leaves about 33 ms of CPU per frame.
 
 The "CPU per frame" column is the whole timed loop — `lookAt`, `beginScene`, the Lua loop over `draw` calls, `endScene`, and any OS service work that lands inside the frame (for example serial polling by a test harness) — so it exceeds the sum of the `draw`-calls and `endScene` columns, which are gfx3d's own work.
 

@@ -85,7 +85,7 @@ The RP2350 has a small amount of on-chip SRAM supplemented by two independent 8M
 
 | Memory | Holds | Limits |
 |---|---|---|
-| SRAM (~520 KB) | The two 200 KB framebuffers and other static data | The heap is effectively nil (about 2 KB after the SDK's share): scratch buffers go through `umm_malloc` |
+| SRAM (~520 KB) | The two 200 KB framebuffers and other static data | The heap is effectively nil (a few KB after the SDK's share): scratch buffers go through `umm_malloc` |
 | SCRATCH | The 4 KB main stack: boot, the launcher, every interrupt | |
 | QMI PSRAM (8 MB, on the Pico Plus 2 W) | Lua heap, native apps' image, data and stack (`umm_malloc`, 6 MB less the 128 KB Core 1 pool) | Cached at `0x11000000`, uncached at `0x15000000` |
 | PIO PSRAM (8 MB, on the mainboard) | The OS's MP3 ring below `0x48000`; apps get the rest through `pio_psram_read`/`write` | No XIP. Non-fatal if absent |
