@@ -5,13 +5,15 @@
 local wire = require("lib.ssh_wire")
 local transport = require("lib.ssh_transport")
 local auth = require("lib.ssh_auth")
+local connection = require("lib.ssh_connection")
 local crypto = picocalc.crypto
 
 -- A socket that replays bytes, and keeps what the client wrote. With peer_closed it
 -- behaves as lua_bridge_tcp.c does after the peer's FIN: the data is still readable.
 local function fake_conn(rx, peer_closed)
     local conn = {rx = rx or "", tx = ""}
-    function conn:isConnected() return not peer_closed end
+    conn.peer_closed = peer_closed
+    function conn:isConnected() return not self.peer_closed end
     function conn:read(max)
         if #self.rx == 0 then return nil end
         local out = self.rx:sub(1, max)
@@ -24,6 +26,52 @@ local function fake_conn(rx, peer_closed)
     end
     function conn:error() return nil end
     return conn
+end
+
+-- A client transport past NEWKEYS, and a scripted server on the other end of its socket.
+local function encrypted_session()
+    local conn = fake_conn()
+    local t = transport.new(conn)
+    local key_c2s, iv_c2s = string.rep("c", 16), string.rep("C", 16)
+    local key_s2c, iv_s2c = string.rep("s", 16), string.rep("S", 16)
+    local mac_c2s, mac_s2c = string.rep("m", 32), string.rep("M", 32)
+    t.session_id = string.rep("i", 32)
+    t.send_cipher, t.send_mac_key, t.send_mac_algo = crypto.aes_ctr_new(key_c2s, iv_c2s), mac_c2s, "hmac-sha2-256"
+    t.recv_cipher, t.recv_mac_key, t.recv_mac_algo = crypto.aes_ctr_new(key_s2c, iv_s2c), mac_s2c, "hmac-sha2-256"
+
+    local server = {enc = crypto.aes_ctr_new(key_s2c, iv_s2c), dec = crypto.aes_ctr_new(key_c2s, iv_c2s),
+                    seq_out = 0, seq_in = 0}
+    -- Queue a packet whose framing the test controls: encrypted, with a good MAC.
+    function server:send_raw(packet)
+        local mac = crypto.hmacSHA256(mac_s2c, string.pack(">I4", self.seq_out) .. packet)
+        self.seq_out = self.seq_out + 1
+        return self.enc:update(packet) .. mac
+    end
+    function server:send(payload)
+        conn.rx = conn.rx .. self:send_raw(wire.build_packet(payload, 16))
+    end
+    -- The payloads the client has sent since the last call.
+    function server:received()
+        local out = {}
+        while #conn.tx > 0 do
+            local first = self.dec:update(conn.tx:sub(1, 16))
+            local length = string.unpack(">I4", first)
+            local packet = first
+            if length > 12 then packet = first .. self.dec:update(conn.tx:sub(17, length + 4)) end
+            local mac = conn.tx:sub(length + 5, length + 36)
+            check(mac == crypto.hmacSHA256(mac_c2s, string.pack(">I4", self.seq_in) .. packet), "client's MAC")
+            self.seq_in = self.seq_in + 1
+            out[#out + 1] = packet:sub(6, 4 + length - packet:byte(5))
+            conn.tx = conn.tx:sub(length + 37)
+        end
+        return out
+    end
+    function server:close()
+        self.enc:free()
+        self.dec:free()
+        t:close()
+    end
+    return t, server, conn
 end
 
 -- A transport that has reached the host key check of recorded handshake or signature v.
@@ -161,7 +209,7 @@ local function test_encrypted_reply(v)
     t.recv_cipher = crypto.aes_ctr_new(v.key_s2c, v.iv_s2c)
     t.recv_mac_key, t.recv_mac_algo = v.mac_s2c, "hmac-sha2-256"
     t.recv_seq = 3
-    check(t:recv_packet(1000) == v.accept_payload, v.name .. ": decrypts sshd's SERVICE_ACCEPT")
+    check(t:recv_packet_skip(1000) == v.accept_payload, v.name .. ": decrypts sshd's SERVICE_ACCEPT")
     check(t.recv_seq == 4, v.name .. ": counts it")
     t:close()
 
@@ -170,8 +218,190 @@ local function test_encrypted_reply(v)
     t.recv_cipher = crypto.aes_ctr_new(v.key_s2c, v.iv_s2c)
     t.recv_mac_key, t.recv_mac_algo = v.mac_s2c, "hmac-sha2-256"
     t.recv_seq = 4
-    check(t:recv_packet(1000) == nil, v.name .. ": a wrong sequence number fails the MAC")
+    check(t:recv_packet_skip(1000) == nil, v.name .. ": a wrong sequence number fails the MAC")
     t:close()
+end
+
+-- A packet that arrives in pieces, however long the gap, is still one packet.
+local function test_packet_in_pieces(v)
+    local wire_bytes = v.accept_wire
+    for _, split in ipairs({1, 4, 15, 16, 17, #wire_bytes - 33, #wire_bytes - 32, #wire_bytes - 1}) do
+        local conn = fake_conn(wire_bytes:sub(1, split))
+        local t = transport.new(conn)
+        t.recv_cipher = crypto.aes_ctr_new(v.key_s2c, v.iv_s2c)
+        t.recv_mac_key, t.recv_mac_algo = v.mac_s2c, "hmac-sha2-256"
+        t.recv_seq = 3
+        check(t:recv_packet_skip(1) == nil, v.name .. ": split at " .. split .. ": not complete yet")
+        conn.rx = wire_bytes:sub(split + 1)
+        check(t:recv_packet_skip(1000) == v.accept_payload, v.name .. ": split at " .. split .. ": decrypts: " .. tostring(t.error))
+        t:close()
+    end
+end
+
+-- ── A hostile server's framing ──────────────────────────────────────────────
+
+-- Must come back at once with a clear error: no Lua error, no waiting for bytes that will not come.
+local function check_refused(what, t, expect)
+    local start = picocalc.sys.getTimeMs()
+    local ok, res = pcall(t.recv_packet_skip, t, 300)
+    check(ok, what .. ": no Lua error: " .. tostring(res))
+    check(ok and res == nil, what .. ": no packet")
+    check(t.error and t.error:find(expect, 1, true), what .. ": " .. tostring(t.error))
+    check(picocalc.sys.getTimeMs() - start < 250, what .. ": without waiting")
+end
+
+local BAD_LENGTHS = {
+    {"\255\255\255\255", "2^32 - 1"},
+    {"\128\0\0\0", "2^31, negative on the device"},
+    {"\127\255\255\255", "2^31 - 1"},
+    {"\0\1\0\0", "65536, over the RFC's 35000"},
+    {"\0\0\0\0", "0"},
+    {"\0\0\0\4", "4, under the minimum"},
+    {"\0\0\0\13", "13, not a whole number of blocks"},
+}
+
+local function test_hostile_lengths()
+    for _, bad in ipairs(BAD_LENGTHS) do
+        local filler = string.rep("\7", 64)
+        local t = transport.new(fake_conn(bad[1] .. filler))
+        check_refused("plaintext length " .. bad[2], t, "bad packet length")
+
+        -- Encrypted, a corrupt or hostile length must not be believed before the MAC either.
+        local e, server, conn = encrypted_session()
+        conn.rx = server.enc:update(bad[1] .. filler)
+        check_refused("encrypted length " .. bad[2], e, "bad packet length")
+        server:close()
+    end
+end
+
+local function test_hostile_padding()
+    -- length + padding_length + body: 16 bytes in all, so packet_length is 12.
+    local function packet(padding)
+        return "\0\0\0\12" .. string.char(padding) .. string.rep("\7", 11)
+    end
+    local cases = {
+        {packet(255), "padding longer than the packet"},
+        {packet(12), "padding of the whole packet"},
+        {packet(11), "no payload"},
+        {packet(3), "under 4 bytes of padding"},
+    }
+    for _, case in ipairs(cases) do
+        check_refused("plaintext, " .. case[2], transport.new(fake_conn(case[1])), "bad padding")
+
+        local e, server, conn = encrypted_session()
+        conn.rx = server:send_raw(case[1])
+        check_refused("encrypted, " .. case[2], e, "bad padding")
+        server:close()
+    end
+end
+
+-- The first error stays, and nothing more is taken from a stream that has gone wrong.
+local function test_stream_stays_dead()
+    local e, server, conn = encrypted_session()
+    conn.rx = server:send_raw(wire.build_packet("\99", 16))
+    conn.rx = conn.rx:sub(1, -2) .. string.char(conn.rx:byte(-1) ~ 1)
+    check_refused("a bad MAC", e, "MAC verification failed")
+    server:send("\99")
+    check(e:recv_packet_skip(300) == nil, "nothing after a bad MAC")
+    check(e.error == "MAC verification failed", "the first error stays: " .. tostring(e.error))
+    server:close()
+end
+
+local function test_hostile_strings()
+    -- A uint32 past 2^31 is negative on the device, and adding to one near it wraps.
+    for _, len in ipairs({"\255\255\255\255", "\255\255\255\240", "\128\0\0\0", "\127\255\255\255"}) do
+        check(wire.read_string(len .. "abc", 1) == nil, "read_string refuses a huge length")
+        check(wire.read_namelist(len .. "abc", 1) == nil, "read_namelist refuses a huge length")
+    end
+    check(wire.read_string("\0\0\0\4abc", 1) == nil, "read_string: one past the end")
+    check(wire.read_string("\0\0\0\3abc", 1) == "abc", "read_string: exact fit")
+    check(wire.read_string("\0\0\0\0", 1) == "", "read_string: empty")
+end
+
+local function test_hostile_kexinit()
+    local good = HANDSHAKES[1].I_S
+    -- Cut inside each name-list, and a whole list too long.
+    for _, cut in ipairs({1, 17, 18, 40, 100, #good - 60}) do
+        local conn = fake_conn("SSH-2.0-hostile\r\n" .. wire.build_packet(good:sub(1, cut)))
+        local t = transport.new(conn)
+        local ok, res = pcall(t.handshake, t)
+        check(ok, "KEXINIT cut at " .. cut .. ": no Lua error: " .. tostring(res))
+        check(ok and res == false, "KEXINIT cut at " .. cut .. ": handshake fails")
+        check(t.error == "malformed KEXINIT from server", "KEXINIT cut at " .. cut .. ": " .. tostring(t.error))
+    end
+end
+
+local function test_hostile_banner()
+    local t = transport.new(fake_conn(string.rep("x", 9000)))
+    local start = picocalc.sys.getTimeMs()
+    check(t:exchange_versions() == false, "a line that never ends")
+    check(t.error and t.error:find("too long", 1, true), "reported: " .. tostring(t.error))
+    check(picocalc.sys.getTimeMs() - start < 250, "without waiting")
+
+    t = transport.new(fake_conn("", true))
+    check(t:exchange_versions() == false, "no version string")
+    check(t.error and t.error:find("connection closed", 1, true), "said as it is: " .. tostring(t.error))
+end
+
+-- The session loop: a channel on an encrypted connection, polled as main.lua does.
+local function open_channel()
+    local t, server, conn = encrypted_session()
+    local ch = connection.new(t)
+    ch.remote_channel, ch.remote_window = 7, 100000
+    return ch, t, server, conn
+end
+
+local function channel_data(text)
+    return string.char(94) .. wire.uint32(0) .. wire.string(text)
+end
+
+local function test_poll_packet_in_pieces()
+    local ch, t, server, conn = open_channel()
+    server:send(channel_data("hello"))
+    local whole = conn.rx
+    for _, split in ipairs({3, 16, 40}) do
+        conn.rx = whole:sub(1, split)
+        local start = picocalc.sys.getTimeMs()
+        ch:poll(0)
+        check(ch:read() == nil and not ch.closed, "split at " .. split .. ": waiting for the rest")
+        check(picocalc.sys.getTimeMs() - start < 50, "split at " .. split .. ": poll(0) does not block")
+        conn.rx = whole:sub(split + 1)
+        ch:poll(0)
+        check(ch:read() == "hello", "split at " .. split .. ": whole packet delivered")
+        check(not ch.closed, "split at " .. split .. ": still open: " .. tostring(ch.error))
+        server:send(channel_data("hello"))
+        whole = conn.rx
+    end
+    server:close()
+end
+
+-- Everything already received is delivered before the session ends.
+local function test_poll_ends_session()
+    local ch, t, server, conn = open_channel()
+    server:send(channel_data("last words"))
+    conn.peer_closed = true
+    ch:poll(0)
+    check(ch:read() == "last words", "data before the close is delivered")
+    ch:poll(0)
+    check(ch.closed, "a closed socket ends the session")
+    check(ch.error and ch.error:find("connection closed", 1, true), "and says why: " .. tostring(ch.error))
+    server:close()
+
+    ch, t, server, conn = open_channel()
+    conn.rx = server:send_raw(wire.build_packet(channel_data("x"), 16))
+    conn.rx = conn.rx:sub(1, -2) .. string.char(conn.rx:byte(-1) ~ 1)
+    ch:poll(0)
+    check(ch.closed, "a bad MAC ends the session")
+    check(ch.error == "MAC verification failed", "and says why: " .. tostring(ch.error))
+    server:close()
+
+    ch, t, server, conn = open_channel()
+    conn.rx = server.enc:update("\255\255\255\255" .. string.rep("\7", 60))
+    local ok, err = pcall(ch.poll, ch, 0)
+    check(ok, "a hostile length in the session: no Lua error: " .. tostring(err))
+    check(ch.closed, "a hostile length ends the session")
+    check(ch.error and ch.error:find("bad packet length", 1, true), "and says why: " .. tostring(ch.error))
+    server:close()
 end
 
 -- ── Framing and encodings (RFC 4253 section 6) ──────────────────────────────
@@ -287,6 +517,7 @@ else
         test_negotiation(v)
         test_key_derivation(v)
         test_encrypted_reply(v)
+        test_packet_in_pieces(v)
     end
     check(#SIGNATURES == 5, "the uncommon signature encodings")
     for _, v in ipairs(SIGNATURES) do
@@ -294,6 +525,14 @@ else
     end
     test_signature_algorithm_binding()
     test_what_is_offered()
+    test_hostile_lengths()
+    test_hostile_padding()
+    test_stream_stays_dead()
+    test_hostile_strings()
+    test_hostile_kexinit()
+    test_hostile_banner()
+    test_poll_packet_in_pieces()
+    test_poll_ends_session()
     test_packet_framing()
     test_mpint()
     test_disconnect_reason()

@@ -83,7 +83,9 @@ function wire.read_string(buf, pos)
     pos = pos or 1
     if pos + 3 > #buf then return nil, pos end
     local len, npos = unpack(">I4", buf, pos)
-    if npos + len - 1 > #buf then return nil, pos end
+    -- On the device's 32-bit integers a length past 2^31 is negative, and adding
+    -- to one near it wraps: compare with the bytes left, and never add first.
+    if len < 0 or len > #buf - npos + 1 then return nil, pos end
     return sub(buf, npos, npos + len - 1), npos + len
 end
 

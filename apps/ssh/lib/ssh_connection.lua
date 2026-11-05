@@ -260,22 +260,27 @@ function connection:process_packet(payload)
     return true
 end
 
--- Poll for incoming data (non-blocking, returns quickly if nothing available)
+-- Poll for incoming data (non-blocking, returns quickly if nothing available).
+-- If the connection has gone, self.closed is set and self.error says why.
 function connection:poll(timeout_ms)
     timeout_ms = timeout_ms or 0
-
-    -- Try to fill TCP buffer
-    self.transport:fill_buf()
+    local transport = self.transport
 
     local start = picocalc.sys.getTimeMs()
     while true do
-        -- Try to receive a packet without blocking long
-        if #self.transport.recv_buf >= 4 then
-            -- There's data — try to read a full packet
-            local payload = self.transport:recv_packet(100)
-            if payload then
-                self:process_packet(payload)
-            end
+        local alive = transport:fill_buf()
+
+        -- Whole packets only: one still arriving stays buffered for the next poll.
+        local payload = transport:take_packet()
+        while payload do
+            self:process_packet(payload)
+            payload = transport:take_packet()
+        end
+
+        if not alive and not self.closed then transport:connection_closed() end
+        if transport.dead and not self.closed then
+            self.closed = true
+            self.error = transport.error
         end
 
         if #self.data_buf > 0 then return end  -- have data to deliver
@@ -285,7 +290,6 @@ function connection:poll(timeout_ms)
         if picocalc.sys.getTimeMs() - start > timeout_ms then return end
 
         picocalc.sys.sleep(5)
-        self.transport:fill_buf()
     end
 end
 

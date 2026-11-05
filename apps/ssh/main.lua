@@ -600,10 +600,15 @@ local function main()
     run_terminal_session(channel, t)
 
     -- Cleanup
+    local session_error = channel.error
     channel:close()
     t:close()
     conn:close()
 
+    if session_error then
+        show_error("Disconnected: " .. session_error)
+        return
+    end
     show_status("Disconnected.")
     sys.sleep(1000)
 end
