@@ -2,13 +2,17 @@
 // Implements the full http.h API using libcurl on the host machine.
 // Core 1 thread calls http_poll() which drives curl_multi_perform().
 
+#define _GNU_SOURCE  // strcasestr
 #include "http.h"
 #include "wifi.h"
 
 #include <curl/curl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <time.h>
 
 // ── Static pool ─────────────────────────────────────────────────────────────
 
@@ -17,6 +21,17 @@ static CURLM *s_multi = NULL;
 
 // Per-connection curl state (stored alongside the connection)
 static struct curl_slist *s_hdrlists[HTTP_MAX_CONNECTIONS];
+static bool s_paused[HTTP_MAX_CONNECTIONS];  // Core 1: curl's transfer is paused
+
+// Guards the receive ring and spill: Core 1 (the curl callbacks) fills them
+// while Core 0 reads them.
+static pthread_mutex_t s_rx_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// Unread body bytes beyond the ring, as many as the device's stack would hold
+// before it (HTTP_RECV_OVERFLOW in http.c), so a response of that size completes
+// on the server's close even if the app reads only then. Past it the transfer
+// pauses, so nothing is lost; the device has no such brake and fails instead.
+#define SIM_HTTP_SPILL_MAX (32u * 1024u)
 
 // ── Internal helpers ────────────────────────────────────────────────────────
 
@@ -24,8 +39,29 @@ static int conn_index(http_conn_t *c) {
     return (int)(c - s_conns);
 }
 
+// Deadlines use the host's clock, not the simulator's (virtual) one: the
+// network runs in real time.
+static uint32_t real_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u);
+}
+
+// A deadline `ms` from now; 0 (never fires) when the timeout is off.
+static uint32_t deadline_after(uint32_t ms) {
+    return ms ? real_ms() + ms : 0;
+}
+
+static bool deadline_passed(uint32_t now, uint32_t deadline) {
+    return deadline != 0 && (int32_t)(now - deadline) > 0;
+}
+
+static void pending_set(http_conn_t *c, uint8_t bits) {
+    __atomic_fetch_or(&c->pending, bits, __ATOMIC_RELAXED);
+}
+
 static void conn_fail(http_conn_t *c, const char *fmt, ...) {
-    if (c->state == HTTP_STATE_DONE)
+    if (c->state == HTTP_STATE_DONE || c->state == HTTP_STATE_FAILED)
         return;
     va_list ap;
     va_start(ap, fmt);
@@ -33,17 +69,18 @@ static void conn_fail(http_conn_t *c, const char *fmt, ...) {
     va_end(ap);
     printf("[HTTP] Error (slot %d, state %d): %s\n", conn_index(c), (int)c->state, c->err);
     c->state = HTTP_STATE_FAILED;
-    c->pending |= HTTP_CB_FAILED | HTTP_CB_CLOSED;
+    pending_set(c, HTTP_CB_FAILED | HTTP_CB_CLOSED);
 }
 
 // ── Ring buffer ─────────────────────────────────────────────────────────────
 
-static void rx_write(http_conn_t *c, const uint8_t *data, uint32_t len) {
+// Returns the bytes taken (less than len once the ring is full).
+static uint32_t rx_write(http_conn_t *c, const uint8_t *data, uint32_t len) {
     uint32_t space = c->rx_cap - c->rx_count;
     if (len > space)
         len = space;
     if (len == 0)
-        return;
+        return 0;
 
     uint32_t till_end = c->rx_cap - c->rx_head;
     if (len <= till_end) {
@@ -57,6 +94,23 @@ static void rx_write(http_conn_t *c, const uint8_t *data, uint32_t len) {
         c->rx_head = len - till_end;
     }
     c->rx_count += len;
+    return len;
+}
+
+// Append to the spill (s_rx_lock held). False if out of memory.
+static bool spill_append(http_conn_t *c, const uint8_t *data, uint32_t len) {
+    uint32_t unread = c->spill_len - c->spill_off;
+    if (unread)
+        memmove(c->spill, c->spill + c->spill_off, unread);
+    c->spill_off = 0;
+    c->spill_len = unread;
+    uint8_t *nb = realloc(c->spill, unread + len);
+    if (!nb)
+        return false;
+    memcpy(nb + unread, data, len);
+    c->spill = nb;
+    c->spill_len = unread + len;
+    return true;
 }
 
 // ── libcurl callbacks (called from Core 1 inside curl_multi_perform) ────────
@@ -77,9 +131,16 @@ static size_t sim_http_header_cb(char *buffer, size_t size, size_t nitems, void 
 
     // Blank line = end of headers
     if (total <= 2) {
+        if (c->status_code >= 100 && c->status_code < 200) {
+            c->hdr_len = 0;  // an interim response (100 Continue): skip it
+            c->hdr_count = 0;
+            return total;
+        }
         c->headers_done = true;
         c->state = HTTP_STATE_BODY;
-        c->pending |= HTTP_CB_HEADERS;
+        c->deadline_connect = 0;
+        c->deadline_read = deadline_after(c->read_timeout_ms);
+        pending_set(c, HTTP_CB_HEADERS);
         return total;
     }
 
@@ -131,9 +192,26 @@ static size_t sim_http_write_cb(char *ptr, size_t size, size_t nmemb, void *user
     http_conn_t *c = (http_conn_t *)userdata;
     size_t total = size * nmemb;
 
-    rx_write(c, (const uint8_t *)ptr, (uint32_t)total);
+    // What the ring cannot take goes to the spill, read after the ring. curl
+    // keeps a chunk it is told to pause on, so nothing is dropped however far
+    // behind the app is (a transfer may hand over more than the ring holds).
+    pthread_mutex_lock(&s_rx_lock);
+    uint32_t unread = c->spill_len - c->spill_off;
+    if (unread > SIM_HTTP_SPILL_MAX) {
+        pthread_mutex_unlock(&s_rx_lock);
+        s_paused[conn_index(c)] = true;
+        c->deadline_read = deadline_after(c->read_timeout_ms);  // not idle
+        return CURL_WRITEFUNC_PAUSE;
+    }
+    uint32_t took = unread ? 0 : rx_write(c, (const uint8_t *)ptr, (uint32_t)total);
+    bool ok = took == total ||
+              spill_append(c, (const uint8_t *)ptr + took, (uint32_t)total - took);
+    pthread_mutex_unlock(&s_rx_lock);
+    if (!ok)
+        return 0;  // curl fails the transfer (CURLE_WRITE_ERROR)
     c->body_received += (uint32_t)total;
-    c->pending |= HTTP_CB_REQUEST;
+    c->deadline_read = deadline_after(c->read_timeout_ms);
+    pending_set(c, HTTP_CB_REQUEST);
 
     return total;
 }
@@ -180,8 +258,9 @@ void http_free(http_conn_t *c) {
 
     int idx = conn_index(c);
 
-    // Push CLOSE if there's an active curl handle
-    if (c->pcb) {
+    // Push CLOSE if there's an active curl handle, or a start still queued
+    // (Core 1 runs them in order, so the handle it makes is closed too).
+    if (c->pcb || c->state == HTTP_STATE_QUEUED) {
         conn_req_t req = {.type = CONN_REQ_HTTP_CLOSE, .conn = c};
         wifi_req_push(&req);
     }
@@ -197,6 +276,7 @@ void http_free(http_conn_t *c) {
     free(c->tx_buf);
     free(c->rx_buf);
     free(c->hdr_buf);
+    free(c->spill);
 
     if (s_hdrlists[idx]) {
         curl_slist_free_all(s_hdrlists[idx]);
@@ -257,14 +337,18 @@ void http_close_all(void (*on_free)(void *lua_ud)) {
 bool http_set_recv_buf(http_conn_t *c, uint32_t bytes) {
     if (!c || bytes == 0 || bytes > HTTP_RECV_BUF_MAX)
         return false;
-    uint8_t *nb = realloc(c->rx_buf, bytes);
+    uint8_t *nb = malloc(bytes);
     if (!nb)
         return false;
+    pthread_mutex_lock(&s_rx_lock);
+    uint8_t *old = c->rx_buf;
     c->rx_buf = nb;
     c->rx_cap = bytes;
     c->rx_head = 0;
     c->rx_tail = 0;
     c->rx_count = 0;
+    pthread_mutex_unlock(&s_rx_lock);
+    free(old);
     return true;
 }
 
@@ -286,15 +370,22 @@ static bool start_request(http_conn_t *c, const char *method, const char *path,
         return false;
     if (!wifi_is_available())
         return false;
+    // Only between requests, as on the device.
+    if (c->state != HTTP_STATE_IDLE && c->state != HTTP_STATE_DONE &&
+        c->state != HTTP_STATE_FAILED)
+        return false;
 
     // Reset state for new request
     c->status_code = 0;
     c->content_length = -1;
     c->body_received = 0;
     c->headers_done = false;
+    pthread_mutex_lock(&s_rx_lock);
     c->rx_head = 0;
     c->rx_tail = 0;
     c->rx_count = 0;
+    c->spill_len = c->spill_off = 0;
+    pthread_mutex_unlock(&s_rx_lock);
     c->hdr_len = 0;
     c->hdr_count = 0;
     c->err[0] = '\0';
@@ -309,12 +400,38 @@ static bool start_request(http_conn_t *c, const char *method, const char *path,
         return false;
     }
 
+    // setByteRange's range goes out as one more extra header, for this request.
     free(c->extra_hdrs);
-    c->extra_hdrs = extra_hdr ? sim_strdup(extra_hdr) : NULL;
+    c->extra_hdrs = NULL;
+    if (c->range_from >= 0) {
+        size_t cap = (extra_hdr ? strlen(extra_hdr) : 0) + 48;
+        c->extra_hdrs = malloc(cap);
+        if (c->extra_hdrs) {
+            int off = snprintf(c->extra_hdrs, cap, "%s", extra_hdr ? extra_hdr : "");
+            if (c->range_to >= 0)
+                snprintf(c->extra_hdrs + off, cap - off, "Range: bytes=%d-%d\r\n",
+                         (int)c->range_from, (int)c->range_to);
+            else
+                snprintf(c->extra_hdrs + off, cap - off, "Range: bytes=%d-\r\n",
+                         (int)c->range_from);
+        }
+        c->range_from = c->range_to = -1;
+    } else if (extra_hdr) {
+        c->extra_hdrs = sim_strdup(extra_hdr);
+    }
     free(c->tx_buf);
-    c->tx_buf = body ? sim_strdup(body) : NULL;
-    c->tx_len = (uint32_t)body_len;
+    c->tx_buf = NULL;
+    c->tx_len = 0;
+    if (body && body_len > 0) {  // binary safe
+        c->tx_buf = malloc(body_len);
+        if (c->tx_buf) {
+            memcpy(c->tx_buf, body, body_len);
+            c->tx_len = (uint32_t)body_len;
+        }
+    }
 
+    c->deadline_connect = deadline_after(c->connect_timeout_ms);
+    c->deadline_read = 0;
     c->state = HTTP_STATE_QUEUED;
 
     conn_req_t req = {.type = CONN_REQ_HTTP_START, .conn = c};
@@ -344,8 +461,9 @@ bool http_post(http_conn_t *c, const char *path, const char *extra_hdr,
 // ── Data reading (Core 0) ───────────────────────────────────────────────────
 
 uint32_t http_read(http_conn_t *c, uint8_t *out, uint32_t len) {
-    if (!c || !out || len == 0 || c->rx_count == 0)
+    if (!c || !out || len == 0)
         return 0;
+    pthread_mutex_lock(&s_rx_lock);
     uint32_t n = (len < c->rx_count) ? len : c->rx_count;
 
     uint32_t till_end = c->rx_cap - c->rx_tail;
@@ -360,11 +478,26 @@ uint32_t http_read(http_conn_t *c, uint8_t *out, uint32_t len) {
         c->rx_tail = n - till_end;
     }
     c->rx_count -= n;
+    // The ring first, then the spill (it came after).
+    if (n < len && c->spill_off < c->spill_len) {
+        uint32_t m = c->spill_len - c->spill_off;
+        if (m > len - n)
+            m = len - n;
+        memcpy(out + n, c->spill + c->spill_off, m);
+        c->spill_off += m;
+        n += m;
+    }
+    pthread_mutex_unlock(&s_rx_lock);
     return n;
 }
 
 uint32_t http_bytes_available(http_conn_t *c) {
-    return c ? c->rx_count : 0;
+    if (!c)
+        return 0;
+    pthread_mutex_lock(&s_rx_lock);
+    uint32_t n = c->rx_count + (c->spill_len - c->spill_off);
+    pthread_mutex_unlock(&s_rx_lock);
+    return n;
 }
 
 http_conn_t *http_get_conn(int idx) {
@@ -390,6 +523,8 @@ void sim_http_start(http_conn_t *c) {
         if (c) conn_fail(c, "curl not initialized");
         return;
     }
+    if (c->state != HTTP_STATE_QUEUED)
+        return;  // closed before Core 1 got to it
     if (sim_network_blocked()) {
         conn_fail(c, "network error: %s", sim_wifi_get_error());
         return;
@@ -433,14 +568,12 @@ void sim_http_start(http_conn_t *c) {
     // Do NOT follow redirects — apps handle redirects themselves
     curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L);
 
-    // Timeouts
-    curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, (long)c->connect_timeout_ms);
-    curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS,
-                     (long)(c->connect_timeout_ms + c->read_timeout_ms));
+    // Timeouts: http_poll enforces the connect and read deadlines (a read
+    // timeout restarts with every byte; curl's own would cap the whole transfer).
 
-    // SSL: accept system CA bundle
-    curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
+    // SSL: the system CA bundle; setInsecure skips the check, as on the device.
+    curl_easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, c->insecure ? 0L : 1L);
+    curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, c->insecure ? 0L : 2L);
 
     // Method
     if (strcmp(c->method, "POST") == 0) {
@@ -471,16 +604,14 @@ void sim_http_start(http_conn_t *c) {
     if (!has_ua) {
         hdrs = curl_slist_append(hdrs, "User-Agent: PicoDeck/1.0");
     }
-
-    // Range header
-    if (c->range_from >= 0) {
-        char range[64];
-        if (c->range_to >= 0)
-            snprintf(range, sizeof(range), "Range: bytes=%d-%d", c->range_from, c->range_to);
-        else
-            snprintf(range, sizeof(range), "Range: bytes=%d-", c->range_from);
-        hdrs = curl_slist_append(hdrs, range);
-    }
+    // The device sends only these: drop what curl would add by itself (an
+    // "Expect" would also delay a large POST by a second).
+    hdrs = curl_slist_append(hdrs, "Accept:");
+    hdrs = curl_slist_append(hdrs, "Expect:");
+    if (!(c->extra_hdrs && strcasestr(c->extra_hdrs, "Content-Type:")))
+        hdrs = curl_slist_append(hdrs, "Content-Type:");
+    if (!(c->extra_hdrs && strcasestr(c->extra_hdrs, "Accept-Encoding:")))
+        hdrs = curl_slist_append(hdrs, "Accept-Encoding: identity");
 
     // Parse extra headers ("\r\n"-delimited)
     if (c->extra_hdrs) {
@@ -522,6 +653,7 @@ void sim_http_start(http_conn_t *c) {
     }
 
     c->pcb = easy;
+    s_paused[idx] = false;
     c->state = HTTP_STATE_CONNECTING;
     printf("[HTTP] Started %s %s (slot %d)\n", c->method, url, idx);
 }
@@ -537,15 +669,59 @@ void sim_http_close_handle(http_conn_t *c) {
         curl_easy_cleanup((CURL *)c->pcb);
         c->pcb = NULL;
     }
+    s_paused[idx] = false;
     if (s_hdrlists[idx]) {
         curl_slist_free_all(s_hdrlists[idx]);
         s_hdrlists[idx] = NULL;
     }
 }
 
+// Timeouts and paused transfers, before curl runs.
+static void sim_http_tick(void) {
+    uint32_t now = real_ms();
+    for (int i = 0; i < HTTP_MAX_CONNECTIONS; i++) {
+        http_conn_t *c = &s_conns[i];
+        if (!c->in_use || !c->pcb)
+            continue;
+        CURL *easy = (CURL *)c->pcb;
+        if (c->state == HTTP_STATE_CONNECTING) {
+            // Connected (and through TLS): the request is on its way, and the
+            // read timeout runs from here.
+            curl_off_t t = 0;
+            curl_easy_getinfo(easy, CURLINFO_PRETRANSFER_TIME_T, &t);
+            if (t > 0) {
+                c->deadline_connect = 0;
+                c->deadline_read = deadline_after(c->read_timeout_ms);
+                c->state = HTTP_STATE_HEADERS;
+            } else if (deadline_passed(now, c->deadline_connect)) {
+                conn_fail(c, "connect timeout (%ums)", (unsigned)c->connect_timeout_ms);
+                sim_http_close_handle(c);
+                continue;
+            }
+        } else if (c->state == HTTP_STATE_HEADERS || c->state == HTTP_STATE_BODY) {
+            if (deadline_passed(now, c->deadline_read)) {
+                conn_fail(c, "read timeout (%ums)", (unsigned)c->read_timeout_ms);
+                sim_http_close_handle(c);
+                continue;
+            }
+        }
+        if (s_paused[i]) {
+            pthread_mutex_lock(&s_rx_lock);
+            uint32_t unread = c->spill_len - c->spill_off;
+            pthread_mutex_unlock(&s_rx_lock);
+            if (unread <= SIM_HTTP_SPILL_MAX) {
+                s_paused[i] = false;  // the callback sets it again if need be
+                curl_easy_pause(easy, CURLPAUSE_CONT);
+            }
+        }
+    }
+}
+
 void http_poll(void) {
     if (!s_multi)
         return;
+
+    sim_http_tick();
 
     int still_running = 0;
     curl_multi_perform(s_multi, &still_running);
@@ -567,25 +743,25 @@ void http_poll(void) {
         CURLcode result = msg->data.result;
 
         if (result == CURLE_OK) {
+            c->deadline_connect = c->deadline_read = 0;
             c->state = HTTP_STATE_DONE;
-            c->pending |= HTTP_CB_COMPLETE;
+            pending_set(c, HTTP_CB_COMPLETE);
             printf("[HTTP] Transfer complete (slot %d, %u bytes)\n", idx, c->body_received);
+        } else if (result == CURLE_PARTIAL_FILE && c->content_length >= 0) {
+            // A body cut short never reports complete: what arrived stays readable.
+            conn_fail(c, "connection closed after %u of %d bytes",
+                      c->body_received, c->content_length);
+        } else if (c->body_received > 0) {
+            conn_fail(c, "partial: %s", curl_easy_strerror(result));
         } else {
-            // If we got some data, treat as partial success
-            if (c->body_received > 0) {
-                printf("[HTTP] Partial transfer (slot %d, %u bytes, error: %s)\n",
-                       idx, c->body_received, curl_easy_strerror(result));
-                c->state = HTTP_STATE_DONE;
-                c->pending |= HTTP_CB_REQUEST | HTTP_CB_COMPLETE;
-            } else {
-                conn_fail(c, "curl error: %s", curl_easy_strerror(result));
-            }
+            conn_fail(c, "curl error: %s", curl_easy_strerror(result));
         }
 
         // Cleanup the easy handle
         curl_multi_remove_handle(s_multi, easy);
         curl_easy_cleanup(easy);
         c->pcb = NULL;
+        s_paused[idx] = false;
 
         if (s_hdrlists[idx]) {
             curl_slist_free_all(s_hdrlists[idx]);

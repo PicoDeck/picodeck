@@ -768,6 +768,39 @@ case_fw("http_connect_timeout_zero_is_off", function()
     conn:close()
 end)
 
+case_fw("http_body_cut_short_fails", function()
+    local r = request("/short")
+    T.ok(wait(function() return r.complete or r.closed end, 3000), "no end")
+    T.eq(r.complete, false, "a cut-short body reported complete")
+    T.ok(r.closed, "closed callback")
+    T.ok(r.err, "an error text")
+end)
+
+-- More than the 4 KB default ring, read slowly: every byte arrives.
+case_fw("http_big_body_default_ring", function()
+    local conn = net.http.new(HOST, cfg.http, false, "ring")
+    local chunks, complete, closed = {}, false, false
+    conn:setRequestCompleteCallback(function() complete = true end)
+    conn:setConnectionClosedCallback(function() closed = true end)
+    T.ok(conn:get("/big"), "get")
+    local n = 0
+    while not closed do
+        local d = conn:read(8192)
+        if d then
+            chunks[#chunks + 1] = d
+            n = n + #d
+        elseif complete then
+            break
+        end
+        pc.sys.sleep(1)
+    end
+    T.ok(complete, "failed: " .. tostring(conn:getError()))
+    local data = table.concat(chunks)
+    T.eq(#data, 1048576, "size")
+    T.eq(adler(data), cfg.big_sum, "checksum")
+    conn:close()
+end)
+
 -- ── Run the one selected case ───────────────────────────────────────────────
 
 local fn = cases[cfg.case]
