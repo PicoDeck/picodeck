@@ -372,7 +372,7 @@ local ok, err = picocalc.sys.applyUpdate("/system/update.bin")
 ```
 
 (Release assets: `picodeck.bin`, `picodeck.sha256`, `picodeck.sig`.
-Signing: `tools/sign_update.py`. Local builds embed a TEST key whose private
+Signing: [`tools/sign_update.py`](https://github.com/PicoDeck/picodeck/blob/master/tools/sign_update.py). Local builds embed a TEST key whose private
 half is in the repo; release builds use the `UPDATE_SIGNING_KEY` CI secret.)
 
 ---
@@ -422,7 +422,7 @@ JSON is not loaded this way. `picocalc.json` is a built-in namespace, always pre
 local data = picocalc.json.decode(raw)
 ```
 
-The libraries in the repo's `system/lib/` are the ones that exist. Each is a plain file that has to be present on the SD card at `/system/lib/`; release packaging does not install them for you:
+The libraries in the repo's [`system/lib/`](https://github.com/PicoDeck/picodeck/tree/master/system/lib) are the ones that exist. Each is a plain file that has to be present on the SD card at `/system/lib/`; release packaging does not install them for you:
 
 | Name | File | Docs |
 |------|------|------|

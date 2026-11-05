@@ -30,7 +30,7 @@ Most modules have the same names on both sides, but the native table is not a co
 | `sys.getMemInfo` | Nothing: `psram->qmiAlloc` returning `NULL` is what you learn |
 | `fileplayer:load`, `mp3player:load` return an error | `filePlayerLoad` and `mp3PlayerLoad` return nothing: test `filePlayerIsPlaying` or `mp3PlayerIsPlaying` after playing |
 
-The same name can also differ in detail: `graphics->drawScaled` takes a destination size where Lua's `img:drawScaled` takes a multiplier. `sdk/native/os.h` is the reference for the native side.
+The same name can also differ in detail: `graphics->drawScaled` takes a destination size where Lua's `img:drawScaled` takes a multiplier. [`sdk/native/os.h`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/os.h) is the reference for the native side.
 
 
 ## Application Structure
@@ -64,11 +64,11 @@ A native app runs at the same privilege as the OS. The sandbox and the requireme
 
 ### Prerequisites
 - **GNU Arm Embedded Toolchain**: `arm-none-eabi-gcc`
-- **PicoDeck SDK Headers**: `app_abi.h`, `os.h` and `terminal.h` (found in `sdk/native/`)
-- **Linker Script**: `linker.ld` (found in `sdk/native/`)
-- **`stubs.c`** (found in `sdk/native/`), if your app uses the [C library](#c-library)
+- **PicoDeck SDK Headers**: `app_abi.h`, `os.h` and `terminal.h` (found in [`sdk/native/`](https://github.com/PicoDeck/picodeck/tree/master/sdk/native))
+- **Linker Script**: `linker.ld` (found in the same folder)
+- **`stubs.c`** (also there), if your app uses the [C library](#c-library)
 
-`sdk/native/` also holds a sample program to start from: `main.c`, its `Makefile` and an `app.json`.
+The folder also holds a sample program to start from: `main.c`, its `Makefile` and an `app.json`. [`sdk/README.md`](https://github.com/PicoDeck/picodeck/blob/master/sdk/README.md) walks through building it.
 
 ## Creating a Native App
 
@@ -118,7 +118,7 @@ Lua has no `shouldExit()`: the bridge handles the system menu's "Exit App" itsel
 
 ### The API Surface
 
-The `PicoCalcAPI` struct contains pointers to all OS subsystems. The full type definitions are in `sdk/native/os.h`.
+The `PicoCalcAPI` struct contains pointers to all OS subsystems. The full type definitions are in [`sdk/native/os.h`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/os.h).
 
 #### Always available
 
@@ -210,7 +210,7 @@ void picodeck_main(const PicoCalcAPI *api, const char *app_dir,
 }
 ```
 
-`sdk/native/os.h` is the source of truth for the complete type definitions, the exact struct layout, and the latest `version` values.
+[`sdk/native/os.h`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/os.h) is the source of truth for the complete type definitions, the exact struct layout, and the latest `version` values.
 
 ## Compilation
 
@@ -229,7 +229,7 @@ Native apps MUST be compiled as **Position-Independent Executables (PIE)**. This
 - `-nostartfiles -nodefaultlibs`: Native apps do not use standard C runtime startup (CRT0), and no library is linked unless you add it: see [C library](#c-library).
 
 ### Example Makefile
-A complete working example can be found in `sdk/native/Makefile`.
+A complete working example can be found in [`sdk/native/Makefile`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/Makefile).
 
 ```makefile
 CC      = arm-none-eabi-gcc
@@ -263,7 +263,7 @@ The flags above link nothing, so neither the C library nor the compiler's helper
 | Soft float, 64-bit division | `-lgcc` |
 | `sqrt`, `sin`, `malloc`, `snprintf`, anything else that needs an OS underneath | `stubs.c`, and all of `-lc -lm -lgcc` |
 
-`sdk/native/stubs.c` supplies what newlib asks of an OS. With all of it:
+[`sdk/native/stubs.c`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/stubs.c) supplies what newlib asks of an OS. With all of it:
 
 ```makefile
 LDFLAGS = -T linker.ld -Wl,--entry=picodeck_main -Wl,-pie -Wl,--gc-sections \

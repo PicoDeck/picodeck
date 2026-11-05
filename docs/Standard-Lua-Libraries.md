@@ -2,7 +2,7 @@
 title: "Standard Lua Libraries"
 ---
 
-Apps run on **Lua 5.4** (5.4.7, `third_party/lua-5.4`), built without the `LUA_COMPAT_*` options. The following standard libraries are available:
+Apps run on **Lua 5.4** (5.4.7), built without the `LUA_COMPAT_*` options. The following standard libraries are available:
 
 | Library | Description |
 |---------|-------------|

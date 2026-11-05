@@ -413,7 +413,7 @@ Called when the request fails (connect error, timeout, reset, a body cut short, 
 
 ### Lua and native HTTP
 
-The native `picocalc_http_t` (`sdk/native/os.h`) is polled: call `http->get()`, then each frame test `http->isComplete()`, drain with `available()`/`read()`, and read the outcome with `getStatus()`/`getError()`. Native apps get no callbacks. Lua has no `isComplete()`; completion arrives through `setRequestCompleteCallback`, and failure through `setConnectionClosedCallback`. Callbacks fire from `picocalc.sys.sleep` and the app's instruction hook, so a loop that calls `sleep` sees them.
+The native `picocalc_http_t` ([`sdk/native/os.h`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/os.h)) is polled: call `http->get()`, then each frame test `http->isComplete()`, drain with `available()`/`read()`, and read the outcome with `getStatus()`/`getError()`. Native apps get no callbacks. Lua has no `isComplete()`; completion arrives through `setRequestCompleteCallback`, and failure through `setConnectionClosedCallback`. Callbacks fire from `picocalc.sys.sleep` and the app's instruction hook, so a loop that calls `sleep` sees them.
 
 | Native | Lua |
 |--------|-----|

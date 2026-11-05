@@ -75,7 +75,7 @@ A grid's cell size comes from its font (`max width × height`), or is given expl
 | `/system/lib/fonts/spleen-5x8.pfn` via `picocalc.display.loadFont` | 5×8 | 64×40 |
 | No font, 4×4 cells | 4×4 | 80×80 (shapes and defined glyphs only) |
 
-Spleen 5×8 (BSD 2-Clause, Frederic Cambus; source and licence in the repo's `sdk/fonts/spleen/`) gives 64-column grids. Release packaging does not install `/system/lib` (see [API System and Config](API-System-and-Config.md)): copy `system/lib/fonts/spleen-5x8.pfn` to the SD card, or ship a copy in your app directory and load it from `APP_DIR`. The font is BSD 2-Clause: copies distributed on SD cards or in app directories must ship `sdk/fonts/spleen/LICENSE` alongside the `.pfn`.
+Spleen 5×8 (BSD 2-Clause, Frederic Cambus; source and licence in the repo's [`sdk/fonts/spleen/`](https://github.com/PicoDeck/picodeck/tree/master/sdk/fonts/spleen)) gives 64-column grids. Release packaging does not install `/system/lib` (see [API System and Config](API-System-and-Config.md)): copy [`system/lib/fonts/spleen-5x8.pfn`](https://github.com/PicoDeck/picodeck/blob/master/system/lib/fonts/spleen-5x8.pfn) to the SD card, or ship a copy in your app directory and load it from `APP_DIR`. The font is BSD 2-Clause: copies distributed on SD cards or in app directories must ship [`sdk/fonts/spleen/LICENSE`](https://github.com/PicoDeck/picodeck/blob/master/sdk/fonts/spleen/LICENSE) alongside the `.pfn`.
 
 ```lua
 local id = picocalc.display.loadFont("/system/lib/fonts/spleen-5x8.pfn")

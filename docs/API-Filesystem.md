@@ -492,7 +492,7 @@ The device resets if the system goes 10 seconds without feeding its watchdog. Th
 
 ### Differences from the native C API
 
-The native `g_api.fs` table (`picocalc_fs_t`) and this Lua table overlap but are not identical. Porting a native app, or reading the C header:
+The native `api->fs` table (`picocalc_fs_t`) and this Lua table overlap but are not identical. Porting a native app, or reading the C header:
 
 | Native C (`api->fs->...`) | Lua | Note |
 |---|---|---|

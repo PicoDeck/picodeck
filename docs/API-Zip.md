@@ -236,7 +236,7 @@ ar:close()
 
 ### C-to-Lua mapping
 
-The native `g_api.zip` (see [Native API](#native-api-c)) and the Lua archive object cover the same ground with two shapes: both address entries by **index** (`numEntries`/`locate`/`statIndex`/`extractEntry`) and both by **name** (`exists`/`size`/`read`/`extract`). C fills a buffer you allocate; Lua returns a string. Porting either way:
+The native `api->zip` (see [Native API](#native-api-c)) and the Lua archive object cover the same ground with two shapes: both address entries by **index** (`numEntries`/`locate`/`statIndex`/`extractEntry`) and both by **name** (`exists`/`size`/`read`/`extract`). C fills a buffer you allocate; Lua returns a string. Porting either way:
 
 | C (`api->zip->...`) | Lua | Note |
 |---|---|---|
@@ -340,7 +340,7 @@ Entry names are strictly validated before an entry name may become a filesystem 
 
 ### Native API (C)
 
-`g_api.zip` (`picocalc_zip_t` in `src/os/os.h`). `extract(zip_path, dest_dir)` and `list(zip_path)` exist since Phase 2. API version 5 (`g_api.version >= 5`) appends read-in-place archive handles: `open`, `close`, `numEntries`, `locate`, `statIndex`, `read` and `extractEntry`, working on an opaque `pczip_t` handle. Check `api->version >= 5` before calling them; on older firmware the struct ends at `list`.
+`api->zip` (`picocalc_zip_t` in [`sdk/native/os.h`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/os.h)). `extract(zip_path, dest_dir)` and `list(zip_path)` are always there. API version 5 (`api->version >= 5`) appends read-in-place archive handles: `open`, `close`, `numEntries`, `locate`, `statIndex`, `read` and `extractEntry`, working on an opaque `pczip_t` handle. Check `api->version >= 5` before calling them; on older firmware the struct ends at `list`.
 
 Reads are caller-allocated: `statIndex` first to size the buffer (`st.size` is the uncompressed size), then `read` decompresses into it. `read` returns the number of bytes written, or a negative code:
 

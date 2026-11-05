@@ -362,7 +362,7 @@ Block until a character is typed. Returns the character as a string (Enter and B
 
 ## Differences from the native terminal API
 
-`picocalc.terminal` covers almost all of the native `picocalc_terminal_t` (`sdk/native/terminal.h`, 42 entries). Every native call has a Lua method of the same name except these:
+`picocalc.terminal` covers almost all of the native `picocalc_terminal_t` ([`sdk/native/terminal.h`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/terminal.h), 42 entries). Every native call has a Lua method of the same name except these:
 
 | Native call | In Lua |
 |-------------|--------|

@@ -47,7 +47,7 @@ SD:/
     └── lib/            download.lua, panels.lua, widgets.lua, fonts/
 ```
 
-You can copy less: `store/` alone gets you the App Store. The launcher lists at most 64 apps. `apps/gbc` has no program until you build it, so it does not appear.
+You can copy less: `store/` alone gets you the App Store. The launcher lists at most 64 apps. [`apps/gbc`](https://github.com/PicoDeck/picodeck/tree/master/apps/gbc) has no program until you build it, so it does not appear.
 
 ## 3. First boot
 
@@ -86,7 +86,7 @@ For repeated copies while developing, the [dev commands](Simulator-and-Testing.m
 
 ## 6. Keep it up to date
 
-**System Update** (`apps/updater`) and the App Store install new firmware over WiFi, signed releases only. Updating the firmware does not touch the card: to get newer first-party apps or libraries, copy `apps/` and `system/` from the new release's source zip, or update what the App Store lists.
+**System Update** ([`apps/updater`](https://github.com/PicoDeck/picodeck/tree/master/apps/updater)) and the App Store install new firmware over WiFi, signed releases only. Updating the firmware does not touch the card: to get newer first-party apps or libraries, copy `apps/` and `system/` from the new release's source zip, or update what the App Store lists.
 
 To flash by hand again without reaching for BOOTSEL, turn on **Settings > Developer Mode**; the system menu then has **Reboot to Flash**, which brings up the `RP2350` drive.
 

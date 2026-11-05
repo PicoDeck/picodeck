@@ -219,7 +219,7 @@ PicoDeck plays **MJPEG AVI** files only. Each video frame is an independent JPEG
 
 ## Converting video with `video_converter.sh`
 
-The `tools/video_converter.sh` script converts any video file (or YouTube URL) to the correct AVI format using `ffmpeg`.
+The [`tools/video_converter.sh`](https://github.com/PicoDeck/picodeck/blob/master/tools/video_converter.sh) script converts any video file (or YouTube URL) to the correct AVI format using `ffmpeg`.
 
 ### Prerequisites
 
