@@ -7,6 +7,8 @@ received by running Lua apps through the picocalc.input API.
 import time
 import pytest
 
+from helpers import stage_lua_app
+
 
 class TestButtonInjection:
     """Test that injected buttons are received by apps."""
@@ -198,3 +200,49 @@ class TestEscExit:
         # Simulator should still be responsive
         result = simulator.call("ping")
         assert "uptime_ms" in result
+
+
+GETTERS_APP = """
+local input = picocalc.input
+local log = picocalc.sys.log
+log("GETTERS_READY")
+while true do
+    input.update()
+    local a, b = input.getChar(), input.getChar()
+    if a or b then log("CHAR " .. tostring(a) .. " " .. tostring(b)) end
+    local r1, r2 = input.getRawKey(), input.getRawKey()
+    if r1 ~= 0 or r2 ~= 0 then log(string.format("RAW %x %x", r1, r2)) end
+    if a == "q" then break end
+    picocalc.sys.sleep(5)
+end
+"""
+
+
+class TestGetCharAndRawKey:
+    """Both keep their value until the next update(), as on the device, so a
+    `while c do c = getChar() end` loop never ends here either."""
+
+    def _start(self, sim):
+        stage_lua_app(sim.sd_card_path, "input_getters", GETTERS_APP)
+        seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
+        sim.launch_app("input_getters")
+        sim.wait_for_log(r"^GETTERS_READY$", timeout=10, since_seq=seq)
+        return seq
+
+    def test_reads_are_not_consumed_within_a_frame(self, simulator):
+        seq = self._start(simulator)
+        simulator.keypress("a")
+        simulator.wait_for_log(r"^CHAR a a$", timeout=5, since_seq=seq)
+        simulator.keypress("q")
+        simulator.wait_for_exit(timeout=5)
+
+    @pytest.mark.parametrize("name,code", [
+        ("del", 0xD4), ("f5", 0x85), ("shift", 0xA2), ("tab", 0x09),
+        ("up", 0xB5), ("esc", 0xB1), ("f1", 0x81), ("backspace", 0x08),
+    ])
+    def test_raw_key_names_every_key(self, simulator, name, code):
+        seq = self._start(simulator)
+        simulator.keypress(name)
+        simulator.wait_for_log(rf"^RAW {code:x} {code:x}$", timeout=5, since_seq=seq)
+        simulator.keypress("q")
+        simulator.wait_for_exit(timeout=5)

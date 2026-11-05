@@ -48,27 +48,6 @@ static kbd_padmap_t s_padmap = KBD_PAD_DEFAULT_MAP;
 // same filter as the device's FIFO items; button masks are masked by it below.
 static kbd_hide_t s_hide;
 
-// Key mapping from SDL to keyboard keycodes
-static struct {
-    uint32_t btn_mask;
-    uint8_t keycode;
-} btn_to_keycode[] = {
-    {BTN_UP, KEY_UP},
-    {BTN_DOWN, KEY_DOWN},
-    {BTN_LEFT, KEY_LEFT},
-    {BTN_RIGHT, KEY_RIGHT},
-    {BTN_ENTER, KEY_ENTER},
-    {BTN_ESC, KEY_ESC},
-    {BTN_F1, KEY_F1},
-    {BTN_F2, KEY_F2},
-    {BTN_F3, KEY_F3},
-    {BTN_F4, KEY_F4},
-    {BTN_TAB, KEY_TAB},
-    {BTN_BACKSPACE, KEY_BKSPC},
-    {BTN_FN, KEY_MOD_SYM},
-    {0, 0}
-};
-
 bool kbd_init(void) {
     printf("[KBD] Keyboard initialized (simulator)\n");
     return true;
@@ -127,11 +106,14 @@ void kbd_poll(void) {
     // First, since an "up" ends a hidden key: one released and pressed again
     // since the last poll reads as the press it is.
     kbd_event_t ev;
+    s_raw_key = 0;  // getRawKey: the last key to go down or repeat in this poll
     while (hal_input_pop_event(&ev)) {
         if (kbd_hide_event(&s_hide, &s_pad, &s_padmap, ev))
             continue;
         kbd_input_accept(&s_in, ev);
         kbd_pad_event(&s_pad, &s_padmap, ev);
+        if (ev.type == KBD_EV_DOWN)
+            s_raw_key = ev.key;
     }
     uint32_t hidden = hide_buttons(new_buttons);
     new_buttons &= ~hidden;
@@ -168,19 +150,6 @@ void kbd_poll(void) {
     do {
         s_last_char = hal_input_get_char();
     } while (s_last_char && kbd_hide_has(&s_hide, (uint8_t)s_last_char));
-    if (s_last_char) {
-        s_raw_key = (uint8_t)s_last_char;
-    } else if (s_buttons_pressed) {
-        // Map button to keycode for raw key
-        for (int i = 0; btn_to_keycode[i].btn_mask != 0; i++) {
-            if (s_buttons_pressed & btn_to_keycode[i].btn_mask) {
-                s_raw_key = btn_to_keycode[i].keycode;
-                break;
-            }
-        }
-    } else {
-        s_raw_key = 0;
-    }
 
     // Idle screen dimming, as keyboard.c's kbd_poll_impl: fresh input is
     // activity, and the input that wakes a dimmed screen never reaches the
@@ -237,16 +206,14 @@ void kbd_poll_background(void) {
     idle_dim_poll();
 }
 
+// Both keep their value until the next kbd_poll, as in keyboard.c: a loop that
+// reads until nil never ends there, so it must not end here.
 char kbd_get_char(void) {
-    char c = s_last_char;
-    s_last_char = 0;
-    return c;
+    return s_last_char;
 }
 
 uint8_t kbd_get_raw_key(void) {
-    uint8_t k = s_raw_key;
-    s_raw_key = 0;
-    return k;
+    return s_raw_key;
 }
 
 uint32_t kbd_get_buttons(void) {

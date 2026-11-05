@@ -96,12 +96,17 @@ picocalc.input.setRepeat(0)        -- disable auto-repeat
 ---
 
 #### `picocalc.input.getChar()`
-Returns the last ASCII character typed, if any.
+Returns the character the last `update()` took, if any: one per `update()`, oldest first. Several keys typed in one frame arrive on the frames that follow, in order; up to 4 wait, and older ones are dropped. A held key repeats. Use `pollEvent()` to see every key, however many arrive.
+
+The value stays until the next `update()`: reading it twice in a frame gives the same character twice, so **never loop on it**. `while c do ... c = getChar() end` does not end. Call it once per `update()`, or drain `pollEvent()` instead.
+
+Enter returns `"\n"`, Backspace `"\b"`, and Ctrl+letter a control code (Ctrl+C is `"\3"`). Tab, Delete, arrows and function keys return `nil`.
 
 - **Parameters:** None
-- **Returns:** (string or nil) Single-character string, or `nil` if no character was typed this frame
+- **Returns:** (string or nil) Single-character string, or `nil` if no character arrived with this `update()`
 
 ```lua
+picocalc.input.update()
 local ch = picocalc.input.getChar()
 if ch then
     text = text .. ch
@@ -111,10 +116,17 @@ end
 ---
 
 #### `picocalc.input.getRawKey()`
-Returns the raw STM32 keycode from the keyboard controller.
+Returns the code of the last key to go down or repeat during the last `update()`: the same code `pollEvent()` reports as `key` (see [Key codes](#key-codes)). It stays until the next `update()`.
 
 - **Parameters:** None
-- **Returns:** (number) Raw key code
+- **Returns:** (number) Key code, or `0` if no key went down with this `update()`
+
+```lua
+picocalc.input.update()
+if picocalc.input.getRawKey() == 0xD4 then  -- Delete
+    delete_selection()
+end
+```
 
 ---
 
