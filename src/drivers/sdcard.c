@@ -701,15 +701,16 @@ bool sdcard_disk_info(uint32_t *out_free_kb, uint32_t *out_total_kb) {
     return true;
 }
 
+// Opens first and takes the size from the handle: a stat before the open walks
+// the path a second time, one sector read per directory sector up to the name
+// (~10 on a card of 40 apps: every app's main.lua, module and app.json paid it).
 char *sdcard_read_file(const char *path, int *out_len) {
-    int size = sdcard_fsize(path);
-    if (size < 0) return NULL;
-
-    char *buf = (char *)umm_malloc(size + 1);
-    if (!buf) return NULL;
-
     sdfile_t f = sdcard_fopen(path, "rb");
-    if (!f) { umm_free(buf); return NULL; }
+    if (!f) return NULL;
+
+    int size = sdcard_fsize_handle(f);
+    char *buf = size < 0 ? NULL : (char *)umm_malloc((size_t)size + 1);
+    if (!buf) { sdcard_fclose(f); return NULL; }
 
     int n = sdcard_fread(f, buf, size);
     sdcard_fclose(f);
