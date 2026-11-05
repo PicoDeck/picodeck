@@ -203,7 +203,32 @@ bool sdcard_ensure_ready(void) {
 }
 
 void sdcard_apply_clock(void) {
+    // Core 1 is paused between its ticks here (launcher_apply_clock), so no
+    // read of its can be in flight: nothing to wait for under the SD mutex.
     spi_set_baudrate(SD_SPI_PORT, SD_SPI_BAUD);
+}
+
+// CYW43 radio EMI corrupts SPI0 at 25 MHz (hardware.h, SD_SPI_BAUD). Writes made
+// while the radio may be active can drop to a speed with a large noise margin.
+#define SD_SAFE_BAUD (1000 * 1000)  // 1 MHz
+
+void sd_set_slow_mode(bool slow) {
+    // Nearly every call finds the bus as asked (the launcher asks at every app's
+    // exit), and then there is nothing to wait for or to risk. Reading the
+    // divider disturbs no transfer; a card recovery on Core 1 moving it meanwhile
+    // ends at full speed.
+    if ((spi_get_baudrate(SD_SPI_PORT) <= SD_SAFE_BAUD) == slow)
+        return;
+    // spi_set_baudrate clears SSE for a moment, and a read in flight on Core 1
+    // can lose the byte in the shifter: spi_write_read_blocking then waits for it
+    // for good, holding this mutex, and only the watchdog ends it (a reboot, with
+    // no crash record). Core 1 reads under the mutex, one sdcard_fread piece (64
+    // KB) or one try-locked stream read at a time, even to the end of an
+    // image_load nobody wants any more (image_preload_update), so this waits for
+    // at most one piece.
+    recursive_mutex_enter_blocking(&g_sdcard_mutex);
+    spi_set_baudrate(SD_SPI_PORT, slow ? SD_SAFE_BAUD : SD_SPI_BAUD);
+    recursive_mutex_exit(&g_sdcard_mutex);
 }
 
 bool sdcard_remount(void) {

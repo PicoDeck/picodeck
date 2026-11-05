@@ -241,6 +241,7 @@ picodeck_unit_test(test_sdcard_driver SOURCES ${SRC}/drivers/sdcard.c
                 ${CMAKE_CURRENT_SOURCE_DIR}/fakes/umm_fake.c
                 INCLUDES ${FEEDCOUNT} ${PICODECK_ROOT}/simulator/stubs ${FATFS_DIR}
                 ${SRC} ${SRC}/drivers)
+target_link_libraries(test_sdcard_driver PRIVATE Threads::Threads)
 
 # The simulator's SD-root containment (host filesystem; sim_log_err faked).
 picodeck_unit_test(test_sim_sdcard SOURCES ${PICODECK_ROOT}/simulator/hal/hal_sdcard.c
