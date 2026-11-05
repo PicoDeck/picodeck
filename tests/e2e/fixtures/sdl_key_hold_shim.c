@@ -5,11 +5,19 @@
 // KEYHOLD_TRIGGER  path: the hold starts when this file exists
 // KEYHOLD_SYM      SDL keycode (default SDLK_F10)
 // KEYHOLD_MS       how long the key stays down (default 2000)
+// KEYHOLD_LAST_REPEAT  set: one more repeat right before the KEYUP, handed over
+//                  in the same drain of the queue, so both land in one poll
+//
+// <trigger>.down and <trigger>.up appear as the KEYDOWN and the KEYUP are handed
+// over, so a test waits for the key itself instead of guessing how long the
+// simulator takes to get to it.
 //
 // Build: cc -shared -fPIC -o shim.so sdl_key_hold_shim.c $(pkg-config --cflags sdl2) -ldl
 #define _GNU_SOURCE
 #include <SDL2/SDL.h>
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -22,6 +30,7 @@ static long now_ms(void) {
 }
 
 static int s_state;  // 0 idle, 1 holding, 2 done
+static int s_last_repeat_sent;
 static long s_start, s_last_ev, s_last_check;
 
 static void make_key(SDL_Event *e, Uint32 type, int repeat, SDL_Keycode sym) {
@@ -31,6 +40,14 @@ static void make_key(SDL_Event *e, Uint32 type, int repeat, SDL_Keycode sym) {
   e->key.repeat = repeat;
   e->key.keysym.sym = sym;
   e->key.keysym.scancode = SDL_GetScancodeFromKey(sym);
+}
+
+static void ack(const char *trigger, const char *what) {
+  char path[4096];
+  snprintf(path, sizeof(path), "%s.%s", trigger, what);
+  int fd = open(path, O_CREAT | O_WRONLY, 0644);
+  if (fd >= 0)
+    close(fd);
 }
 
 int SDL_PollEvent(SDL_Event *event) {
@@ -49,12 +66,19 @@ int SDL_PollEvent(SDL_Event *event) {
         s_state = 1;
         s_start = s_last_ev = t;
         make_key(event, SDL_KEYDOWN, 0, sym);
+        ack(trig, "down");
         return 1;
       }
     } else if (s_state == 1) {
       if (t - s_start >= hold_ms) {
+        if (getenv("KEYHOLD_LAST_REPEAT") && !s_last_repeat_sent) {
+          s_last_repeat_sent = 1;
+          make_key(event, SDL_KEYDOWN, 1, sym);
+          return 1;
+        }
         s_state = 2;
         make_key(event, SDL_KEYUP, 0, sym);
+        ack(trig, "up");
         return 1;
       }
       if (t - s_start >= 500 && t - s_last_ev >= 40) {

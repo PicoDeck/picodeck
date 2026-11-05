@@ -106,19 +106,34 @@ void kbd_poll(void) {
     // Staged key events, in order, into the app-facing queue and the gamepad.
     // First, since an "up" ends a hidden key: one released and pressed again
     // since the last poll reads as the press it is.
+    //
+    // The HAL's press edges and chars are not in order with these events, and a
+    // repeat makes both (an arrow's edge, Enter's or a letter's char). So a
+    // repeat and the release that ends the hiding can land in one poll (always
+    // possible, as sys.sleep's background polls gather them for the next
+    // kbd_poll) and the repeat's edge must still go: of the keys hidden when
+    // this poll began, only a down that passes the filter is a press. Its char
+    // goes as its event does. The device has none of this: kbd_hide_item drops
+    // the item before anything is made of it.
+    uint32_t hidden_before = hide_buttons(UINT32_MAX);
+    uint32_t fresh = 0;
     kbd_event_t ev;
     s_raw_key = 0;  // getRawKey: the last key to go down or repeat in this poll
     while (hal_input_pop_event(&ev)) {
-        if (kbd_hide_event(&s_hide, &s_pad, &s_padmap, ev))
+        if (kbd_hide_event(&s_hide, &s_pad, &s_padmap, ev)) {
+            if (ev.type == KBD_EV_CHAR)
+                hal_input_drop_host_char((char)ev.ch);
             continue;
+        }
         kbd_input_accept(&s_in, ev);
         kbd_pad_event(&s_pad, &s_padmap, ev);
-        if (ev.type == KBD_EV_DOWN)
+        if (ev.type == KBD_EV_DOWN) {
             s_raw_key = ev.key;
+            fresh |= kbd_keycode_to_button(ev.key);
+        }
     }
-    uint32_t hidden = hide_buttons(new_buttons);
-    new_buttons &= ~hidden;
-    new_pressed &= ~hidden;
+    new_buttons &= ~hide_buttons(new_buttons);
+    new_pressed &= ~(hidden_before & ~fresh);
 
     // Calculate released buttons
     s_buttons_released = s_buttons & ~new_buttons;
@@ -147,11 +162,9 @@ void kbd_poll(void) {
     if (pad_home)
         hal_input_raise_menu(false);
 
-    // Get character input (a hidden key's chars stay hidden with it)
+    // Get character input (a hidden key's chars have left the queue already)
     bool injected;
-    do {
-        s_last_char = hal_input_get_char_ex(&injected);
-    } while (s_last_char && kbd_hide_has(&s_hide, (uint8_t)s_last_char));
+    s_last_char = hal_input_get_char_ex(&injected);
     if (injected) {
         s_injected_char = s_last_char;
         s_last_char = 0;
@@ -367,6 +380,11 @@ void kbd_hide_held(void) {
     for (uint32_t b = 1; b && b <= down; b <<= 1)
         if (down & b)
             kbd_hide_add(&s_hide, kbd_button_to_keycode(b));
+    // Chars of theirs not read yet go too, as the device's clear drops its
+    // backlog (the other keys' stay, as across any clear here).
+    for (int i = 0; i < s_hide.count; i++)
+        while (hal_input_drop_host_char((char)s_hide.key[i]))
+            ;
     kbd_clear_state();
     pad_sources_hide_held();
 }

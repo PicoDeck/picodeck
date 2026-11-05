@@ -102,6 +102,12 @@ bool hal_input_take_host_key(void);
 // edge, by the next poll (the device's pending one).
 uint32_t hal_input_injected_down(void);
 
+// Take the oldest char of a host key out of the queue (letters ignore case), for
+// a hidden key's repeats: the queue is not in step with the staged events, so it
+// would still hold them when the release ends the hiding. An injected char stays.
+// False when there is none.
+bool hal_input_drop_host_char(char c);
+
 // Every button down right now but the menu key and a click no poll has read
 // yet (published with its edge by the next poll): what kbd_hide_held hides.
 uint32_t hal_input_read_down(void);

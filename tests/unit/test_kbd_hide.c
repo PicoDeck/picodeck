@@ -153,6 +153,34 @@ static void test_held_arrow_repeats_as_pressed(void) {
   CHECK_EQ_U32(pad_released(), PAD_UP);
 }
 
+// A repeat and the release in one poll, or in one background run: the decode
+// never sees the repeat, so no edge or char of it is left when the release ends
+// the hiding. (The simulator's HAL keeps edges and chars apart from its events
+// and has to take them back: keyboard_stub.c, test_menu_key_leak.py.)
+static void test_repeat_and_release_together(void) {
+  static const uint8_t keys[] = {KEY_UP, KEY_ENTER, 'w', KEY_ESC};
+  for (unsigned k = 0; k < sizeof(keys); k++) {
+    uint8_t rep = keys[k] == KEY_ESC ? KBD_FIFO_HOLD : KBD_FIFO_PRESSED;
+    item_t both[] = {{rep, keys[k]}, {KBD_FIFO_RELEASED, keys[k]}};
+    reset();
+    press_in_menu(keys[k]);
+    poll_items(16, false, both, 2);
+    CHECK_NOTHING();
+    poll_none(16);
+    CHECK_NOTHING();
+
+    reset();
+    press_in_menu(keys[k]);
+    poll_items(10, true, &both[0], 1);
+    poll_items(10, true, &both[1], 1);
+    CHECK_NOTHING();
+    poll_none(10);
+    CHECK_NOTHING();
+    poll_none(10);
+    CHECK_NOTHING();
+  }
+}
+
 // A letter's repeats give chars; so does Enter, for getChar.
 static void test_held_keys_give_no_chars(void) {
   reset();
@@ -476,6 +504,7 @@ static void test_simulator_events(void) {
 int main(void) {
   test_held_esc_repeats_as_hold();
   test_held_arrow_repeats_as_pressed();
+  test_repeat_and_release_together();
   test_held_keys_give_no_chars();
   test_other_keys_read_normally();
   test_menu_key_released_under_either_code();
