@@ -360,6 +360,33 @@ static void report(const char *label, bool show_device) {
   printf("  pixels: FNV-1a of every frame's 320x320 buffer %016" PRIx64 "\n", s_fnv);
 }
 
+// The self-test guest (guest/selftest.c) ran a known instruction sequence in the
+// geometry phase, a known cache pattern in the raster phase, and counted its own
+// wrong results (VFP, DSP) in stat 0.
+static int selftest_report(void) {
+  const counters_t *c = &s_c[PH_GEOM];
+  int bad = 0;
+  const struct {
+    const char *what;
+    uint64_t got, want;
+  } t[] = {
+      {"guest result failures", s_stat[0], 0},
+      {"words loaded", c->loads, s_stat[1]},
+      {"words stored", c->stores, s_stat[2]},
+      {"VDIV+VSQRT", c->fdiv, s_stat[3]},
+      {"FP operations", c->fp, s_stat[4]},
+      {"data misses (PSRAM)", s_c[PH_RASTER].dmiss_psram, 4},
+  };
+  for (size_t i = 0; i < sizeof t / sizeof t[0]; i++) {
+    const bool ok = t[i].got == t[i].want;
+    printf("  %-24s %6" PRIu64 " want %6" PRIu64 " %s\n", t[i].what, t[i].got, t[i].want,
+           ok ? "ok" : "WRONG");
+    bad += !ok;
+  }
+  printf("selftest: %s\n", bad ? "FAILED" : "passed");
+  return bad ? 1 : 0;
+}
+
 static void usage(void) {
   fprintf(stderr, "usage: perf_rig <guest.elf> [--label s] [--policy lru|fifo|random] [--warm]\n"
                   "                [--dirty-frac 0..1] [--no-device] [--max-instr N]");
@@ -373,10 +400,14 @@ static void usage(void) {
 int main(int argc, char **argv) {
   if (argc < 2) usage();
   const char *elf = argv[1], *label = argv[1];
-  bool show_device = true;
+  bool show_device = true, selftest = false;
   uint64_t max_instr = 0;
   for (int i = 2; i < argc; i++) {
     const char *a = argv[i];
+    if (!strcmp(a, "--selftest")) {
+      selftest = true;
+      continue;
+    }
     if (i + 1 >= argc && strcmp(a, "--warm") && strcmp(a, "--no-device")) usage();
     if (!strcmp(a, "--label")) label = argv[++i];
     else if (!strcmp(a, "--warm")) s_cold_frames = false;
@@ -434,6 +465,7 @@ int main(int argc, char **argv) {
     report(label, show_device);
     return 1;
   }
+  if (selftest) return selftest_report();
   report(label, show_device);
   uc_close(uc);
   return 0;

@@ -66,11 +66,27 @@ RIG := $(HERE)/build/perf_rig
 SCENE := $(HERE)/build/scene-$(FRAMES)-$(LAP_S).bin
 GUEST := $(O)/gfx3d.elf
 
-.PHONY: all run compare help clean
+.PHONY: all run sweep compare check help clean
 all: $(RIG) $(GUEST)
+
+# Checks the emulator: the self-test of VFP, DSP, hook counts and the cache model,
+# and every frame rendered natively on the host against the same frames emulated.
+check: all $(HERE)/build/selftest.elf $(O)/native
+	@$(RIG) $(HERE)/build/selftest.elf --selftest
+	@a=$$($(O)/native); b=$$($(RIG) $(GUEST) | sed -n 's/.*buffer //p'); echo "pixels: native $$a, emulated $$b"; test "$$a" = "$$b"
+
+$(HERE)/build/selftest.elf: $(HERE)/guest/selftest.c $(HERE)/guest/rig.h $(HERE)/guest/selftest.ld
+	$(CC) $(ARCH) -O1 -g -I$(HERE)/guest -nostdlib -Wl,-T,$(HERE)/guest/selftest.ld -Wl,--no-warn-rwx-segments -o $@ $< -lgcc
+
+$(O)/native: $(HERE)/guest/native.c $(HERE)/guest/gfx3d_main.c $(GFX3D_SRC)/src/os/gfx3d.c $(GFX3D_SRC)/src/drivers/display_clip.h $(SCENE)
+	@mkdir -p $(O)
+	$(HOSTCC) -O2 -std=gnu11 -ffp-contract=off -DRIG_NATIVE -DSCENE_BIN=\"$(SCENE)\" $(GUEST_INC) -include rig_alloc.h -DGFX3D_MALLOC=rig_malloc -DGFX3D_FREE=rig_free -o $@ $(HERE)/guest/native.c $(HERE)/guest/gfx3d_main.c $(GFX3D_SRC)/src/os/gfx3d.c -lm
 
 run: all
 	@$(RIG) $(GUEST) --label "gfx3d.c from $(GFX3D_SRC), map $(MAP)" $(RIG_ARGS)
+
+sweep: all
+	@bash $(HERE)/sweep.sh $(RIG) $(GUEST)
 
 compare:
 	@$(MAKE) --no-print-directory run GFX3D_SRC=$(ROOT)
