@@ -1669,7 +1669,7 @@ local emptySprite = picocalc.graphics.sprite.new()
 ---
 
 #### `picocalc.graphics.sprite.update()`
-Updates and draws all sprites in the manager. Call once per frame.
+Draws all sprites in the manager that are visible and have updates enabled, in z-index order (see [`setZIndex`](#spritesetzindexz)), lowest first. Call once per frame, between clearing and flushing: it does neither. It calls no sprite callback, and it draws at raw screen coordinates, so a camera's offset does not apply: a scrolling game moves its sprites itself or draws them with `sprite:draw(x, y)`.
 
 - **Returns:** None
 
@@ -1695,7 +1695,7 @@ local count = picocalc.graphics.sprite.spriteCount()
 ---
 
 #### `picocalc.graphics.sprite.getAllSprites()`
-Returns a table containing all sprites in the manager.
+Returns a table containing all sprites in the manager, in draw order.
 
 - **Returns:** (table) Array of sprite objects
 
@@ -1910,7 +1910,7 @@ local x, y = sprite:getPosition()
 ---
 
 #### `sprite:setZIndex(z)`
-Sets the sprite's Z-index for draw ordering.
+Sets the sprite's Z-index, which orders `graphics.sprite.update()`: a lower z draws first, so a higher z draws on top. Sprites of equal z draw in the order they took that z, by `add()` or by this call, so a sprite that never sets one (they start at 0) draws in the order added. Setting the z a sprite already has does not move it.
 
 - **Parameters:**
   - `z` (number): Z-order value

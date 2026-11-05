@@ -1257,7 +1257,10 @@ static lua_sprite_t *check_sprite(lua_State *L, int idx) {
 }
 
 // ── Display list ─────────────────────────────────────────────────────────────
-// s_sprites[] is the draw order. The registry table keyed by the address of
+// s_sprites[] is the draw order: sorted by z_index, lowest (drawn first, so under
+// the rest) first, and within one z in the order the sprites took it. Every
+// z_index change of a listed sprite goes through sprite_set_z, and every
+// insertion through sprite_list_insert. The registry table keyed by the address of
 // s_sprites maps lightuserdata(sprite) -> sprite userdata, so a listed sprite
 // is always reachable from Lua and is never collected while displayed; it is
 // also how enumeration (getAllSprites, query*, collisions) hands out the real
@@ -1267,6 +1270,14 @@ static int sprite_list_find(const lua_sprite_t *s) {
   for (int i = 0; i < s_sprite_count; i++)
     if (s_sprites[i] == s) return i;
   return -1;
+}
+
+// Insert after every sprite of the same or a lower z (the caller checked for room).
+static void sprite_list_insert(lua_sprite_t *s) {
+  int at = s_sprite_count++;
+  for (; at > 0 && s_sprites[at - 1]->z_index > s->z_index; at--)
+    s_sprites[at] = s_sprites[at - 1];
+  s_sprites[at] = s;
 }
 
 // Add the sprite at idx (idempotent). False when the list is full.
@@ -1279,7 +1290,7 @@ static bool sprite_list_add(lua_State *L, int idx) {
   lua_pushvalue(L, idx);
   lua_rawsetp(L, -2, s);  // anchor first: this may raise out-of-memory
   lua_pop(L, 1);
-  s_sprites[s_sprite_count++] = s;
+  sprite_list_insert(s);
   return true;
 }
 
@@ -1287,6 +1298,15 @@ static void sprite_list_unlink(int i) {
   for (int j = i; j < s_sprite_count - 1; j++)
     s_sprites[j] = s_sprites[j + 1];
   s_sprite_count--;
+}
+
+// A z that does not change leaves the sprite where it is among its equals.
+static void sprite_set_z(lua_sprite_t *s, int z) {
+  if (s->z_index == z) return;
+  int i = sprite_list_find(s);
+  if (i >= 0) sprite_list_unlink(i);
+  s->z_index = z;
+  if (i >= 0) sprite_list_insert(s);
 }
 
 static void sprite_list_remove(lua_State *L, lua_sprite_t *s) {
@@ -1619,7 +1639,7 @@ static int l_sprite_getPosition(lua_State *L) {
 
 static int l_sprite_setZIndex(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
-  s->z_index = lb_checkint(L, 2);
+  sprite_set_z(s, lb_checkint(L, 2));
   return 0;
 }
 
@@ -1983,7 +2003,7 @@ static int l_sprite_newindex(lua_State *L) {
   } else if (!strcmp(key, "height")) {
     s->height = lb_checkint(L, 3);
   } else if (!strcmp(key, "z")) {
-    s->z_index = lb_checkint(L, 3);
+    sprite_set_z(s, lb_checkint(L, 3));
   } else if (!strcmp(key, "visible")) {
     s->visible = lua_toboolean(L, 3);
   } else if (!strcmp(key, "scale")) {
