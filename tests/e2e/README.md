@@ -105,6 +105,13 @@ own card to run the same app in the simulator).
 `HwTarget` drives the device through `tools/picodeck_mcp.py`'s serial helpers
 and builds the device's traps in:
 
+- **Transfers are checked.** A screenshot or a file read is checked against the
+  device's FNV-1a, retried, and raises `HwTargetError` rather than return a
+  transfer that failed (a screenshot from firmware before #61 has no checksum:
+  it comes back unverified, with a warning on stderr). While a transfer runs the
+  device drops other log output (`src/console_gate.h`), which is one more reason
+  the log is advisory. A hardware test that must see a tear, not a retry, calls
+  the helper's `_once` form (`test_screenshot_integrity.py`).
 - **Results come from files.** The serial capture drops `[APP]` lines, so a
   Lua app's verdict is its picotest `/data/<APP_ID>/test_results.json`, read
   back with `getb64`; the outcome of a launch is `status` polling plus

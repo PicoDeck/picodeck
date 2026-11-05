@@ -29,7 +29,6 @@ import re
 import signal
 import shutil
 import socket
-import struct
 import subprocess
 import sys
 import tempfile
@@ -52,6 +51,10 @@ if TYPE_CHECKING:
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp import Image as MCPImage
 
+# Next to this file, however it was loaded (a script, ota_flash.py, hw_target).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import scrn_frame  # noqa: E402
+
 mcp = FastMCP("picodeck")
 
 DEFAULT_TIMEOUT = 5
@@ -61,8 +64,8 @@ SIMULATOR_ONLY = False  # --simulator: simulator only, never hardware
 # Default (neither flag): AUTO — use the simulator when reachable, otherwise
 # fall back to a detected serial device.
 
-SCRN_MAGIC = b"SCRN"
-SCRN_HEADER_SIZE = 12
+SCRN_STALL_S = scrn_frame.STALL_S  # silence that ends a binary screenshot
+RETRY_DELAY_S = 0.5                # between attempts at a serial transfer
 
 
 # ── JSON-RPC 2.0 Client ─────────────────────────────────────────────────────────
@@ -543,10 +546,7 @@ def open_serial(port: str, timeout: float = DEFAULT_TIMEOUT):
     return ser
 
 
-def _fnv1a(data: bytes, h: int = 2166136261) -> int:
-    for b in data:
-        h = ((h ^ b) * 16777619) & 0xFFFFFFFF
-    return h
+_fnv1a = scrn_frame.fnv1a
 
 
 class LineReader:
@@ -687,7 +687,7 @@ class HardwareMonitor:
 # Response lines that terminate a dev command exchange.
 _CMD_END_MARKERS = ["pong", "Total:", "Error:", "Launching", "Rebooting",
                     "Unknown", "Status:", "Created:", "Unzipped", "Deleted:",
-                    "Pad:", "Usage: pad", "Moved:", "Usage: mv"]
+                    "Pad:", "Usage: pad", "Moved:", "Usage: mv", "LogNoise:"]
 
 
 def _is_cmd_end(line: str) -> bool:
@@ -734,10 +734,12 @@ def _exclusive_serial(port: str):
 def _retry_transfer(fn, attempts: int = 3):
     """Retry a serial bulk transfer on integrity/corruption failures.
 
-    A device log line interleaving mid-transfer surfaces as an fnv1a
-    mismatch or a corrupted base64 line; both are transient (the firmware
-    also mutes its log sink during transfers now), so a retry nearly
-    always succeeds.  Non-transient errors re-raise immediately.
+    A transfer that gained or lost bytes surfaces as an fnv1a mismatch, a
+    corrupted line or frame, or a stall; all are transient (the firmware also
+    keeps its log output out of a transfer: src/console_gate.h), so a retry
+    nearly always succeeds. Non-transient errors re-raise immediately, and a
+    transfer still failing after the last attempt raises: a caller never gets
+    a transfer that failed its check.
     """
     for attempt in range(attempts):
         try:
@@ -746,9 +748,11 @@ def _retry_transfer(fn, attempts: int = 3):
             msg = str(e)
             transient = ("integrity" in msg or "corrupted" in msg
                          or "mismatch" in msg or "stalled" in msg)
-            if not transient or attempt == attempts - 1:
+            if not transient:
                 raise
-            time.sleep(0.5)
+            if attempt == attempts - 1:
+                raise type(e)(f"{msg} (after {attempts} attempts)") from e
+            time.sleep(RETRY_DELAY_S)
 
 
 # ── Base64 file transfer (works on UART and CDC — stdio-based) ────────────────
@@ -761,6 +765,10 @@ def do_get_file_b64(port: str, remote_path: str) -> bytes:
     return _retry_transfer(attempt)
 
 
+_B64_LINE_CORRUPTED = ("corrupted base64 line (a device log line may have "
+                       "interleaved mid-transfer) — retry the transfer")
+
+
 def _do_get_file_b64_once(port: str, remote_path: str) -> bytes:
     ser = open_serial(port, timeout=0.2)
     try:
@@ -768,22 +776,27 @@ def _do_get_file_b64_once(port: str, remote_path: str) -> bytes:
         ser.flush()
         raw = bytearray()
         size = None
+        bad_line = False
         for line in LineReader(ser).lines(idle_timeout=10.0):
             if line.startswith(b"~"):
+                # A bad line fails the transfer at its footer, not here: closing
+                # on a half-read stream puts the rest of it ahead of the retry.
                 try:
                     raw += base64.b64decode(line[1:], validate=True)
                 except Exception:
-                    raise RuntimeError(
-                        "corrupted base64 line (a device log line may have "
-                        "interleaved mid-transfer) — retry the transfer")
+                    bad_line = True
             elif b"B64 size=" in line:
                 size = int(line.split(b"size=")[1].split()[0])
+                raw.clear()  # any '~' line before the header is an older transfer's
+                bad_line = False
             elif b"Failed to open" in line:
                 raise FileNotFoundError(f"device: no such file: {remote_path}")
             elif b"Unknown command" in line:
                 raise RuntimeError(
                     "device firmware lacks getb64 — flash the current build")
             elif b"B64_END" in line:
+                if bad_line:
+                    raise RuntimeError(_B64_LINE_CORRUPTED)
                 fnv = int(line.split(b"fnv1a=")[1].split()[0], 16)
                 if size is not None and size >= 0 and len(raw) != size:
                     raise RuntimeError(
@@ -865,15 +878,17 @@ def _do_screenshot_b64_once(port: str) -> bytes:
         ser.flush()
         raw = bytearray()
         w = h = 320
+        bad_line = False
         for line in LineReader(ser).lines(idle_timeout=10.0):
             if line.startswith(b"~"):
+                # As in _do_get_file_b64_once: read on to the footer.
                 try:
                     raw += base64.b64decode(line[1:], validate=True)
                 except Exception:
-                    raise RuntimeError(
-                        "corrupted base64 line (a device log line may have "
-                        "interleaved mid-transfer) — retry the transfer")
+                    bad_line = True
             elif b"SCRN64 " in line:
+                raw.clear()
+                bad_line = False
                 for tok in line.split():
                     if tok.startswith(b"w="):
                         w = int(tok[2:])
@@ -883,6 +898,8 @@ def _do_screenshot_b64_once(port: str) -> bytes:
                 raise RuntimeError(
                     "device firmware lacks screenshot64 — flash the current build")
             elif b"SCRN64_END" in line:
+                if bad_line:
+                    raise RuntimeError(_B64_LINE_CORRUPTED)
                 fnv = int(line.split(b"fnv1a=")[1].split()[0], 16)
                 if _fnv1a(bytes(raw)) != fnv:
                     raise RuntimeError("integrity check failed (fnv1a mismatch)")
@@ -950,8 +967,16 @@ def do_command_hardware(cmd: str, port: str, timeout: float = DEFAULT_TIMEOUT,
 
 
 def do_screenshot_hardware(port: str, timeout: float = DEFAULT_TIMEOUT) -> bytes:
-    with _exclusive_serial(port):
-        return _do_screenshot_hardware_once(port, timeout)
+    """Capture the framebuffer via the binary `screenshot` command: checked
+    against the device's FNV-1a (tools/scrn_frame.py) and retried if it fails.
+    Raises rather than return a frame that failed the check."""
+    def attempt() -> bytes:
+        with _exclusive_serial(port):
+            return _do_screenshot_hardware_once(port, timeout)
+    return _retry_transfer(attempt)
+
+
+_scrn_unverified_warned: set[str] = set()
 
 
 def _do_screenshot_hardware_once(port: str, timeout: float = DEFAULT_TIMEOUT) -> bytes:
@@ -959,34 +984,19 @@ def _do_screenshot_hardware_once(port: str, timeout: float = DEFAULT_TIMEOUT) ->
     try:
         ser.write(b"screenshot\n")
         ser.flush()
-        buf = b""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            chunk = ser.read(max(1, ser.in_waiting))
-            if not chunk:
-                continue
-            buf += chunk
-            idx = buf.find(SCRN_MAGIC)
-            if idx >= 0:
-                buf = buf[idx:]
-                break
-        else:
-            raise TimeoutError("Timed out waiting for SCRN header")
-        while len(buf) < SCRN_HEADER_SIZE:
-            chunk = ser.read(SCRN_HEADER_SIZE - len(buf))
-            if not chunk:
-                raise TimeoutError("Timed out reading header")
-            buf += chunk
-        width, height, fmt = struct.unpack_from("<HHH", buf, 4)
-        pixel_bytes = width * height * 2
-        data = buf[SCRN_HEADER_SIZE:]
-        while len(data) < pixel_bytes:
-            remaining = pixel_bytes - len(data)
-            chunk = ser.read(min(remaining, 4096))
-            if not chunk:
-                raise TimeoutError(f"Timed out reading pixels ({len(data)}/{pixel_bytes})")
-            data += chunk
-        return rgb565be_to_png(data[:pixel_bytes], width, height)
+        try:
+            frame = scrn_frame.read_frame(ser, timeout, SCRN_STALL_S)
+        except Exception:
+            # Never close on a half-read stream: the next attempt would meet
+            # its tail, and the device would be left writing to nobody.
+            scrn_frame.drain(ser)
+            raise
+        if not frame.verified and port not in _scrn_unverified_warned:
+            _scrn_unverified_warned.add(port)
+            print(f"{port}: this firmware sends no screenshot checksum, so its "
+                  "frames are unverified (flash a current build)",
+                  file=sys.stderr)
+        return rgb565be_to_png(frame.pixels, frame.width, frame.height)
     finally:
         ser.close()
 

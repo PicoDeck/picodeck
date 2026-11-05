@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "console_gate.h"
 #include "dev_commands.h"
 #include "usb/usb_msc.h"
 
@@ -263,6 +264,9 @@ static void __attribute__((used)) hardfault_c(uint32_t *frame, uint32_t exc_retu
     stack_overflow = true;
 
   // ── UART output (always works — polling-based, no IRQ required) ────────────
+  // A serial transfer may be running; the report matters more than its frame
+  // (and the host's checksum will catch the frame).
+  console_gate_force_open();
   printf("\n!!! HARDFAULT (core %lu) !!!\n", (unsigned long)core);
   if (app_name)
     printf("  App  = %s (uptime %lum %lus)\n",
@@ -1744,6 +1748,7 @@ static void core1_entry(void) {
 
       image_preload_update();
       video_prefetch_update();
+      dev_commands_core1_poll();
 
       // DIAG: code-corruption watcher — scan the native app's read-only
       // image against the load-time snapshot in rotating 32KB chunks (both
@@ -2068,6 +2073,7 @@ int main(void) {
   *fpccr |= (1u << 31) | (1u << 30);
 
   stdio_init_all();
+  console_gate_init();
 
   // Bring up the QMI PSRAM in quad (QPI) mode before any PSRAM pointers are
   // accessed.  Falls back to the reset-default serial mode if the chip fails

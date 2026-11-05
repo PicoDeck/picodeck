@@ -46,6 +46,16 @@ def _fnv1a(data: bytes) -> int:
     return h
 
 
+def _scrn_stream(fb: bytes, legacy: bool = False) -> bytes:
+    """What the firmware's `screenshot` sends (src/os/serial_frame.h): before
+    #61 the header's last two bytes were padding and the pixels were the end."""
+    flags = 0 if legacy else 1
+    head = b"SCRN" + struct.pack("<HHHH", 320, 320, 565, flags)
+    if legacy:
+        return head + fb
+    return head + fb + f"\n[DEV] SCRN_END fnv1a={_fnv1a(fb):08x}\n".encode()
+
+
 # ── Fake device ─────────────────────────────────────────────────────────────
 
 
@@ -92,6 +102,12 @@ class FakeDevice:
         self.scan_s = 0.0    # after a boot, `list` shows no apps for this long
         self.on_upload = None   # called when a putb64 has completed
         self.unzip_error = None  # unzip replies this as "[DEV] Error: ..."
+        self.scrn_legacy = False  # firmware before #61: no flags, no trailer
+        self.scrn_silent = False  # `screenshot` gets no answer at all
+        self.scrn_faults = []     # one per `screenshot`: stream -> stream
+        self.b64_torn = 0         # next N getb64/screenshot64: a mangled line
+        self.unread_at_close = []  # bytes left when a port was closed
+        self.read_limit = 1 << 30  # bytes one read can take (USB's pacing)
 
     # -- helpers --
     def install(self, app: FakeApp, cached=True):
@@ -194,6 +210,17 @@ class FakeDevice:
                 return a, f"[DEV] Launching app by dir: {arg} ({a.name})"
         return self._find_hidden(arg)
 
+    def _emit_b64(self, data: bytes):
+        """The '~' lines; a torn transfer has a log line inside one of them."""
+        torn = self.b64_torn > 0
+        if torn:
+            self.b64_torn -= 1
+        for i, off in enumerate(range(0, len(data), 72)):
+            line = "~" + base64.b64encode(data[off:off + 72]).decode()
+            if torn and i == 2:
+                line = line[:20] + "[BT] found a pad" + line[20:]
+            self.emit(line)
+
     def _later(self, delay: float, lines):
         def fire():
             with self.lock:
@@ -253,9 +280,12 @@ class FakeDevice:
                 return
             data = self.files[path]
             self.emit(f"[DEV] B64 size={len(data)}")
-            for off in range(0, len(data), 72):
-                self.emit("~" + base64.b64encode(data[off:off + 72]).decode())
+            self._emit_b64(data)
             self.emit(f"[DEV] B64_END fnv1a={_fnv1a(data):08x} path={path}")
+        elif cmd == "screenshot64":
+            self.emit("[DEV] SCRN64 w=320 h=320 fmt=565")
+            self._emit_b64(self.fb)
+            self.emit(f"[DEV] SCRN64_END fnv1a={_fnv1a(self.fb):08x}")
         elif cmd.startswith("putb64 "):
             path, size = cmd[7:].rsplit(" ", 1)
             self.putb64 = (path, int(size), b"")
@@ -315,8 +345,12 @@ class FakeDevice:
                 hold = f" for {args[1]} ms" if len(args) > 1 else ""
                 self.emit(f"[DEV] Pad: {args[0]}{hold}")
         elif cmd == "screenshot":
-            self.emit_raw(b"SCRN" + struct.pack("<HHH", 320, 320, 565) + b"\0\0")
-            self.emit_raw(self.fb)
+            if self.scrn_silent:
+                return
+            stream = _scrn_stream(self.fb, legacy=self.scrn_legacy)
+            if self.scrn_faults:
+                stream = self.scrn_faults.pop(0)(stream)
+            self.emit_raw(stream)
         elif cmd == "stack":
             self.emit("[DEV] Stack: msp_peak=3012 msp_size=4096 core1_peak=900 "
                       "core1_size=4096 app=lua app_peak=21000 app_size=65536 "
@@ -363,7 +397,7 @@ class FakeSerial:
 
     @property
     def in_waiting(self):
-        return len(self.dev.out)
+        return min(len(self.dev.out), self.dev.read_limit)
 
     def write(self, data):
         if self.closed or not self.dev.present:
@@ -379,6 +413,7 @@ class FakeSerial:
             self.dev.out.clear()
 
     def _take(self, n):
+        n = min(n, self.dev.read_limit)
         chunk = bytes(self.dev.out[:n])
         del self.dev.out[:n]
         return chunk
@@ -406,6 +441,8 @@ class FakeSerial:
             return self._take(self.dev.out.index(b"\n") + 1)
 
     def close(self):
+        if not self.closed and self.dev.out:
+            self.dev.unread_at_close.append(len(self.dev.out))
         self.closed = True
 
 
@@ -650,6 +687,240 @@ def test_screenshot_decodes_big_endian_rgb565(hw, dev):
     assert tuple(img[0, 2]) == (0, 0, 255)
     assert tuple(img[0, 3]) == (0, 0, 0)
     assert hw_target.pixel(png, 1, 0) == (0, 255, 0)
+
+
+# ── Screenshot integrity (issue #61) ────────────────────────────────────────
+#
+# The binary stream runs over the same CDC port as every log line, so a transfer
+# can gain, lose or end early. FakeDevice.scrn_faults damages one transfer each;
+# a damaged frame must never come back as a frame.
+
+HDR = 12
+PIXELS = 320 * 320 * 2
+TEST_FB = (bytes(range(256)) * (PIXELS // 256 + 1))[:PIXELS]
+LOG_LINE = b"[BT] found aa:bb:cc:dd:ee:ff cod=002508 (no name yet)\r\n"
+
+
+def _insert(offset, data=LOG_LINE):
+    return lambda s: s[:offset] + data + s[offset:]
+
+
+def _drop(offset, n):
+    return lambda s: s[:offset] + s[offset + n:]
+
+
+def _truncate(offset):
+    return lambda s: s[:offset]
+
+
+def _flip(offset):
+    return lambda s: s[:offset] + bytes([s[offset] ^ 0x40]) + s[offset + 1:]
+
+
+SCRN_FAULTS = {
+    "log_line_mid_frame": _insert(HDR + PIXELS // 2),
+    "log_line_first_row": _insert(HDR + 100),
+    "log_line_in_magic": _insert(2),
+    "log_line_in_header": _insert(6),
+    "log_line_before_trailer": _insert(HDR + PIXELS),
+    "log_line_in_trailer": _insert(HDR + PIXELS + 10),
+    "lost_bytes": _drop(HDR + 50000, 7),
+    "lost_rows": _drop(HDR + 50000, 640 * 3),
+    "lost_trailer": _truncate(HDR + PIXELS),
+    "truncated_mid_frame": _truncate(HDR + PIXELS // 2),
+    "truncated_header": _truncate(6),
+    "flipped_bit": _flip(HDR + 1234),
+    "wrong_hash": _flip(HDR + PIXELS + 25),
+}
+
+
+@pytest.fixture
+def scrn(dev, monkeypatch):
+    """A device showing TEST_FB, with the host's waits cut so that a stalled
+    transfer costs a fraction of a second here."""
+    monkeypatch.setattr(pm, "SCRN_STALL_S", 0.15, raising=False)
+    monkeypatch.setattr(pm, "RETRY_DELAY_S", 0.0, raising=False)
+    dev.fb = TEST_FB
+    dev.read_limit = 512  # so a reader that stops early leaves bytes unread
+    return dev
+
+
+def _scrn_commands(dev) -> int:
+    return dev.commands.count("screenshot")
+
+
+def test_screenshot_verified_frame(scrn):
+    assert pm.do_screenshot_hardware("/dev/fake", timeout=1.0) == \
+        pm.rgb565be_to_png(TEST_FB, 320, 320)
+    assert _scrn_commands(scrn) == 1
+
+
+@pytest.mark.parametrize("fault", sorted(SCRN_FAULTS))
+def test_screenshot_damaged_transfer_is_retried(scrn, fault):
+    """One damaged transfer: detected, retried, and the good frame returned."""
+    scrn.scrn_faults = [SCRN_FAULTS[fault]]
+    png = pm.do_screenshot_hardware("/dev/fake", timeout=1.0)
+    assert png == pm.rgb565be_to_png(TEST_FB, 320, 320)
+    assert _scrn_commands(scrn) == 2
+    # The failed attempt read its stream to the end: nothing was abandoned for
+    # the device to block on (project_sim_stale_build_trap: cdc_write_all).
+    assert scrn.unread_at_close == []
+
+
+@pytest.mark.parametrize("fault", sorted(SCRN_FAULTS))
+def test_screenshot_keeps_failing_raises(scrn, fault):
+    """Every transfer damaged: an error after the attempts, never a frame."""
+    scrn.scrn_faults = [SCRN_FAULTS[fault]] * 10
+    with pytest.raises((RuntimeError, TimeoutError)) as e:
+        pm.do_screenshot_hardware("/dev/fake", timeout=1.0)
+    assert "attempts" in str(e.value)
+    assert _scrn_commands(scrn) == 3
+    assert scrn.unread_at_close == []
+
+
+def test_screenshot_noise_outside_the_frame_is_harmless(scrn):
+    """Log lines before the header and after the trailer are no damage, and
+    pixels that spell the markers are only pixels."""
+    fb = bytearray(TEST_FB)
+    fake_trailer = b"\n[DEV] SCRN_END fnv1a=00000000\n"
+    fb[1000:1000 + len(fake_trailer)] = fake_trailer
+    fb[2000:2004] = b"SCRN"
+    scrn.fb = bytes(fb)
+    scrn.scrn_faults = [lambda s: LOG_LINE + s + LOG_LINE]
+    assert pm.do_screenshot_hardware("/dev/fake", timeout=1.0) == \
+        pm.rgb565be_to_png(scrn.fb, 320, 320)
+    assert _scrn_commands(scrn) == 1
+
+
+def test_screenshot_through_hw_target_retries_and_raises(hw, dev, monkeypatch):
+    """HwTarget, with its log monitor parked around each attempt."""
+    monkeypatch.setattr(pm, "SCRN_STALL_S", 0.15, raising=False)
+    monkeypatch.setattr(pm, "RETRY_DELAY_S", 0.0, raising=False)
+    dev.fb = TEST_FB
+    dev.scrn_faults = [SCRN_FAULTS["log_line_mid_frame"]]
+    assert hw.screenshot() == pm.rgb565be_to_png(TEST_FB, 320, 320)
+    assert hw.ping()  # the monitor came back
+    dev.commands.clear()
+    dev.scrn_faults = [SCRN_FAULTS["lost_bytes"]] * 10
+    with pytest.raises(HwTargetError, match="attempts"):
+        hw.screenshot()
+    assert _scrn_commands(dev) == 3
+    assert hw.ping()
+
+
+def test_screenshot_unanswered_is_not_retried(scrn):
+    """A device that sends nothing at all is not a damaged transfer."""
+    scrn.scrn_silent = True
+    with pytest.raises(TimeoutError, match="SCRN header"):
+        pm.do_screenshot_hardware("/dev/fake", timeout=0.3)
+    assert _scrn_commands(scrn) == 1
+
+
+def test_screenshot_new_host_old_firmware(scrn, capsys, monkeypatch):
+    """An old device: flags 0, so no trailer to wait for; the frame comes back
+    at once, unverified, and the host says so once."""
+    monkeypatch.setattr(pm, "SCRN_STALL_S", 3.0, raising=False)
+    pm._scrn_unverified_warned.discard("/dev/fake")
+    scrn.scrn_legacy = True
+    t0 = time.monotonic()
+    png = pm.do_screenshot_hardware("/dev/fake", timeout=1.0)
+    assert time.monotonic() - t0 < 2.0
+    assert png == pm.rgb565be_to_png(TEST_FB, 320, 320)
+    assert "unverified" in capsys.readouterr().err
+    pm.do_screenshot_hardware("/dev/fake", timeout=1.0)
+    assert capsys.readouterr().err == ""
+
+
+def test_screenshot_old_host_new_firmware(scrn):
+    """The reader as it was before #61, against a new device: it takes the
+    pixels at the same offsets and never looks at the flags or the trailer."""
+    ser = pm.open_serial("/dev/fake", 1.0)
+    ser.write(b"screenshot\n")
+    buf = b""
+    while b"SCRN" not in buf:
+        buf += ser.read(max(1, ser.in_waiting))
+    buf = buf[buf.index(b"SCRN"):]
+    while len(buf) < 12:
+        buf += ser.read(12 - len(buf))
+    width, height, fmt = struct.unpack_from("<HHH", buf, 4)
+    pixel_bytes = width * height * 2
+    data = buf[12:]
+    while len(data) < pixel_bytes:
+        data += ser.read(min(pixel_bytes - len(data), 4096))
+    assert (width, height, fmt) == (320, 320, 565)
+    assert data[:pixel_bytes] == TEST_FB
+    ser.close()  # the trailer it never read goes with the port
+
+
+def _load_screenshot_tool():
+    import importlib.util
+    pytest.importorskip("serial")
+    spec = importlib.util.spec_from_file_location(
+        "picodeck_screenshot_tool", hw_target.TOOLS_DIR / "screenshot.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_screenshot_tool_retries_and_raises(scrn, monkeypatch):
+    """tools/screenshot.py, the standalone way to the same stream."""
+    tool = _load_screenshot_tool()
+    monkeypatch.setattr(tool, "open_serial",
+                        lambda port, timeout=5: FakeSerial(scrn, timeout))
+    scrn.scrn_faults = [SCRN_FAULTS["log_line_mid_frame"]]
+    assert tool.capture("/dev/fake", timeout=1.0) == (320, 320, 565, TEST_FB)
+    assert _scrn_commands(scrn) == 2
+    assert scrn.unread_at_close == []
+    scrn.scrn_faults = [SCRN_FAULTS["flipped_bit"]] * 10
+    with pytest.raises(tool.scrn_frame.ScrnError, match="attempts"):
+        tool.capture("/dev/fake", timeout=1.0)
+
+
+def test_screenshot64_torn_line_reads_to_the_footer_then_retries(scrn):
+    """A mangled line does not end the read: the retry must not meet the rest
+    of the old stream."""
+    scrn.b64_torn = 1
+    png = pm.do_screenshot_b64("/dev/fake")
+    assert png == pm.rgb565be_to_png(TEST_FB, 320, 320)
+    assert scrn.commands.count("screenshot64") == 2
+    assert scrn.unread_at_close == []
+
+
+def test_getb64_torn_line_reads_to_the_footer_then_retries(scrn):
+    scrn.files["/data/f.bin"] = bytes(range(256)) * 4
+    scrn.b64_torn = 1
+    assert pm.do_get_file_b64("/dev/fake", "/data/f.bin") == bytes(range(256)) * 4
+    assert scrn.commands.count("getb64 /data/f.bin") == 2
+    assert scrn.unread_at_close == []
+
+
+def test_getb64_keeps_failing_raises(scrn):
+    scrn.files["/data/f.bin"] = bytes(range(256)) * 4
+    scrn.b64_torn = 10
+    with pytest.raises(RuntimeError, match="attempts"):
+        pm.do_get_file_b64("/dev/fake", "/data/f.bin")
+    assert scrn.commands.count("getb64 /data/f.bin") == 3
+    assert scrn.unread_at_close == []
+
+
+def test_getb64_ignores_lines_from_before_its_header(scrn):
+    """The tail of an abandoned transfer ahead of this one's header is not
+    this file's data."""
+    data = bytes(range(256)) * 4
+    scrn.files["/data/f.bin"] = data
+    ser = FakeSerial(scrn, 0.2)
+    scrn.emit("~" + base64.b64encode(b"stale").decode())
+    ser.close()
+    scrn.unread_at_close.clear()
+    assert pm.do_get_file_b64("/dev/fake", "/data/f.bin") == data
+    assert scrn.commands.count("getb64 /data/f.bin") == 1
+
+
+def test_transfer_lines_do_not_end_a_command():
+    """A line a command reader can catch after a transfer ends no command."""
+    assert not pm._is_cmd_end("[DEV] SCRN_END fnv1a=0123abcd")
+    assert not pm._is_cmd_end(
+        "[DEV] Console: 123 bytes of log output dropped during a transfer")
 
 
 # ── Keys ────────────────────────────────────────────────────────────────────
