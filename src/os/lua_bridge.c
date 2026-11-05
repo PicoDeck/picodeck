@@ -620,7 +620,18 @@ static int l_base_load_text(lua_State *L) {
   return lua_gettop(L);
 }
 
+// log2 of the bytes allocated between two incremental collector steps. Lua's
+// default, 8 KB, is 102,400 work units a step (stepsize / sizeof(TValue) *
+// stepmul; a unit is about one TValue marked or one object swept, each its own
+// 8-byte PSRAM line), so on this device a step finishes a whole cycle of any
+// heap up to ~800 KB: one long pause, nothing incremental. At 128 B a step is
+// 1,600 units; the collector does the same work per byte allocated. It does
+// not bound one object: a table is marked in one go. Apps that choose
+// generational mode do not use it.
+#define LB_GC_STEPSIZE_LOG2 7
+
 void lua_bridge_register(lua_State *L) {
+  lua_gc(L, LUA_GCINC, 0, 0, LB_GC_STEPSIZE_LOG2);
   lb_mt_reset(L);  // a new VM: no metatable address from the last one holds
   printf("[LUA] lua_bridge_register start, PSRAM free=%lu\n",
          (unsigned long)umm_free_heap_size());
