@@ -1511,7 +1511,7 @@ function PicoDeckHttpConn:setReadBufferSize(bytes) end
 
 ---Send an HTTP GET request.
 ---@param path string URL path, e.g. `"/api/data"`
----@param headers? string|string[]|table<string, string> Extra request headers: a raw `"Key: Value"` string, an array of them, or a `{key = value}` table
+---@param headers? string|string[]|table<string, string> Extra request headers: a raw `"Key: Value"` string, an array of them, or a `{key = value}` table; 4095 bytes in all, or `false, "request headers too long ..."` and nothing is sent
 ---@return boolean ok
 ---@return string? error
 function PicoDeckHttpConn:get(path, headers) end

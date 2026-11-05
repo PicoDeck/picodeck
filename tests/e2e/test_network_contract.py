@@ -39,6 +39,7 @@ CASES = [
     "http_connect_timeout_zero_is_off",
     "http_body_cut_short_fails",
     "http_big_body_default_ring",
+    "http_headers_too_long",
     "tcp_echo",
     "tcp_read_timeout",
     "tcp_connect_timeout",
