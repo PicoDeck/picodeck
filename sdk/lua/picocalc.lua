@@ -1762,7 +1762,7 @@ function picocalc.graphics.image.loadScaled(path, w, h) end
 ---Load an image from a Lua string (in-memory buffer). Format is auto-detected
 ---from magic bytes (BMP, JPEG, PNG, GIF).
 ---@param data string|userdata Raw encoded image bytes, or a qmibuf
----@param length? integer With a qmibuf: how many bytes of it to decode (default: all)
+---@param length? integer How many bytes of it to decode (default: all)
 ---@return PicoDeckImage img Raises on an unsupported or corrupt buffer
 function picocalc.graphics.image.loadFromBuffer(data, length) end
 

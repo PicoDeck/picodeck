@@ -35,6 +35,32 @@ static void anchor_set(lua_State *L, int idx, int slot, int valueidx) {
   lua_setiuservalue(L, idx, slot);
 }
 
+// ── Image memory and the collector ───────────────────────────────────────────
+// Pixels live in umm_malloc, outside Lua's accounting, so dropped images put no
+// pressure on the collector and the heap can be full of garbage when a new image
+// is asked for. Every image allocation therefore gets one full collection and
+// one retry before it fails. (Core 1's preload cannot run the collector.)
+static void *gc_umm_malloc(lua_State *L, size_t bytes) {
+  void *p = umm_malloc(bytes);
+  if (!p) {
+    lua_gc(L, LUA_GCCOLLECT, 0);
+    p = umm_malloc(bytes);
+  }
+  return p;
+}
+
+// image_load with the same retry. A file that is missing or is not an image
+// fails the header probe, and a collection would not help it.
+static pc_image_t *gc_image_load(lua_State *L, const char *path) {
+  pc_image_t *img = image_load(path);
+  int w, h;
+  if (!img && image_probe(path, &w, &h)) {
+    lua_gc(L, LUA_GCCOLLECT, 0);
+    img = image_load(path);
+  }
+  return img;
+}
+
 static int l_graphics_image_gc(lua_State *L) {
   lua_image_t *img = (lua_image_t *)lb_checkudata(L, 1, GRAPHICS_IMAGE_MT);
   if (img->data) {
@@ -81,8 +107,14 @@ static int l_graphics_clear(lua_State *L) {
 static int l_graphics_image_new(lua_State *L) {
   int w = lb_checkint(L, 1);
   int h = lb_checkint(L, 2);
+  if (w <= 0 || h <= 0 || w > 2048 || h > 2048)
+    return luaL_error(L, "image size %dx%d out of range (1..2048)", w, h);
 
   pc_image_t *loaded = image_new_blank(w, h);
+  if (!loaded) {
+    lua_gc(L, LUA_GCCOLLECT, 0);
+    loaded = image_new_blank(w, h);
+  }
   if (!loaded)
     return luaL_error(L, "out of memory allocating image");
 
@@ -105,7 +137,7 @@ static int l_graphics_image_load(lua_State *L) {
     return luaL_error(L, "access denied");
   }
 
-  pc_image_t *loaded = image_load(path);
+  pc_image_t *loaded = gc_image_load(L, path);
   if (!loaded)
     return luaL_error(L, "failed to load image: %s", path);
 
@@ -136,7 +168,7 @@ static int l_graphics_image_copy(lua_State *L) {
   dst->w = src->w;
   dst->h = src->h;
   dst->transparent_color = src->transparent_color;
-  dst->data = (uint16_t *)umm_malloc(dst->w * dst->h * sizeof(uint16_t));
+  dst->data = (uint16_t *)gc_umm_malloc(L, dst->w * dst->h * sizeof(uint16_t));
   if (!dst->data)
     return luaL_error(L, "out of memory allocating image copy");
   memcpy(dst->data, src->data, dst->w * dst->h * sizeof(uint16_t));
@@ -466,55 +498,67 @@ static const luaL_Reg l_graphics_image_methods[] = {
     {"setPixels", l_graphics_image_setPixels},
     {NULL, NULL}};
 
-// loadFromBuffer(string) or loadFromBuffer(qmibuf, [len]): the only
-// buffers accepted are a Lua string and a sys.qmiPsramAlloc handle, whose
-// length is checked against the handle's size. Any other userdata was once
-// read as raw bytes (an 8-byte handle read `len` bytes past its end).
+// Decodes by the magic bytes. *known is false for a format none of them matches.
+static bool decode_buffer(const uint8_t *data, size_t len,
+                          image_decode_result_t *res, bool *known,
+                          const char **err_msg) {
+  *known = true;
+  if (data[0] == 'B' && data[1] == 'M') {
+    *err_msg = "BMP decoding failed";
+    return decode_bmp_buffer(data, len, res);
+  }
+  if (data[0] == 0xFF && data[1] == 0xD8) {
+    *err_msg = "JPEG decoding failed";
+    return decode_jpeg_buffer(data, len, res);
+  }
+  if (data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47) {
+    *err_msg = "PNG decoding failed";
+    return decode_png_buffer(data, len, res);
+  }
+  if (data[0] == 'G' && data[1] == 'I' && data[2] == 'F') {
+    *err_msg = "GIF decoding failed";
+    return decode_gif_buffer(data, len, res);
+  }
+  *known = false;
+  *err_msg = "unsupported image format";
+  return false;
+}
+
+// loadFromBuffer(data, [len]): the only buffers accepted are a Lua string and a
+// sys.qmiPsramAlloc handle, and len (default all of it) is checked against its
+// size. Any other userdata was once read as raw bytes (an 8-byte handle read
+// `len` bytes past its end).
 static int l_graphics_image_loadFromBuffer(lua_State *L) {
-  size_t len;
+  size_t size;
   const uint8_t *data;
 
   if (lua_type(L, 1) == LUA_TSTRING) {
-    data = (const uint8_t *)lua_tolstring(L, 1, &len);
+    data = (const uint8_t *)lua_tolstring(L, 1, &size);
   } else {
     qmi_buf_t *b = (qmi_buf_t *)lb_testudata(L, 1, QMI_BUF_MT);
     if (!b)
       return luaL_typeerror(L, 1, "string or qmibuf");
     if (!b->p)
       return luaL_error(L, "loadFromBuffer: qmibuf freed");
-    lua_Integer n = luaL_optinteger(L, 2, (lua_Integer)b->size);
-    luaL_argcheck(L, n >= 0 && (uint64_t)n <= (uint64_t)b->size, 2,
-                  "length exceeds the buffer");
     data = b->p;
-    len = (size_t)n;
+    size = b->size;
   }
+  lua_Integer n = luaL_optinteger(L, 2, (lua_Integer)size);
+  luaL_argcheck(L, n >= 0 && (uint64_t)n <= (uint64_t)size, 2,
+                "length exceeds the buffer");
+  size_t len = (size_t)n;
 
   if (!data || len < 16) {
     return luaL_error(L, "buffer too small or invalid");
   }
 
-  bool is_bmp = (data[0] == 'B' && data[1] == 'M');
-  bool is_jpeg = (data[0] == 0xFF && data[1] == 0xD8);
-  bool is_png = (data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E &&
-                 data[3] == 0x47);
-  bool is_gif = (data[0] == 'G' && data[1] == 'I' && data[2] == 'F');
-
   image_decode_result_t res = {0, 0, NULL};
-  bool success = false;
-  const char *err_msg = "unsupported image format";
-
-  if (is_bmp) {
-    success = decode_bmp_buffer(data, len, &res);
-    err_msg = "BMP decoding failed";
-  } else if (is_jpeg) {
-    success = decode_jpeg_buffer(data, len, &res);
-    err_msg = "JPEG decoding failed";
-  } else if (is_png) {
-    success = decode_png_buffer(data, len, &res);
-    err_msg = "PNG decoding failed";
-  } else if (is_gif) {
-    success = decode_gif_buffer(data, len, &res);
-    err_msg = "GIF decoding failed";
+  const char *err_msg;
+  bool known;
+  bool success = decode_buffer(data, len, &res, &known, &err_msg);
+  if (!success && known) {  // perhaps memory: see gc_umm_malloc
+    lua_gc(L, LUA_GCCOLLECT, 0);
+    success = decode_buffer(data, len, &res, &known, &err_msg);
   }
 
   if (success && res.data) {
@@ -527,7 +571,7 @@ static int l_graphics_image_loadFromBuffer(lua_State *L) {
     return 1;
   }
 
-  return luaL_error(L, err_msg);
+  return luaL_error(L, "%s", err_msg);
 }
 
 // getInfo(path) — parse just the image header, no pixel decode.
@@ -566,7 +610,7 @@ static int l_graphics_image_loadRegion(lua_State *L) {
   if (!fs_sandbox_check(L, path, false))
     return luaL_error(L, "access denied");
 
-  pc_image_t *loaded = image_load(path);
+  pc_image_t *loaded = gc_image_load(L, path);
   if (!loaded)
     return luaL_error(L, "failed to load image: %s", path);
 
@@ -588,7 +632,7 @@ static int l_graphics_image_loadRegion(lua_State *L) {
   rw = (int)(x1 - x0);
   rh = (int)(y1 - y0);
 
-  uint16_t *crop = (uint16_t *)umm_malloc((size_t)rw * rh * sizeof(uint16_t));
+  uint16_t *crop = (uint16_t *)gc_umm_malloc(L, (size_t)rw * rh * sizeof(uint16_t));
   if (!crop) {
     image_free(loaded);
     return luaL_error(L, "out of memory");
@@ -620,11 +664,11 @@ static int l_graphics_image_loadScaled(lua_State *L) {
   if (dw <= 0 || dh <= 0 || dw > 2048 || dh > 2048)
     return luaL_error(L, "invalid target size");
 
-  pc_image_t *loaded = image_load(path);
+  pc_image_t *loaded = gc_image_load(L, path);
   if (!loaded)
     return luaL_error(L, "failed to load image: %s", path);
 
-  uint16_t *out = (uint16_t *)umm_malloc((size_t)dw * dh * sizeof(uint16_t));
+  uint16_t *out = (uint16_t *)gc_umm_malloc(L, (size_t)dw * dh * sizeof(uint16_t));
   if (!out) {
     image_free(loaded);
     return luaL_error(L, "out of memory");
@@ -1666,11 +1710,13 @@ static int l_sprite_copy(lua_State *L) {
   // Deep-copy extracted frame data so each sprite owns its buffer
   if (src->frame_data && src->frame_w > 0 && src->frame_h > 0) {
     int sz = src->frame_w * src->frame_h * sizeof(uint16_t);
-    dst->frame_data = (uint16_t *)umm_malloc(sz);
-    if (dst->frame_data)
+    dst->frame_data = (uint16_t *)gc_umm_malloc(L, sz);
+    if (dst->frame_data) {
       memcpy(dst->frame_data, src->frame_data, sz);
-    else
-      dst->frame_data = NULL;
+    } else {
+      dst->frame_w = 0;
+      dst->frame_h = 0;
+    }
   }
   luaL_setmetatable(L, GRAPHICS_SPRITE_MT);
   return 1;
@@ -1701,8 +1747,12 @@ static int l_sprite_setSourceRect(lua_State *L) {
     s->frame_data = NULL;
   }
 
-  s->frame_data = (uint16_t *)umm_malloc(sw * sh * sizeof(uint16_t));
-  if (!s->frame_data) return 0;
+  s->frame_data = (uint16_t *)gc_umm_malloc(L, sw * sh * sizeof(uint16_t));
+  if (!s->frame_data) {
+    s->frame_w = 0;
+    s->frame_h = 0;
+    return 0;
+  }
 
   for (int row = 0; row < sh; row++)
     for (int col = 0; col < sw; col++)
@@ -3191,7 +3241,8 @@ static int l_tilemap_setSize(lua_State *L) {
 
   if (tm->tiles) umm_free(tm->tiles);
   size_t sz = (size_t)w * h * sizeof(uint16_t);
-  tm->tiles = (uint16_t *)umm_malloc(sz);
+  tm->tiles = NULL;
+  tm->tiles = (uint16_t *)gc_umm_malloc(L, sz);
   if (!tm->tiles) return luaL_error(L, "out of memory for tilemap");
   memset(tm->tiles, 0, sz);
   tm->map_w = w;
@@ -4340,7 +4391,7 @@ static uint16_t *render_text_image(lua_State *L, const char *text, int w, int h,
   // and w=h=-1 made (size_t)w*h*2 wrap to a 2-byte allocation.
   if (w <= 0 || h <= 0 || w > 2048 || h > 2048)
     luaL_error(L, "text image size %dx%d out of range (1..2048)", w, h);
-  uint16_t *pixels = (uint16_t *)umm_malloc((size_t)w * h * sizeof(uint16_t));
+  uint16_t *pixels = (uint16_t *)gc_umm_malloc(L, (size_t)w * h * sizeof(uint16_t));
   if (!pixels) return NULL;
   for (int i = 0; i < w * h; i++) pixels[i] = bg;
   emit_buf_t e = { pixels, w, h, s_graphics_color, bg };

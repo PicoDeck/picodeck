@@ -914,6 +914,10 @@ API version 6 (`api->version >= 6`) adds the font system to the same vtable. `PC
 
 Image loading, drawing, and state management. Images are stored in PSRAM and support BMP, JPEG, PNG, and GIF formats.
 
+**Calls that do nothing yet.** The sprite and graphics APIs are modelled on the Playdate SDK's, and some calls are kept so code written that way runs. A call marked *Accepted but not applied* below takes its arguments, may store them to read back, and changes nothing on screen.
+
+**Image memory and the collector.** An image's pixels live outside Lua's memory accounting, so dropping images does not prompt a collection. When an image allocation fails, the call runs a full collection and tries once more before it reports out of memory. A `collectgarbage()` after dropping big images still frees that memory sooner, and keeps the heap in larger pieces.
+
 ### State Functions
 
 #### `picocalc.graphics.setColor(color)`
@@ -1229,10 +1233,10 @@ end
 Creates a new blank image in PSRAM, initialized to all zeros (black).
 
 - **Parameters:**
-  - `width` (number): Image width in pixels
-  - `height` (number): Image height in pixels
+  - `width` (number): Image width in pixels, 1 to 2048
+  - `height` (number): Image height in pixels, 1 to 2048
 - **Returns:** (userdata) Image object
-- **Errors:** If dimensions are invalid or memory allocation fails
+- **Errors:** `image size WxH out of range (1..2048)` for any other size, or `out of memory allocating image` if the allocation fails after a collection
 
 ```lua
 local canvas = picocalc.graphics.image.new(64, 64)
@@ -1246,7 +1250,7 @@ Loads an image from the SD card. Supports **BMP**, **JPEG**, **PNG**, and **GIF*
 - **Parameters:**
   - `path` (string): Absolute file path
 - **Returns:** (userdata) Image object
-- **Errors:** If file not found, format unsupported, or memory allocation fails
+- **Errors:** `failed to load image: <path>` if the file is missing, is not a supported image or is too large, or if the allocation fails after a collection; `access denied` outside the sandbox
 
 ```lua
 local img = picocalc.graphics.image.load("/apps/myapp/sprite.bmp")
@@ -1257,12 +1261,13 @@ local img = picocalc.graphics.image.load("/apps/myapp/sprite.bmp")
 #### `picocalc.graphics.image.loadFromBuffer(data [, len])`
 Decodes an image from an in-memory buffer. The format is auto-detected from the magic bytes — BMP, JPEG, PNG, and GIF are all supported.
 
-`data` is a string or a `sys.qmiPsramAlloc` handle (`len` is checked against its size). Decoded images are capped at 2048×2048.
+Decoded images are capped at 2048×2048. Unlike `image.load`, a large JPEG is not reduced.
 
 - **Parameters:**
-  - `data` (string or userdata): Image file data
+  - `data` (string or userdata): Image file data: a string or a `sys.qmiPsramAlloc` handle
+  - `len` (number, optional): How many bytes of `data` to decode. Defaults to all of it; more than `data` holds raises `length exceeds the buffer`.
 - **Returns:** (userdata) Image object
-- **Errors:** If format unsupported or decoding fails
+- **Errors:** If fewer than 16 bytes are given, the format is unsupported, or decoding fails
 
 ```lua
 local raw = picocalc.fs.readFile("/apps/myapp/photo.jpg")
