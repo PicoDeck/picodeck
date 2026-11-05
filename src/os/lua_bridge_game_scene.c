@@ -103,40 +103,24 @@ static int l_scene_has(lua_State *L) {
     return 1;
 }
 
-static int call_scene_method(lua_State *L, int scene_ref, const char *method, int nargs) {
-    // Save the position of arguments
-    int args_start = lua_gettop(L) - nargs + 1;
-    
+// Calls a scene's function with no arguments, if it has it. An error in it is
+// the app's error: it propagates like any other, to the app's pcall or to the
+// error screen.
+static void call_scene_method(lua_State *L, int scene_ref, const char *method) {
     lua_rawgeti(L, LUA_REGISTRYINDEX, scene_ref);
     if (!lua_istable(L, -1)) {
         lua_pop(L, 1);
-        return 0;
+        return;
     }
     
     lua_getfield(L, -1, method);
     if (!lua_isfunction(L, -1)) {
         lua_pop(L, 2);
-        return 0;
+        return;
     }
     
-    // Remove the scene table from stack
-    lua_remove(L, -2);
-    
-    // Move arguments to top of stack (after function)
-    for (int i = 0; i < nargs; i++) {
-        lua_pushvalue(L, args_start + i);
-    }
-    
-    int err = lua_pcall(L, nargs, 0, 0);
-    if (err != 0) {
-        if (lua_bridge_is_exit_sentinel(L, -1))
-            return lua_error(L);  // re-raise exit sentinel
-        const char *err_msg = lua_tostring(L, -1);
-        printf("[SCENE] Error in %s: %s\n", method, err_msg ? err_msg : "unknown");
-        lua_pop(L, 1);
-    }
-
-    return err == 0;
+    lua_remove(L, -2);  // Remove the scene table: no self
+    lua_call(L, 0, 0);
 }
 
 static int l_scene_switch(lua_State *L) {
@@ -148,13 +132,13 @@ static int l_scene_switch(lua_State *L) {
     
     if (s_stack_depth > 0) {
         int old_ref = s_scene_stack[s_stack_depth - 1];
-        call_scene_method(L, old_ref, "exit", 0);
+        call_scene_method(L, old_ref, "exit");
     }
     
     s_scene_stack[0] = s_scenes[idx].ref;
     s_stack_depth = 1;
     
-    call_scene_method(L, s_scenes[idx].ref, "enter", 0);
+    call_scene_method(L, s_scenes[idx].ref, "enter");
     
     return 0;
 }
@@ -171,7 +155,7 @@ static int l_scene_push(lua_State *L) {
     }
     
     s_scene_stack[s_stack_depth++] = s_scenes[idx].ref;
-    call_scene_method(L, s_scenes[idx].ref, "enter", 0);
+    call_scene_method(L, s_scenes[idx].ref, "enter");
     
     return 0;
 }
@@ -182,10 +166,10 @@ static int l_scene_pop(lua_State *L) {
     }
     
     int old_ref = s_scene_stack[--s_stack_depth];
-    call_scene_method(L, old_ref, "exit", 0);
+    call_scene_method(L, old_ref, "exit");
     
     int new_ref = s_scene_stack[s_stack_depth - 1];
-    call_scene_method(L, new_ref, "enter", 0);
+    call_scene_method(L, new_ref, "enter");
     
     return 0;
 }
@@ -224,14 +208,7 @@ static int l_scene_update(lua_State *L) {
     if (lua_isfunction(L, -1)) {
         lua_remove(L, -2);  // Remove scene table, keep only function
         lua_pushnumber(L, dt);
-        int err = lua_pcall(L, 1, 0, 0);  // Call with 1 arg: dt
-        if (err != 0) {
-            if (lua_bridge_is_exit_sentinel(L, -1))
-                return lua_error(L);  // re-raise exit sentinel
-            const char *err_msg = lua_tostring(L, -1);
-            printf("[SCENE] Error in update: %s\n", err_msg ? err_msg : "unknown");
-            lua_pop(L, 1);
-        }
+        lua_call(L, 1, 0);  // Call with 1 arg: dt
     } else {
         lua_pop(L, 2);
     }
@@ -242,29 +219,7 @@ static int l_scene_update(lua_State *L) {
 static int l_scene_draw(lua_State *L) {
     if (s_stack_depth == 0) return 0;
     
-    int ref = s_scene_stack[s_stack_depth - 1];
-    
-    lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
-    if (!lua_istable(L, -1)) {
-        lua_pop(L, 1);
-        return 0;
-    }
-    
-    lua_getfield(L, -1, "draw");
-    if (lua_isfunction(L, -1)) {
-        lua_remove(L, -2);  // Remove scene table, keep only function
-        int err = lua_pcall(L, 0, 0, 0);  // Call with 0 args
-        if (err != 0) {
-            if (lua_bridge_is_exit_sentinel(L, -1))
-                return lua_error(L);  // re-raise exit sentinel
-            const char *err_msg = lua_tostring(L, -1);
-            printf("[SCENE] Error in draw: %s\n", err_msg ? err_msg : "unknown");
-            lua_pop(L, 1);
-        }
-    } else {
-        lua_pop(L, 2);
-    }
-    
+    call_scene_method(L, s_scene_stack[s_stack_depth - 1], "draw");
     return 0;
 }
 

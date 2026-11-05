@@ -229,6 +229,63 @@ log("BAD " .. tostring(okp) .. " " .. tostring(err))
 
 # ── A scene's error is the app's error ───────────────────────────────────────
 
+ERRORS = {
+    "update": 'scene.add("s", { update = function(dt) error("boom update") end })\n'
+              'scene.switch("s")\nscene.update(0.1)\n',
+    "draw": 'scene.add("s", { draw = function() error("boom draw") end })\n'
+            'scene.switch("s")\nscene.draw()\n',
+    "enter": 'scene.add("s", { enter = function() error("boom enter") end })\n'
+             'scene.switch("s")\n',
+    "exit": 'scene.add("s", { exit = function() error("boom exit") end })\n'
+            'scene.add("t", {})\nscene.switch("s")\nscene.switch("t")\n',
+    "push": 'scene.add("s", {})\nscene.add("t", { enter = function() error("boom push") end })\n'
+            'scene.switch("s")\nscene.push("t")\n',
+    "pop": 'scene.add("s", {})\nscene.add("t", { exit = function() error("boom pop") end })\n'
+           'scene.switch("s")\nscene.push("t")\nscene.pop()\n',
+}
+
+
+@pytest.mark.sd(fixtures=[])
+@pytest.mark.parametrize("where", sorted(ERRORS))
+def test_a_scene_error_stops_the_app_like_any_lua_error(simulator, test_sd_card, where):
+    """They went to printf only: on a device with no serial attached, a scene
+    bug was a stuck screen with nothing in the error log."""
+    out, lines = run(simulator, test_sd_card,
+                     ERRORS[where] + 'log("STILL RUNNING")\n')
+    assert out.get("result") == "error", (out, lines)
+    assert f"boom {where}" in (out.get("error") or ""), out
+    assert not any("STILL RUNNING" in line for line in lines), lines
+    record = (test_sd_card / "system" / "error.log").read_text()
+    assert f"boom {where}" in record, record
+
+
+@pytest.mark.sd(fixtures=[])
+def test_an_app_can_catch_a_scene_error(simulator, test_sd_card):
+    """pcall around scene.update sees it, and the scene stays current."""
+    lines = ok(simulator, test_sd_card, r"""
+scene.add("s", { update = function(dt) error("boom") end })
+scene.switch("s")
+local okp, err = pcall(scene.update, 0.1)
+log("CAUGHT " .. tostring(okp) .. " " .. tostring(err))
+log("CURRENT " .. tostring(scene.getCurrent()))
+""")
+    assert value(lines, "CAUGHT").startswith("false ") and "boom" in value(lines, "CAUGHT")
+    assert value(lines, "CURRENT") == "s"
+
+
+@pytest.mark.sd(fixtures=[])
+def test_exit_still_unwinds_a_scene(simulator, test_sd_card):
+    """sys.exit() inside a scene function ends the app as an exit, not an error."""
+    out, lines = run(simulator, test_sd_card, r"""
+scene.add("s", { update = function(dt) picocalc.sys.exit() end })
+scene.switch("s")
+scene.update(0.1)
+log("STILL RUNNING")
+""")
+    assert out.get("result") == "exit_sentinel", (out, lines)
+    assert not any("STILL RUNNING" in line for line in lines), lines
+
+
 # ── What the page says about leaving ─────────────────────────────────────────
 
 @pytest.mark.sd(fixtures=[])

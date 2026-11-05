@@ -260,6 +260,8 @@ picocalc.game.scene.add("play", play)
 picocalc.game.scene.switch("play")
 ```
 
+**An error in a scene function stops the app,** like any other Lua error: the player sees the error screen and it goes in `/system/error.log`. To carry on after one, call `scene.update` or `scene.draw` inside `pcall`.
+
 **Nothing runs when the player exits.** Exit App in the system menu stops the app on the spot: no scene's `exit()`, no code after your main loop and no `<close>` handler runs. `exit()` runs only when `switch` or `pop` leaves a scene. So save when the data changes, not on the way out.
 
 Limits: 16 registered scenes, a stack 4 deep and names of up to 63 bytes. Going past any of them raises an error.

@@ -2968,8 +2968,9 @@ function PicoDeckCamera:getOffset() end
 picocalc.game.scene = {}
 
 ---A plain table with up to four functions. They are called with no `self`:
----write `function play.update(dt)`, not `function play:update(dt)`. Nothing runs
----at Exit App, so save when data changes rather than in `exit()`.
+---write `function play.update(dt)`, not `function play:update(dt)`. An error in
+---one stops the app like any other Lua error. Nothing runs at Exit App, so save
+---when data changes rather than in `exit()`.
 ---@class PicoDeckScene
 ---@field update? fun(dt: number)
 ---@field draw? fun()
