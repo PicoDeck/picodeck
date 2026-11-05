@@ -7,6 +7,7 @@
 #include "../hal/hal_input.h"
 #include "../hal/hal_timing.h"
 #include "../hal/web_platform.h"  // web_yield_if_due (web build)
+#include "../../src/os/idle_dim.h"
 #include "../../src/os/os.h"
 #include <SDL2/SDL.h>
 #include <string.h>
@@ -75,6 +76,9 @@ void kbd_poll(void) {
     web_yield_if_due();
 #endif
     kbd_pad_begin_poll(&s_pad);
+    kbd_pad_t pad_before = s_pad;
+    kbd_keyset_t down_before = s_in.down;
+    s_in.ev_pushed = 0;
 
     // Pull pending events from the Wayland socket into SDL's internal queue.
     // Must be called before SDL_PollEvent to avoid blocking on compositor I/O.
@@ -108,7 +112,8 @@ void kbd_poll(void) {
     s_buttons_pressed = new_pressed;
     
     // Check for menu key (F10 or BTN_MENU)
-    if (s_buttons_pressed & BTN_MENU) {
+    bool menu_key = (s_buttons_pressed & BTN_MENU) != 0;
+    if (menu_key) {
         hal_input_raise_menu(false);
         // Hide MENU from apps, matching the hardware driver's intercept
         s_buttons &= ~BTN_MENU;
@@ -129,7 +134,8 @@ void kbd_poll(void) {
 
     // The other gamepad sources (the `pad` dev command, the host's game
     // controllers), as keyboard.c does; a source's Home raises the menu.
-    if (pad_sources_poll(false, hal_get_time_ms()))
+    bool pad_home = pad_sources_poll(false, hal_get_time_ms());
+    if (pad_home)
         hal_input_raise_menu(false);
 
     // Get character input
@@ -147,6 +153,31 @@ void kbd_poll(void) {
     } else {
         s_raw_key = 0;
     }
+
+    // Idle screen dimming, as keyboard.c's kbd_poll_impl: fresh input is
+    // activity, and the input that wakes a dimmed screen never reaches the
+    // app. An injected char is not activity there either: kbd_inject_char
+    // queues it outside the poll. Off unless --idle-dim (main.c): with a
+    // timeout of 0 the screen never dims, so nothing is ever swallowed.
+    bool activity = s_buttons_pressed || menu_key || hal_input_take_host_key() ||
+                    pad_sources_fresh() || pad_home;
+    if (activity && idle_dim_note_activity()) {
+        s_buttons &= ~s_buttons_pressed;
+        s_buttons_pressed = 0;
+        kbd_pad_swallow(&s_pad, false, pad_before);
+        pad_sources_swallow();
+        // This poll's presses and chars; a key the app saw go down still
+        // comes up.
+        kbd_evq_drop_newest_keep_ups(&s_in.q, s_in.ev_pushed, &down_before);
+        for (int i = 0; i < 8; i++)
+            s_in.down.bits[i] &= down_before.bits[i];
+        // The waking click is retired for good (kbd_inject_drop_oneshots):
+        // its hold would otherwise read as held on the next polls.
+        hal_input_discard_pending();
+        s_last_char = 0;
+        s_raw_key = 0;
+    }
+    idle_dim_poll();
 }
 
 // sys.sleep's poll: keep SDL (window events, quit) serviced. Key edges stay
@@ -168,8 +199,14 @@ void kbd_poll_background(void) {
     }
     // A source's Home acts at once (as the device's background poll sets the
     // menu flag); its buttons wait for the app's next kbd_poll().
-    if (pad_sources_poll(true, hal_get_time_ms()))
+    bool pad_home = pad_sources_poll(true, hal_get_time_ms());
+    if (pad_home)
         hal_input_raise_menu(false);
+    // Idle dim runs here too, so an app that only sleeps still dims (keys
+    // count at the next kbd_poll(), where they are decoded here).
+    if ((pad_sources_fresh() || pad_home) && idle_dim_note_activity())
+        pad_sources_swallow();
+    idle_dim_poll();
 }
 
 char kbd_get_char(void) {
@@ -252,8 +289,16 @@ bool kbd_is_charging(void) {
     return __atomic_load_n(&s_sim_charging, __ATOMIC_RELAXED);
 }
 
+// What the panel's backlight was last set to (nothing draws with it): the
+// get_backlight RPC. Written by Core 0, read by the socket thread.
+static int s_sim_backlight = 0;
+
+int sim_kbd_get_backlight(void) {
+    return __atomic_load_n(&s_sim_backlight, __ATOMIC_RELAXED);
+}
+
 void kbd_set_backlight(uint8_t brightness) {
-    (void)brightness;
+    __atomic_store_n(&s_sim_backlight, brightness, __ATOMIC_RELAXED);
 }
 
 void kbd_apply_clock(void) {

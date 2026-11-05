@@ -15,6 +15,7 @@
 #include "drivers/sound.h"
 #include "drivers/mp3_player.h"
 #include "os/core0_idle.h"
+#include "os/idle_dim.h"
 #include "os/launcher.h"
 #include "os/lua_psram_alloc.h"
 #include "os/screenshot.h"
@@ -983,6 +984,19 @@ static char *h_set_battery(const char *params) {
     return strdup("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true}}");
 }
 
+// {level, dimmed}: the level last written to the backlight (kbd_set_backlight)
+// and whether idle dim holds it down (--idle-dim).
+extern int sim_kbd_get_backlight(void);
+
+static char *h_get_backlight(const char *params) {
+    (void)params;
+    char buf[96];
+    snprintf(buf, sizeof(buf),
+             "{\"jsonrpc\":\"2.0\",\"result\":{\"level\":%d,\"dimmed\":%s}}",
+             sim_kbd_get_backlight(), idle_dim_is_dimmed() ? "true" : "false");
+    return strdup(buf);
+}
+
 // {since_seq, tail}: entries with seq >= since_seq (0 = all held), or only
 // the newest `tail` of them. Paged at ~256 KB ("more":true).
 static char *h_get_log_buffer(const char *params) {
@@ -1423,6 +1437,7 @@ static struct {
     { "get_wifi_state",     h_get_wifi_state },
     { "set_wifi_state",     h_set_wifi_state },
     { "set_battery",        h_set_battery },
+    { "get_backlight",      h_get_backlight },
     { "get_log_buffer",     h_get_log_buffer },
     { "set_time_multiplier",h_set_time_multiplier },
     { "step_time",          h_step_time },

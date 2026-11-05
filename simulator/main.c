@@ -79,6 +79,7 @@ static int g_show_splash = 0;        // Show boot splash screen
 static int g_virtual_time = 0;       // --virtual-time (needs --test-mode)
 static int g_host_gamepad = -1;      // --gamepad 1 / --no-gamepad 0; -1: on
                                      // unless --test-mode
+static int g_idle_dim = 0;           // --idle-dim: idle dim as on the device
 static int g_tcp_port = 7878;        // TCP port for RPC socket
 static char g_instance_id[64] = "";  // Instance ID for unique socket paths
 static char g_unix_socket[256] = ""; // --unix-socket PATH|none ("" = default)
@@ -173,11 +174,14 @@ static void print_usage(const char* program) {
     printf("  --unix-socket PATH   UNIX control socket path, or 'none' to disable\n");
     printf("  --crash-log PATH     Crash log file path (default: /tmp/picodeck_sim_crash_<pid>.log)\n");
     printf("  --show-splash        Show boot splash screen with delays\n");
-    printf("  --test-mode          Error screens return at once; idle dim off;\n"
-           "                       math.random seeded and the clock pinned to\n"
+    printf("  --test-mode          Error screens return at once; math.random\n"
+           "                       seeded and the clock pinned to\n"
            "                       2026-01-01T00:00:00Z at boot\n");
     printf("  --virtual-time       (with --test-mode) virtual clock: Core 0 sleeps\n"
            "                       advance it instead of waiting (step_time RPC)\n");
+    printf("  --idle-dim           Idle dim as on the device (dim_timeout_s, default\n"
+           "                       60 s): the key that wakes the screen is swallowed.\n"
+           "                       Nothing shows it dim: see the get_backlight RPC\n");
     printf("  --gamepad            Read the host's game controllers (the default,\n"
            "                       except under --test-mode)\n");
     printf("  --no-gamepad         Ignore the host's game controllers\n");
@@ -231,6 +235,8 @@ static void parse_args(int argc, char** argv) {
             sim_set_test_mode(true);
         } else if (strcmp(argv[i], "--virtual-time") == 0) {
             g_virtual_time = 1;
+        } else if (strcmp(argv[i], "--idle-dim") == 0) {
+            g_idle_dim = 1;
         } else if (strcmp(argv[i], "--gamepad") == 0) {
             g_host_gamepad = 1;
         } else if (strcmp(argv[i], "--no-gamepad") == 0) {
@@ -663,14 +669,15 @@ int main(int argc, char** argv) {
     // Load persisted settings from /system/config.json
     config_load();
 
-    // Idle screen dimming. The keyboard stub never polls it, so it stays
-    // inert in the simulator; --test-mode disables it outright.
+    // Idle screen dimming. No panel here shows a dim backlight, so a swallowed
+    // wake key would just be a lost key: a timeout of 0 leaves it inert unless
+    // --idle-dim asks for the device's behaviour (keyboard_stub.c).
     {
         uint32_t dim_timeout_s = 60;
         const char *dt = config_get("dim_timeout_s");
         if (dt)
             dim_timeout_s = (uint32_t)atoi(dt);
-        if (sim_test_mode())
+        if (!g_idle_dim)
             dim_timeout_s = 0;
         uint8_t brightness = config_parse_brightness(config_get("brightness"));
         kbd_set_backlight(brightness);

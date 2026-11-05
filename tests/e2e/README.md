@@ -301,6 +301,7 @@ Prefer these over `time.sleep`:
 | injected key consumed | `seq = sim.keypress(k)["input_seq"]; sim.wait_input_consumed(seq)` |
 | app staged after boot | `stage_lua_app(sd, name, code, requirements=[...])` then `launch_app` (the sim rescans on a miss) |
 | app running | `sim.call("get_running_app")` → always `{running, name}` |
+| idle dim, the wake swallow | `sim_factory(sd, virtual_time=True, extra_args=["--idle-dim"])`, `sim.call("get_backlight")` → `{level, dimmed}` (`test_idle_dim.py`) |
 | timed behaviour (animations, sleeps, repeat) | a `virtual_time=True` sim: `sys.sleep` runs at 50x and reads back exact; `sim.set_time_multiplier(0)` pauses, `sim.step_time(ms)` advances |
 
 Virtual time (`sim_factory(sd, virtual_time=True)`) is opt-in. Only the

@@ -1,0 +1,149 @@
+"""Idle dim and app launches (issue #72): the key that wakes a dimmed screen is
+swallowed, so an app must not start on a dimmed screen, or its first key is
+spent waking it.
+
+The simulator models the firmware's dim and swallow only with --idle-dim
+(simulator/stubs/keyboard_stub.c is a port of keyboard.c's; launcher.c and
+idle_dim.c are the firmware's own). No panel shows the dim: the get_backlight
+RPC reports the level. On the virtual clock the 60 s timeout costs ~1.2 s, and
+the tests then slow the clock to real time so the screen cannot dim again while
+they run. tests/e2e/test_kbd_hw.py checks the launch on the device.
+"""
+import time
+
+import pytest
+
+from helpers import stage_lua_app
+
+DIM_LEVEL = 10  # IDLE_DIM_LEVEL, src/os/idle_dim.c
+
+PROBE = """
+local input = picocalc.input
+picocalc.sys.log("PROBE READY")
+while true do
+  input.update()
+  local pressed = input.getButtonsPressed()
+  if pressed & input.BTN_UP ~= 0 then picocalc.sys.log("PROBE press up") end
+  if pressed & input.BTN_DOWN ~= 0 then picocalc.sys.log("PROBE press down") end
+  local ev = input.pollEvent()
+  while ev do
+    picocalc.sys.log("PROBE event " .. ev.type)
+    ev = input.pollEvent()
+  end
+  if pressed & input.BTN_ESC ~= 0 then return end
+  picocalc.sys.sleep(10)
+end
+"""
+
+
+def _boot(sim_factory, sd):
+    sim = sim_factory(sd, virtual_time=True, extra_args=["--idle-dim"])
+    level = sim.call("get_backlight")["level"]
+    assert level > DIM_LEVEL, "the test needs a level that dimming changes"
+    return sim, level
+
+
+def _wait_dimmed(sim):
+    """Idle until the screen dims, then run the clock at real time."""
+    deadline = time.time() + 30
+    while not sim.call("get_backlight")["dimmed"]:
+        assert time.time() < deadline, "the screen never dimmed"
+        time.sleep(0.02)
+    sim.set_time_multiplier(1)
+    assert sim.call("get_backlight")["level"] == DIM_LEVEL
+
+
+def _tap(sim, key):
+    r = sim.keypress(key)
+    sim.wait_input_consumed(r["input_seq"], timeout=10)
+
+
+def _wait_lit(sim, level):
+    """The poll that reads a key wakes the screen just after marking the key
+    consumed."""
+    deadline = time.time() + 10
+    while sim.call("get_backlight") != {"level": level, "dimmed": False}:
+        assert time.time() < deadline, "the key did not wake the screen"
+        time.sleep(0.005)
+
+
+def _probe_lines(sim):
+    return [e["text"] for e in sim.get_log_lines(0) if "PROBE" in e["text"]]
+
+
+def _launcher_passes(sim, n=2):
+    """Let the launcher loop run: it serves dev commands between its polls."""
+    for _ in range(n):
+        assert sim.call("dev_command", {"cmd": "ping"})["ok"]
+
+
+@pytest.mark.sd(fixtures=[], reserve=1)  # stages a listed app
+def test_launcher_swallows_the_wake_and_a_key_launch_still_works(sim_factory,
+                                                                 test_sd_card):
+    """The launcher's own path: the first Enter on a dimmed screen only wakes
+    it, the next launches the selected app, and that app gets its first key."""
+    # Sorts first, so it is the selected row.
+    stage_lua_app(test_sd_card, "aaa_dim_probe", PROBE, hidden=False)
+    sim, level = _boot(sim_factory, test_sd_card)
+    _wait_dimmed(sim)
+
+    _tap(sim, "enter")
+    _wait_lit(sim, level)
+    _launcher_passes(sim)
+    assert not sim.call("get_running_app")["running"], \
+        "the key that woke the screen launched an app"
+
+    _tap(sim, "enter")
+    sim.wait_for_log("PROBE READY", timeout=10)
+    assert sim.call("get_running_app")["name"] == "aaa_dim_probe"
+    _tap(sim, "up")
+    sim.wait_for_log("PROBE press up", timeout=10)
+
+
+@pytest.mark.sd(fixtures=[], reserve=1)  # stages a listed app
+def test_pad_press_wakes_the_launcher_and_the_next_one_launches(sim_factory,
+                                                                test_sd_card):
+    stage_lua_app(test_sd_card, "aaa_dim_probe", PROBE, hidden=False)
+    sim, level = _boot(sim_factory, test_sd_card)
+    _wait_dimmed(sim)
+
+    sim.pad("a")
+    _wait_lit(sim, level)
+    _launcher_passes(sim)
+    assert not sim.call("get_running_app")["running"], \
+        "the pad press that woke the screen launched an app"
+
+    sim.pad("none")
+    _launcher_passes(sim)
+    sim.pad("a")
+    sim.wait_for_log("PROBE READY", timeout=10)
+
+
+def test_wake_key_in_a_running_app_is_still_swallowed(sim_factory, test_sd_card):
+    """The other side of the launch: a screen that dims while an app runs
+    still wakes on a key the app never sees."""
+    stage_lua_app(test_sd_card, "dim_probe", PROBE)
+    sim, level = _boot(sim_factory, test_sd_card)
+    sim.launch_app("dim_probe")
+    sim.wait_for_log("PROBE READY", timeout=10)
+    _wait_dimmed(sim)
+
+    _tap(sim, "up")
+    _wait_lit(sim, level)
+    _tap(sim, "down")
+    sim.wait_for_log("PROBE press down", timeout=10)
+    lines = _probe_lines(sim)
+    assert "PROBE press up" not in lines, f"the waking key leaked: {lines}"
+    # Only the second key's events: down, then up once its hold ends.
+    assert lines.count("PROBE event down") == 1, lines
+
+
+def test_launch_of_a_missing_app_leaves_the_screen_dim(sim_factory, test_sd_card):
+    """Nothing starts and nothing is drawn, so nothing needs the panel."""
+    sim, _ = _boot(sim_factory, test_sd_card)
+    _wait_dimmed(sim)
+
+    sim.launch_app("no_such_app", hidden=False)
+    out = sim.wait_for_exit(timeout=10)
+    assert out["found"] is False, out
+    assert sim.call("get_backlight") == {"level": DIM_LEVEL, "dimmed": True}
