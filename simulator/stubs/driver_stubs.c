@@ -601,16 +601,7 @@ void display_draw_image_stretched(int x, int y, int dst_w, int dst_h,
 // The firmware's path (src/drivers/display.c) without its byte swaps: TGX, in the
 // host byte order this framebuffer already has. (x, y) is the top-left corner of
 // the unrotated result.
-extern void tgx_draw_image_scaled(uint16_t *dst_fb, int dst_w, int dst_h,
-                                  int clip_x0, int clip_y0, int clip_x1, int clip_y1,
-                                  const uint16_t *src_data, int src_w, int src_h,
-                                  float dst_x, float dst_y, float scale, float angle);
-extern void tgx_draw_image_scaled_masked(uint16_t *dst_fb, int dst_w, int dst_h,
-                                         int clip_x0, int clip_y0, int clip_x1,
-                                         int clip_y1, const uint16_t *src_data,
-                                         int src_w, int src_h, float dst_x, float dst_y,
-                                         float scale, float angle,
-                                         uint16_t transparent_color);
+#include "../../src/os/image_decoders.h"
 
 void display_draw_image_scaled(int x, int y, int img_w, int img_h,
                                const uint16_t *data, float scale, float angle,
