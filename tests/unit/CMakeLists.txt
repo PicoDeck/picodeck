@@ -372,6 +372,19 @@ picodeck_unit_test(test_crypto_verify
                 SOURCES ${SRC}/os/crypto.c ${SRC}/os/ssh_blob.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_crypto_verify PRIVATE picodeck_host_mbedtls)
+# apps/ssh's key exchange: its Lua on the device's VM configuration over the real
+# crypto bridge, crypto.c and mbedTLS, with recorded OpenSSH handshakes and, where
+# the machine has sshd (it is skipped otherwise), against the real thing.
+if(TARGET lua_host)
+    picodeck_unit_test(test_ssh_transport
+                    SOURCES ${SRC}/os/crypto.c ${SRC}/os/ssh_blob.c
+                            ${SRC}/os/lua_bridge_crypto.c ${SD_FAKE}
+                    INCLUDES ${SD_INCLUDES})
+    target_link_libraries(test_ssh_transport PRIVATE lua_host picodeck_host_mbedtls)
+    add_test(NAME test_ssh_transport_live COMMAND test_ssh_transport --live)
+    set_tests_properties(test_ssh_transport_live PROPERTIES SKIP_RETURN_CODE 77
+        ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:abort_on_error=0;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
+endif()
 
 picodeck_unit_test(test_small_alloc SOURCES ${SRC}/os/small_alloc.c)
 
