@@ -3,6 +3,7 @@
 #include "lua_hook_arm.h"
 #include "lua_psram_alloc.h"
 #include "crashlog.h"
+#include "idle_dim.h"
 #include "sim_hooks.h"
 
 char lua_bridge_exit_tag; // address used as sentinel, value irrelevant
@@ -739,7 +740,9 @@ void lua_bridge_show_error(lua_State *L, const char *context) {
   sim_app_report_error(context, buf);
 
   // System screen: built-in 6x8 font whatever the app left selected. The app
-  // is gone (the launcher resets the font to 0 after it), so no restore.
+  // is gone (the launcher resets the font to 0 after it), so no restore. Nor
+  // may its setBrightness(0) hide the message.
+  idle_dim_clear_app_brightness();
   display_set_font(0);
   display_clear(COLOR_BLACK);
   display_draw_text(4, 4, context, COLOR_RED, COLOR_BLACK);

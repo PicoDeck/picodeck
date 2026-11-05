@@ -265,7 +265,7 @@ Returns the display height in pixels.
 ---
 
 #### `picocalc.display.setBrightness(level)`
-Sets the display backlight brightness.
+Sets the display backlight brightness. The level holds until your app exits or the user changes the Brightness setting; the system menu always shows at the user's level, and idle dimming still applies.
 
 - **Parameters:**
   - `level` (number): Brightness value (0-255, where 255 is full brightness) (clamped)

@@ -18,6 +18,7 @@
 #include <string.h>
 #include <math.h>
 
+#include "../os/idle_dim.h"
 #include "../os/image_decoders.h"
 #include "../fonts/font_registry.h"
 // The image blitters build at -O2 (the firmware is -Os): these loops are where
@@ -1135,9 +1136,10 @@ void display_push_rect(int x, int y, int w, int h) {
 }
 
 void display_set_brightness(uint8_t brightness) {
-  // Backlight is controlled by the STM32 keyboard MCU (kbd_set_backlight).
-  // This function is a no-op on PicoCalc v2.0.
-  (void)brightness;
+  // An app's call: the backlight is on the STM32 keyboard MCU, reached through
+  // idle_dim so a wake from dimming restores this level and the app's exit the
+  // user's. OS code that sets the user's own level calls kbd_set_backlight.
+  idle_dim_set_app_brightness(brightness);
 }
 
 void display_darken(void) {

@@ -283,7 +283,8 @@ function picocalc.display.getWidth() end
 ---@return integer
 function picocalc.display.getHeight() end
 
----Set the LCD backlight brightness.
+---Set the LCD backlight brightness. The level holds until the app exits or the
+---user changes the Brightness setting; the system menu shows at the user's level.
 ---@param brightness integer 0 (off) – 255 (maximum)
 function picocalc.display.setBrightness(brightness) end
 

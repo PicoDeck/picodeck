@@ -1140,6 +1140,7 @@ static bool menu_loop(lua_State *L, int context) {
 
   int sel = 0;
   uint8_t entry_brightness = s_brightness;
+  idle_dim_menu_open(true);
   bool running = true;
   bool need_redraw = true;
   bool need_bg_restore = false;
@@ -1415,6 +1416,7 @@ static bool menu_loop(lua_State *L, int context) {
   // the app's service pass would turn into a second menu.
   kbd_consume_menu_press();
   save_brightness_if_changed(entry_brightness);
+  idle_dim_menu_open(false);
   display_set_clip_rect(saved_clip_x, saved_clip_y, saved_clip_w, saved_clip_h);
   os_overlay_reload();  // the Show FPS setting; the menu drew over the overlays
   display_set_font(menu_saved_font);
