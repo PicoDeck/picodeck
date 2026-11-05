@@ -1,6 +1,5 @@
 #!/bin/bash
 
-FILE="$1"
 CROP_VIDEO=false
 VIDEO_QUALITY=8
 AUDIO_MUTED=false
@@ -15,10 +14,10 @@ if ! command -v ffmpeg &> /dev/null; then
     exit 1
 fi
 
-if [ -z "$FILE" ]; then
-    echo "Usage: $0 <video_file_or_url>"
+usage() {
+    echo "Usage: $0 [--crop] [--quality N] [--mute] [--chroma444] <video_file_or_url>"
     exit 1
-fi
+}
 
 while [[ "$1" == -* ]]; do
     case "$1" in
@@ -41,10 +40,16 @@ while [[ "$1" == -* ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            exit 1
+            usage
             ;;
     esac
 done
+
+# Only after the options: the input may follow any of them.
+FILE="$1"
+if [ -z "$FILE" ]; then
+    usage
+fi
 
 if [ "$AUDIO_MUTED" = true ]; then
     AUDIO_OPTS="-an"
@@ -61,14 +66,21 @@ if [[ "$FILE" =~ ^http ]]; then
         exit 1
     fi
 
-    TMPFILE=$(mktemp --suffix=.mp4)
+    # A directory, not an empty temp file: yt-dlp takes a file that already
+    # exists as finished and downloads nothing.
+    DOWNLOAD_DIR=$(mktemp -d)
+    trap 'rm -rf "$DOWNLOAD_DIR"' EXIT
     echo "Downloading $FILE with yt-dlp..."
-    yt-dlp -f best -o "$TMPFILE" "$FILE"
+    yt-dlp -f best --restrict-filenames -o "$DOWNLOAD_DIR/%(title)s.%(ext)s" "$FILE"
     if [ $? -ne 0 ]; then
         echo "yt-dlp failed to download video."
         exit 1
     fi
-    FILE="$TMPFILE"
+    FILE=$(find "$DOWNLOAD_DIR" -type f | head -n 1)
+    if [ -z "$FILE" ]; then
+        echo "yt-dlp wrote no file."
+        exit 1
+    fi
 fi
 
 OUTPUT_DIR="$HOME/Videos/PicoDeck/"

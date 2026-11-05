@@ -221,7 +221,7 @@ pip install yt-dlp
 tools/video_converter.sh [options] <file_or_url>
 ```
 
-Output is written to `~/Videos/PicoDeck/` (the directory must exist).
+Output is written to `~/Videos/PicoDeck/` (the directory must exist), named after the input file, or after the video's title for a URL. Options come before the file or URL.
 
 ### Options
 
