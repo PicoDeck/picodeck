@@ -3077,9 +3077,10 @@ picocalc.terminal = {}
 local PicoDeckTerminal = {}
 
 ---Create a terminal widget with `cols` × `rows` characters and `scrollback_lines` of history.
----@param cols integer
----@param rows integer
----@param scrollback_lines? integer
+---A terminal of up to 22 rows draws from y = 28; a taller one moves up to fit.
+---@param cols? integer 1-53 (default 53)
+---@param rows? integer 1-26 (default 26)
+---@param scrollback_lines? integer At most 5000; zero or less means the default, 1000
 ---@return PicoDeckTerminal
 function picocalc.terminal.new(cols, rows, scrollback_lines) end
 

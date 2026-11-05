@@ -4,6 +4,8 @@ title: "API Terminal"
 
 `picocalc.terminal` provides a full-featured terminal emulator widget. Each terminal has its own cell grid, scrollback buffer, cursor, and colour state. Multiple terminals can be created but only one should render to the display at a time.
 
+A cell is 6x12 px, so a terminal has its own font and metrics: it does not use the display's current font, and it ignores the display's clip rect.
+
 ## Creating a terminal
 
 ```lua
@@ -13,10 +15,9 @@ local term = picocalc.terminal.new([cols [, rows [, scrollback]]])
 - `cols` (number, default **53**): grid width in characters, 1-53
 - `rows` (number, default **26**): grid height in characters, 1-26
 
-Out-of-range sizes raise an error.
-- `scrollback` (number, default **1000**): number of lines kept in scrollback history
+Out-of-range sizes raise an error. Returns a terminal object. Raises an error if allocation fails (PSRAM OOM).
 
-Returns a terminal object. Raises an error if allocation fails (PSRAM OOM).
+**Where it draws.** A terminal of up to 22 rows starts at y = 28 with its text at x = 4, which leaves room for a header above it and a footer below. A taller one moves up just enough to fit (a full 26 rows starts at y = 8 and ends at the bottom of the screen), and one of 53 columns starts at x = 2. Use [`setRenderBounds`](#render-bounds) to place it yourself, for example under `ui.drawHeader`.
 
 ```lua
 -- Full-screen terminal with default size

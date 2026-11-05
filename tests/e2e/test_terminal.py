@@ -108,6 +108,44 @@ def fill(rows):
 
 
 @pytest.mark.sd(fixtures=[])
+def test_a_terminal_fits_its_rows_on_the_panel(simulator, test_sd_card):
+    """The default bounds are y 28..302, 22 rows: a taller terminal lost its
+    bottom rows, the newest output and the cursor among them."""
+    body = (
+        "local t = term_new()\n" + fill(26) + "t:render(); report('default')\n"
+        "t = term_new(53, 26)\n" + fill(26) + "t:render(); report('r26')\n"
+        "t = term_new(53, 25)\n" + fill(25) + "t:render(); report('r25')\n"
+        "t = term_new(53, 23)\n" + fill(23) + "t:render(); report('r23')\n"
+        "t = term_new(53, 22)\n" + fill(22) + "t:render(); report('r22')\n"
+        "t = term_new(10, 5)\n" + fill(5) + "t:render(); report('r5')\n")
+    got = extents(simulator, test_sd_card, body)
+    def top_bottom(name):
+        return int(got[name][0]), int(got[name][1])
+    # 12 px cells. A tall terminal moves up just far enough, and its last row shows...
+    for name, rows in (("default", 26), ("r26", 26), ("r25", 25), ("r23", 23)):
+        top, bottom = top_bottom(name)
+        height = rows * 12
+        y0 = min(28, 320 - height)
+        assert y0 <= top < y0 + 12, (name, got[name])
+        assert y0 + height - 12 <= bottom < y0 + height, (name, got[name])
+    # ...and one that always fitted stays exactly where it was, under y 28.
+    assert 28 <= top_bottom("r22")[0] < 28 + 12
+    assert top_bottom("r22")[1] < 302
+    assert 28 <= top_bottom("r5")[0] < 28 + 12
+    assert top_bottom("r5")[1] < 28 + 5 * 12
+
+
+@pytest.mark.sd(fixtures=[])
+def test_set_render_bounds_still_wins(simulator, test_sd_card):
+    body = (
+        "local t = term_new()\n" + fill(26) +
+        "t:setRenderBounds(21, 302); t:render(); report('app')\n")
+    got = extents(simulator, test_sd_card, body)
+    assert 21 <= int(got["app"][0]) < 21 + 12
+    assert int(got["app"][1]) < 302
+
+
+@pytest.mark.sd(fixtures=[])
 def test_every_draw_path_stops_at_the_bounds_end(simulator, test_sd_card):
     """The end of setRenderBounds held for render() only: the partial redraw,
     the gutter, the cursor and the scrollback view ran down to the panel's end."""
@@ -167,6 +205,40 @@ picocalc.sys.log("RANGE " .. a .. " " .. b)
     simulator.launch_app("term_clean")
     simulator.wait_for_exit(timeout=10)
     assert any("RANGE -1 -1" in e["text"] for e in simulator.get_log_lines(0))
+
+
+@pytest.mark.sd(fixtures=[])
+def test_a_full_width_terminal_shows_its_last_column(simulator, test_sd_card):
+    """x starts at 4, so column 53 of 53 ended at pixel 322: 2 px off the panel."""
+    code = r"""
+local d = picocalc.display
+d.clear(0)
+local t = picocalc.terminal.new()
+t:setCursorVisible(false)
+t:setCell(51, 0, "#"); t:setCell(52, 0, "#")
+t:render()
+local function column_cells()
+    -- The two cells' pixels, left to right, by where the glyphs land.
+    local lit = {}
+    for x = 300, 319 do
+        local n = 0
+        for y = 0, 40 do
+            if d.getPixel(x, y) ~= 0 then n = n + 1 end
+        end
+        lit[#lit + 1] = n
+    end
+    return table.concat(lit, " ")
+end
+picocalc.sys.log("COLS " .. column_cells())
+"""
+    stage_lua_app(test_sd_card, "term_cols", code)
+    simulator.launch_app("term_cols")
+    simulator.wait_for_exit(timeout=10)
+    line = next(e["text"] for e in simulator.get_log_lines(0) if "COLS " in e["text"])
+    lit = [int(v) for v in line.split("COLS ")[1].split()]
+    # Find where the first glyph starts: the second is the same 6 px later.
+    first = next(i for i, v in enumerate(lit) if v)
+    assert lit[first:first + 6] == lit[first + 6:first + 12], lit
 
 
 # ── The doc's complete example, verbatim ─────────────────────────────────────
