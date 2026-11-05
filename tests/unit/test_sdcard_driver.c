@@ -167,6 +167,49 @@ static void test_read_file_walks_the_path_once(void) {
   umm_free(src);
 }
 
+// The launcher skips its rescan unless this moved: every way to change /apps
+// must move it, and a game saving under /data must not, or nothing is saved.
+static void test_apps_generation(void) {
+  reset();
+  CHECK(sdcard_mkdir("/apps/a"));
+  sdfile_t f = sdcard_fopen("/data/save.bin", "w");
+  CHECK(f != NULL);
+  CHECK_EQ_INT(sdcard_fwrite(f, "x", 1), 1);
+  sdcard_fclose(f);
+
+  uint32_t g = sdcard_apps_generation();
+  f = sdcard_fopen("/data/save.bin", "a");
+  sdcard_fclose(f);
+  f = sdcard_fopen("/data/save.bin", "r");
+  sdcard_fclose(f);
+  f = sdcard_fopen("/apps/a/none", "r");
+  CHECK(f == NULL);
+  CHECK(sdcard_mkdir("/data/d"));
+  CHECK(sdcard_copy("/data/save.bin", "/data/copy.bin", NULL, NULL));
+  CHECK(sdcard_rename("/data/copy.bin", "/data/copy2.bin"));
+  CHECK(sdcard_delete("/data/copy2.bin"));
+  CHECK_EQ_INT(sdcard_apps_generation(), g);
+
+#define MOVES(expr) do { uint32_t b = sdcard_apps_generation(); (void)(expr); \
+                         CHECK(sdcard_apps_generation() != b); } while (0)
+  MOVES(sdcard_mkdir("/apps/b"));
+  MOVES(sdcard_mkdir("//APPS/c"));
+  sdfile_t w = NULL;
+  MOVES(w = sdcard_fopen("/apps/b/main.lua", "w"));
+  sdcard_fclose(w);
+  MOVES(w = sdcard_fopen("/data/../apps/b/app.json", "a"));
+  sdcard_fclose(w);
+  MOVES(w = sdcard_fopen("/apps/b/main.lua", "rw"));
+  sdcard_fclose(w);
+  MOVES(sdcard_copy("/data/save.bin", "/apps/b/x", NULL, NULL));
+  MOVES(sdcard_rename("/apps/b/x", "/data/x"));
+  MOVES(sdcard_rename("/data/x", "/apps/b/x"));
+  MOVES(sdcard_delete("/apps/b/x"));
+  MOVES(sdcard_delete_recursive("/apps/b"));
+  MOVES(sdcard_remount());  // USB mass storage: the host wrote past this layer
+#undef MOVES
+}
+
 static void test_read_error_is_minus_one_after_a_partial_read(void) {
   reset();
   sdfile_t f = sdcard_fopen("/data/big.bin", "w");
@@ -383,6 +426,7 @@ int main(void) {
   test_big_write_and_read_feed();
   test_small_transfers_do_not_feed();
   test_read_file_walks_the_path_once();
+  test_apps_generation();
   test_read_error_is_minus_one_after_a_partial_read();
   test_full_card_is_a_short_count();
   test_copy_feeds_and_can_stop();
