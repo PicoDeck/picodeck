@@ -41,6 +41,21 @@ void wifi_connect(const char *ssid, const char *password);
 // Disconnect from the current network.
 void wifi_disconnect(void);
 
+// The launcher's disconnect around an app's own clock (system_clock_khz without
+// "http"), and the way back. wifi_leave_for_clock() disconnects like
+// wifi_disconnect() if the connection is up or on its way, and remembers it: the
+// network and password in use (not necessarily the saved ones), and whether it
+// is the boot auto-connect still short of its time sync, which then carries on
+// to that sync and its disconnect. wifi_rejoin_after_clock() starts it again once
+// the app has exited and sysclk is back at 200 MHz: it only queues the join, so
+// the launcher does not wait for it. Nothing is rejoined if WiFi was not up (the
+// user's disconnect, the boot's own after its sync, FAILED, no credentials) or if
+// anyone called wifi_connect() or wifi_disconnect() since: the app, or the user
+// in the system menu, decided, and that stands. wifi_rejoin.h has the rules.
+// Core 0.
+void wifi_leave_for_clock(void);
+void wifi_rejoin_after_clock(void);
+
 // Current connection state (WIFI_STATUS_*).
 wifi_status_t wifi_get_status(void);
 

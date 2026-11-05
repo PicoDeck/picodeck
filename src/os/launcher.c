@@ -855,13 +855,9 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   // PIO SPI divider for the new clock and holds its bus across the switch,
   // so a link left up would stay in spec; before that, the divider fixed at
   // init for 200 MHz ran the bus at 75 MHz at 300 MHz: "hdr mismatch"
-  // errors that stalled Core 1.)
+  // errors that stalled Core 1.) The exit below gives the connection back.
   if (app->system_clock_khz > 0 && !app->has_http && wifi_is_available()) {
-    wifi_status_t wst = wifi_get_status();
-    if (wst == WIFI_STATUS_CONNECTED || wst == WIFI_STATUS_CONNECTING ||
-        wst == WIFI_STATUS_ONLINE) {
-      wifi_disconnect();
-    }
+    wifi_leave_for_clock();
     // Wait for Core 1 to finish the hardware disconnect (bounded) before the
     // clock change: changing sysclk while the driver still talks to the chip
     // triggers an "hdr mismatch" error storm on Core 1.
@@ -935,6 +931,7 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   if (app->system_clock_khz > 0) {
     launcher_apply_clock(200000); // Reset to system default
     wifi_resume_radio();          // paused above (a no-op if not)
+    wifi_rejoin_after_clock();    // taken down above (only queues the join)
   }
 
   system_menu_clear_items();

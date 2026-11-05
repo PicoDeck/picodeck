@@ -2,6 +2,9 @@
 # Any other skip fails the run: a skip hides a test that silently stopped running.
 # Tests marked @pytest.mark.hardware are always allowed.
 
+# On a device (--target hw) with no WiFi configured; on the simulator they never skip.
+test_wifi_clock.py::*
+
 # Needs an external C-Dogs checkout (PICODECK_CDOGS_DIR, PicoDeck/cdogs).
 test_cdogs_memory.py::*
 
