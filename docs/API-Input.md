@@ -142,7 +142,7 @@ shorter than a frame and several characters in one frame are all reported.
   - `char`: the character (`"char"` events only)
   - `mods`: `BTN_SHIFT`/`BTN_CTRL`/`BTN_ALT`/`BTN_FN` held at the event
   - `button`: the `BTN_*` constant for keys that have one
-  - `repeat`: `true` for events produced by holding the key (read as `ev["repeat"]`)
+  - `repeat`: `true` on the `down` and `char` events a held key repeats with, absent on a press (read as `ev["repeat"]`: `repeat` is a Lua keyword). The keyboard repeats a held key about every 100 ms after the first 300 ms.
 
 Independent of `getChar()`/`getButtons*()`. 16 events are kept (the oldest is
 dropped); a new app starts with an empty queue.

@@ -163,6 +163,68 @@ static void test_repeated_hold_after_clear_stays_quiet(void) {
   CHECK_EQ_INT(kbd_chars_pop(&in), 'y'); // a seen press repeats again
 }
 
+// Arrows, letters, Enter, Tab, Backspace and Delete repeat as PRESSED items with
+// no RELEASED between them (the STM32's keyboard.ino). The app must be able to
+// tell those from a new press, as it can for a HOLD: flagged, no new button edge,
+// and the first press and the first press after a release are not flagged.
+static void test_pressed_repeat_is_flagged(void) {
+  static const uint8_t k_keys[] = {KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
+                                   KEY_ENTER, KEY_TAB, KEY_BKSPC, KEY_DEL, 'a'};
+  for (size_t i = 0; i < sizeof(k_keys); i++) {
+    uint8_t key = k_keys[i];
+    reset();
+    begin_poll();
+    kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, key);
+    kbd_event_t e = pop();
+    CHECK_EQ_INT(e.type, KBD_EV_DOWN);
+    CHECK_EQ_INT(e.flags & KBD_EVF_REPEAT, 0);
+    kbd_evq_clear(&in.q);
+    uint32_t bit = kbd_keycode_to_button(key);
+    CHECK_EQ_U32(pressed(), bit);
+    for (int n = 0; n < 3; n++) {
+      begin_poll();
+      CHECK_EQ_INT(kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, key), key);
+      CHECK_EQ_U32(pressed(), 0);  // the mask's edge stays the first press's
+      e = pop();
+      CHECK_EQ_INT(e.type, KBD_EV_DOWN);
+      CHECK(e.flags & KBD_EVF_REPEAT);
+      if (kbd_keycode_to_char(key, false)) {
+        e = pop();
+        CHECK_EQ_INT(e.type, KBD_EV_CHAR);
+        CHECK(e.flags & KBD_EVF_REPEAT);
+      }
+      CHECK_EQ_INT(in.q.count, 0);
+    }
+    begin_poll();
+    kbd_fifo_apply(&in, &btn, KBD_FIFO_RELEASED, key);
+    e = pop();
+    CHECK_EQ_INT(e.type, KBD_EV_UP);
+    CHECK_EQ_INT(e.flags & KBD_EVF_REPEAT, 0);
+    begin_poll();
+    kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, key);
+    e = pop();
+    CHECK_EQ_INT(e.type, KBD_EV_DOWN);
+    CHECK_EQ_INT(e.flags & KBD_EVF_REPEAT, 0);  // released: a new press
+  }
+
+  // A held letter whose Shift state changes mid-hold is still the same key.
+  reset();
+  begin_poll();
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, 'a');
+  kbd_evq_clear(&in.q);
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, 'A');
+  CHECK(pop().flags & KBD_EVF_REPEAT);
+
+  // A clear forgets the key is down: its next item reads as a press (hidden
+  // keys are how the system menu avoids that, test_kbd_hide.c).
+  reset();
+  begin_poll();
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, KEY_UP);
+  kbd_input_clear(&in);
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, KEY_UP);
+  CHECK_EQ_INT(pop().flags & KBD_EVF_REPEAT, 0);
+}
+
 static void test_tap_inside_one_poll(void) {
   reset();
   begin_poll();
@@ -578,6 +640,7 @@ int main(void) {
   test_hold_is_a_repeat();
   test_hold_after_clear_is_not_a_press();
   test_repeated_hold_after_clear_stays_quiet();
+  test_pressed_repeat_is_flagged();
   test_tap_inside_one_poll();
   test_tap_then_press_again();
   test_ctrl_letter();

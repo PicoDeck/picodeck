@@ -416,7 +416,7 @@ function picocalc.input.getButtonsRepeated() end
 ---@field char? string `"char"` events only: the character (as `getChar()` would return it)
 ---@field mods integer BTN_SHIFT/BTN_CTRL/BTN_ALT/BTN_FN held at the event
 ---@field button? integer The BTN_* constant for keys that have one
----@field repeat? boolean true for a `down`/`char` produced by holding the key (read it as `ev["repeat"]`: `repeat` is a Lua keyword)
+---@field repeat? boolean true on a `down`/`char` a held key repeats with, absent on a press (read it as `ev["repeat"]`: `repeat` is a Lua keyword)
 
 ---Pop the oldest keyboard event, or `nil` when none is queued. Events are
 ---filled by `update()` in the order keys were pressed and released, so taps

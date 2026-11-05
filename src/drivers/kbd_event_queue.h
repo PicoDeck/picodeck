@@ -775,7 +775,10 @@ static inline void kbd_buttons_swallow(kbd_buttons_t *b, bool bg_run,
 // keycode for getRawKey (0 when the item is not a press or repeat).
 //
 // PRESSED  down event (+ char event and backlog char if the key makes one);
-//          a button bit becomes held with a press edge.
+//          a button bit becomes held with a press edge. Arrows, letters, Enter,
+//          Tab, Backspace and Delete repeat as PRESSED items, so one for a key
+//          already down is a repeat: its events are flagged KBD_EVF_REPEAT, as
+//          a HOLD's are (the masks show no new edge, as prev already has it).
 // HOLD     the STM32's "still held" report. For a key whose press we saw it is
 //          a repeat: down + char events flagged KBD_EVF_REPEAT and a backlog
 //          char (getChar has always repeated on HOLD), no new press edge.
@@ -786,8 +789,8 @@ static inline void kbd_buttons_swallow(kbd_buttons_t *b, bool bg_run,
 //          as well (the STM32 repeats HOLD), until the key is released and
 //          pressed again. Only F-keys, Esc, modifiers and shifted codes
 //          repeat as HOLD: arrows, letters, Enter, Tab, Backspace and Delete
-//          repeat as PRESSED items, fresh presses here (a held 'y' does
-//          answer ui_confirm once it is armed).
+//          repeat as PRESSED items, which push a backlog char like any press
+//          (a held 'y' does answer ui_confirm once it is armed).
 // RELEASED up event if the key was down. A button pressed during this same
 //          poll stays held until the next poll (see kbd_buttons_begin_poll).
 static inline uint8_t kbd_fifo_apply(kbd_input_t *in, kbd_buttons_t *b,
@@ -806,11 +809,12 @@ static inline uint8_t kbd_fifo_apply(kbd_input_t *in, kbd_buttons_t *b,
       b->deferred &= ~btn;
     }
     if (!os_only) {
-      uint8_t mods = kbd_mods_from_buttons(b->curr);
-      kbd_input_push(in, KBD_EV_DOWN, key, 0, mods);
+      uint8_t flags = kbd_mods_from_buttons(b->curr) |
+                      (was_down ? KBD_EVF_REPEAT : 0);
+      kbd_input_push(in, KBD_EV_DOWN, key, 0, flags);
       char c = kbd_keycode_to_char(key, (b->curr & BTN_CTRL) != 0);
       if (c) {
-        kbd_input_push(in, KBD_EV_CHAR, key, c, mods);
+        kbd_input_push(in, KBD_EV_CHAR, key, c, flags);
         kbd_chars_push(in, c);
       }
     }
