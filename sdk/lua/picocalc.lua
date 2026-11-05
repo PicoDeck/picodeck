@@ -2418,8 +2418,9 @@ function PicoDeckBlinker:remove() end
 ---@return boolean
 function PicoDeckBlinker:isRunning() end
 
----Advance the blinker timer by the elapsed time.
----@return boolean on Whether the blinker is currently on
+---Advance the blinker timer by the elapsed time. The first call starts a blinker
+---that has never been started or stopped.
+---@return boolean on Whether it is on; false once stopped or finished, until start()
 function PicoDeckBlinker:update() end
 
 -- ── Animator ──────────────────────────────────────────────────────────────────

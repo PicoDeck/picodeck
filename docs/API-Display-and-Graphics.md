@@ -2704,13 +2704,13 @@ Creates a blinker. It does not run until started.
 - **Parameters:**
   - `onMs`, `offMs` (number, optional): Durations of the on and off phases in milliseconds (default 500 each)
   - `loop` (boolean, optional): Repeat forever (default `true`)
-  - `cycles` (number, optional): With `loop` false, the number of on/off cycles to run before stopping
+  - `cycles` (number, optional): With `loop` false, the number of on/off cycles to run before stopping. With none, the blinker runs until stopped, as a looping one does.
   - `startOff` (boolean, optional): Intended to start in the off state; the blinker is reported on at first regardless
 - **Returns:** (userdata) Blinker object
 
 ### Blinker Methods
 
-- `blinker:update()` returns the current state (`true` = on). The first call starts the blinker. Returns `false` once a non-looping blinker has finished or been stopped.
+- `blinker:update()` returns the current state (`true` = on). The first call starts a blinker that has never been started or stopped. Once a non-looping blinker has finished or any blinker has been stopped, it returns `false` until `start` or `startLoop`.
 - `blinker:start([onMs [, offMs [, loop [, cycles [, startOff]]]]])` (re)starts the blinker, optionally changing its settings, beginning in the on state.
 - `blinker:startLoop()` starts the blinker as an endless loop, keeping its on/off durations.
 - `blinker:stop()` stops the blinker.
@@ -2768,7 +2768,7 @@ end
 - `animator:valueAtTime(ms)` returns the value `ms` milliseconds into the animation, without changing it.
 - `animator:progress()` returns completion from 0 to 1.
 - `animator:ended()` returns `true` once `currentValue()` has seen the animation finish.
-- `animator:reset([durationMs])` restarts it, optionally with a new duration.
+- `animator:reset([durationMs])` restarts it from `from`, optionally with a new duration, keeping `repeatCount` and `reverses`.
 
 ### Animator Properties
 

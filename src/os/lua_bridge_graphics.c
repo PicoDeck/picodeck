@@ -3728,11 +3728,11 @@ static float easing_linear(float t) {
 }
 
 static float easing_sineIn(float t) {
-  return sinf(t * (float)M_PI_2);
+  return 1.0f - sinf((1.0f - t) * (float)M_PI_2);
 }
 
 static float easing_sineOut(float t) {
-  return 1.0f - sinf((1.0f - t) * (float)M_PI_2);
+  return sinf(t * (float)M_PI_2);
 }
 
 static float easing_sineInOut(float t) {
@@ -3799,6 +3799,7 @@ typedef struct {
   int repeat_count;
   int current_repeat;
   bool reverses;
+  bool reversing;  // on the way back: from end_value to start_value
   bool ended;
   easing_fn easing;
   bool destroyed;  // set by __gc
@@ -3854,6 +3855,7 @@ static int l_animator_new(lua_State *L) {
   a->repeat_count = 1;
   a->current_repeat = 0;
   a->reverses = false;
+  a->reversing = false;
   a->ended = false;
   a->easing = easing_f;
   a->destroyed = false;
@@ -3878,12 +3880,9 @@ static int l_animator_currentValue(lua_State *L) {
       a->current_repeat++;
       a->start_time_ms = now;
       t = 0.0f;
-    } else if (a->reverses) {
-      float tmp = a->start_value;
-      a->start_value = a->end_value;
-      a->end_value = tmp;
+    } else if (a->reverses && !a->reversing) {
+      a->reversing = true;
       a->start_time_ms = now;
-      a->reverses = false;
       t = 0.0f;
     } else {
       t = 1.0f;
@@ -3895,8 +3894,9 @@ static int l_animator_currentValue(lua_State *L) {
   if (t > 1.0f) t = 1.0f;
 
   float eased = a->easing(t);
-  float value = a->start_value + (a->end_value - a->start_value) * eased;
-  lua_pushnumber(L, value);
+  float from = a->reversing ? a->end_value : a->start_value;
+  float to = a->reversing ? a->start_value : a->end_value;
+  lua_pushnumber(L, from + (to - from) * eased);
   return 1;
 }
 
@@ -3933,6 +3933,7 @@ static int l_animator_reset(lua_State *L) {
   lua_animator_t *a = check_animator(L, 1);
   a->start_time_ms = to_ms_since_boot(get_absolute_time());
   a->ended = false;
+  a->reversing = false;
   a->current_repeat = 0;
 
   if (lua_isnumber(L, 2)) {
@@ -4007,6 +4008,7 @@ typedef struct {
   int current_cycle;
   uint32_t start_time_ms;
   bool running;
+  bool started;    // ever started or stopped: only the first update auto-starts
   bool state;
   bool destroyed;  // set by __gc; a dead blinker must never re-enter the list
 } lua_animation_blinker_t;
@@ -4063,14 +4065,15 @@ static int l_animation_blinker_new(lua_State *L) {
   b->current_cycle = 0;
   b->start_time_ms = to_ms_since_boot(get_absolute_time());
   b->running = false;
+  b->started = false;
   b->state = true;
   b->destroyed = false;
 
-  if (top >= 1) b->on_duration_ms = lb_checkint(L, 1);
-  if (top >= 2) b->off_duration_ms = lb_checkint(L, 2);
-  if (top >= 3) b->loop = lua_toboolean(L, 3);
-  if (top >= 4) b->cycles = lb_checkint(L, 4);
-  if (top >= 5) b->state = !lua_toboolean(L, 5);
+  if (top >= 1 && !lua_isnil(L, 1)) b->on_duration_ms = lb_checkint(L, 1);
+  if (top >= 2 && !lua_isnil(L, 2)) b->off_duration_ms = lb_checkint(L, 2);
+  if (top >= 3 && !lua_isnil(L, 3)) b->loop = lua_toboolean(L, 3);
+  if (top >= 4 && !lua_isnil(L, 4)) b->cycles = lb_checkint(L, 4);
+  if (top >= 5 && !lua_isnil(L, 5)) b->state = !lua_toboolean(L, 5);
 
   if (s_blinker_count < MAX_BLINKERS) {
     s_blinkers[s_blinker_count++] = b;
@@ -4084,6 +4087,11 @@ static int l_animation_blinker_update(lua_State *L) {
   lua_animation_blinker_t *b = check_blinker(L, 1);
 
   if (!b->running) {
+    if (b->started) {  // stopped or finished: it stays so until start()
+      lua_pushboolean(L, false);
+      return 1;
+    }
+    b->started = true;
     b->running = true;
     b->start_time_ms = to_ms_since_boot(get_absolute_time());
     b->current_cycle = 0;
@@ -4124,16 +4132,16 @@ static int l_animation_blinker_start(lua_State *L) {
   lua_animation_blinker_t *b = check_blinker(L, 1);
 
   // Argument 1 is self; the optional durations/flags start at 2.
-  int top = lua_gettop(L);
-  if (top >= 2) b->on_duration_ms = lb_checkint(L, 2);
-  if (top >= 3) b->off_duration_ms = lb_checkint(L, 3);
-  if (top >= 4) b->loop = lua_toboolean(L, 4);
-  if (top >= 5) b->cycles = lb_checkint(L, 5);
-  if (top >= 6) b->state = !lua_toboolean(L, 6);
+  if (!lua_isnoneornil(L, 2)) b->on_duration_ms = lb_checkint(L, 2);
+  if (!lua_isnoneornil(L, 3)) b->off_duration_ms = lb_checkint(L, 3);
+  if (!lua_isnoneornil(L, 4)) b->loop = lua_toboolean(L, 4);
+  if (!lua_isnoneornil(L, 5)) b->cycles = lb_checkint(L, 5);
+  if (!lua_isnoneornil(L, 6)) b->state = !lua_toboolean(L, 6);
 
   b->start_time_ms = to_ms_since_boot(get_absolute_time());
   b->current_cycle = 0;
   b->running = true;
+  b->started = true;
   b->state = true;
   return 0;
 }
@@ -4145,6 +4153,7 @@ static int l_animation_blinker_startLoop(lua_State *L) {
   b->start_time_ms = to_ms_since_boot(get_absolute_time());
   b->current_cycle = 0;
   b->running = true;
+  b->started = true;
   b->state = true;
   return 0;
 }
@@ -4152,6 +4161,7 @@ static int l_animation_blinker_startLoop(lua_State *L) {
 static int l_animation_blinker_stop(lua_State *L) {
   lua_animation_blinker_t *b = check_blinker(L, 1);
   b->running = false;
+  b->started = true;
   return 0;
 }
 
@@ -4196,6 +4206,7 @@ static int l_animation_blinker_stopAll(lua_State *L) {
   (void)L;
   for (int i = 0; i < s_blinker_count; i++) {
     s_blinkers[i]->running = false;
+    s_blinkers[i]->started = true;
   }
   return 0;
 }
