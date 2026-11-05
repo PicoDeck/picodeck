@@ -228,6 +228,8 @@ Restrict rendering to rows between `y_start` and `y_end` (inclusive). Useful for
 - `y_start` (number): First row to render (0-based pixel row)
 - `y_end` (number): Last row to render
 
+A new terminal renders from y 28 to y 302 at x 4, below a header and above a footer, however many rows you asked for: a terminal that uses the whole screen must set its bounds.
+
 ```lua
 term:setRenderBounds(16, 300)  -- leave room for a header
 ```

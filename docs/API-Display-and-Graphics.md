@@ -848,11 +848,12 @@ end
 Native ELF apps access effects through the `picocalc_display_t` vtable:
 
 ```c
-void picodeck_main(PicoCalcAPI *api) {
+void picodeck_main(const PicoCalcAPI *api, const char *app_dir,
+                   const char *app_id, const char *app_name) {
     const picocalc_display_t *d = api->display;
 
-    d->clear(RGB565(0, 0, 0));
-    d->drawText(10, 10, "Hello", RGB565(255, 255, 255), RGB565(0, 0, 0));
+    d->clear(PC_COLOR_BLACK);
+    d->drawText(10, 10, "Hello", PC_COLOR_WHITE, PC_COLOR_BLACK);
 
     // Apply effects
     d->effectTint(255, 0, 0, 128);    // red tint

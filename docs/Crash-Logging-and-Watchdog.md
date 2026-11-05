@@ -77,6 +77,8 @@ This is written at: `sdcard_init`, `sdcard_remount`, `sdcard_fopen`, `sdcard_fre
 
 The watchdog is enabled with a **10-second** timeout (`watchdog_enable(10000, true)`). The boot sequence calls `watchdog_update()` at several checkpoints (after PSRAM init, after SD mount, after config load, etc.) to prevent a spurious reset during a slow cold boot.
 
+A native app has longer: Core 1 keeps feeding the watchdog for as long as the app has called `sys->poll()` in the last 60 seconds, so only a native app stuck for about 60 to 70 seconds resets the device ([Native App Development](Native-Loading.md#the-watchdog)).
+
 `watchdog_caused_reboot()` is printed to UART at each boot so you can distinguish a normal power-on from a watchdog-triggered reset.
 
 ---
