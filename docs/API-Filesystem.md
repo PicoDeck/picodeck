@@ -235,7 +235,7 @@ local chunk = f:read(16)     -- still the first 16 bytes
 ---
 
 #### `picocalc.fs.appPath(name)`
-Returns the path `/data/<appname>/<name>`, automatically creating the app's data directory if it does not exist. This is the recommended way to access per-app persistent storage.
+Returns the path `/data/<APP_ID>/<name>`. This is the recommended way to access per-app persistent storage. The directory is there when your app starts (the OS creates it at launch, and this call makes sure of it), and a `/` in `name` needs its directory made with `fs.mkdir` first.
 
 - **Parameters:**
   - `name` (string): Filename within the app's data directory

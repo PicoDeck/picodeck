@@ -39,6 +39,37 @@ class TestFilesystemLua:
             run_lua_app(simulator, "fs_test", timeout=15).assert_all_passed(FS_CASES)
 
 
+DATA_DIR_APP = """
+local fs = picocalc.fs
+local dir = "/data/" .. APP_ID
+local existed = fs.isDir(dir)
+-- The first thing the app does, before appPath, a config save or a save slot.
+local f, err = fs.open(dir .. "/first.txt", "w")
+local T = picocalc.sys.loadlib("picotest")
+T.case("data_dir_exists_at_launch", function()
+    T.ok(existed, "no data directory at launch")
+    T.ok(f, "first open failed: " .. tostring(err))
+    T.eq(f:write("x"), 1, "write")
+    f:close()
+end)
+T.done()
+"""
+
+
+@pytest.mark.parametrize("requirements", [(), ("root-filesystem",)],
+                         ids=["default", "root_filesystem"])
+def test_data_dir_exists_at_launch(simulator, requirements):
+    """The docs promise /data/<APP_ID> exists: a first fs.open there works
+    without appPath or mkdir."""
+    app_id = "com.test.first_run_" + str(len(requirements))
+    data = Path(simulator.sd_card_path) / "data" / app_id
+    assert not data.exists()
+    stage_lua_app(simulator.sd_card_path, "first_run", DATA_DIR_APP,
+                  requirements=requirements, id=app_id)
+    run_lua_app(simulator, "first_run").check_case("data_dir_exists_at_launch")
+    assert (data / "first.txt").read_text() == "x"
+
+
 COPY_EXIT_APP = """
 local fs = picocalc.fs
 local src, dst = fs.appPath("src.bin"), fs.appPath("dst.bin")

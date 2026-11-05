@@ -125,6 +125,11 @@ static void lua_vm_body(void *arg) {
   lua_vm_ctx_t *ctx = (lua_vm_ctx_t *)arg;
   const app_entry_t *app = ctx->app;
 
+  // The app's data directory exists from its first instruction: a first
+  // fs.open("/data/<id>/x", "w") works without appPath or mkdir. One lookup from
+  // the second launch on; the first also writes the new directory.
+  sdcard_mkdir(app_identity_current()->data_dir);
+
   // ── Create Lua VM ─────────────────────────────────────────────────────────
   lua_State *L = lua_psram_newstate();
   if (!L) {
