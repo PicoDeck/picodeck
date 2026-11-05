@@ -34,7 +34,7 @@ static void test_set_get_delete(void) {
 // Fill the pool with pairs of `vlen`-char values ("k<i>"); returns how many
 // were stored.
 static int fill(int vlen) {
-  char k[8], v[CONFIG_VAL_MAX];
+  char k[16], v[CONFIG_VAL_MAX];
   memset(v, 'v', (size_t)vlen);
   v[vlen] = '\0';
   int n = 0;
@@ -50,7 +50,7 @@ static void test_pool_limit(void) {
   // Each pair costs its key and value plus two NULs.
   int n = fill(100);
   CHECK_EQ_INT(n, CONFIG_POOL_SIZE / (2 + 1 + 100 + 1));
-  char k[8], over[8];
+  char k[16], over[8];
   snprintf(over, sizeof(over), "k%d", n);
   CHECK(config_get(over) == NULL);          // one past the end is dropped
   CHECK_EQ_INT(strlen(config_get("k0")), 100);
@@ -171,7 +171,7 @@ static void test_round_trip_special_chars(void) {
 
 static void test_round_trip_full_store(void) {
   reset();
-  char k[8], v[CONFIG_VAL_MAX];
+  char k[16], v[CONFIG_VAL_MAX];
   memset(v, '"', sizeof(v) - 1);  // worst case: every char escaped
   v[sizeof(v) - 1] = '\0';
   int n = 0;
