@@ -512,8 +512,8 @@ static const char *http_getError_w(pchttp_t c) { return http_get_error((http_con
 static int http_getProgress_w(pchttp_t c, int *received, int *total) { int r, t; http_get_progress((http_conn_t *)c, &r, &t); if (received) *received = r; if (total) *total = t; return t; }
 static void http_setKeepAlive_w(pchttp_t c, bool ka) { ((http_conn_t *)c)->keep_alive = ka; }
 static void http_setByteRange_w(pchttp_t c, int from, int to) { ((http_conn_t *)c)->range_from = from; ((http_conn_t *)c)->range_to = to; }
-static void http_setConnectTimeout_w(pchttp_t c, int s) { ((http_conn_t *)c)->connect_timeout_ms = (uint32_t)(s * 1000); }
-static void http_setReadTimeout_w(pchttp_t c, int s) { ((http_conn_t *)c)->read_timeout_ms = (uint32_t)(s * 1000); }
+static void http_setConnectTimeout_w(pchttp_t c, int s) { ((http_conn_t *)c)->connect_timeout_ms = s > 0 ? (uint32_t)s * 1000u : 0; }
+static void http_setReadTimeout_w(pchttp_t c, int s) { ((http_conn_t *)c)->read_timeout_ms = s > 0 ? (uint32_t)s * 1000u : 0; }
 static bool http_setReadBufferSize_w(pchttp_t c, int bytes) { return http_set_recv_buf((http_conn_t *)c, (uint32_t)bytes); }
 static bool http_isComplete_w(pchttp_t c) { return http_is_complete((http_conn_t *)c); }
 // The simulator's libcurl transport keeps its own TLS policy; the flag is

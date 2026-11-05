@@ -730,6 +730,44 @@ case_fw("http_range_open_ended", function()
     conn:close()
 end)
 
+case_fw("http_read_timeout_fraction", function()
+    local t0 = now()
+    local r = request("/hang", { read_timeout = 0.5 })
+    T.ok(wait(function() return r.closed end, 3000), "no read timeout")
+    local dt = now() - t0
+    T.ok(dt >= 400, "timed out too early: " .. dt .. " ms")
+    T.ok(dt < 2000, "timed out too late: " .. dt .. " ms")
+    T.ok(tostring(r.err):find("read timeout", 1, true),
+         "error: " .. tostring(r.err))
+end)
+
+-- 0 turns the read timeout off, as TCP's does.
+case_fw("http_read_timeout_zero_is_off", function()
+    local r = request("/slowok", { read_timeout = 0 })
+    T.ok(wait(function() return r.complete or r.closed end, 4000), "no answer")
+    T.ok(r.complete, "failed: " .. tostring(r.err))
+    T.eq(body(r), "hello picodeck", "body")
+    r.conn:close()
+end)
+
+case_fw("http_connect_timeout_fraction", function()
+    local conn = net.http.new(HOST, cfg.blackhole, false, "ct")
+    local t0 = now()
+    local r = request("/ok", { conn = conn, connect_timeout = 0.5 })
+    T.ok(wait(function() return r.closed end, 3000), "no connect timeout")
+    local dt = now() - t0
+    T.ok(dt >= 400, "timed out too early: " .. dt .. " ms")
+    T.ok(dt < 2000, "timed out too late: " .. dt .. " ms")
+end)
+
+case_fw("http_connect_timeout_zero_is_off", function()
+    local conn = net.http.new(HOST, cfg.blackhole, false, "ct")
+    local r = request("/ok", { conn = conn, connect_timeout = 0 })
+    wait(function() return r.closed end, 700)
+    T.eq(r.closed, false, "failed although the timeout is off: " .. tostring(r.err))
+    conn:close()
+end)
+
 -- ── Run the one selected case ───────────────────────────────────────────────
 
 local fn = cases[cfg.case]

@@ -279,16 +279,16 @@ conn:get("/files/big.bin")
 Sets the TCP connection timeout. Default is 10 seconds.
 
 - **Parameters:**
-  - `seconds` (number): Timeout in seconds (fractions allowed)
+  - `seconds` (number): Timeout in seconds. Fractions are allowed (`0.5`). `0` turns it off.
 - **Returns:** None
 
 ---
 
 #### `conn:setReadTimeout(seconds)`
-Sets the timeout waiting for response data after connecting. Default is 30 seconds.
+Sets how long a request may go without receiving anything, from the moment it is sent. Default is 30 seconds. Every byte that arrives starts it over, so it does not limit the length of a whole transfer.
 
 - **Parameters:**
-  - `seconds` (number): Timeout in seconds (fractions allowed)
+  - `seconds` (number): Timeout in seconds. Fractions are allowed (`0.5`). `0` turns it off.
 - **Returns:** None
 
 ---

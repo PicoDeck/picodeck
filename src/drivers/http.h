@@ -96,10 +96,10 @@ typedef struct {
     bool     use_ssl;
     bool     keep_alive;
     bool     insecure;           // TLS without certificate checks (opt-in)
-    int32_t  range_from;         // -1 = not set
-    int32_t  range_to;           // -1 = not set
-    uint32_t connect_timeout_ms;
-    uint32_t read_timeout_ms;
+    int32_t  range_from;         // -1 = not set; the next request sends it
+    int32_t  range_to;           // < 0 = to the end
+    uint32_t connect_timeout_ms; // 0 = off
+    uint32_t read_timeout_ms;    // 0 = off
     uint32_t max_transfer_ms;    // 0 = disabled (default)
 
     // Snapshot of the configuration taken by start_request: the only copy
@@ -191,7 +191,8 @@ void http_close(http_conn_t *c);
 void http_reap(void);
 
 // Resize the receive ring buffer. Must be called before issuing a request.
-// Clamps to HTTP_RECV_BUF_MAX. Returns false on OOM (the old buffer stays).
+// Returns false for 0, over HTTP_RECV_BUF_MAX or out of memory (the old
+// buffer stays).
 bool http_set_recv_buf(http_conn_t *c, uint32_t bytes);
 
 // Issue an HTTP GET request. extra_hdr: optional "Key: Value\r\n..." string.

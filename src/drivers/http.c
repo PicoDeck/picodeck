@@ -79,6 +79,10 @@ static inline uint32_t now_ms(void) {
 static inline bool deadline_passed(uint32_t now, uint32_t deadline) {
   return deadline != 0 && (int32_t)(now - deadline) > 0;
 }
+// A deadline `ms` from now; 0 (never fires) when the timeout is off.
+static inline uint32_t deadline_after(uint32_t ms) {
+  return ms ? now_ms() + ms : 0;
+}
 
 // Atomically set pending callback bits (Core 1), unless being released
 static inline void pending_set(http_conn_t *c, uint8_t bits) {
@@ -281,7 +285,7 @@ void http_c1_send_request(struct mg_connection *nc, http_conn_t *c) {
   http_state_t st = st_get(c);
   if (st == HTTP_STATE_CONNECTING || st == HTTP_STATE_SENDING) {
     c->deadline_connect = 0;
-    c->deadline_read = now_ms() + c->req_read_timeout_ms;
+    c->deadline_read = deadline_after(c->req_read_timeout_ms);
     st_put(c, HTTP_STATE_HEADERS);
   }
   spin_unlock(s_lock, irq);
@@ -384,7 +388,7 @@ static bool c1_parse_head(struct mg_connection *nc, http_conn_t *c) {
     if (ok) {
       __atomic_store_n(&c->headers_done, true, __ATOMIC_RELEASE);
       c->deadline_connect = 0;
-      c->deadline_read = now_ms() + c->req_read_timeout_ms;
+      c->deadline_read = deadline_after(c->req_read_timeout_ms);
       st_put(c, HTTP_STATE_BODY);
       c->pending |= HTTP_CB_HEADERS;
     }
@@ -489,7 +493,7 @@ static bool c1_feed_body(struct mg_connection *nc, http_conn_t *c,
       c->pending |= HTTP_CB_REQUEST;
     // Bytes arrived or are waiting for ring space: the transfer is not idle.
     if (used || nc->recv.len)
-      c->deadline_read = now_ms() + c->req_read_timeout_ms;
+      c->deadline_read = deadline_after(c->req_read_timeout_ms);
   }
   spin_unlock(s_lock, irq);
 
@@ -939,7 +943,7 @@ static bool start_request(http_conn_t *c, const char *method, const char *path,
   c->req_connect_timeout_ms = c->connect_timeout_ms;
   c->req_read_timeout_ms = c->read_timeout_ms;
   c->req_max_transfer_ms = c->max_transfer_ms;
-  c->deadline_connect = now + c->req_connect_timeout_ms;
+  c->deadline_connect = deadline_after(c->req_connect_timeout_ms);
   c->deadline_read = 0;
   c->deadline_transfer =
       c->req_max_transfer_ms > 0 ? now + c->req_max_transfer_ms : 0;

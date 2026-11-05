@@ -2074,14 +2074,14 @@ static void tramp_http_set_connect_timeout(uc_engine *uc) {
     uint32_t handle = read_reg(uc, UC_ARM_REG_R0);
     int seconds = (int)read_reg(uc, UC_ARM_REG_R1);
     http_conn_t *c = handle_unwrap(handle);
-    if (c) c->connect_timeout_ms = seconds * 1000;
+    if (c) c->connect_timeout_ms = seconds > 0 ? (uint32_t)seconds * 1000u : 0;
 }
 
 static void tramp_http_set_read_timeout(uc_engine *uc) {
     uint32_t handle = read_reg(uc, UC_ARM_REG_R0);
     int seconds = (int)read_reg(uc, UC_ARM_REG_R1);
     http_conn_t *c = handle_unwrap(handle);
-    if (c) c->read_timeout_ms = seconds * 1000;
+    if (c) c->read_timeout_ms = seconds > 0 ? (uint32_t)seconds * 1000u : 0;
 }
 
 static void tramp_http_set_read_buffer_size(uc_engine *uc) {

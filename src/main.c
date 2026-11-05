@@ -1067,11 +1067,11 @@ static void http_setByteRange_w(pchttp_t c, int from, int to) {
 }
 
 static void http_setConnectTimeout_w(pchttp_t c, int seconds) {
-    ((http_conn_t *)c)->connect_timeout_ms = (uint32_t)(seconds * 1000);
+    ((http_conn_t *)c)->connect_timeout_ms = seconds > 0 ? (uint32_t)seconds * 1000u : 0;
 }
 
 static void http_setReadTimeout_w(pchttp_t c, int seconds) {
-    ((http_conn_t *)c)->read_timeout_ms = (uint32_t)(seconds * 1000);
+    ((http_conn_t *)c)->read_timeout_ms = seconds > 0 ? (uint32_t)seconds * 1000u : 0;
 }
 
 static bool http_setReadBufferSize_w(pchttp_t c, int bytes) {
