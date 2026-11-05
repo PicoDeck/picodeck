@@ -35,6 +35,7 @@ picodeck_fuzz_target(fuzz_wav SOURCES ${PICODECK_ROOT}/src/drivers/wav.c INCLUDE
 picodeck_fuzz_target(fuzz_qoa SOURCES ${PICODECK_ROOT}/src/drivers/qoa.c
                      INCLUDES ${PICODECK_ROOT}/src/drivers ${PICODECK_ROOT}/simulator/stubs)
 picodeck_fuzz_target(fuzz_hid_pad SOURCES ${PICODECK_ROOT}/src/drivers/hid_pad.c
+                     ${PICODECK_ROOT}/src/drivers/pad_source.c
                      INCLUDES ${PICODECK_ROOT}/src/drivers)
 picodeck_fuzz_target(fuzz_chargrid_text
                      SOURCES ${PICODECK_ROOT}/src/os/chargrid.c ${PICODECK_ROOT}/src/os/chargrid_shapes.c

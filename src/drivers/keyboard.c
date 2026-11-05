@@ -274,7 +274,8 @@ static void kbd_poll_impl(bool bg) {
   bool activity = bg ? (new_key || s_in.char_pushed)
                      : ((s_btn.curr & ~s_btn.prev) || s_in.char_pushed ||
                         s_last_raw_key);
-  activity = activity || pad_sources_fresh() || pad_home;
+  activity = activity || pad_sources_fresh() || pad_home ||
+             pad_sources_axes_moved();
   if (activity) {
     if (idle_dim_note_activity()) {
       // Drop this poll's fresh press edges (in a background run, only this
@@ -337,6 +338,10 @@ uint32_t kbd_get_pad_pressed(void) {
 
 uint32_t kbd_get_pad_released(void) {
   return pad_sources_combine_released(s_btn.pad.curr, s_btn.pad.prev);
+}
+
+float kbd_get_pad_axis(int axis) {
+  return pad_sources_axis(axis, kbd_get_pad());
 }
 
 uint32_t kbd_get_pad_nav_pressed(void) {

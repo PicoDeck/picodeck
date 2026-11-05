@@ -129,6 +129,10 @@ The `PicoCalcAPI` struct contains pointers to all OS subsystems. The full type d
 
 `api->gamepad` sits after `version` in `PicoCalcAPI`, so older firmware does not have the field at all: check `api->version >= 9` before reading it.
 
+#### Version 10 additions (`api->version >= 10`)
+
+`api->gamepad->getAxis` (`AXIS_*`): analog sticks and triggers, at the end of `picocalc_gamepad_t`, so a version 9 table does not have it. See [API Gamepad](API-Gamepad.md).
+
 #### Version detection
 
 The `api->version` field indicates which additions are present:
@@ -142,6 +146,7 @@ The `api->version` field indicates which additions are present:
 - `7` — video time seek/position, progress OSD, `hasEnded`
 - `8` — TLS verification: `http->setInsecure`, `tcp->connectEx` (`PCTCP_TLS`, `PCTCP_TLS_INSECURE`)
 - `9` — `api->gamepad` (`getButtons`/`getButtonsPressed`/`getButtonsReleased`/`getLabel`, `PAD_*`)
+- `10` — `api->gamepad->getAxis` (`AXIS_*`: analog sticks and triggers)
 
 ```c
 if (api->version >= 2) {

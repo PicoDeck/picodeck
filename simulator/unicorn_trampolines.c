@@ -99,6 +99,7 @@ extern char kbd_get_char(void);
 extern uint32_t kbd_get_pad(void);
 extern uint32_t kbd_get_pad_pressed(void);
 extern uint32_t kbd_get_pad_released(void);
+extern float kbd_get_pad_axis(int axis);
 #include "gamepad.h"  // gamepad_get_label (src/os)
 
 // Timing
@@ -661,11 +662,12 @@ enum {
     SLOT_ZIP_EXTRACT_ENTRY,
     SLOT_ZIP_END,
 
-    // picocalc_gamepad_t (4 functions, API v9): the table after `version`.
+    // picocalc_gamepad_t (API v9, getAxis v10): the table after `version`.
     SLOT_GAMEPAD_GET_BUTTONS = SLOT_ZIP_END,
     SLOT_GAMEPAD_GET_BUTTONS_PRESSED,
     SLOT_GAMEPAD_GET_BUTTONS_RELEASED,
     SLOT_GAMEPAD_GET_LABEL,
+    SLOT_GAMEPAD_GET_AXIS,
     SLOT_GAMEPAD_END,
 
     SLOT_TOTAL_COUNT = SLOT_GAMEPAD_END,
@@ -1095,6 +1097,15 @@ static void tramp_gamepad_get_label(uc_engine *uc) {
     int slot = (int)read_reg(uc, UC_ARM_REG_R1);
     const char *label = gamepad_get_label(pad, slot);
     write_reg(uc, UC_ARM_REG_R0, label ? label_addr(uc, label) : 0);
+}
+
+// Native apps use the base AAPCS (no -mfloat-abi=hard): a float comes back in
+// r0, as its bits.
+static void tramp_gamepad_get_axis(uc_engine *uc) {
+    float v = kbd_get_pad_axis((int)read_reg(uc, UC_ARM_REG_R0));
+    uint32_t bits;
+    memcpy(&bits, &v, 4);
+    write_reg(uc, UC_ARM_REG_R0, bits);
 }
 
 // =============================================================================
@@ -3407,6 +3418,7 @@ void unicorn_tramp_init(uc_engine *uc) {
     s_dispatch[SLOT_GAMEPAD_GET_BUTTONS_PRESSED]  = tramp_gamepad_get_buttons_pressed;
     s_dispatch[SLOT_GAMEPAD_GET_BUTTONS_RELEASED] = tramp_gamepad_get_buttons_released;
     s_dispatch[SLOT_GAMEPAD_GET_LABEL]            = tramp_gamepad_get_label;
+    s_dispatch[SLOT_GAMEPAD_GET_AXIS]             = tramp_gamepad_get_axis;
 }
 
 void unicorn_tramp_dispatch(uc_engine *uc, uint32_t slot) {
@@ -3554,7 +3566,7 @@ void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_b
     uint32_t zip_count = SLOT_ZIP_END - SLOT_ZIP_EXTRACT;
     sub_base = write_func_table(uc, sub_base, tramp_base, SLOT_ZIP_EXTRACT, zip_count);
 
-    // picocalc_gamepad_t (4 function pointers, API v9)
+    // picocalc_gamepad_t (5 function pointers: API v9, getAxis v10)
     uint32_t gamepad_addr = sub_base;
     uint32_t gamepad_count = SLOT_GAMEPAD_END - SLOT_GAMEPAD_GET_BUTTONS;
     sub_base = write_func_table(uc, sub_base, tramp_base, SLOT_GAMEPAD_GET_BUTTONS, gamepad_count);
@@ -3618,8 +3630,8 @@ void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_b
     write32(uc, api_base + 64, video_addr);
     write32(uc, api_base + 68, modplayer_addr);
     write32(uc, api_base + 72, zip_addr);
-    write32(uc, api_base + 76, 9);  // version = 9 (gamepad; 8 = http->setInsecure, tcp->connectEx; matches src/main.c g_api.version)
+    write32(uc, api_base + 76, 10);  // version = 10 (gamepad->getAxis; 9 = gamepad; 8 = http->setInsecure, tcp->connectEx; matches src/main.c g_api.version)
     write32(uc, api_base + 80, gamepad_addr);
 
-    printf("[UNICORN] PicoCalcAPI struct at 0x%08x, version=9\n", api_base);
+    printf("[UNICORN] PicoCalcAPI struct at 0x%08x, version=10\n", api_base);
 }

@@ -33,6 +33,39 @@ static const struct {
     {SDL_CONTROLLER_BUTTON_GUIDE, PAD_SOURCE_HOME},
 };
 
+// SDL's -32768 .. 32767 as a raw stick, -127 .. 127.
+static int8_t stick_value(SDL_GameController *gc, SDL_GameControllerAxis axis) {
+  int n = SDL_GameControllerGetAxis(gc, axis) * 127;
+  return (int8_t)((n >= 0 ? n + 16383 : n - 16383) / 32767);
+}
+
+// SDL's 0 .. 32767 as a raw trigger, 0 .. 255.
+static uint8_t trigger_value(SDL_GameController *gc,
+                             SDL_GameControllerAxis axis) {
+  int v = SDL_GameControllerGetAxis(gc, axis);
+  return (uint8_t)(v <= 0 ? 0 : (v * 255 + 16383) / 32767);
+}
+
+static void keep_larger_stick(int8_t *have, int8_t v) {
+  if (v * v > *have * *have)
+    *have = v;
+}
+
+// The largest reading on each axis across the controllers: pad_source.c's rule
+// for sources, since they are one source here. The dead zone is pad_source's.
+static void add_axes(SDL_GameController *gc, pad_axes_t *a) {
+  keep_larger_stick(&a->lx, stick_value(gc, SDL_CONTROLLER_AXIS_LEFTX));
+  keep_larger_stick(&a->ly, stick_value(gc, SDL_CONTROLLER_AXIS_LEFTY));
+  keep_larger_stick(&a->rx, stick_value(gc, SDL_CONTROLLER_AXIS_RIGHTX));
+  keep_larger_stick(&a->ry, stick_value(gc, SDL_CONTROLLER_AXIS_RIGHTY));
+  uint8_t t = trigger_value(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+  if (t > a->lt)
+    a->lt = t;
+  t = trigger_value(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+  if (t > a->rt)
+    a->rt = t;
+}
+
 static uint32_t pad_state(SDL_GameController *gc) {
   uint32_t st = 0;
   for (size_t i = 0; i < sizeof(k_buttons) / sizeof(k_buttons[0]); i++)
@@ -59,17 +92,22 @@ static uint32_t pad_state(SDL_GameController *gc) {
 static void publish(void) {
   bool any = false;
   uint32_t st = 0;
+  pad_axes_t axes = {0, 0, 0, 0, 0, 0};
   for (int i = 0; i < HAL_PAD_MAX; i++) {
     if (!s_pads[i])
       continue;
     any = true;
-    if (SDL_GameControllerGetAttached(s_pads[i]))
+    if (SDL_GameControllerGetAttached(s_pads[i])) {
       st |= pad_state(s_pads[i]);
+      add_axes(s_pads[i], &axes);
+    }
   }
-  if (any)
+  if (any) {
+    pad_source_publish_axes(PAD_SOURCE_HOST, &axes);
     pad_source_publish(PAD_SOURCE_HOST, st);
-  else
+  } else {
     pad_source_disconnect(PAD_SOURCE_HOST);
+  }
 }
 
 static int slot_of(SDL_JoystickID id) {

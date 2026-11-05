@@ -617,6 +617,7 @@ static const picocalc_gamepad_t s_gamepad_impl = {
     .getButtonsPressed = kbd_get_pad_pressed,
     .getButtonsReleased = kbd_get_pad_released,
     .getLabel = gamepad_get_label,
+    .getAxis = kbd_get_pad_axis,
 };
 
 static int display_get_width_fn(void) { return FB_WIDTH; }
@@ -2162,7 +2163,7 @@ int main(void) {
   g_api.video       = &s_video_impl;
   g_api.modplayer   = &s_modplayer_impl;
   g_api.zip         = &s_zip_impl;
-  g_api.version     = 9;  // 9 = gamepad; 8 = TLS verify: http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts; 5 = zip handles
+  g_api.version     = 10; // 10 = gamepad->getAxis; 9 = gamepad; 8 = TLS verify: http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts; 5 = zip handles
   g_api.gamepad     = &s_gamepad_impl;
   // fs wired after SD card init
 

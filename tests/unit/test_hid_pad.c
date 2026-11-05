@@ -13,14 +13,26 @@
 #define LEN(a) (sizeof(a) / sizeof((a)[0]))
 
 static hid_pad_layout_t s_l;
+static pad_axes_t s_a; // the axes of the last report dec() decoded
 
 // Decode one report; 0xDEAD when the decoder refused it.
 static uint32_t dec(hid_pad_profile_t p, const uint8_t *r, size_t n) {
   uint32_t st = 0xDEADu;
-  if (!hid_pad_decode(&s_l, p, r, n, &st))
+  memset(&s_a, 0x55, sizeof(s_a));
+  if (!hid_pad_decode(&s_l, p, r, n, &st, &s_a))
     return 0xDEADu;
   return st;
 }
+
+#define CHECK_AXES(lx_, ly_, rx_, ry_, lt_, rt_)                              \
+  do {                                                                        \
+    CHECK_EQ_INT(s_a.lx, (lx_));                                              \
+    CHECK_EQ_INT(s_a.ly, (ly_));                                              \
+    CHECK_EQ_INT(s_a.rx, (rx_));                                              \
+    CHECK_EQ_INT(s_a.ry, (ry_));                                              \
+    CHECK_EQ_INT(s_a.lt, (lt_));                                              \
+    CHECK_EQ_INT(s_a.rt, (rt_));                                              \
+  } while (0)
 
 static int count_kind(uint8_t id, uint8_t kind) {
   int n = 0;
@@ -168,7 +180,7 @@ static void test_ds4_other_reports(void) {
   // An empty report, and no report at all.
   CHECK_EQ_U32(dec(HID_PAD_PROFILE_SONY, s, 0), 0xDEADu);
   uint32_t st = 7;
-  CHECK(!hid_pad_decode(&s_l, HID_PAD_PROFILE_SONY, NULL, 10, &st));
+  CHECK(!hid_pad_decode(&s_l, HID_PAD_PROFILE_SONY, NULL, 10, &st, &s_a));
   CHECK_EQ_U32(st, 7);
 }
 
@@ -394,6 +406,201 @@ static void test_one_byte_max_hat_and_array(void) {
   CHECK_EQ_U32(dec(p, r, sizeof(r)), 0xDEADu);
 }
 
+// ── Axes ────────────────────────────────────────────────────────────────────
+// Each profile's map, against the descriptors above. Raw values (the dead zone
+// is pad_source's): -127 .. 127, 0 .. 255, right and down positive.
+
+// Report 1 of the DS4 and the DualSense: X Y Z Rz at bytes 1-4 are the left
+// and right stick, Rx Ry at bytes 8-9 the triggers.
+static void check_sony_axes(void) {
+  hid_pad_profile_t p = HID_PAD_PROFILE_SONY;
+  uint8_t r[10];
+  ds4(r, 8, 0, 0x80, 0x80);
+  CHECK_EQ_U32(dec(p, r, sizeof(r)), 0);
+  CHECK_AXES(0, 0, 0, 0, 0, 0);
+  ds4(r, 8, 0, 0x00, 0xFF);
+  CHECK_EQ_U32(dec(p, r, sizeof(r)), PAD_LEFT | PAD_DOWN);
+  CHECK_AXES(-127, 127, 0, 0, 0, 0);
+  // The centre of 0..255 is 127.5: both neighbours read 0.
+  ds4(r, 8, 0, 127, 128);
+  CHECK_EQ_U32(dec(p, r, sizeof(r)), 0);
+  CHECK_AXES(0, 0, 0, 0, 0, 0);
+  // Half way: the D-pad's threshold, and the value is still kept.
+  ds4(r, 8, 0, 63, 192);
+  CHECK_EQ_U32(dec(p, r, sizeof(r)), PAD_LEFT | PAD_DOWN);
+  CHECK_AXES(-64, 64, 0, 0, 0, 0);
+  ds4(r, 8, 0, 0x80, 0x80);
+  r[3] = 0xFF; // Z: right stick X
+  r[4] = 0x00; // Rz: right stick Y
+  r[8] = 0xFF; // Rx: L2
+  r[9] = 0x40; // Ry: R2
+  // L2 and R2 also have their digital buttons; neither is a PAD_* button.
+  CHECK_EQ_U32(dec(p, r, sizeof(r)), 0);
+  CHECK_AXES(0, 0, 127, -127, 255, 64);
+}
+
+static void test_ds4_axes(void) {
+  CHECK(hid_pad_parse(k_ds4_bt, sizeof(k_ds4_bt), &s_l));
+  check_sony_axes();
+  // A report that ends early loses only the analog extras past its end: it
+  // used to be read, so it still is (no button reads released).
+  uint8_t r[10];
+  ds4(r, 8, DS4_CROSS, 0x80, 0x80);
+  r[3] = 0xFF;
+  r[8] = 0xFF;
+  CHECK_EQ_U32(dec(HID_PAD_PROFILE_SONY, r, 8), PAD_A);
+  CHECK_AXES(0, 0, 127, 0, 0, 0);
+  CHECK_EQ_U32(dec(HID_PAD_PROFILE_SONY, r, 9), PAD_A);
+  CHECK_AXES(0, 0, 127, 0, 255, 0);
+  // A refused report leaves the output alone.
+  uint32_t st = 7;
+  pad_axes_t a = {1, 2, 3, 4, 5, 6};
+  CHECK(!hid_pad_decode(&s_l, HID_PAD_PROFILE_SONY, r, 7, &st, &a));
+  CHECK_EQ_U32(st, 7);
+  CHECK_EQ_INT(a.lx, 1);
+  CHECK_EQ_INT(a.rt, 6);
+}
+
+static void test_dualsense_axes(void) {
+  CHECK(hid_pad_parse(k_dualsense_bt, sizeof(k_dualsense_bt), &s_l));
+  check_sony_axes();
+}
+
+// Android: X Y Z Rz Brake Accelerator at bytes 3-8: Z/Rz the right stick,
+// Brake the left trigger, Accelerator the right one.
+static void test_android_axes(void) {
+  CHECK(hid_pad_parse(k_asus_gamepad, sizeof(k_asus_gamepad), &s_l));
+  hid_pad_profile_t p = HID_PAD_PROFILE_GENERIC;
+  uint8_t r[9];
+  asus(r, 0, 8, 0x80, 0x80);
+  CHECK_EQ_U32(dec(p, r, sizeof(r)), 0);
+  CHECK_AXES(0, 0, 0, 0, 0, 0);
+  asus(r, 0, 8, 0xFF, 0x00);
+  r[5] = 0x00; // Z
+  r[6] = 0xFF; // Rz
+  r[7] = 0x20; // Brake
+  r[8] = 0xE0; // Accelerator
+  CHECK_EQ_U32(dec(p, r, sizeof(r)), PAD_RIGHT | PAD_UP);
+  CHECK_AXES(127, -127, -127, 127, 0x20, 0xE0);
+}
+
+// Switch Pro: X Y Rx Ry, 16 bits. ZL and ZR are buttons 7 and 8: no triggers.
+static void test_switch_pro_axes(void) {
+  CHECK(hid_pad_parse(k_switch_pro_bt, sizeof(k_switch_pro_bt), &s_l));
+  hid_pad_profile_t p = HID_PAD_PROFILE_NINTENDO;
+  uint8_t r[12];
+  sw(r, 0, 8, 0x8000, 0x8000);
+  CHECK_EQ_U32(dec(p, r, sizeof(r)), 0);
+  CHECK_AXES(0, 0, 0, 0, 0, 0);
+  sw(r, 0, 8, 0x0000, 0xFFFF);
+  r[8] = r[9] = 0xFF;  // Rx: right
+  r[10] = r[11] = 0x00; // Ry: up
+  CHECK_EQ_U32(dec(p, r, sizeof(r)), PAD_LEFT | PAD_DOWN);
+  CHECK_AXES(-127, 127, 127, -127, 0, 0);
+  sw(r, (1u << 6) | (1u << 7), 8, 0x8000, 0x8000); // ZL + ZR
+  CHECK_EQ_U32(dec(p, r, sizeof(r)), 0);
+  CHECK_AXES(0, 0, 0, 0, 0, 0);
+}
+
+// 8BitDo: X Y Z Rz at bytes 4-7, Accelerator then Brake at bytes 8-9.
+static void test_8bitdo_axes(void) {
+  CHECK(hid_pad_parse(k_8bitdo_dinput, sizeof(k_8bitdo_dinput), &s_l));
+  hid_pad_profile_t p = HID_PAD_PROFILE_8BITDO;
+  uint8_t r[10] = {0x03, 0, 0, 0x08, 0x80, 0x80, 0x80, 0x80, 0, 0};
+  CHECK_EQ_U32(dec(p, r, sizeof(r)), 0);
+  CHECK_AXES(0, 0, 0, 0, 0, 0);
+  r[6] = 0x00; // Z
+  r[7] = 0xFF; // Rz
+  r[8] = 0xF0; // Accelerator: the right trigger
+  r[9] = 0x10; // Brake: the left one
+  CHECK_EQ_U32(dec(p, r, sizeof(r)), 0);
+  CHECK_AXES(0, 0, -127, 127, 0x10, 0xF0);
+}
+
+// A generic pad with Rx/Ry and Z/Rz and no Simulation page: the Xbox shape, Rx
+// Ry the right stick, Z and Rz the triggers. 16-bit sticks, 10-bit triggers.
+static void test_generic_xbox_shape(void) {
+  static const uint8_t d[] = {
+      0x05, 0x01, 0x09, 0x05, 0xa1, 0x01,
+      0x09, 0x30, 0x09, 0x31, 0x09, 0x33, 0x09, 0x34,
+      0x15, 0x00, 0x27, 0xff, 0xff, 0x00, 0x00,
+      0x75, 0x10, 0x95, 0x04, 0x81, 0x02,
+      0x09, 0x32, 0x09, 0x35, 0x15, 0x00, 0x26, 0xff, 0x03,
+      0x75, 0x10, 0x95, 0x02, 0x81, 0x02,
+      0xc0};
+  CHECK(hid_pad_parse(d, sizeof(d), &s_l));
+  hid_pad_profile_t p = HID_PAD_PROFILE_GENERIC;
+  uint8_t r[12] = {0x00, 0x80, 0x00, 0x80, 0xFF, 0xFF, 0x00, 0x00,
+                   0xFF, 0x03, 0x00, 0x02};
+  CHECK_EQ_U32(dec(p, r, sizeof(r)), 0);
+  CHECK_AXES(0, 0, 127, -127, 255, 128);
+}
+
+// A pad with no right stick or triggers: those axes read 0. Signed ranges map
+// straight; a descriptor with a useless range reads 0, not nonsense.
+static void test_axes_absent_and_odd_ranges(void) {
+  static const uint8_t signed_axes[] = {
+      0x05, 0x01, 0x09, 0x05, 0xa1, 0x01,
+      0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7f, // -127 .. 127
+      0x75, 0x08, 0x95, 0x02, 0x81, 0x02,
+      0x05, 0x09, 0x19, 0x01, 0x29, 0x08, 0x15, 0x00, 0x25, 0x01,
+      0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0xc0};
+  CHECK(hid_pad_parse(signed_axes, sizeof(signed_axes), &s_l));
+  for (int p = 0; p < HID_PAD_PROFILE_COUNT; p++) {
+    uint8_t r[3] = {0x81, 0x40, 0};
+    CHECK_EQ_U32(dec((hid_pad_profile_t)p, r, sizeof(r)), PAD_LEFT | PAD_DOWN);
+    CHECK_AXES(-127, 64, 0, 0, 0, 0);
+    r[0] = 0x80; // -128: outside the logical range, clamped
+    dec((hid_pad_profile_t)p, r, sizeof(r));
+    CHECK_EQ_INT(s_a.lx, -127);
+  }
+  // X/Y with Logical Max < Min, Z/Rz likewise, a trigger range of one value.
+  static const uint8_t odd[] = {
+      0x05, 0x01, 0x09, 0x05, 0xa1, 0x01,
+      0x09, 0x30, 0x09, 0x31, 0x09, 0x32, 0x09, 0x35,
+      0x15, 0x10, 0x25, 0x01, 0x75, 0x08, 0x95, 0x04, 0x81, 0x02,
+      0x05, 0x02, 0x09, 0xc4, 0x15, 0x05, 0x25, 0x05,
+      0x75, 0x08, 0x95, 0x01, 0x81, 0x02, 0xc0};
+  CHECK(hid_pad_parse(odd, sizeof(odd), &s_l));
+  uint8_t r[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  CHECK_EQ_U32(dec(HID_PAD_PROFILE_GENERIC, r, sizeof(r)), 0);
+  CHECK_AXES(0, 0, 0, 0, 0, 0);
+  // A report that holds only analog extras is not a state report: publishing
+  // it would release the buttons of the report that has them.
+  static const uint8_t split[] = {
+      0x05, 0x01, 0x09, 0x05, 0xa1, 0x01, 0x85, 0x01,
+      0x05, 0x09, 0x19, 0x01, 0x29, 0x08, 0x15, 0x00, 0x25, 0x01,
+      0x75, 0x01, 0x95, 0x08, 0x81, 0x02,
+      0x85, 0x02, 0x05, 0x01, 0x09, 0x32, 0x09, 0x35, 0x15, 0x00, 0x26, 0xff,
+      0x00, 0x75, 0x08, 0x95, 0x02, 0x81, 0x02, 0xc0};
+  CHECK(hid_pad_parse(split, sizeof(split), &s_l));
+  uint8_t b[2] = {0x01, 0x01}, e[3] = {0x02, 0xFF, 0xFF};
+  CHECK_EQ_U32(dec(HID_PAD_PROFILE_GENERIC, b, sizeof(b)), PAD_A);
+  CHECK_EQ_U32(dec(HID_PAD_PROFILE_GENERIC, e, sizeof(e)), 0xDEADu);
+  // A descriptor with nothing but those (a pedal set) is not a gamepad.
+  static const uint8_t pedals[] = {
+      0x05, 0x01, 0x09, 0x04, 0xa1, 0x01, 0x05, 0x02, 0x09, 0xc4, 0x09, 0xc5,
+      0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x02, 0x81, 0x02, 0xc0};
+  CHECK(!hid_pad_parse(pedals, sizeof(pedals), &s_l));
+}
+
+// The map follows the profile, not the parse: a pad whose name arrives after
+// its descriptor (bt_pad.c) reads right from then on.
+static void test_axes_follow_the_profile(void) {
+  CHECK(hid_pad_parse(k_ds4_bt, sizeof(k_ds4_bt), &s_l));
+  uint8_t r[10];
+  ds4(r, 8, 0, 0x80, 0x80);
+  r[3] = 0xFF; // Z
+  r[8] = 0xFF; // Rx
+  dec(HID_PAD_PROFILE_SONY, r, sizeof(r));
+  CHECK_AXES(0, 0, 127, 0, 255, 0);
+  // No name yet: the same report read as the Xbox shape.
+  dec(HID_PAD_PROFILE_GENERIC, r, sizeof(r));
+  CHECK_AXES(0, 0, 127, -127, 255, 128);
+  CHECK_EQ_INT(count_kind(1, HID_PAD_F_Z), 1);
+  CHECK_EQ_INT(count_kind(1, HID_PAD_F_RX), 1);
+}
+
 static void test_not_a_pad_and_garbage(void) {
   // A keyboard: no buttons, hat or stick.
   static const uint8_t kbd[] = {
@@ -441,5 +648,13 @@ int main(void) {
   test_no_report_ids_signed_axes();
   test_one_byte_max_hat_and_array();
   test_not_a_pad_and_garbage();
+  test_ds4_axes();
+  test_dualsense_axes();
+  test_android_axes();
+  test_switch_pro_axes();
+  test_8bitdo_axes();
+  test_generic_xbox_shape();
+  test_axes_absent_and_odd_ranges();
+  test_axes_follow_the_profile();
   return check_report("test_hid_pad");
 }

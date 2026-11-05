@@ -3,9 +3,11 @@
 // (little-endian, mod the rest's size + 1) say how many of the remaining
 // bytes are the descriptor; the rest is a report. Each is copied to a block
 // of exactly its size, so ASan catches overreads; a decoded state may hold
-// only PAD_* bits and Home.
+// only PAD_* bits and Home, and its axes, through pad_source's shape and
+// combine, must read in range however the fields lie about their ranges.
 #include "hid_pad.h"
 #include "pad_source.h"
+#include "../os/os.h" // AXIS_*
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -27,9 +29,21 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
       abort();
     for (int p = 0; p < HID_PAD_PROFILE_COUNT; p++) {
       uint32_t st = 0;
-      if (hid_pad_decode(&l, (hid_pad_profile_t)p, rep, rlen, &st) &&
-          (st & ~(PAD_SOURCE_BUTTONS | PAD_SOURCE_HOME)))
+      pad_axes_t a;
+      if (!hid_pad_decode(&l, (hid_pad_profile_t)p, rep, rlen, &st, &a))
+        continue;
+      if (st & ~(PAD_SOURCE_BUTTONS | PAD_SOURCE_HOME))
         abort();
+      if (a.lx == -128 || a.ly == -128 || a.rx == -128 || a.ry == -128)
+        abort();
+      pad_source_publish_axes(PAD_SOURCE_BT, &a);
+      pad_source_publish(PAD_SOURCE_BT, st);
+      pad_sources_poll(false, 0);
+      for (int ax = AXIS_LX; ax <= AXIS_RT; ax++) {
+        float v = pad_sources_axis(ax, st);
+        if (!(v >= (ax >= AXIS_LT ? 0.0f : -1.0f) && v <= 1.0f))
+          abort();
+      }
     }
   }
   free(desc);

@@ -113,6 +113,15 @@ typedef struct {
 #define PAD_START     (1 << 10)
 #define PAD_SELECT    (1 << 11)
 
+// Gamepad axes for picocalc_gamepad_t.getAxis (API version 10). Sticks read
+// -1.0 to 1.0, right and down positive; triggers 0.0 to 1.0.
+#define AXIS_LX       0
+#define AXIS_LY       1
+#define AXIS_RX       2
+#define AXIS_RY       3
+#define AXIS_LT       4
+#define AXIS_RT       5
+
 // Built-in font ids for display->setFont (API version 6)
 #define PC_FONT_6X8               0
 #define PC_FONT_8X12              1
@@ -135,6 +144,7 @@ typedef struct {
 // A logical gamepad read like the input masks (after sys->poll()). Players
 // rebind it; the keys stay readable through picocalc_input_t. Only present
 // when api->version >= 9: the pointer sits after `version` in PicoCalcAPI.
+// Pad sources (a Bluetooth pad, the simulator's controller) drive it too.
 
 typedef struct {
     uint32_t (*getButtons)(void);          // PAD_* held
@@ -143,6 +153,12 @@ typedef struct {
     // Name of the key bound to one PAD_* button ("F4", "Del", "W"), for
     // on-screen hints. slot 0 = primary, 1 = alternate. NULL if unbound.
     const char *(*getLabel)(uint32_t pad_button, int slot);
+    // --- API version 10 (check api->version before calling it) ---
+    // One AXIS_* now, 0.0 for anything else, read like the masks (after
+    // sys->poll()). The dead zone is applied. With no stick in use AXIS_LX and
+    // AXIS_LY read the D-pad (-1, 0 or +1: the keyboard's aliases or a pad's
+    // hat), so a game can read only these and still work on the keyboard.
+    float (*getAxis)(int axis);
 } picocalc_gamepad_t;
 
 // --- Display ----------------------------------------------------------------
@@ -801,6 +817,7 @@ typedef struct PicoCalcAPI {
                                              // 8=TLS verification: http->setInsecure,
                                              //   tcp->connectEx
                                              // 9=gamepad
+                                             // 10=gamepad->getAxis (AXIS_*)
     // --- API version 9: fields after `version` (check it first) ---
     const picocalc_gamepad_t     *gamepad;     // logical gamepad (PAD_*)
 } PicoCalcAPI;

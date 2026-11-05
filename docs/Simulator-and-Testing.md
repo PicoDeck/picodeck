@@ -35,7 +35,8 @@ The PC simulator (`make simulator`, binary `build_sim/picodeck_simulator`) runs 
   fragmentation), `--build-info`, `--gamepad` / `--no-gamepad`.
 - A game controller plugged into the computer drives `picocalc.gamepad`
   (D-pad or left stick, A/B/X/Y, shoulders = L/R, Start, Back = Select, Guide
-  opens or closes the system menu), with hotplug. It is read unless
+  opens or closes the system menu; both sticks and the triggers for `getAxis`),
+  with hotplug. It is read unless
   `--no-gamepad`, and not under `--test-mode` unless `--gamepad` is given, so
   tests never see the host's controller. The browser demo
   ([picodeck.net/try](https://picodeck.net/try/)) reads controllers too, once
@@ -91,9 +92,14 @@ The PC simulator (`make simulator`, binary `build_sim/picodeck_simulator`) runs 
   `pad a 100` holds A for 100 ms, `pad none` releases everything, `pad off`
   disconnects it, and `home` opens the system menu (and closes it again when
   it is open: `pad home 100`). Buttons:
-  `up down left right a b x y l r start select home`, joined by `+`. Replies
-  `Pad: up+a`. The MCP `pad` tool sends it (`pad("home, up, a")` presses each
-  in turn).
+  `up down left right a b x y l r start select home`, joined by `+`. Axes join
+  them as `name=value`: `lx ly rx ry` from -1 to 1, `lt rt` from 0 to 1, so `pad
+  lx=-0.5+rt=1` sets the left stick and the right trigger. An axis is what a
+  stick would report: the [dead zone](API-Gamepad.md#analog-sticks-and-triggers)
+  applies (`lx=-0.6` reads about -0.575), and it sets no button (a real stick
+  past half way also holds the D-pad: `pad left+lx=-0.6`). Replies `Pad: up+a`,
+  axes to three places (`Pad: left+lx=-0.600`). The MCP `pad` tool sends it
+  (`pad("home, up, a")` presses each in turn).
 - `bt` reports Bluetooth (`available`, `enabled`, `power`, `scanning`,
   `link`, `peer`, `ready`, `profile`, `reports`, `paired`, `found`,
   `radio_in_use`, `bus_errors`, then `note="..."`); `bt on|off`, `bt

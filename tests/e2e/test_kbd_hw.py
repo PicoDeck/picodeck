@@ -447,6 +447,42 @@ def test_launch_lights_a_dimmed_screen(target):
     assert woke["errors"] == 0, woke
 
 
+def test_idle_dim_counts_a_moving_stick(target):
+    """A stick or trigger moving is activity: a game driven by one sets no
+    press edge. The same reading sent over and over moves nothing and the
+    screen dims, so it is not the `pad` commands that keep it lit."""
+    target.ensure_launcher()
+    try:
+        cfg = json.loads(target.read_file("/system/config.json"))
+    except Exception:
+        cfg = {}
+    timeout_s = int(cfg.get("dim_timeout_s", 60))
+    if timeout_s == 0 or timeout_s > 120:
+        pytest.skip(f"dim_timeout_s={timeout_s}")
+    target.keypress("down")  # activity: wakes a dimmed screen, restarts the timer
+    time.sleep(1)
+    kbdstat(target, "reset")
+    try:
+        value = 0.4
+        end = time.monotonic() + timeout_s + 5
+        while time.monotonic() < end:
+            target.pad(f"lx={value}")
+            value = -value
+            time.sleep(5)
+        moving = kbdstat(target)
+        assert moving["bl_writes"] == 0, moving
+
+        end = time.monotonic() + timeout_s + 5
+        while time.monotonic() < end:
+            target.pad("lx=0.4")
+            time.sleep(5)
+        still = kbdstat(target)
+        assert still["bl_writes"] >= 1, still
+    finally:
+        target.pad("off")
+    target.keypress("down")  # wakes it
+
+
 @pytest.mark.skipif(SOAK_S <= 0, reason="set KBD_SOAK_S=<seconds> to soak")
 @pytest.mark.timeout(SOAK_S + 900 if SOAK_S > 0 else 900)
 def test_bus_soak(target):

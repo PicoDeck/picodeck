@@ -992,7 +992,7 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   screenshot     - Capture screen (binary, ends with its FNV-1a)\n");
         printf("[DEV]   keypress <key> - Inject keypress\n");
         printf("[DEV]   keydown <key> / keyup <key> - Hold/release a key (chords)\n");
-        printf("[DEV]   pad <btns|none|off> [ms] - Test gamepad: e.g. 'pad up+a', 'pad home 100'\n");
+        printf("[DEV]   pad <btns|none|off> [ms] - Test gamepad: e.g. 'pad up+a', 'pad home 100', 'pad lx=-0.5+rt=1'\n");
         printf("[DEV]   put <path> <size> - Receive file from host (USB CDC only)\n");
         printf("[DEV]   get <path>     - Send file to host (USB CDC only)\n");
         printf("[DEV]   putb64 <path> <size> - Receive file as base64 (any transport)\n");
