@@ -911,18 +911,22 @@ function picocalc.config.get(key, fallback) end
 ---@return string? why `"config full"`, `"key too long"`, `"value too long"`, `"empty key"`, `"value contains a NUL byte"`, `"out of memory"`
 function picocalc.config.set(key, value) end
 
----Persist the per-app config to `/data/<APP_ID>/config.json`.
+---Persist the per-app config to `/data/<APP_ID>/config.json`. What the file holds
+---beyond the limits, or that is not a string, is written back as it was.
 ---@return boolean ok
 function picocalc.config.save() end
 
----Reload the per-app config from `/data/<APP_ID>/config.json`.
+---Reload the per-app config from `/data/<APP_ID>/config.json`, dropping unsaved
+---changes. Not needed before the first `get`: the store loads itself. `false` on
+---a first run, when there is no file yet.
 ---@return boolean ok
 function picocalc.config.load() end
 
 ---Clear all in-memory per-app entries (does not delete the file).
 function picocalc.config.clear() end
 
----Delete the per-app config file and clear all keys from memory.
+---Delete the per-app config file and clear all keys from memory. `true` whether
+---or not there was a file.
 ---@return boolean ok
 function picocalc.config.reset() end
 
