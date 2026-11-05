@@ -4,6 +4,7 @@
 #include "gfx3d.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define W 320
@@ -20,6 +21,22 @@ void *gfx3d_sram_scratch(size_t *bytes) {
   memset(s_lent, 0xA5, sizeof s_lent);  // nothing may rely on what it held
   *bytes = s_lent_bytes;
   return s_lent;
+}
+
+// The scene's lent SRAM (gfx3d_sram_tier, weak in gfx3d.c): off unless a test
+// sets it. Exactly the size asked for, so ASan sees a write past its end.
+static char *s_tier;
+static size_t s_tier_bytes;
+void *gfx3d_sram_tier(size_t *bytes) {
+  if (!s_tier_bytes) return NULL;
+  *bytes = s_tier_bytes;
+  return s_tier;
+}
+static void tier_set(size_t bytes) {
+  free(s_tier);
+  s_tier = bytes ? (char *)malloc(bytes) : NULL;
+  if (s_tier) memset(s_tier, 0xA5, bytes);  // nothing may rely on what it held
+  s_tier_bytes = bytes;
 }
 
 static bool near_f(float a, float b, float eps) { return fabsf(a - b) <= eps; }
@@ -618,6 +635,145 @@ static void test_lent_sram_changes_nothing(void) {
   gfx3d_mesh_free(m);
 }
 
+// A slanted grid, so that its 800 triangles land in many buckets.
+static gfx3d_mesh_t *tier_grid(void) {
+  enum { N = 20 };
+  gfx3d_mesh_t *m = gfx3d_mesh_alloc((N + 1) * (N + 1), 2 * N * N);
+  for (int r = 0; r <= N; r++)
+    for (int c = 0; c <= N; c++) {
+      float *v = &m->xyz[3 * (r * (N + 1) + c)];
+      v[0] = -4.0f + 8.0f * (float)c / N;
+      v[1] = -3.0f + 6.0f * (float)r / N;
+      v[2] = -5.0f - 6.0f * (float)r / N;
+    }
+  for (int r = 0; r < N; r++)
+    for (int c = 0; c < N; c++) {
+      const uint16_t a = (uint16_t)(r * (N + 1) + c), b = (uint16_t)(a + 1);
+      const uint16_t d = (uint16_t)(a + N + 1), e = (uint16_t)(d + 1);
+      const uint16_t tri[6] = {a, b, e, a, e, d};
+      const int t = 2 * (r * N + c);
+      memcpy(&m->idx[3 * t], tri, sizeof tri);
+      m->color[t] = (uint16_t)(0x1234 + 77 * t);
+      m->color[t + 1] = (uint16_t)(0x4321 + 55 * t);
+      m->flags[t] = m->flags[t + 1] = GFX3D_DOUBLE_SIDED | GFX3D_UNLIT | GFX3D_NO_FOG;
+    }
+  CHECK(gfx3d_mesh_finish(m) == NULL);
+  return m;
+}
+
+static bool tier_sprite(void *ud, int slot, const uint16_t **data, int *w, int *h,
+                        uint16_t *key) {
+  static const uint16_t px[4] = {0xF81F, 0x07FF, 0xFFE0, 0x001F};
+  (void)ud;
+  (void)slot;
+  *data = px;
+  *w = *h = 2;
+  *key = 0;
+  return true;
+}
+
+// One scene: half a grid's records, then `mid` (between two draw calls, where Lua
+// runs), then a sprite and the rest, with sprites at both ends of the record list.
+typedef void (*tier_mid_fn)(gfx3d_t *);
+static void tier_scene(gfx3d_t *g, const gfx3d_mesh_t *m, uint16_t *fb, gfx3d_stats_t *st,
+                       tier_mid_fn mid) {
+  const float id[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, p0[3] = {0, 0, 0};
+  const float back[3] = {0, 0.5f, -1.0f}, s1[3] = {-1, 1, -4}, s2[3] = {1, -1, -4};
+  gfx3d_begin(g, true, 0x0841);
+  CHECK(gfx3d_draw_sprite(g, 0, s1, 1.0f, 0, 0, 2, 2, 0));
+  gfx3d_draw(g, m, id, p0, 1, 0, false);
+  if (mid) mid(g);
+  gfx3d_draw(g, m, id, back, 1, 0, false);
+  CHECK(gfx3d_draw_sprite(g, 1, s2, 1.0f, 0, 0, 2, 2, 0));
+  const gfx3d_target_t t = {fb, W, 0, 0, W - 1, H - 1, false, tier_sprite, NULL};
+  gfx3d_end(g, &t);
+  *st = *gfx3d_get_stats(g);
+}
+
+static void tier_mid_take_back(gfx3d_t *g) {
+  (void)g;
+  gfx3d_sram_take_back();
+  memset(s_tier, 0x5A, s_tier_bytes);  // the lender uses it at once
+  tier_set(0);                         // and stops lending
+}
+
+static gfx3d_t *s_tier_other;
+static gfx3d_mesh_t *s_tier_mesh;
+static void tier_mid_other_context(gfx3d_t *g) {
+  (void)g;
+  const float id[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, p0[3] = {0, 0, 0};
+  gfx3d_begin(s_tier_other, false, 0);  // takes the block over, records and all
+  gfx3d_draw(s_tier_other, s_tier_mesh, id, p0, 1, 0, false);
+}
+
+// sizeof the bitmap and buckets; a record is 28 B.
+#define TIER_HEAD ((((GFX3D_BUCKETS + 1 + 31) / 32) * 4) + (GFX3D_BUCKETS + 1) * 4)
+
+static void test_lent_tier_changes_nothing(void) {
+  gfx3d_mesh_t *m = tier_grid();
+  static uint16_t want[W * H], got[W * H];
+  gfx3d_stats_t swant, sgot;
+  gfx3d_t *g = gfx3d_new(W, H);
+  tier_set(0);
+  tier_scene(g, m, want, &swant, NULL);
+  CHECK(swant.drawn > 700);  // more than the firmware's block holds
+  CHECK(swant.sprites == 2);
+
+  // No room for a record, one record, part of the scene, all of it.
+  const size_t sizes[] = {TIER_HEAD, TIER_HEAD + 27, TIER_HEAD + 28, TIER_HEAD + 28 * 100,
+                          8192, 23820, TIER_HEAD + 28 * GFX3D_CAPACITY + 1000};
+  for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+    gfx3d_sram_take_back();
+    tier_set(sizes[i]);
+    for (int round = 0; round < 2; round++) {  // the same block, scene after scene
+      tier_scene(g, m, got, &sgot, NULL);
+      CHECK(memcmp(want, got, sizeof want) == 0);
+      CHECK(memcmp(&swant, &sgot, sizeof swant) == 0);
+    }
+  }
+
+  // Taken back between two draw calls, at every size the records may have filled.
+  const size_t back_sizes[] = {TIER_HEAD + 28, TIER_HEAD + 28 * 100, 8192, 23820,
+                               TIER_HEAD + 28 * GFX3D_CAPACITY};
+  for (size_t i = 0; i < sizeof back_sizes / sizeof back_sizes[0]; i++) {
+    gfx3d_sram_take_back();
+    tier_set(back_sizes[i]);
+    tier_scene(g, m, got, &sgot, NULL);  // holds it
+    tier_scene(g, m, got, &sgot, tier_mid_take_back);
+    CHECK(memcmp(want, got, sizeof want) == 0);
+    CHECK(memcmp(&swant, &sgot, sizeof swant) == 0);
+    // With the block gone, the next scene is PSRAM's.
+    tier_scene(g, m, got, &sgot, NULL);
+    CHECK(memcmp(want, got, sizeof want) == 0);
+    // Taking back what is not lent does nothing.
+    gfx3d_sram_take_back();
+    tier_scene(g, m, got, &sgot, NULL);
+    CHECK(memcmp(want, got, sizeof want) == 0);
+    // Offered again, the next scene takes it.
+    tier_set(back_sizes[i]);
+    tier_scene(g, m, got, &sgot, NULL);
+    CHECK(memcmp(want, got, sizeof want) == 0);
+  }
+
+  // A second context starting a scene takes it, and the first scene survives.
+  gfx3d_sram_take_back();
+  tier_set(23820);
+  s_tier_other = gfx3d_new(W, H);
+  s_tier_mesh = m;
+  tier_scene(g, m, got, &sgot, tier_mid_other_context);
+  CHECK(memcmp(want, got, sizeof want) == 0);
+  // The holder freed: nothing is left to take back (ASan: no use of the freed one).
+  gfx3d_free(s_tier_other);
+  gfx3d_sram_take_back();
+  tier_scene(g, m, got, &sgot, NULL);
+  CHECK(memcmp(want, got, sizeof want) == 0);
+
+  gfx3d_free(g);
+  gfx3d_sram_take_back();
+  tier_set(0);
+  gfx3d_mesh_free(m);
+}
+
 // A non-finite projected vertex (vertices just in front of the near plane, huge
 // coordinates) counts as drawn and paints nothing, as it did before records kept
 // their vertices sorted.
@@ -660,6 +816,7 @@ int main(void) {
   test_background_is_drawn_first_and_never_far_culled();
   test_sprites();
   test_lent_sram_changes_nothing();
+  test_lent_tier_changes_nothing();
   test_nonfinite_vertex_draws_nothing();
   return check_report("test_gfx3d");
 }

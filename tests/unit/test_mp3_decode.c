@@ -380,6 +380,43 @@ static void test_id3v2_tags_before_stereo_frames(void) {
   free(b.data);
 }
 
+// ── The SRAM it lends to gfx3d ──────────────────────────────────────────────
+
+extern int g_gfx3d_take_backs;  // fake_gfx3d_lend.c
+void *gfx3d_sram_tier(size_t *bytes);
+
+// Nothing decodes into the block before a session starts, and every session takes
+// it first; the app's teardown gives it back.
+#define STAGING_LEND_MIN 8192
+static void test_a_session_takes_the_lent_sram_back(void) {
+  blob_t b = load_fixture("chord128.mp3");
+  put_file("/lend.mp3", b);
+  mp3_player_t *p = mp3_player_create();
+  mp3_player_reset();
+  size_t bytes = 0;
+  void *const block = gfx3d_sram_tier(&bytes);
+  CHECK(block != NULL);
+  CHECK(bytes >= STAGING_LEND_MIN);
+  int before = g_gfx3d_take_backs;
+  CHECK(mp3_player_load(p, "/lend.mp3"));
+  CHECK(g_gfx3d_take_backs > before);
+  CHECK(gfx3d_sram_tier(&bytes) == NULL);
+  CHECK(mp3_player_play(p, 1));
+  CHECK(gfx3d_sram_tier(&bytes) == NULL);
+  mp3_player_reset();
+  CHECK(gfx3d_sram_tier(&bytes) == block);
+
+  before = g_gfx3d_take_backs;
+  CHECK(mp3_player_start_fed(44100, 2));
+  CHECK(g_gfx3d_take_backs > before);
+  CHECK(gfx3d_sram_tier(&bytes) == NULL);
+  mp3_player_stop_fed();
+  CHECK(gfx3d_sram_tier(&bytes) == NULL);  // until the reset, not the stop
+  mp3_player_reset();
+  CHECK(gfx3d_sram_tier(&bytes) == block);
+  free(b.data);
+}
+
 // ── Tags after the audio and between streams (issue #63) ────────────────────
 
 static void append(blob_t *b, const void *src, uint32_t n) {
@@ -1257,6 +1294,7 @@ int main(void) {
   test_fed_mode_leaves_tags_to_libmad();
   test_random_files_finish();
   test_a_player_without_its_decoder_refuses_to_load();
+  test_a_session_takes_the_lent_sram_back();
   mp3_player_deinit();
   return check_report("test_mp3_decode");
 }

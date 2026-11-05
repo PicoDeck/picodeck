@@ -1,0 +1,8 @@
+{
+    "id": "com.test.gfx3dlent",
+    "name": "gfx3d Lent SRAM",
+    "description": "E2E fixture: an MP3 session started in the middle of a gfx3d scene takes its SRAM back, and the scene survives",
+    "version": "1.0",
+    "author": "PicoDeck E2E",
+    "requirements": ["audio"]
+}

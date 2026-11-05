@@ -4,6 +4,7 @@
 #include "mp3_sched.h"
 #include "mp3_id3.h"
 #include "../os/core0_idle.h"
+#include "../os/gfx3d.h"
 #include "sdcard.h"
 #include "pio_psram.h"
 #include "pico/platform.h"
@@ -63,12 +64,32 @@ static struct mad_synth  *s_mad_synth  = NULL;
 //  - the window D[] (libmad's synth.c, MAD_D_IN_RAM): 0.6 ms more.
 // Next in line, with no SRAM left: the overlap (4.5 KB, 1.4 ms) and
 // layer3.c's code (~11 KB, 1-2 ms).
+#endif
+// One block, so that it can be lent whole: nothing uses it before an MP3 session
+// starts (load, start_fed, the bench), and a game playing QOA or nothing has it
+// for gfx3d (sram_claim, src/os/gfx3d.h: on Core 0, like every gfx3d call). The
+// session keeps it until the next mp3_player_reset, at the app's exit. Core 1's
+// update and the mixer touch it only while a file plays.
 static struct {
+#if defined(PICODECK_MP3_SRAM)
     struct mad_synth synth;
     mad_fixed_t sbsample[2][18][32];
     mad_fixed_t xr[576 * 2];
-} s_mp3_sram;
 #endif
+    uint8_t staging[STAGING_BUF_SIZE];
+} s_mp3_sram __attribute__((aligned(8)));
+static bool s_sram_claimed;
+
+static void sram_claim(void) {
+    gfx3d_sram_take_back();
+    s_sram_claimed = true;
+}
+
+void *gfx3d_sram_tier(size_t *bytes) {
+    if (s_sram_claimed) return NULL;
+    *bytes = sizeof(s_mp3_sram);
+    return &s_mp3_sram;
+}
 static sdfile_t    s_file = NULL;
 static uint32_t    s_file_pos = 0;  // next byte of s_file to decode (Core 1
                                     // reads at it: no blocking fseek there)
@@ -122,7 +143,6 @@ static int  s_pcm_channels = 2;
 // updates. A striped spin lock with interrupts off: never held across
 // anything slow (SD, PIO PSRAM copies, printf, umm), never nested with
 // another lock.
-static uint8_t s_staging_buf[STAGING_BUF_SIZE] __attribute__((aligned(4)));
 static pcm_stage_t s_stage;
 static critical_section_t s_stage_cs;
 static atomic_bool s_stage_ready;  // set once: the mixer may run before the first init
@@ -911,6 +931,7 @@ static void bind_frame(void) {
 
 void mp3_player_reset(void) {
     if (!s_initialized) return;
+    gfx3d_sram_take_back();  // the decoder's state is cleared below
     if (s_fed_mode) mp3_player_stop_fed();
     mutex_enter_blocking(&s_mp3_mutex);
     detach();
@@ -930,6 +951,7 @@ void mp3_player_reset(void) {
     if (s_mad_frame)  mad_frame_init(s_mad_frame);
     s_in_frame = false;
     if (s_mad_synth)  mad_synth_init(s_mad_synth);
+    s_sram_claimed = false;
     mutex_exit(&s_mp3_mutex);
 }
 
@@ -956,10 +978,11 @@ void mp3_player_deinit(void) {
 bool mp3_player_init(void) {
     if (s_initialized) return true;
 
+    gfx3d_sram_take_back();  // the decoder's state is cleared below
     mutex_init(&s_mp3_mutex);
     if (!atomic_load(&s_stage_ready)) {
         critical_section_init_with_lock_num(&s_stage_cs, next_striped_spin_lock_num());
-        pcm_stage_init(&s_stage, s_staging_buf, STAGING_BUF_SIZE, AUDIO_OUT_RATE);
+        pcm_stage_init(&s_stage, s_mp3_sram.staging, STAGING_BUF_SIZE, AUDIO_OUT_RATE);
         atomic_store_explicit(&s_stage_ready, true, memory_order_release);
     }
     printf("[MP3] Initializing libmad decoder...\n");
@@ -1045,6 +1068,7 @@ bool mp3_player_load(mp3_player_t *player, const char *path) {
     // the decoder's buffers are missing.)
     if (!player || !path || !s_initialized) return false;
 
+    sram_claim();
     // Video audio and file playback share the decoder: stop fed mode first.
     if (s_fed_mode) mp3_player_stop_fed();
     fade_out_and_wait();
@@ -1237,6 +1261,7 @@ bool mp3_player_start_fed(uint32_t sample_rate, uint16_t channels) {
     if (!s_initialized) {
         if (!mp3_player_init()) return false;
     }
+    sram_claim();
     // A playing session restarted here (a seek's fallback) is silent from
     // its fade-out until start_fed_output starts the new audio.
     bool audible = s_fed_mode && s_mixing && audio_output_running();
@@ -1560,6 +1585,7 @@ void mp3_player_bench(const char *path, uint32_t frames, uint32_t flags) {
         printf("[DEV] mp3bench: error=busy\n");
         return;
     }
+    sram_claim();
     sdfile_t f = sdcard_fopen(path, "rb");
     if (!f) {
         printf("[DEV] mp3bench: error=open\n");

@@ -145,3 +145,11 @@ const gfx3d_stats_t *gfx3d_get_stats(const gfx3d_t *g);
 // gfx3d.c (none); the firmware lends the video decoder's SRAM while no player
 // exists. Nothing in it outlives the call, so nothing else may run meanwhile.
 void *gfx3d_sram_scratch(size_t *bytes);
+// Fast memory for a whole scene, from gfx3d_begin to the next one, or NULL: a
+// scene's bitmap, buckets and first records, 4-byte aligned. Weak in gfx3d.c
+// (none); the firmware lends the MP3 decoder's SRAM until an MP3 session starts.
+// Lua runs between the calls of a scene, so a lender that wants its block back
+// calls gfx3d_sram_take_back, mid-scene or not, and stops returning it. Both on
+// the core that runs gfx3d, never during a gfx3d call.
+void *gfx3d_sram_tier(size_t *bytes);
+void gfx3d_sram_take_back(void);

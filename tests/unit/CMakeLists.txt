@@ -331,7 +331,7 @@ target_compile_definitions(libmad_host PRIVATE FPM_64BIT HAVE_STDINT_H=1
             NDEBUG=1 OPT_SPEED=1 OPT_SSO=1 PROGMEM=)
 target_compile_options(libmad_host PRIVATE -O2 -w)
 picodeck_unit_test(test_mp3_fed SOURCES ${SRC}/drivers/mp3_player.c
-                ${SRC}/os/core0_idle.c ${SD_FAKE}
+                ${SRC}/os/core0_idle.c ${SD_FAKE} fake_gfx3d_lend.c
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_fed PRIVATE libmad_host)
 # The pico/critical_section.h stub leaves a parameter unused.
@@ -342,14 +342,14 @@ target_link_options(test_mp3_fed PRIVATE -Wl,--wrap=mad_synth_granule)
 # ...and its decode loop at the ends of the input buffer (no frame lost
 # where a refill ends), from a file (the SD fake) and fed.
 picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c
-                ${SRC}/os/core0_idle.c ${SD_FAKE}
+                ${SRC}/os/core0_idle.c ${SD_FAKE} fake_gfx3d_lend.c
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_refill PRIVATE libmad_host)
 target_compile_options(test_mp3_refill PRIVATE -Wno-unused-parameter)
 # ...and what its decoder writes (a mono frame's samples, in order) and when
 # (ahead, in Core 0's idle windows).
 picodeck_unit_test(test_mp3_decode SOURCES ${SRC}/drivers/mp3_player.c
-                ${SRC}/os/core0_idle.c ${SD_FAKE}
+                ${SRC}/os/core0_idle.c ${SD_FAKE} fake_gfx3d_lend.c
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_decode PRIVATE libmad_host)
 target_compile_options(test_mp3_decode PRIVATE -Wno-unused-parameter)

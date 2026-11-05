@@ -63,6 +63,16 @@ typedef struct {
   uint16_t head, tail;
 } gfx3d_bucket_t;
 
+// What a scene's records touch for every triangle, in lent SRAM when there is
+// some (gfx3d_sram_tier): the bitmap, the buckets and as many records as fit,
+// the first ones. A record's index means the same in either home, so taking the
+// block back is a copy (gfx3d_sram_take_back).
+typedef struct {
+  uint32_t used[USED_WORDS];
+  gfx3d_bucket_t bucket[GFX3D_BUCKETS + 1];
+  gfx3d_rec_t rec[];
+} gfx3d_tier_t;
+
 struct gfx3d {
   int vx, vy, vw, vh;
   float fov_y, znear, zfar;
@@ -78,10 +88,14 @@ struct gfx3d {
   uint16_t sky_color[GFX3D_MAX_SKY_BANDS];
   bool clear;
   uint16_t clear_color;
-  gfx3d_rec_t *rec;
+  gfx3d_rec_t *rec;  // GFX3D_CAPACITY records: all but the first ntrec are here
+  gfx3d_rec_t *trec;  // the lent block's records, or NULL
+  int ntrec;
   int nrec;
-  uint32_t used[USED_WORDS];  // bit b of word w: bucket 32 * w + b has records
-  gfx3d_bucket_t bucket[GFX3D_BUCKETS + 1];
+  uint32_t *used;  // bit b of word w: bucket 32 * w + b has records
+  gfx3d_bucket_t *bucket;
+  uint32_t own_used[USED_WORDS];  // their home when no block is lent
+  gfx3d_bucket_t own_bucket[GFX3D_BUCKETS + 1];
   gfx3d_vert_t *verts;  // vcap vertices, when the lent SRAM is not available
   int vcap;
   gfx3d_order_t *order;  // sort_as_one scratch
@@ -234,10 +248,49 @@ static void update_projection(gfx3d_t *g) {
   g->inv_y = 1.0f / sqrtf(1.0f + g->tan_y * g->tan_y);
 }
 
+// The context holding the lent block. One at a time: an app has one context.
+static gfx3d_t *s_tier_user;
+
+__attribute__((weak)) void *gfx3d_sram_tier(size_t *bytes) {
+  (void)bytes;
+  return NULL;
+}
+
+void gfx3d_sram_take_back(void) {
+  gfx3d_t *const g = s_tier_user;
+  if (!g) return;
+  s_tier_user = NULL;
+  const int n = g->nrec < g->ntrec ? g->nrec : g->ntrec;
+  if (n > 0) memcpy(g->rec, g->trec, (size_t)n * sizeof *g->rec);
+  memcpy(g->own_used, g->used, sizeof g->own_used);
+  memcpy(g->own_bucket, g->bucket, sizeof g->own_bucket);
+  g->used = g->own_used;
+  g->bucket = g->own_bucket;
+  g->trec = NULL;
+  g->ntrec = 0;
+}
+
+// At every scene's start, so a block given back since the last one is used again.
+static void tier_acquire(gfx3d_t *g) {
+  if (s_tier_user == g) return;  // a lender takes it back before it needs it
+  gfx3d_sram_take_back();        // another context's
+  size_t have = 0;
+  gfx3d_tier_t *const t = (gfx3d_tier_t *)gfx3d_sram_tier(&have);
+  if (!t || have < sizeof *t + sizeof t->rec[0]) return;
+  const size_t n = (have - sizeof *t) / sizeof t->rec[0];
+  g->ntrec = n < GFX3D_CAPACITY ? (int)n : GFX3D_CAPACITY;
+  g->trec = t->rec;
+  g->used = t->used;
+  g->bucket = t->bucket;
+  s_tier_user = g;
+}
+
 gfx3d_t *gfx3d_new(int screen_w, int screen_h) {
   gfx3d_t *g = (gfx3d_t *)GFX3D_MALLOC(sizeof *g);
   if (!g) return NULL;
   memset(g, 0, sizeof *g);
+  g->used = g->own_used;
+  g->bucket = g->own_bucket;
   g->rec = (gfx3d_rec_t *)GFX3D_MALLOC(sizeof(gfx3d_rec_t) * GFX3D_CAPACITY);
   if (!g->rec) {
     GFX3D_FREE(g);
@@ -258,6 +311,7 @@ gfx3d_t *gfx3d_new(int screen_w, int screen_h) {
 
 void gfx3d_free(gfx3d_t *g) {
   if (!g) return;
+  if (s_tier_user == g) s_tier_user = NULL;
   GFX3D_FREE(g->rec);
   if (g->verts) GFX3D_FREE(g->verts);
   if (g->order) GFX3D_FREE(g->order);
@@ -350,7 +404,8 @@ void gfx3d_begin(gfx3d_t *g, bool clear, uint16_t clear_color) {
   g->clear = clear;
   g->clear_color = clear_color;
   g->nrec = 0;
-  memset(g->used, 0, sizeof g->used);
+  tier_acquire(g);
+  memset(g->used, 0, sizeof g->own_used);
   memset(&g->stats, 0, sizeof g->stats);
 }
 
@@ -363,11 +418,14 @@ static int bucket_of(float znear, float range, float depth) {
   return (int)(sqrtf(t) * (float)(GFX3D_BUCKETS - 1));
 }
 
+static inline gfx3d_rec_t *rec_at(const gfx3d_t *g, int i) {
+  return i < g->ntrec ? &g->trec[i] : &g->rec[i];
+}
+
 // Appends record i to bucket b (submission order is kept within a bucket).
 // `kind` is 0 for a triangle, REC_SPRITE for a sprite.
 static void link_rec(gfx3d_t *g, int b, int i, uint16_t kind) {
-  gfx3d_rec_t *const rec = g->rec;
-  rec[i].next = kind | REC_END;
+  rec_at(g, i)->next = kind | REC_END;
   gfx3d_bucket_t *const bk = &g->bucket[b];
   uint32_t *const w = &g->used[b >> 5];
   const uint32_t bit = 1u << (b & 31);
@@ -375,7 +433,7 @@ static void link_rec(gfx3d_t *g, int b, int i, uint16_t kind) {
     *w |= bit;
     bk->head = (uint16_t)i;
   } else {
-    gfx3d_rec_t *const last = &rec[bk->tail];
+    gfx3d_rec_t *const last = rec_at(g, bk->tail);
     last->next = (uint16_t)((last->next & REC_SPRITE) | i);
   }
   bk->tail = (uint16_t)i;
@@ -523,7 +581,7 @@ static inline bool add_tri(gfx3d_t *g, gfx3d_order_t *order, int *n_one, bool on
   const int ri = new_rec(g);
   if (ri < 0) return false;
   if (!disp_tri_sort(&x0, &y0, &x1, &y1, &x2, &y2)) y0 = y1 = y2 = 0.0f;
-  gfx3d_rec_t *const r = &g->rec[ri];
+  gfx3d_rec_t *const r = rec_at(g, ri);
   r->u.tri.x[0] = x0;
   r->u.tri.y[0] = y0;
   r->u.tri.x[1] = x1;
@@ -750,7 +808,7 @@ bool gfx3d_draw_sprite(gfx3d_t *g, int slot, const float pos[3], float size,
   }
   const int ri = new_rec(g);
   if (ri < 0) return false;
-  gfx3d_rec_t *r = &g->rec[ri];
+  gfx3d_rec_t *const r = rec_at(g, ri);
   r->u.spr.x = (int16_t)ix;
   r->u.spr.y = (int16_t)iy;
   r->u.spr.w = (int16_t)iw;
@@ -851,20 +909,23 @@ __attribute__((noinline)) static void raster_sprite(gfx3d_t *g, const gfx3d_targ
 // are looked at (of 1025, a frame has a few hundred).
 GFX3D_RAM_FUNC static void raster_scene(gfx3d_t *g, const gfx3d_target_t *t,
                                         const disp_clip_t *c) {
-  const gfx3d_rec_t *const rec = g->rec;
+  const gfx3d_rec_t *const rec = g->rec, *const trec = g->trec;
+  const uint32_t ntrec = (uint32_t)g->ntrec;
+  const uint32_t *const used = g->used;
+  const gfx3d_bucket_t *const bucket = g->bucket;
   uint16_t *const fb = t->fb;
   const int stride = t->stride;
   const int cx0 = c->x0, cy0 = c->y0, cx1 = c->x1, cy1 = c->y1;
   const bool swap = t->swap;
   uint32_t drawn = 0;
   for (int w = USED_WORDS - 1; w >= 0; w--) {
-    uint32_t bits = g->used[w];
+    uint32_t bits = used[w];
     while (bits) {
       const int bit = 31 - __builtin_clz(bits);
       bits &= ~(1u << bit);
-      uint32_t i = g->bucket[w * 32 + bit].head;
+      uint32_t i = bucket[w * 32 + bit].head;
       while (i != REC_END) {
-        const gfx3d_rec_t *const r = &rec[i];
+        const gfx3d_rec_t *const r = i < ntrec ? &trec[i] : &rec[i];
         const uint32_t next = r->next;
         if (next & REC_SPRITE) {
           raster_sprite(g, t, c, r);
