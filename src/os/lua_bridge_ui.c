@@ -279,30 +279,25 @@ static int l_ui_wrapText(lua_State *L) {
   const char *text = luaL_checklstring(L, 1, &text_len);
   int max_cols = (int)lb_checkint(L, 2);
 
-  // Max segments: worst case is 1 segment per character
-  int max_segs = (int)(text_len / (max_cols > 0 ? max_cols : 1)) + 2;
-  if (max_segs > 512) max_segs = 512;
-
-  int stack_segs[128];
-  int *segments = stack_segs;
-  if (max_segs > 128) {
-    segments = (int *)umm_malloc(sizeof(int) * max_segs);
-    if (!segments) return luaL_error(L, "out of memory for wrap segments");
+  // Rows are counted first, so the table is the only memory this takes and
+  // nothing limits how many rows a text can have.
+  int len = (int)text_len;
+  int rows = 1;
+  for (int p = text_wrap_next_row(text, len, 0, max_cols); p >= 0;
+       p = text_wrap_next_row(text, len, p, max_cols)) {
+    rows++;
   }
 
-  int num_rows = text_wrap_segments(text, (int)text_len, max_cols,
-                                    segments, max_segs);
-
-  // Build Lua table of segment offsets (0-based char offsets)
-  lua_createtable(L, num_rows, 0);
-  for (int i = 0; i < num_rows; i++) {
-    lua_pushinteger(L, segments[i]);
-    lua_rawseti(L, -2, i + 1);
+  // Row starts, as 0-based byte offsets.
+  lua_createtable(L, rows, 0);
+  int pos = 0;
+  for (int i = 1; i <= rows; i++) {
+    lua_pushinteger(L, pos);
+    lua_rawseti(L, -2, i);
+    pos = text_wrap_next_row(text, len, pos, max_cols);
   }
 
-  lua_pushinteger(L, num_rows);
-
-  if (segments != stack_segs) umm_free(segments);
+  lua_pushinteger(L, rows);
   return 2;
 }
 

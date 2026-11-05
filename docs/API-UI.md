@@ -338,14 +338,17 @@ picocalc.ui.toast("Download complete", picocalc.ui.TOAST_INFO)
 #### `picocalc.ui.wrapText(text, maxCols)`
 Word-wrap text to fit within a column width. Returns segment offsets for use with `drawTextArea`.
 
+A row breaks after the last space or punctuation mark that fits, looking back at most 20 columns, and is cut at `maxCols` if there is none. `\n` always starts a new row, and the newline counts as the last byte of the row it ends, so a text ending in `\n` has an empty row after it.
+
 - **Parameters:**
   - `text` (string): Text to wrap
-  - `maxCols` (number): Maximum columns per line
-- **Returns:** (table, number) segments array of byte offsets, number of wrapped rows
+  - `maxCols` (number): Maximum columns per line. Zero or less makes the whole text one row.
+- **Returns:** (table, number) segments array of 0-based byte offsets where the rows start, number of wrapped rows. Empty text is one row at offset 0.
 
-> **Note:** Maximum 512 segments.
+Row `i` (1-based) of the text is `text:sub(segments[i] + 1, segments[i + 1] or #text)`, including any newline or space at its end.
 
 ```lua
+local longText = "One line that is long enough to need wrapping.\nA second line."
 local segments, rows = picocalc.ui.wrapText(longText, 40)
 picocalc.ui.drawTextArea(10, 30, 250, 200, longText, segments, 0, 0, 0, true, true)
 ```

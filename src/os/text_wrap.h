@@ -1,7 +1,7 @@
 #pragma once
 
 // Shared word wrap utility for PicoDeck
-// Used by terminal_render.c and ui_widgets.c
+// Used by terminal_render.c and lua_bridge_ui.c
 
 // Find best break position in text, searching backward from max_cols
 // for spaces/punctuation (space, tab, dash, comma, period, semicolons,
@@ -27,3 +27,16 @@ int text_wrap_find_break(const char *text, int text_len, int max_cols);
 // Returns: number of visual rows (always >= 1)
 int text_wrap_segments(const char *text, int text_len, int max_cols,
                        int *segments, int max_segments);
+
+// One step of wrapping a whole text, newlines included (picocalc.ui.wrapText):
+// the terminal's text_wrap_segments sees one logical line and has no newlines
+// to honour. A row ends at a newline, which belongs to it, or where
+// text_wrap_find_break says, so a text with no newline wraps exactly as
+// text_wrap_segments wraps it.
+//
+// pos: where the current row starts (0 for the first)
+//
+// Returns: where the next row starts, or -1 if this row is the last. A text
+//          ending in a newline has one more, empty, row (at text_len).
+//          max_cols <= 0 makes the whole text one row.
+int text_wrap_next_row(const char *text, int text_len, int pos, int max_cols);

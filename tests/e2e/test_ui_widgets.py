@@ -135,6 +135,42 @@ def test_text_field_scroll_clamps_to_the_text(simulator, test_sd_card):
 
 # ── wrapText ─────────────────────────────────────────────────────────────────
 
+WRAP = r"""
+local function show(name, text, cols)
+    local segs, rows = ui.wrapText(text, cols)
+    picocalc.sys.log("WRAP " .. name .. " rows=" .. rows .. " #=" .. #segs
+                     .. " segs=" .. table.concat(segs, ",", 1, math.min(#segs, 8)))
+end
+show("newlines", "a\nb\nc", 10)
+show("trailing", "a\n", 10)
+show("blank", "a\n\nb", 10)
+show("words", ("abcdef "):rep(40), 10)
+show("long_nl", ("x"):rep(25) .. "\n" .. ("y"):rep(5), 10)
+show("many", ("ab\n"):rep(600), 10)
+show("empty", "", 10)
+show("badcols", "abc", 0)
+"""
+
+
+@pytest.mark.sd(fixtures=[])
+def test_wraptext_keeps_every_row_and_breaks_at_newlines(simulator, test_sd_card):
+    run_ok(simulator, test_sd_card, "ui_wrap", WRAP)
+    got = {}
+    for t in log_lines(simulator):
+        if "WRAP " in t:
+            parts = t.split("WRAP ", 1)[1].split()
+            got[parts[0]] = dict(p.split("=", 1) for p in parts[1:])
+    assert got["newlines"]["segs"] == "0,2,4" and got["newlines"]["rows"] == "3"
+    assert got["trailing"]["segs"] == "0,2" and got["trailing"]["rows"] == "2"
+    assert got["blank"]["segs"] == "0,2,3" and got["blank"]["rows"] == "3"
+    assert got["words"]["rows"] == "40"                # was 30: rows were dropped
+    assert got["long_nl"]["segs"] == "0,10,20,26"
+    assert got["many"]["rows"] == "601", got["many"]   # no 512-row cap
+    assert got["many"]["#"] == "601"
+    assert got["empty"]["segs"] == "0" and got["empty"]["rows"] == "1"
+    assert got["badcols"]["segs"] == "0" and got["badcols"]["rows"] == "1"
+
+
 # ── Modal dialogs ─────────────────────────────────────────────────────────────
 
 # Blue under a clip rect in the top-left corner: everything else is black, so a
