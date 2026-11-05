@@ -47,8 +47,10 @@ mycard/
 ```
 
 ```sh
-./picodeck_simulator --sd-card mycard
+./picodeck-simulator-linux --sd-card mycard
 ```
+
+One you built is `build_sim/picodeck_simulator`, with the same flags.
 
 The simulator creates `apps/`, `data/` and `system/` in an empty folder, so it starts with a blank card. It stops with a message, and creates nothing, if the path is not a folder, or if the folder holds app folders but no `apps/` (you passed `mycard/apps`).
 
@@ -59,7 +61,7 @@ With no `--sd-card`, a simulator you built uses the source tree it was built fro
 Pick it in the launcher with the arrow keys and Enter, or start it from the command line. `--launch` takes the app's id, its name or its folder name:
 
 ```sh
-./picodeck_simulator --sd-card mycard --launch myapp
+./picodeck-simulator-linux --sd-card mycard --launch myapp
 ```
 
 The launcher reads `/apps` at boot and each time an app exits. `main.lua` is read on every launch, so to try an edit, press Esc in your app (if it handles that) or use the system menu's Exit App, then Enter.

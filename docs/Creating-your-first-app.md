@@ -55,8 +55,10 @@ mycard/
 ```
 
 ```sh
-./picodeck_simulator --sd-card mycard --launch myapp
+./picodeck-simulator-linux --sd-card mycard --launch myapp
 ```
+
+That is the name of the [downloaded simulator](Simulator-and-Testing.md); one you built is `build_sim/picodeck_simulator`.
 
 **On a device:** copy the `myapp` folder into `apps/` on the card. With the device at the launcher, the system menu's **USB Disk Mode** makes the card a USB drive, so it can stay in the slot; [Getting started on a device](Getting-started-on-a-device.md#5-copy-your-own-apps) has the steps. Then pick the app in the launcher: with no `category` it is under Demos.
 
