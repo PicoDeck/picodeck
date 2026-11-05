@@ -1327,14 +1327,16 @@ local thumb = picocalc.graphics.image.loadScaled("/apps/myapp/photo.jpg", 64, 64
 ---
 
 #### `picocalc.graphics.image.preload(path)`
-Starts an asynchronous decode of an image on Core 1. Only one preload can be in flight at a time. Poll for completion with `pollPreload()`.
+Starts an asynchronous decode of an image on Core 1. Poll for completion with `pollPreload()`.
+
+Only one preload can be in flight. Calling `preload` while one is decoding **cancels that one** and returns `false` without starting the new one, so nothing is pending any more: try again on a later frame, until it returns `true`. Starting one also drops a finished image nobody has polled for.
 
 - **Parameters:**
   - `path` (string): Absolute file path
 - **Returns:** (boolean) `true` if the preload was started
 
 ```lua
-picocalc.graphics.image.preload("/apps/myapp/level2.png")
+local started = picocalc.graphics.image.preload(APP_DIR .. "/level2.png")
 ```
 
 ---
@@ -1342,16 +1344,18 @@ picocalc.graphics.image.preload("/apps/myapp/level2.png")
 #### `picocalc.graphics.image.pollPreload()`
 Checks the state of the pending preload.
 
-- **Returns:** (userdata or nil, boolean) `image, ready` — `ready` is `true` once the preload has finished (successfully or not); `image` is the decoded image, or `nil` while still decoding or on failure
+- **Returns:** (userdata or nil, boolean) `image, ready` — `ready` is `true` once, when the preload has finished (successfully or not); `image` is the decoded image, or `nil` while still decoding or on failure
+
+With nothing pending, after a delivery, a `cancelPreload` or a `preload` that returned `false`, this returns `nil, false` for ever, so only wait for a preload that returned `true`. The decode runs on Core 1, which cannot run the Lua collector: if a preload fails for lack of memory, call `collectgarbage()` and preload again, or use `image.load`, which collects by itself.
 
 ```lua
-while true do
-    local img, ready = picocalc.graphics.image.pollPreload()
-    if ready then
-        if img then levelArt = img end
-        break
-    end
-    picocalc.sys.sleep(10)
+local levelArt
+if picocalc.graphics.image.preload(APP_DIR .. "/level2.png") then
+    repeat
+        local img, ready = picocalc.graphics.image.pollPreload()
+        levelArt = img
+        picocalc.sys.sleep(10)
+    until ready
 end
 ```
 
