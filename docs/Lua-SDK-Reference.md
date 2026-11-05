@@ -2,7 +2,7 @@
 title: "Lua SDK Reference"
 ---
 
-This page lists every Lua API available to PicoDeck apps, with a link to its reference. All of them hang off the `picocalc` global, except the standard libraries.
+This page lists every Lua API available to PicoDeck apps, with a link to its reference. The `API` pages are all under the `picocalc` global.
 
 ## API Sections
 
