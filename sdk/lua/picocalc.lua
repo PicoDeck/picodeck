@@ -591,6 +591,7 @@ function picocalc.sys.clearMenuItems() end
 function picocalc.sys.triggerFault() end
 
 ---Reset the idle screen-dim timer (call on user activity to keep the screen on).
+---An app starts with the timer fresh and the screen lit.
 function picocalc.sys.resetIdleTimer() end
 
 ---Pause Core 1 background work (network polling, audio updates).

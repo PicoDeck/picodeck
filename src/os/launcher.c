@@ -23,6 +23,7 @@
 
 #include "clock.h"
 #include "config.h"
+#include "idle_dim.h"
 #include "lua_psram_alloc.h"
 #include "os_overlay.h"
 #include "screenshot.h"
@@ -805,6 +806,14 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   s_running_app_name = app->name;
   s_app_launch_time_ms = to_ms_since_boot(get_absolute_time());
   sim_app_outcome_begin(app->name, app->id);
+
+  // A launch is activity: lights a dimmed panel and restarts the idle timer.
+  // A key or pad launch finds the screen awake already (what woke it was
+  // swallowed), but the dev `launch` does not, and the app's first key would
+  // be spent waking it (keyboard.c swallows the waking input). Here rather
+  // than in the dev command, so that no way in can miss it and a refusal
+  // below shows its reason on a lit panel.
+  idle_dim_note_activity();
 
   // Free any PSRAM used by the MP3 player (from a previous Lua app)
   // so we have maximum memory for the next app.

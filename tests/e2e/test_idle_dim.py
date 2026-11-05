@@ -9,11 +9,12 @@ RPC reports the level. On the virtual clock the 60 s timeout costs ~1.2 s, and
 the tests then slow the clock to real time so the screen cannot dim again while
 they run. tests/e2e/test_kbd_hw.py checks the launch on the device.
 """
+import json
 import time
 
 import pytest
 
-from helpers import stage_lua_app
+from helpers import app_rel_dir, stage_lua_app
 
 DIM_LEVEL = 10  # IDLE_DIM_LEVEL, src/os/idle_dim.c
 
@@ -77,6 +78,34 @@ def _launcher_passes(sim, n=2):
         assert sim.call("dev_command", {"cmd": "ping"})["ok"]
 
 
+def _launch_probe_dimmed(sim_factory, sd):
+    stage_lua_app(sd, "dim_probe", PROBE)
+    sim, level = _boot(sim_factory, sd)
+    _wait_dimmed(sim)
+    sim.launch_app("dim_probe")
+    sim.wait_for_log("PROBE READY", timeout=10)
+    return sim, level
+
+
+def test_launch_lights_the_panel(sim_factory, test_sd_card):
+    sim, level = _launch_probe_dimmed(sim_factory, test_sd_card)
+    state = sim.call("get_backlight")
+    assert state == {"level": level, "dimmed": False}, \
+        "the app started on a dimmed screen"
+
+
+def test_first_key_after_a_launch_reaches_the_app(sim_factory, test_sd_card):
+    sim, _ = _launch_probe_dimmed(sim_factory, test_sd_card)
+    _tap(sim, "up")
+    # A second key marks the place: whatever became of the first, this one
+    # arrives, and the app read the first before it.
+    _tap(sim, "down")
+    sim.wait_for_log("PROBE press down", timeout=10)
+    lines = _probe_lines(sim)
+    assert "PROBE press up" in lines, \
+        f"the first key after the launch never reached the app: {lines}"
+
+
 @pytest.mark.sd(fixtures=[], reserve=1)  # stages a listed app
 def test_launcher_swallows_the_wake_and_a_key_launch_still_works(sim_factory,
                                                                  test_sd_card):
@@ -136,6 +165,21 @@ def test_wake_key_in_a_running_app_is_still_swallowed(sim_factory, test_sd_card)
     assert "PROBE press up" not in lines, f"the waking key leaked: {lines}"
     # Only the second key's events: down, then up once its hold ends.
     assert lines.count("PROBE event down") == 1, lines
+
+
+def test_refused_launch_shows_its_reason_on_a_lit_panel(sim_factory, test_sd_card):
+    stage_lua_app(test_sd_card, "dim_big", "return\n")
+    manifest = test_sd_card / app_rel_dir("dim_big") / "app.json"
+    m = json.loads(manifest.read_text())
+    m["min_psram_kb"] = 1024 * 1024
+    manifest.write_text(json.dumps(m))
+    sim, level = _boot(sim_factory, test_sd_card)
+    _wait_dimmed(sim)
+
+    sim.launch_app("dim_big")
+    out = sim.wait_for_exit(timeout=10)
+    assert out["result"] == "load_failed", out
+    assert sim.call("get_backlight") == {"level": level, "dimmed": False}
 
 
 def test_launch_of_a_missing_app_leaves_the_screen_dim(sim_factory, test_sd_card):
