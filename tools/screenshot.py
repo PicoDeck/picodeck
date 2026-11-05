@@ -8,12 +8,14 @@ Usage:
     python3 tools/screenshot.py --raw frame.bin     # save raw RGB565 (no Pillow needed)
     python3 tools/screenshot.py ping                # test serial connectivity
 
+A transfer that fails its integrity check is retried, and after 3 failures
+this exits with an error rather than save a damaged frame.
+
 Requires: pyserial (pip install pyserial)
 Optional: Pillow  (pip install Pillow) — for PNG output
 """
 
 import argparse
-import struct
 import sys
 import time
 
@@ -23,10 +25,11 @@ except ImportError:
     print("Error: pyserial not installed. Run: pip install pyserial", file=sys.stderr)
     sys.exit(1)
 
+import scrn_frame
 
-MAGIC = b"SCRN"
-HEADER_SIZE = 12
+
 TIMEOUT = 5  # seconds
+ATTEMPTS = 3
 
 
 def find_device():
@@ -72,54 +75,28 @@ def ping(port, timeout=TIMEOUT):
 def capture(port, timeout=TIMEOUT):
     """Send screenshot command and receive framebuffer data.
 
-    Returns (width, height, format, pixel_data) or raises on error.
+    Returns (width, height, format, pixel_data). A damaged transfer is retried;
+    raises ScrnError after ATTEMPTS of them, TimeoutError if the device does
+    not answer.
     """
-    ser = open_serial(port, timeout)
-
-    # Send command
-    ser.write(b"screenshot\n")
-    ser.flush()
-
-    # Read until we find the SCRN magic (skip any printf output before it)
-    buf = b""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        chunk = ser.read(max(1, ser.in_waiting))
-        if not chunk:
-            continue
-        buf += chunk
-        idx = buf.find(MAGIC)
-        if idx >= 0:
-            buf = buf[idx:]  # discard anything before magic
-            break
-    else:
-        ser.close()
-        raise TimeoutError("Timed out waiting for SCRN header")
-
-    # Read rest of header
-    while len(buf) < HEADER_SIZE:
-        remaining = HEADER_SIZE - len(buf)
-        chunk = ser.read(remaining)
-        if not chunk:
-            raise TimeoutError("Timed out reading header")
-        buf += chunk
-
-    width, height, fmt = struct.unpack_from("<HHH", buf, 4)
-    pixel_bytes = width * height * 2
-
-    # Read pixel data
-    data = buf[HEADER_SIZE:]
-    while len(data) < pixel_bytes:
-        remaining = pixel_bytes - len(data)
-        chunk = ser.read(min(remaining, 4096))
-        if not chunk:
-            raise TimeoutError(
-                f"Timed out reading pixels ({len(data)}/{pixel_bytes} bytes)"
-            )
-        data += chunk
-
-    ser.close()
-    return width, height, fmt, data[:pixel_bytes]
+    for attempt in range(ATTEMPTS):
+        ser = open_serial(port, timeout)
+        try:
+            ser.write(b"screenshot\n")
+            ser.flush()
+            frame = scrn_frame.read_frame(ser, timeout)
+            if not frame.verified:
+                print("Warning: this firmware sends no screenshot checksum, so "
+                      "the frame is unverified", file=sys.stderr)
+            return frame.width, frame.height, frame.format, frame.pixels
+        except scrn_frame.ScrnError as e:
+            # Never close on a half-read stream: see scrn_frame.drain.
+            scrn_frame.drain(ser)
+            if attempt == ATTEMPTS - 1:
+                raise scrn_frame.ScrnError(f"{e} (after {ATTEMPTS} attempts)") from e
+            print(f"Retrying: {e}", file=sys.stderr)
+        finally:
+            ser.close()
 
 
 def rgb565be_to_rgb(data, width, height):
@@ -201,7 +178,7 @@ def main():
 
     try:
         width, height, fmt, data = capture(device, timeout=args.timeout)
-    except (TimeoutError, serial.SerialException) as e:
+    except (TimeoutError, scrn_frame.ScrnError, serial.SerialException) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
