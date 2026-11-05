@@ -4,6 +4,8 @@ title: "API — TCP Sockets"
 
 Raw non-blocking TCP/TLS client sockets. Connections are handled cross-core by the Core 1 network stack. A static pool supports up to 4 simultaneous connections.
 
+**Requirements:** declare `"http"` in your `app.json` `requirements` for TCP too. It makes the OS connect to the saved network when your app launches and keep the connection up while it runs. Without it nothing refuses your calls, but WiFi may well be off, and a connect then fails. The simulator is always online, so a missing requirement shows only on the device.
+
 ## picocalc.tcp
 
 Callbacks fire from the main loop — they are pumped by the firmware's debug hook. Call `picocalc.input.update()` or `picocalc.sys.sleep()` regularly in your main loop so they can run.
@@ -15,7 +17,7 @@ Open a new TCP connection to a host.
 
 - **Parameters:**
   - `host` (string): Hostname or IP address
-  - `port` (number, optional): Port number. Default 80.
+  - `port` (number, optional): Port number. Default 80, with or without TLS. To pass `use_ssl` without a port, give `nil`: `new(host, nil, true)` (`new(host, true)` raises).
   - `use_ssl` (boolean, optional): `true` for a TLS connection. Default `false`. TLS verifies the server certificate (OS root bundle + host name); a TLS connect before SNTP has set the clock fails with "clock not set". The socket counts as connected only after the TLS handshake.
 - **Returns:** a connection object, or `nil, err` when the 4-socket pool is full. Nothing is sent until `conn:connect()`.
 
@@ -72,10 +74,21 @@ Write data to the connection.
 
 - **Parameters:**
   - `data` (string): Data to send
-- **Returns:** (number) Number of bytes written, or -1 on error
+- **Returns:** (number) Number of bytes queued (all of them), or -1 if nothing was queued
+
+-1 is usually not a failure. Each `write` is one request to the network core, and at most 8 can wait, so a tight loop gets -1 once they are queued, with the connection fine and `conn:error()` still `nil`. Send data in one call where you can (a single large write is fine), and retry the rest while the socket is connected:
 
 ```lua
-conn:write("GET / HTTP/1.0\r\n\r\n")
+local function write_all(conn, data)
+    while true do
+        local n = conn:write(data)
+        if n >= 0 then return true end
+        if not conn:isConnected() then return false, conn:error() end
+        picocalc.sys.sleep(5)   -- the queue drains within a few milliseconds
+    end
+end
+
+local ok, err = write_all(conn, "GET / HTTP/1.0\r\n\r\n")
 ```
 
 ---
@@ -84,7 +97,7 @@ conn:write("GET / HTTP/1.0\r\n\r\n")
 Read available data from the connection.
 
 - **Parameters:**
-  - `max_len` (number, optional): Maximum number of bytes to read
+  - `max_len` (number, optional): Maximum number of bytes to read. Default 4096, so `conn:read()` can leave data behind: loop while `conn:available() > 0`.
 - **Returns:** (string or nil) Data read, or `nil` if no data is available
 
 Read as data arrives: the device has no TCP flow control, so a connection whose unread data passes 32 KB fails with `receive overflow (the app is not reading fast enough)` (`conn:error()`). Data already received stays readable after the peer closes, however much of it there is. A TLS server's close_notify ends the connection like a plain close (`isConnected()` false, no error).
@@ -116,7 +129,7 @@ Get the number of bytes available to read.
 - **Returns:** (number) Bytes available
 
 ```lua
-if conn:available() > 0 then
+while conn:available() > 0 do
     local data = conn:read()
 end
 ```
@@ -127,7 +140,7 @@ end
 Get the last connection error.
 
 - **Parameters:** None
-- **Returns:** (string or nil) Error string, or `nil` if there is no error
+- **Returns:** (string or nil) Error string, or `nil` if there is no error. It stays `nil` while the socket is connecting or connected.
 
 ---
 
@@ -160,13 +173,13 @@ Fail a connected socket that receives nothing for this long. Every byte that arr
 Off by default; 0 disables it.
 
 - **Parameters:**
-  - `seconds` (number): Timeout in seconds
+  - `seconds` (number): Timeout in seconds. Fractions are allowed.
 - **Returns:** None
 
 ---
 
 #### `conn:setConnectCallback(fn)`
-Set a callback fired when the connection is established (or fails). The callback receives the connection object.
+Set a callback fired when the connection is established. The callback receives the connection object. It does not fire when the connection fails: that is the [close callback](#connsetclosecallbackfn).
 
 Callbacks receive the socket and are never nested.
 
@@ -199,7 +212,7 @@ end)
 ---
 
 #### `conn:setCloseCallback(fn)`
-Set a callback fired when the connection closes. The callback receives the connection object.
+Set a callback fired when the connection ends: the peer closed it, or the connection failed (including a connect that never succeeded and a timeout; `c:error()` says why, and is `nil` after a clean close). It does not fire after your own `conn:close()`. The callback receives the connection object.
 
 - **Parameters:**
   - `fn` (function): `function(conn) ... end`
@@ -211,7 +224,7 @@ Set a callback fired when the connection closes. The callback receives the conne
 Get pending connection events.
 
 - **Parameters:** None
-- **Returns:** (number) the pending events that have **no callback registered**, cleared by the call: `picocalc.tcp.CB_CONNECT` (1), `CB_READ` (2), `CB_WRITE` (4), `CB_CLOSED` (8), `CB_FAILED` (16).
+- **Returns:** (number) the pending events that have **no callback registered**, cleared by the call: `picocalc.tcp.CB_CONNECT` (1), `CB_READ` (2), `CB_CLOSED` (8), `CB_FAILED` (16). `CB_WRITE` (4) is reserved: it is never set.
 
 ---
 
