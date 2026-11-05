@@ -173,3 +173,35 @@ def test_mp3_contention(target):
         app = results[name]["app"]
         assert app["late"] == 0, (name, app)
         assert app["work_avg"] <= none * 1.15, (name, app, none)
+
+
+def id3v2(body: int) -> bytes:
+    """An ID3v2.3 tag of `body` bytes: noise, as a JPEG's scan is."""
+    size = bytes((body >> s) & 0x7f for s in (21, 14, 7, 0))
+    return b"ID3\x03\x00\x00" + size + os.urandom(body)
+
+
+@pytest.mark.skipif(not FFMPEG, reason="needs ffmpeg for the music")
+@pytest.mark.parametrize("where", ["end", "between"])
+def test_a_big_tag_in_the_file_costs_nothing(target, where):
+    """Issue #63: a 200 KB tag after the audio, or between two streams, looped
+    for 20 s (each 8 s pass meets it): no underrun, and libmad never walks it
+    (a walk is one `mad_err` a byte, 32 a millisecond: ~6 s of stall a pass)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        app = Path(tmp) / APP
+        shutil.copytree(HW_APPS_DIR / APP, app)
+        make_music(app, "s44.mp3")
+        music = (app / "s44.mp3").read_bytes()
+        (app / "tagged.mp3").write_bytes(
+            music + id3v2(200000) + (music if where == "between" else b""))
+        target.push_app(app, APP)
+    target.command("mp3stats", timeout=3.0)    # resets its counters
+    r = run(target, f"tag_{where}", "tagged.mp3", 30, "idle", True, False)
+    print(row(r), flush=True)
+    stats = next(line for line in target.command("mp3stats", timeout=3.0)
+                 if "[DEV] mp3 @" in line)
+    print(stats, flush=True)
+    mad_err = int(re.search(r"mad_err=(\d+)", stats).group(1))
+    assert r["app"].get("mp3_playing"), r
+    assert r["audio"]["mp3_underruns"] == 0, r
+    assert mad_err < 100, stats                # one or so a pass

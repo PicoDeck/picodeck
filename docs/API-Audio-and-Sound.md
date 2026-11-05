@@ -591,7 +591,7 @@ mp3:play()
 ---
 
 #### `player:load(path)`
-Opens an MP3 file for streaming. ID3v2 tags at the start of the file (title, artist, cover art; any size) are skipped: playback starts, and every loop restarts, at the first frame of audio.
+Opens an MP3 file for streaming. ID3v2 tags at the start of the file (title, artist, cover art; any size) are skipped: playback starts, and every loop restarts, at the first frame of audio. ID3 tags further on (an ID3v1 or ID3v2 tag after the audio, or between two MP3s joined into one file) are skipped when the decoder reaches them, and cost nothing however large. A tag is skipped only if its size fits the file and the stream goes on where it ends; otherwise its bytes are searched for the next frame, which holds the decoder up by ~1 ms for every 32 bytes (no audio is lost).
 
 - **Returns:** `true` on success, or `nil, errstr` if the file cannot be opened or is not an MP3
 
