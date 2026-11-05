@@ -953,9 +953,10 @@ function picocalc.sysconfig.load() end
 ---@class picocalc.audio
 picocalc.audio = {}
 
----Play a tone at the given frequency. If `duration_ms` is 0 or omitted the
----tone plays indefinitely until `stopTone()` is called.
----@param freq integer Frequency in Hz (e.g. 440 for A4)
+---Play a square wave at the given frequency, replacing any tone playing. If
+---`duration_ms` is 0 or omitted the tone plays indefinitely until `stopTone()`
+---is called.
+---@param freq integer Frequency in Hz (e.g. 440 for A4), held to 20-20000
 ---@param duration_ms? integer Duration in milliseconds; 0 = indefinite
 function picocalc.audio.playTone(freq, duration_ms) end
 
@@ -963,8 +964,9 @@ function picocalc.audio.playTone(freq, duration_ms) end
 function picocalc.audio.stopTone() end
 
 ---Set the master volume. It scales everything the mixer plays: tones,
----samples, the PCM stream (FilePlayer, MOD player) and MP3. It resets to
----100 when the app exits.
+---samples, the PCM stream (FilePlayer, MOD player) and MP3. A tone falls
+---faster than the rest (12% at volume 50, 0.3% at 10). It resets to 100 when
+---the app exits.
 ---@param volume integer 0 (mute) – 100 (maximum)
 function picocalc.audio.setVolume(volume) end
 
@@ -999,7 +1001,8 @@ function picocalc.sound.getCurrentTime() end
 ---Reset the audio clock to zero.
 function picocalc.sound.resetTime() end
 
----Return the number of currently active audio sources.
+---Return how many SamplePlayers are playing. A FilePlayer, MP3Player, MOD
+---player, tone or stream does not count.
 ---@return integer
 function picocalc.sound.playingSources() end
 
@@ -1024,9 +1027,11 @@ function picocalc.sound.sample(path_or_duration, opts) end
 ---@return string? error
 function picocalc.sound.sampleplayer(sample_or_path) end
 
----Create a FilePlayer for streaming WAV files from the SD card.
----@param buffer_size? integer Internal streaming buffer size in bytes
----@return PicoDeckFilePlayer
+---Create a FilePlayer for streaming WAV and QOA files from the SD card. At most
+---2 exist at once; one plays at a time.
+---@param buffer_size? integer Accepted and ignored
+---@return PicoDeckFilePlayer? player
+---@return string? error
 function picocalc.sound.fileplayer(buffer_size) end
 
 ---Create an MP3Player for streaming MP3 files from the SD card.
@@ -1057,10 +1062,12 @@ function PicoDeckSample:getFormat() end
 ---@return PicoDeckSample
 function PicoDeckSample:decompress() end
 
----Return a new Sample containing the sub-range `[start, end]` (sample frames).
+---Return a new Sample containing frames `start_frame` up to, not including,
+---`end_frame`.
 ---@param start_frame integer
 ---@param end_frame integer
----@return PicoDeckSample
+---@return PicoDeckSample? sample `nil` if the slice is empty or memory runs out
+---@return string? error
 function PicoDeckSample:getSubsample(start_frame, end_frame) end
 
 ---Play this sample on a temporary player, which you may drop: it plays to the
@@ -1135,9 +1142,9 @@ function PicoDeckSamplePlayer:setVolume(vol) end
 ---@return integer
 function PicoDeckSamplePlayer:getVolume() end
 
----Restrict playback to a sub-range (in sample frames).
----@param start_frame integer
----@param end_frame integer
+---Restrict playback to frames `start_frame` up to, not including, `end_frame`.
+---@param start_frame integer Ignored at or past `end_frame`
+---@param end_frame integer 0 = the end of the sample
 function PicoDeckSamplePlayer:setPlayRange(start_frame, end_frame) end
 
 ---Set playback rate multiplier (1.0 = normal speed).
@@ -1202,8 +1209,8 @@ function PicoDeckFilePlayer:getOffset() end
 ---@param seconds number
 function PicoDeckFilePlayer:setOffset(seconds) end
 
----Set the volume. `right` is accepted for Playdate compatibility, but both
----channels play at `left`.
+---Set the volume. `right` is accepted but ignored: both channels play at
+---`left`.
 ---@param left integer 0–100 (larger values clamp to 100)
 ---@param right? integer 0–100
 function PicoDeckFilePlayer:setVolume(left, right) end
