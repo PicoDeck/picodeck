@@ -201,16 +201,10 @@ static int l_tcp_isConnected(lua_State *L) {
     return 1;
 }
 
-// Seconds (fractions allowed) → ms; negative counts as 0.
-static uint32_t tcp_secs_to_ms(lua_State *L, int idx) {
-    lua_Number s = luaL_checknumber(L, idx);
-    return s > 0 ? (uint32_t)(s * 1000.0) : 0;
-}
-
 // sock:setConnectTimeout(seconds) — applies to the next connect().
 static int l_tcp_setConnectTimeout(lua_State *L) {
     tcp_ud_t *ud = check_tcp(L, 1);
-    uint32_t ms = tcp_secs_to_ms(L, 2);
+    uint32_t ms = lb_secs_to_ms(luaL_checknumber(L, 2));
     if (ud->conn) tcp_set_connect_timeout(ud->conn, ms);
     return 0;
 }
@@ -247,7 +241,7 @@ static int l_tcp_peerFingerprint(lua_State *L) {
 // nothing for that long; 0 turns it off (the default).
 static int l_tcp_setReadTimeout(lua_State *L) {
     tcp_ud_t *ud = check_tcp(L, 1);
-    uint32_t ms = tcp_secs_to_ms(L, 2);
+    uint32_t ms = lb_secs_to_ms(luaL_checknumber(L, 2));
     if (ud->conn) tcp_set_read_timeout(ud->conn, ms);
     return 0;
 }

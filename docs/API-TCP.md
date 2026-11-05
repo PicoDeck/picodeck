@@ -145,7 +145,7 @@ Set the connection timeout.
 Applies to the next connect; default 15 s (covers the TLS handshake).
 
 - **Parameters:**
-  - `seconds` (number): Timeout in seconds
+  - `seconds` (number): Timeout in seconds. Fractions are allowed. `0` turns it off.
 - **Returns:** None
 
 ```lua
@@ -155,7 +155,7 @@ conn:setConnectTimeout(10)
 ---
 
 #### `conn:setReadTimeout(seconds)`
-Set the read timeout.
+Fail a connected socket that receives nothing for this long. Every byte that arrives starts it over.
 
 Off by default; 0 disables it.
 

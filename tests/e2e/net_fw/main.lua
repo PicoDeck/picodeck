@@ -801,6 +801,63 @@ case_fw("http_big_body_default_ring", function()
     conn:close()
 end)
 
+-- A second connect() while one runs is refused.
+case_fw("tcp_connect_twice_refused", function()
+    local s = T.ok(pc.tcp.new(HOST, cfg.blackhole, false), "tcp.new")
+    T.ok(s:connect(), "first connect")
+    local ok, err = s:connect()
+    T.eq(ok, false, "second connect while connecting")
+    T.ok(err, "a reason")
+    s:close()
+    local e = tcp_open()
+    ok, err = e:connect()
+    T.eq(ok, false, "connect while connected")
+    T.ok(err, "a reason")
+    e:close()
+end)
+
+case_fw("tcp_read_timeout_fraction", function()
+    local s = tcp_open()
+    s:setReadTimeout(0.3)
+    local t0 = now()
+    T.ok(wait(function() return s:error() ~= nil end, 2000),
+         "no read timeout within 2 s")
+    T.ok(now() - t0 >= 200, "too early")
+    T.ok(s:error():find("read timeout", 1, true), s:error())
+    T.eq(s:isConnected(), false, "isConnected")
+    s:close()
+end)
+
+-- The documented retry: a burst of small writes all arrive, in order.
+case_fw("tcp_write_retry_pattern", function()
+    local s = tcp_open()
+    local function write_all(conn, data)
+        while true do
+            local n = conn:write(data)
+            if n >= 0 then return true end
+            if not conn:isConnected() then return false, conn:error() end
+            pc.sys.sleep(5)
+        end
+    end
+    local sent = {}
+    for i = 1, 200 do
+        local b = string.char(32 + i % 90)
+        sent[i] = b
+        T.ok(write_all(s, b), "write " .. i)
+    end
+    T.eq(tcp_read_until(s, 200), table.concat(sent), "echo")
+    s:close()
+end)
+
+case_fw("tcp_connect_timeout_zero_is_off", function()
+    local s = T.ok(pc.tcp.new(HOST, cfg.blackhole, false), "tcp.new")
+    s:setConnectTimeout(0)
+    T.ok(s:connect(), "connect")
+    wait(function() return s:error() ~= nil end, 700)
+    T.eq(s:error(), nil, "failed although the timeout is off")
+    s:close()
+end)
+
 -- ── Run the one selected case ───────────────────────────────────────────────
 
 local fn = cases[cfg.case]

@@ -197,7 +197,7 @@ bool tcp_connect(tcp_conn_t *c, const char *host, uint16_t port, bool use_ssl) {
     uint8_t *spill = c->spill;  // the last connection's unread end
     c->spill = NULL;
     c->spill_len = c->spill_off = 0;
-    c->deadline_connect = now_ms() + c->connect_timeout_ms;
+    c->deadline_connect = c->connect_timeout_ms ? now_ms() + c->connect_timeout_ms : 0;
     c->deadline_read = 0;
     st_put(c, TCP_STATE_QUEUED);
     spin_unlock(s_lock, save);
