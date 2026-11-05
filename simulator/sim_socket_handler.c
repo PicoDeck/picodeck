@@ -18,6 +18,7 @@
 #include "os/launcher.h"
 #include "os/lua_psram_alloc.h"
 #include "os/screenshot.h"
+#include "os/serial_frame.h"
 #include "os/os.h"
 #include "sim_wifi.h"
 #include "os/terminal.h"
@@ -394,6 +395,37 @@ static char *framebuffer_base64(int *out_len) {
     return b64;
 }
 
+// ── The firmware's `screenshot` stream, as base64 ──────────────────────────────
+// The bytes that dev command sends over serial (src/os/serial_frame.h), for the
+// host's reader to read end to end (tests/e2e/test_screenshot_frame.py). Pixels
+// in panel order, as the firmware's framebuffer holds them.
+
+static char *serial_frame_base64(int *out_len) {
+    uint16_t *fb = hal_display_get_framebuffer();
+    if (!fb) { *out_len = 0; return NULL; }
+    const size_t pixel_bytes = 320 * 320 * 2;
+    const size_t total = SCRN_HEADER_LEN + pixel_bytes + SCRN_TRAILER_LEN;
+    uint8_t *raw = malloc(total);
+    char *b64 = malloc(b64_enc_size(total) + 1);
+    if (!raw || !b64) { free(raw); free(b64); *out_len = 0; return NULL; }
+
+    scrn_frame_header(raw, 320, 320, SCRN_FORMAT_RGB565, SCRN_FLAG_TRAILER);
+    uint8_t *pixels = raw + SCRN_HEADER_LEN;
+    for (size_t i = 0; i < 320 * 320; i++) {
+        pixels[i * 2] = (uint8_t)(fb[i] >> 8);
+        pixels[i * 2 + 1] = (uint8_t)fb[i];
+    }
+    char trailer[SCRN_TRAILER_LEN + 1];
+    scrn_frame_trailer(trailer, serial_fnv1a_update(SERIAL_FNV1A_INIT, pixels,
+                                                    (uint32_t)pixel_bytes));
+    memcpy(pixels + pixel_bytes, trailer, SCRN_TRAILER_LEN);
+
+    b64_encode(raw, total, b64);
+    free(raw);
+    *out_len = (int)strlen(b64);
+    return b64;
+}
+
 // ── Method handlers ────────────────────────────────────────────────────────────
 
 static char *h_ping(const char *params) {
@@ -596,6 +628,8 @@ static char *h_screenshot(const char *params) {
     int len;
     if (strcmp(format, "raw") == 0) {
         data = framebuffer_base64(&len);
+    } else if (strcmp(format, "serial") == 0) {
+        data = serial_frame_base64(&len);
     } else {
         data = take_screenshot_png(&len);
     }

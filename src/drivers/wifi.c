@@ -573,9 +573,10 @@ static void drain_requests(void) {
 // ─────────────────────────────────────────────────────────────────
 
 // Mongoose log sink.  The vendored mongoose defaults to MG_LL_DEBUG, so
-// Core 1 floods the shared serial console with ARP/IP-proto chatter; a log
-// line landing mid-payload corrupts dev-command bulk transfers (b64
-// screenshots and file transfers).  Runs on Core 1.
+// Core 1 floods the shared serial console with ARP/IP-proto chatter.  It logs
+// one character at a time, and each putchar takes the print mutex just to be
+// dropped by the console gate during a transfer (console_gate.h): stop here
+// instead.  Runs on Core 1.
 static void wifi_mg_log_sink(char c, void *param) {
   (void)param;
   if (dev_commands_transfer_active()) return;

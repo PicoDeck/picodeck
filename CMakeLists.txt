@@ -266,6 +266,7 @@ pico_generate_pio_header(pio_psram_lib ${PIO_PSRAM_DIR}/psram_spi.pio)
 
 add_executable(picodeck
     src/main.c
+    src/console_gate.c
     src/dev_commands.c
     src/dev_ops.c
     src/os/mv_op.c
@@ -566,6 +567,8 @@ endif()
 # Enable USB serial for stdio (printf goes to USB-C serial — handy for debug)
 pico_enable_stdio_usb(picodeck 1)
 pico_enable_stdio_uart(picodeck 1)
+# panic() opens the console gate before it prints (src/console_gate.c).
+target_link_options(picodeck PRIVATE "LINKER:--wrap=panic")
 
 pico_generate_pio_header(picodeck ${CMAKE_CURRENT_SOURCE_DIR}/src/drivers/lcd_spi.pio)
 

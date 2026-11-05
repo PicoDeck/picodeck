@@ -90,6 +90,11 @@ picodeck_unit_test(test_hid_pad SOURCES ${SRC}/drivers/hid_pad.c INCLUDES ${SRC}
 # The Bluetooth pads' bonding store (link keys + paired pads, on the SD card).
 picodeck_unit_test(test_bt_pad_store SOURCES ${SRC}/drivers/bt_pad_store.c INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_bus SOURCES ${SRC}/drivers/kbd_bus.c INCLUDES ${SRC}/drivers)
+picodeck_unit_test(test_serial_frame)
+find_package(Threads REQUIRED)
+picodeck_unit_test(test_console_gate SOURCES ${SRC}/console_gate.c
+                   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/fakes/console_gate ${SRC})
+target_link_libraries(test_console_gate PRIVATE Threads::Threads)
 # The default alarm pool fix (cmake/picodeck_pico_time.cmake, #58): the
 # cancellation pass cut out of the patched pico_time the firmware build
 # generates, from the SDK's time.c when PICO_SDK_PATH has one the patch
