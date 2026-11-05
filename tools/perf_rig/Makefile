@@ -14,6 +14,9 @@ NOVA_RAIL ?= $(HOME)/Projects/PicoDeck/nova-rail
 FRAMES ?= 60
 LAP_S ?= 71
 MAP ?= flash
+# The lent SRAM's sizes, as the firmware's: LENT="-DLENT_TIER=0" keeps that one in PSRAM.
+LENT ?=
+GUEST_API = $(shell grep -q gfx3d_xform $(GFX3D_SRC)/src/os/gfx3d.h && echo -DRIG_HAS_XFORM)
 RIG_ARGS ?=
 
 # ── Unicorn: the simulator's static build, here or in the main checkout ──────
@@ -55,7 +58,7 @@ HEAP_BASE := 0x20080000
 endif
 # Build directory: one per source tree, scene and placement, so `compare` keeps
 # both trees and changing FRAMES or a base can never run a stale guest.
-TAG := $(shell printf '%s' '$(abspath $(GFX3D_SRC)) $(TEXT_BASE) $(RAMTEXT_BASE) $(LIB_BASE) $(RODATA_BASE) $(DATA_BASE) $(STACK_TOP) $(HEAP_BASE) $(FB_BASE)' | cksum | cut -d' ' -f1)
+TAG := $(shell printf '%s' '$(LENT) $(abspath $(GFX3D_SRC)) $(TEXT_BASE) $(RAMTEXT_BASE) $(LIB_BASE) $(RODATA_BASE) $(DATA_BASE) $(STACK_TOP) $(HEAP_BASE) $(FB_BASE)' | cksum | cut -d' ' -f1)
 O ?= $(HERE)/build/$(TAG)-$(MAP)-$(FRAMES)-$(LAP_S)
 LDFLAGS := -nostartfiles --specs=nano.specs --specs=nosys.specs -Wl,--gc-sections -Wl,-T,$(HERE)/guest/guest.ld \
 	-Wl,--defsym=TEXT_BASE=$(TEXT_BASE) -Wl,--defsym=RAMTEXT_BASE=$(RAMTEXT_BASE) \
@@ -82,7 +85,7 @@ $(HERE)/build/selftest.elf: $(HERE)/guest/selftest.c $(HERE)/guest/rig.h $(HERE)
 
 $(O)/native: $(HERE)/guest/native.c $(HERE)/guest/gfx3d_main.c $(GFX3D_SRC)/src/os/gfx3d.c $(GFX3D_SRC)/src/drivers/display_clip.h $(SCENE)
 	@mkdir -p $(O)
-	$(HOSTCC) -O2 -std=gnu11 -ffp-contract=off -DRIG_NATIVE -DSCENE_BIN=\"$(SCENE)\" $(GUEST_INC) -include rig_alloc.h -DGFX3D_MALLOC=rig_malloc -DGFX3D_FREE=rig_free -o $@ $(HERE)/guest/native.c $(HERE)/guest/gfx3d_main.c $(GFX3D_SRC)/src/os/gfx3d.c -lm
+	$(HOSTCC) -O2 -std=gnu11 -ffp-contract=off -DRIG_NATIVE $(LENT) $(GUEST_API) -DSCENE_BIN=\"$(SCENE)\" $(GUEST_INC) -include rig_alloc.h -DGFX3D_MALLOC=rig_malloc -DGFX3D_FREE=rig_free -o $@ $(HERE)/guest/native.c $(HERE)/guest/gfx3d_main.c $(GFX3D_SRC)/src/os/gfx3d.c -lm
 
 run: all
 	@$(RIG) $(GUEST) --label "gfx3d.c from $(GFX3D_SRC), map $(MAP)" $(RIG_ARGS)
@@ -143,7 +146,7 @@ $(O)/gfx3d.o: $(GFX3D_SRC)/src/os/gfx3d.c $(GFX3D_SRC)/src/os/gfx3d.h $(GFX3D_SR
 
 $(O)/gfx3d_main.o: $(HERE)/guest/gfx3d_main.c $(HERE)/guest/rig.h $(HERE)/guest/rig_alloc.h $(GFX3D_SRC)/src/os/gfx3d.h
 	@mkdir -p $(O)
-	$(CC) $(ARCH) $(GFX3D_FLAGS) $(GUEST_INC) -c -o $@ $<
+	$(CC) $(LENT) $(GUEST_API) $(ARCH) $(GFX3D_FLAGS) $(GUEST_INC) -c -o $@ $<
 
 $(O)/start.o: $(HERE)/guest/start.S $(SCENE)
 	@mkdir -p $(O)

@@ -345,10 +345,10 @@ static void report(const char *label, bool show_device) {
            s_frame_cycles_raster[p] / (mhz * 1000));
   }
   if (show_device) {
-    printf("  %-24s %12.2f %12.2f %12.2f\n", "device, 200 MHz (ms)", 6.3, 4.1, 10.4);
+    printf("  %-24s %12.2f %12.2f %12.2f\n", "device, 200 MHz (ms)", 8.3, 5.9, 14.2);
     printf("  %-24s %+11.0f%% %+11.0f%% %+11.0f%%\n", "estimate vs device",
-           100 * (cg / (mhz * 1000) / 6.3 - 1), 100 * (cr / (mhz * 1000) / 4.1 - 1),
-           100 * ((cg + cr) / (mhz * 1000) / 10.4 - 1));
+           100 * (cg / (mhz * 1000) / 8.3 - 1), 100 * (cr / (mhz * 1000) / 5.9 - 1),
+           100 * ((cg + cr) / (mhz * 1000) / 14.2 - 1));
   }
   const counters_t *b = &s_c[PH_BEGIN];
   printf("  outside the device's timers (setProjection, lookAt, beginScene): %.2f ms, "

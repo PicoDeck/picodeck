@@ -20,6 +20,26 @@ void *rig_malloc(size_t n) {
 }
 void rig_free(void *p) { (void)p; }
 
+// The firmware's lent SRAM, at an address nothing else uses (the rig has no
+// other SRAM data below the stack). LENT_SCRATCH 17884 is s_jpeg_sram, LENT_TIER
+// 23820 is s_mp3_sram; 0 leaves that one in PSRAM. An older gfx3d.c never asks.
+#ifndef LENT_SCRATCH
+#define LENT_SCRATCH 17884
+#endif
+#ifndef LENT_TIER
+#define LENT_TIER 23820
+#endif
+#ifndef RIG_NATIVE  // the host's build has no such addresses: gfx3d.c's weak ones
+void *gfx3d_sram_scratch(size_t *bytes) {
+  *bytes = LENT_SCRATCH;
+  return LENT_SCRATCH ? (void *)0x20060000u : NULL;
+}
+void *gfx3d_sram_tier(size_t *bytes) {
+  *bytes = LENT_TIER;
+  return LENT_TIER ? (void *)0x20070000u : NULL;
+}
+#endif
+
 extern const uint32_t scene_blob[];
 extern uint16_t __fb_base[];
 
@@ -39,15 +59,24 @@ static const uint32_t *s_list[MAX_LISTS];
 static const float k_ident[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
 static const float k_origin[3] = {0, 0, 0};
 
+// As the bridge's drawList: one transform for the list, inside the timer. An older
+// gfx3d.c (make compare) has only gfx3d_draw, once per mesh, as its bridge did.
 static void draw_list(gfx3d_t *g, const uint32_t *list, float bias, int start) {
   const int n = (int)list[0];
+  RIG_PHASE(PHASE_GEOM);
+#ifdef RIG_HAS_XFORM
+  gfx3d_xform_t xf;
+  gfx3d_xform(g, k_ident, k_origin, 1.0f, &xf);
+#endif
   for (int k = 0; k < n; k++) {
     const int i = (start - 1 + k) % n + 1;
-    gfx3d_mesh_t *m = s_mesh[list[i]];
-    RIG_PHASE(PHASE_GEOM);
-    gfx3d_draw(g, m, k_ident, k_origin, 1.0f, bias, false);
-    RIG_PHASE(PHASE_IDLE);
+#ifdef RIG_HAS_XFORM
+    gfx3d_draw_xf(g, s_mesh[list[i]], &xf, bias, false);
+#else
+    gfx3d_draw(g, s_mesh[list[i]], k_ident, k_origin, 1.0f, bias, false);
+#endif
   }
+  RIG_PHASE(PHASE_IDLE);
 }
 
 int main(void) {

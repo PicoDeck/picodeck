@@ -10,7 +10,7 @@ one() {
   "$rig" "$elf" "$@" | awk -v name="$name" '/time at clock/ {
     printf "  %-34s %8s %8s %8s\n", name, $(NF-2), $(NF-1), $NF }'
 }
-printf "  %-34s %8s %8s %8s\n" "estimate (ms), device 6.30 4.10" geometry raster total
+printf "  %-34s %8s %8s %8s\n" "estimate (ms), device 8.3 5.9" geometry raster total
 one "as shipped (LRU, cold, no dirty)"
 one "replacement: FIFO" --policy fifo
 one "replacement: random" --policy random

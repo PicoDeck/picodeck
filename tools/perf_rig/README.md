@@ -22,13 +22,13 @@ Needs `arm-none-eabi-gcc`, host `lua` 5.4, a simulator build for its static Unic
 
 The table's last line hashes every frame's pixels: an optimisation that must not change the picture keeps that hash.
 
-The table's device row is the unmodified code's. For changed code or another map, compare the estimate with the unmodified code's estimate, not with that row.
+The table's device row is the unmodified code's, at 200 MHz. For changed code or another map, compare the estimate with the unmodified code's estimate, not with that row.
 
 ## What runs
 
 - **Code.** `src/os/gfx3d.c` is its own translation unit, built with the firmware's compiler and flags (`-mcpu=cortex-m33 -mthumb -march=armv8-m.main+fp+dsp -mfloat-abi=softfp -mcmse`, `-Os` then its per-file `-O2 -ffp-contract=off`). In `MAP=flash`, its symbols land at the same addresses as in `build/picodeck.elf` (checked by diffing `nm` at the time of writing: identical), so its lines fall in the same cache sets. A changed `gfx3d.c` moves as it would in the firmware, up to what follows it. `.time_critical*` goes to SRAM, as does newlib's `sqrtf` (where the firmware has it); `memset` and `memcpy` stay near their firmware addresses.
 - **Scene.** `scene/dump_scene.lua` runs the game's real `render.lua`, `trackgen`, `trackmesh`, `models` and `camera` under host Lua with `picocalc.gfx3d` stubbed, and records every call. It totals 2353 triangles, the device's `tris_in` max. Only the motion is approximate: the player runs the lap at constant speed, and the rivals hold fixed offsets, with no AI or physics.
-- **Phases.** `guest/gfx3d_main.c` replays the calls in the bridge's order. Geometry and raster bracket the same calls as the bridge's `us_geom` and `us_raster` timers. Meshes, the context, records and scratch come from a bump allocator in PSRAM at 200-byte granularity; the stack is in PSRAM; the 320x320 target is in SRAM with `swap` on, the viewport 320x240.
+- **Phases.** `guest/gfx3d_main.c` replays the calls in the bridge's order. Geometry and raster bracket the same calls as the bridge's `us_geom` and `us_raster` timers. Meshes, the context and the blocks that overflow lent memory come from a bump allocator in PSRAM at 200-byte granularity; the stack is in PSRAM; the 320x320 target is in SRAM with `swap` on, the viewport 320x240. Lent SRAM is as on the firmware (`gfx3d_sram_scratch`, `gfx3d_sram_tier`); `LENT="-DLENT_TIER=0 -DLENT_SCRATCH=0"` keeps either in PSRAM, as an older `gfx3d.c` does anyway.
 - **Lua (`run-lua`).** The real core from `third_party/lua-5.4` with the device's defines and `-O2`, and `for i = 1, 1000000 do end`, which is one FORLOOP bytecode per iteration. `luaV_execute` has the firmware's address and size (checked with `nm`); the rest of Lua follows it at other addresses, which an empty loop never reaches once running. The heap is a bump allocator in PSRAM.
 
 ## The cost model
@@ -68,20 +68,19 @@ The firmware addresses are defaults in the Makefile, read from the build at comm
 
 ## Calibration
 
-Device: geometry 6.3 ms and raster 4.1 ms a frame at 200 MHz. Nothing was tuned, and the miss costs are the stated ones. 300 frames over the lap:
+Against `hw_lap` on the device at 200 MHz (Nova Rail, 5 rivals, one lap, no audio; `--clock 200000`, since the game's own clock is 300 MHz). Nothing was tuned, and the miss costs are the stated ones. Each row is a real firmware, against the rig running that firmware's `gfx3d.c` and lent memory:
 
-| | geometry | raster | total |
-|---|---:|---:|---:|
-| Device (ms) | 6.30 | 4.10 | 10.40 |
-| Estimate (ms) | 5.28 | 5.64 | 10.92 |
-| Estimate vs device | -16% | +38% | +5% |
+| gfx3d | device geometry | rig | device raster | rig | device total | rig |
+|---|---:|---:|---:|---:|---:|---:|
+| Before any of this (`integration/issues-2026-11-05`) | 8.3 | 5.40 | 5.94 | 5.63 | 14.2 | 11.04 |
+| Bitmap walk, span fill, one slope per edge, vertex scratch in SRAM | 5.9 | 3.90 | 3.66 | 3.60 | 9.6 | 7.50 |
+| The same, and the scene's records in lent SRAM | 4.5 | 2.91 | 3.01 | 3.10 | 7.5 | 6.02 |
+
+- **Comparisons held:** the rig said -32% and then -46% from the first row; the device did -33% and -47%.
+- **Geometry reads about 1.5x low, steadily** (1.54, 1.51, 1.54): prefetch misses, the interrupts inside its timers and dirty lines left by Lua are all left out, and all add time.
+- **Raster is within 5%,** on all three.
 
 The scene's own numbers: `drawn` avg 349 (device 358), max 544 (device 587), `tris_in` max 2353 (device 2353).
-
-**The +5% total is partly luck: the two phases err in opposite directions.**
-
-- **Raster** is only 13% cache stalls, so its error is in the core figures, not the cache model. Each of these alone takes it to about 5.0-5.2 ms: a taken branch at +1, a store at +0, or 0.8 cycles an instruction. All three are plausible on the M33 and none was applied, because the brief says not to tune them.
-- **Geometry** is 63% cache stalls. It reads low, as expected from what is left out, all of which adds time on the device: prefetch misses, the interrupts inside its timers, dirty lines left by Lua (`--dirty-frac 1` gives 5.72 ms).
 
 **Lua's empty for-loop checks the core figures alone**, since it has no misses once running. The estimate is 40.0 cycles an iteration (200 ns): 25 instructions, 7 words loaded, 4 stored, 2 taken branches. The device's is ~180 ns (36 cycles), so the estimate is 11% high. That agrees in direction with raster: the core figures run somewhat high on the M33. One short loop cannot fix them, so they stay as they are.
 
@@ -89,5 +88,5 @@ The scene's own numbers: `drawn` avg 349 (device 358), max 544 (device 587), `tr
 
 - **Exact, for this scene and build:** instruction, FP and load/store counts. They are what the code does.
 - **Good for comparing versions:** fetch and data misses and write-backs, given the assumptions above. In the sweep the replacement policy moves geometry by about 6% and raster by under 1%. A change that removes misses or instructions by much more than that is probably real.
-- **Rough, about +-40% per phase:** the absolute milliseconds. Do not read them as a prediction of the device. Geometry's share of misses is better modelled than raster's core timing, and the comparison between phases is not reliable: this model overstates raster against geometry.
-- **Not captured:** a change's effect on the Lua code around it (cache sets freed or taken), or the layout of the rest of the firmware.
+- **Rough:** the absolute milliseconds. On the three builds above, device time is about 1.5x the estimate for geometry and within 5% of it for raster, and that may not hold for code that behaves differently. For the same reason this model overstates raster against geometry.
+- **Not captured:** a change's effect on the Lua code around it (cache sets freed or taken), the layout of the rest of the firmware, and what a call costs in Lua. The last matters: splitting Nova Rail's skyline into 8 meshes saved 0.22 ms here, and cost 0.17 ms on the device (six laps each), because the extra `drawBackground` calls outweighed it.
