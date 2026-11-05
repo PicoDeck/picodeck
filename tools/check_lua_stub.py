@@ -121,6 +121,8 @@ ALLOW = {
                                 "are read by draw_instance()",
     "PicoDeckImage.setPixels": "the optional rect (3-6) is read by "
                                "image_check_rect() from a computed index",
+    "picocalc.graphics.sprite.spriteWithText": "the trailing font argument (5) is "
+                                               "read by render_text_image()",
 }
 
 # A reader is any call `name(L, <literal>` whose name says it reads or checks
