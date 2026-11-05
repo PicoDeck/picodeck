@@ -392,7 +392,7 @@ end
 ---
 
 #### `picocalc.fs.setSlowMode(enabled)`
-Enable or disable slow SD card mode. Slow mode reduces SPI clock speed for compatibility with some SD cards.
+Drop the SD bus to 1 MHz, or restore its normal speed. WiFi radio noise can corrupt writes at full speed, so write large amounts to the card under slow mode while the network is transferring (`download.toFile` does). It affects every file, and it is much slower (about 100 KB/s). It ends when your app exits.
 
 - **Parameters:**
   - `enabled` (boolean): `true` to enable slow mode, `false` to disable

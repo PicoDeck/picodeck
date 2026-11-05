@@ -1020,6 +1020,15 @@ static char *h_set_battery(const char *params) {
 
 // {level, dimmed}: the level last written to the backlight (kbd_set_backlight)
 // and whether idle dim holds it down (--idle-dim).
+extern bool sim_sd_slow_mode(void);
+
+// What fs.setSlowMode last set: the device's SD bus speed has no other witness.
+static char *h_get_sd_slow_mode(const char *params) {
+    (void)params;
+    return strdup(sim_sd_slow_mode() ? "{\"jsonrpc\":\"2.0\",\"result\":{\"slow\":true}}"
+                                     : "{\"jsonrpc\":\"2.0\",\"result\":{\"slow\":false}}");
+}
+
 extern int sim_kbd_get_backlight(void);
 
 static char *h_get_backlight(const char *params) {
@@ -1472,6 +1481,7 @@ static struct {
     { "set_wifi_state",     h_set_wifi_state },
     { "set_battery",        h_set_battery },
     { "get_backlight",      h_get_backlight },
+    { "get_sd_slow_mode",   h_get_sd_slow_mode },
     { "get_log_buffer",     h_get_log_buffer },
     { "set_time_multiplier",h_set_time_multiplier },
     { "step_time",          h_step_time },

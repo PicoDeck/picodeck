@@ -613,7 +613,10 @@ void usb_msc_enter_mode(void) {
 bool sdcard_remount(void) { return true; }
 void sdcard_apply_clock(void) {}
 bool sdcard_ensure_ready(void) { return true; }
-void sd_set_slow_mode(bool slow) { (void)slow; }
+// Nothing to slow down here; recorded for the get_sd_slow_mode RPC.
+static atomic_bool s_sd_slow_mode = false;
+void sd_set_slow_mode(bool slow) { atomic_store(&s_sd_slow_mode, slow); }
+bool sim_sd_slow_mode(void) { return atomic_load(&s_sd_slow_mode); }
 
 bool sdcard_fexists(const char* path) {
     char full_path[1024];
@@ -877,7 +880,7 @@ bool sdcard_copy(const char* src, const char* dst,
                  bool (*progress_cb)(uint32_t done, uint32_t total, void* user),
                  void* user) {
     // Mirrors src/drivers/sdcard.c: chunked copy, progress callback per
-    // chunk, dst removed on failure.
+    // chunk (false stops the copy), dst removed on failure.
     char full_src[1024], full_dst[1024];
     if (!hal_sdcard_resolve(src, full_src, sizeof(full_src)) ||
         !hal_sdcard_resolve(dst, full_dst, sizeof(full_dst)))
@@ -908,7 +911,6 @@ bool sdcard_stat(const char* path, sdcard_stat_t* out) {
     if (!hal_sdcard_resolve(path, full_path, sizeof(full_path))) return false;
     struct stat host_st;
     if (stat(full_path, &host_st) != 0) return false;
-    out->size = (uint32_t)host_st.st_size;
     out->is_dir = S_ISDIR(host_st.st_mode);
     out->size = out->is_dir ? 0 : (uint32_t)host_st.st_size;  // as f_stat
     sim_fat_time(host_st.st_mtime, &out->fdate, &out->ftime);
