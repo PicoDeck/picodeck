@@ -691,7 +691,8 @@ local PicoDeckFile = {}
 ---@return string? data `nil` at end of file or on error
 function PicoDeckFile:read(len) end
 
----Write data. Returns bytes written (-1 on error).
+---Write data. Returns bytes written (-1 on error, including a handle not open
+---for writing). A full card is a smaller count, not an error.
 ---@param data string
 ---@return integer bytes_written
 function PicoDeckFile:write(data) end
@@ -728,8 +729,12 @@ function PicoDeckFile:fsize() end
 function picocalc.fs.fsize(file) end
 
 ---Open a file on the SD card.
+---Only the letters r, w and a of the mode count, not C's meanings: `"r"` and
+---`"r+"` read (the file must exist), `"w"` and `"w+"` write (emptying or
+---creating), `"a"` and `"a+"` write from the end (creating), `"rw"` does both
+---(creating, keeping the contents).
 ---@param path string Absolute SD card path
----@param mode? string `"r"` (default), `"w"`, `"a"`, `"r+"`, etc.
+---@param mode? string `"r"` (default), `"w"`, `"a"`, `"rw"`
 ---@return PicoDeckFile? handle
 ---@return string? error `"permission denied"`, `"cannot open file"` or `"too many open files"`
 function picocalc.fs.open(path, mode) end
@@ -741,7 +746,8 @@ function picocalc.fs.open(path, mode) end
 ---@return string? data `nil` on EOF or error
 function picocalc.fs.read(file, len) end
 
----Write data to an open file. Returns bytes written (-1 on error).
+---Write data to an open file. Returns bytes written (-1 on error, including a
+---handle not open for writing). A full card is a smaller count, not an error.
 ---Raises on a closed handle.
 ---@param file PicoDeckFile
 ---@param data string
@@ -804,12 +810,15 @@ function picocalc.fs.isDir(path) end
 ---@field min? integer
 ---@field sec? integer
 
----List directory contents.
+---List directory contents. An empty table when the directory cannot be read,
+---plus `"permission denied"` when the sandbox refused it.
 ---@param path string
 ---@return PicoDeckDirEntry[]
+---@return string? error
 function picocalc.fs.listDir(path) end
 
----Create a directory (and any missing parents).
+---Create one directory; its parent must exist. `true` if created or already a
+---directory, `false` on an error (a missing parent, a file of that name).
 ---@param path string
 ---@return boolean ok
 function picocalc.fs.mkdir(path) end
@@ -819,25 +828,38 @@ function picocalc.fs.mkdir(path) end
 ---@return string path
 function picocalc.fs.appPath(name) end
 
----Show a fullscreen file-browser UI and return the selected path, or `nil` if cancelled.
+---Show a fullscreen file-browser UI and return the selected path, or `nil` if
+---cancelled. Esc goes up and cancels at the top: `/data/<APP_ID>` for a start
+---inside it, otherwise the start directory itself. `/data/<APP_ID>` is also where
+---it opens by default and instead of a directory the sandbox refuses.
 ---@param start_path? string Initial directory
 ---@return string? selected_path
 function picocalc.fs.browse(start_path) end
 
----Delete a file or empty directory.
+---Delete a file or empty directory. The volume root is refused.
 ---@param path string
 ---@return boolean ok
 ---@return string? error
 function picocalc.fs.delete(path) end
 
----Rename/move a file or directory.
+---Delete a directory and everything in it, or a single file. The volume root is
+---refused, for every app.
+---@param path string
+---@return boolean ok
+---@return string? error
+function picocalc.fs.deleteRecursive(path) end
+
+---Rename/move a file or directory. Refuses an existing `dst` (it does not
+---replace it, unlike POSIX): delete the old file first.
 ---@param src string
 ---@param dst string
 ---@return boolean ok
 ---@return string? error
 function picocalc.fs.rename(src, dst) end
 
----Copy a file. Optional progress callback receives `(done: integer, total: integer)`.
+---Copy a file, replacing `dst`. Optional progress callback receives
+---`(done: integer, total: integer)` after each 4 KB; an exit requested from it
+---stops the copy. On a failure `dst` is removed.
 ---@param src string
 ---@param dst string
 ---@param progress_fn? fun(done: integer, total: integer)
@@ -1342,35 +1364,40 @@ function PicoDeckHttpConn:setInsecure(flag) end
 ---@param flag boolean
 function PicoDeckHttpConn:setKeepAlive(flag) end
 
----Request a specific byte range (for resumable downloads).
+---Request a byte range on the next request only (for resumable downloads). A
+---server may still answer 200 with the whole body: check for 206.
 ---@param from integer Start byte offset (inclusive)
----@param to integer End byte offset (inclusive)
+---@param to integer End byte offset (inclusive), or -1 for the rest of the file
 function PicoDeckHttpConn:setByteRange(from, to) end
 
----Set the connection timeout in seconds (default: 10).
+---Set the connection timeout in seconds (default: 10). Fractions allowed; 0
+---turns it off.
 ---@param seconds number
 function PicoDeckHttpConn:setConnectTimeout(seconds) end
 
----Set the read timeout in seconds (default: 30).
+---Set how long a request may receive nothing, in seconds (default: 30), from the
+---moment it is sent. Fractions allowed; 0 turns it off.
 ---@param seconds number
 function PicoDeckHttpConn:setReadTimeout(seconds) end
 
 ---Set the internal read buffer size in bytes (default 4096, max 2097152 / 2 MiB).
+---`false` for 0, a negative size, over the maximum or too little memory; the old
+---buffer stays.
 ---@param bytes integer
 ---@return boolean ok
 function PicoDeckHttpConn:setReadBufferSize(bytes) end
 
 ---Send an HTTP GET request.
 ---@param path string URL path, e.g. `"/api/data"`
----@param headers? string Extra request headers (raw HTTP format)
+---@param headers? string|string[]|table<string, string> Extra request headers: a raw `"Key: Value"` string, an array of them, or a `{key = value}` table
 ---@return boolean ok
 ---@return string? error
 function PicoDeckHttpConn:get(path, headers) end
 
----Send an HTTP POST request.
+---Send an HTTP POST request. With two arguments the second is the body.
 ---@param path string
----@param headers? string Extra headers
----@param body? string Request body
+---@param headers? string|string[]|table<string, string> Extra headers, as for `get`
+---@param body? string Request body (binary safe)
 ---@return boolean ok
 ---@return string? error
 function PicoDeckHttpConn:post(path, headers, body) end
@@ -1467,12 +1494,14 @@ function PicoDeckTcpConn:setInsecure(flag) end
 ---@return string?
 function PicoDeckTcpConn:peerFingerprint() end
 
----Write data to the connection. Returns bytes written, or -1 on error.
+---Queue data for sending. Returns the bytes queued (all of them), or -1 if
+---nothing was queued. -1 is usually transient: at most 8 writes can wait, so
+---retry while `isConnected()`.
 ---@param data string
 ---@return integer
 function PicoDeckTcpConn:write(data) end
 
----Read up to `max_len` bytes. Returns `nil` if no data is available.
+---Read up to `max_len` bytes (default 4096). Returns `nil` if no data is available.
 ---@param max_len? integer
 ---@return string?
 function PicoDeckTcpConn:read(max_len) end
@@ -1493,14 +1522,18 @@ function PicoDeckTcpConn:error() end
 ---@return boolean
 function PicoDeckTcpConn:isConnected() end
 
+---Connect timeout for the next `connect()` (default 15 s, covers the TLS
+---handshake). Fractions allowed; 0 turns it off.
 ---@param seconds number
 function PicoDeckTcpConn:setConnectTimeout(seconds) end
 
----Read timeout; off by default, 0 disables it. Applies to the connection.
+---Read timeout; off by default, 0 disables it. Fractions allowed. Applies to the
+---connection.
 ---@param seconds number
 function PicoDeckTcpConn:setReadTimeout(seconds) end
 
----Register a callback fired when the connection is established.
+---Register a callback fired when the connection is established. A failed
+---connect fires the close callback instead.
 ---@param fn fun(conn: PicoDeckTcpConn)
 function PicoDeckTcpConn:setConnectCallback(fn) end
 
@@ -1508,23 +1541,26 @@ function PicoDeckTcpConn:setConnectCallback(fn) end
 ---@param fn fun(conn: PicoDeckTcpConn)
 function PicoDeckTcpConn:setReadCallback(fn) end
 
----Register a callback fired when the connection closes.
+---Register a callback fired when the peer closes the connection or it fails,
+---not after your own `close()`.
 ---@param fn fun(conn: PicoDeckTcpConn)
 function PicoDeckTcpConn:setCloseCallback(fn) end
 
 ---Return and clear the pending events that have no callback registered, as a
----bitmask of `picocalc.tcp.CB_CONNECT` (1), `CB_READ` (2), `CB_WRITE` (4),
----`CB_CLOSED` (8), `CB_FAILED` (16). Callbacks receive the socket and never
----nest; buffered data stays readable after the peer closes.
+---bitmask of `picocalc.tcp.CB_CONNECT` (1), `CB_READ` (2), `CB_CLOSED` (8),
+---`CB_FAILED` (16). `CB_WRITE` (4) is reserved and never set. Callbacks receive
+---the socket and never nest; buffered data stays readable after the peer closes.
 ---@return integer
 function PicoDeckTcpConn:getEvents() end
 
----Block until connected, with an optional timeout. Returns `true` if connected.
+---Block until connected, with an optional timeout (default 10 s). Returns `true`
+---if connected. Callbacks, the system menu and exit work during the wait.
 ---@param timeout_seconds? number
 ---@return boolean
 function PicoDeckTcpConn:waitConnected(timeout_seconds) end
 
----Block until data is available, with an optional timeout. Returns `true` if data arrived.
+---Block until data is available, with an optional timeout (default 10 s). Returns
+---`true` if data arrived. Callbacks, the system menu and exit work during the wait.
 ---@param timeout_seconds? number
 ---@return boolean
 function PicoDeckTcpConn:waitData(timeout_seconds) end
@@ -3431,15 +3467,20 @@ function PicoDeckZipArchive:close() end
 ---@field null userdata Sentinel representing JSON null (compare with json.isNull)
 picocalc.json = {}
 
----Encode a Lua value as a JSON string.
+---Encode a Lua value as a JSON string. Raises on a function, userdata other than
+---`json.null`, a thread, NaN, infinity, a cycle or nesting deeper than 32. An empty
+---table is `{}`, a table with holes or mixed keys is an object, numeric keys become
+---strings and boolean keys are dropped.
 ---@param value any
 ---@param opts? {indent?: integer} Spaces per indent level (default 0: compact)
 ---@return string
 function picocalc.json.encode(value, opts) end
 
----Decode a JSON string into Lua values. JSON null decodes to `json.null`.
+---Decode a JSON string into Lua values. JSON null decodes to `json.null`. Bad
+---input returns `nil, err`; it does not raise.
 ---@param text string
----@return any
+---@return any value
+---@return string? error
 function picocalc.json.decode(text) end
 
 ---Return `true` if `v` is the `json.null` sentinel.
