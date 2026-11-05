@@ -262,7 +262,7 @@ picocalc.game.scene.switch("play")
 
 **An error in a scene function stops the app,** like any other Lua error: the player sees the error screen and it goes in `/system/error.log`. To carry on after one, call `scene.update` or `scene.draw` inside `pcall`.
 
-**Nothing runs when the player exits.** Exit App in the system menu stops the app on the spot: no scene's `exit()`, no code after your main loop and no `<close>` handler runs. `exit()` runs only when `switch` or `pop` leaves a scene. So save when the data changes, not on the way out.
+**Nothing runs when the player exits.** Exit App in the system menu stops the app on the spot: no scene's `exit()`, no code after your main loop and no `<close>` handler runs (the one exception is the callback of a menu option the player just changed, `sys.addMenuOption`). `exit()` runs only when `switch` or `pop` leaves a scene. So save when the data changes, not on the way out.
 
 Limits: 16 registered scenes, a stack 4 deep and names of up to 63 bytes. Going past any of them raises an error.
 
@@ -457,8 +457,9 @@ Per-app save slots, one JSON file each at `/data/<app id>/saves/<key>.json`.
   numbers, booleans). An array stays an array. A table with holes in its integer
   keys, or with string keys as well, comes back with all its keys as strings
   (`[1]` becomes `["1"]`). Whole floats keep `.0` so `math.type` survives.
-- Writes happen when `set` is called, and nothing runs when the player picks
-  Exit App, so call `set` when the data changes rather than on the way out.
+- Writes happen when `set` is called, and your exit code does not run when the
+  player picks Exit App, so call `set` when the data changes rather than on the
+  way out.
 - Saves used to live in a shared `/saves/<key>.json`. The first time an app
   reads a key (`get`/`exists`) that it has no slot for and the old file
   exists, the file is **copied** into the app's slot; the old file is never
@@ -528,7 +529,7 @@ end
 
 ## Example
 
-A play scene that follows a player with the camera, and a pause scene pushed over it. The high score is saved as soon as it is beaten, because nothing runs when the player exits. Esc quits and Enter pauses.
+A play scene that follows a player with the camera, and a pause scene pushed over it. The high score is saved as soon as it is beaten, because your exit code does not run when the player picks Exit App. Esc quits and Enter pauses.
 
 The scene reads `picocalc.gamepad` (see [API Gamepad](API-Gamepad.md)), which needs firmware with API version 9. To also run on older firmware, check for it once and fall back to `picocalc.input`:
 

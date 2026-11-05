@@ -150,7 +150,7 @@ A full-screen wait screen. `draw()` clears the screen to black and shows a spinn
 | Option | Default | Meaning |
 |---|---|---|
 | `text` | `"Loading..."` | Main text |
-| `subtext` | none | Smaller line below (same font, dimmer) |
+| `subtext` | none | A second line below it, dimmer |
 | `progress` | none | 0.0 to 1.0; none shows the spinner |
 
 Methods: `setText(str)`, `setProgress(p)`, `draw()`.
@@ -183,7 +183,7 @@ Methods: `setLabel(str)`. It shows as pressed for one frame.
 | `checked` | false | Starting state |
 | `onChange` | none | `function(checked)` |
 
-Methods: `isChecked()`, `setChecked(bool)`. Enter toggles it (not `setChecked`, which calls nothing).
+Methods: `isChecked()`, `setChecked(bool)`. Enter toggles it and calls `onChange`; `setChecked` does not.
 
 ### `W.RadioGroup(opts)`
 
@@ -221,7 +221,7 @@ Keys: Left, Right; Ctrl+Left and Ctrl+Right by word; Ctrl+F1 to the start and Ct
 | `w`, `h` | 300, 100 | Size |
 | `text` | `""` | Starting text |
 | `placeholder` | `""` | Shown while empty and unfocused |
-| `wordWrap` | true | Wrap long lines at word breaks. Off, a long line runs out of the box |
+| `wordWrap` | true | Wrap long lines at word breaks. Off, a long line is cut at the edge of the box |
 | `multiline` | true | Enter adds a newline. Off, Enter calls `onSubmit` |
 | `maxlen` | 4096 | Most characters typing can reach |
 | `onChange` | none | `function(text)` |
@@ -281,7 +281,7 @@ The colours and metrics the toolkit's Lua code reads, as a table you can change 
 |---|---|---|
 | `text`, `text_dim` | white, grey | Labels; dim when not focused |
 | `bg` | dark blue | `ListView` and the `Select` dropdown |
-| `bg_input` | near black | The closed `Select` |
+| `bg_input` | near black | The closed `Select`, and behind a `TextField`'s placeholder |
 | `border`, `focus` | blue-greys | `ListView`, `Select` and `Divider` |
 | `success` | green | `ProgressBar`, `Loading` |
 | `accent`, `error` | | Not read by any widget |

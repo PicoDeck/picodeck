@@ -182,7 +182,7 @@ picocalc.ui.drawButton(10, 100, 80, "OK", true, false)
 ---
 
 #### `picocalc.ui.drawTextField(x, y, w, text, cursorPos, scrollOffset, focused, showCursor)`
-Draw a single-line text input field. This is a rendering primitive — it does NOT handle input.
+Draw a single-line text input field. This is a rendering primitive — it does NOT handle input: keep the text and cursor yourself, reading typed characters with [`picocalc.input.pollEvent()`](API-Input.md), or use `W.TextField` from [Library Widgets](Library-Widgets.md), which does all that.
 
 - **Parameters:**
   - `x` (number): X position

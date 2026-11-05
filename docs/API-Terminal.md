@@ -372,6 +372,7 @@ Block until a character is typed. Returns the character as a string (Enter and B
 
 Same name, different shape:
 
+- `create`: a native terminal always starts at y = 28, x = 4, whatever its size, so a native app sizes it to fit or calls `setRenderBounds`. Only Lua's `new` moves a tall terminal to fit.
 - `write`: only Lua reads ANSI escape sequences. The native call puts each byte in a cell as it is, so native code sets colours with `setColors`.
 - `getScrollbackLine`: native fills a `uint16_t` cell array for a 0-based `line`; Lua takes a 1-based line and returns a plain string (characters only, no colours).
 - `setCursorVisible` and `setCursorBlink` are global: one setting shared by every terminal. The native entries take no `terminal_t*`; the Lua methods are called on an object as usual but the setting still applies to all terminals.
