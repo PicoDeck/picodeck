@@ -3568,25 +3568,27 @@ function picocalc.json.decode(text) end
 function picocalc.json.isNull(v) end
 
 -- =============================================================================
--- picocalc.repl  (interactive Lua REPL)
+-- picocalc.repl  (console input bar and scrolling output)
 -- =============================================================================
 
 ---@class picocalc.repl
 picocalc.repl = {}
 
----Read a line of REPL input (non-blocking). Returns the line, or nil if no
----complete line is ready (also nil on Esc).
+---Read a line of REPL input (non-blocking; it polls the keyboard itself). Returns
+---the line, or nil if no complete line is ready. Esc also reads as nil, and keeps
+---the typed text: check `input.getButtonsPressed()` straight after this.
 ---@return string?
 function picocalc.repl.readline() end
 
----Print to the REPL output.
+---Print to the REPL output. With no arguments it only draws the screen.
 ---@param ... any
 function picocalc.repl.print(...) end
 
----Clear the REPL screen.
+---Clear the REPL screen and forget its output and any typed text.
 function picocalc.repl.clear() end
 
----Enable or disable input echo.
+---Enable or disable input echo. Off, the bar shows `*`s and a submitted line is
+---returned but not added to the output.
 ---@param flag boolean
 function picocalc.repl.echo(flag) end
 

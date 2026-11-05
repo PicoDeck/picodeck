@@ -14,6 +14,7 @@
 
 #define TERM_COLS 53
 #define TERM_INPUT_ROW 37
+#define TERM_TAB_COLS 8
 // Scrollback: a ring of fixed-width lines (REPL_SCROLLBACK * (TERM_COLS + 1)
 // = 13,824 bytes), allocated from the PSRAM heap on first use.
 #define REPL_SCROLLBACK 256
@@ -83,11 +84,20 @@ static void term_draw_line(int row, const char *line, int start_col, uint16_t fg
     }
 }
 
-// The input row shows the tail of the line when it is wider than the screen.
+// The input row shows the tail of the line when it is wider than the screen,
+// and one * per character while echo is off.
 static void term_draw_input(repl_state_t *r) {
     int start = r->input_len > TERM_COLS - 1 ? r->input_len - (TERM_COLS - 1) : 0;
-    term_draw_line(TERM_INPUT_ROW, r->input_buffer + start, 0, COLOR_WHITE, COLOR_DKGRAY);
-    term_draw_char(r->input_len - start, TERM_INPUT_ROW, ' ', COLOR_BLACK, COLOR_WHITE);
+    int shown = r->input_len - start;
+    if (s_echo) {
+        term_draw_line(TERM_INPUT_ROW, r->input_buffer + start, 0, COLOR_WHITE, COLOR_DKGRAY);
+    } else {
+        char stars[TERM_COLS + 1];
+        memset(stars, '*', (size_t)shown);
+        stars[shown] = '\0';
+        term_draw_line(TERM_INPUT_ROW, stars, 0, COLOR_WHITE, COLOR_DKGRAY);
+    }
+    term_draw_char(shown, TERM_INPUT_ROW, ' ', COLOR_BLACK, COLOR_WHITE);
 }
 
 static void term_scroll_up(repl_state_t *r) {
@@ -137,22 +147,37 @@ static void term_add_line(repl_state_t *r, const char *line, size_t len) {
     r->scroll_offset = 0;
 }
 
-// Splits text at newlines and at TERM_COLS columns.
+// Splits text at newlines and at TERM_COLS columns; a tab moves to the next
+// stop of TERM_TAB_COLS.
 static void term_print(repl_state_t *r, const char *text, size_t len) {
-    size_t start = 0;
-    for (size_t i = 0; i <= len; i++) {
-        if (i == len || text[i] == '\n' || i - start == TERM_COLS) {
-            if (i < len || i > start)
-                term_add_line(r, text + start, i - start);
-            if (i < len && text[i] == '\n') {
-                start = i + 1;
-            } else {
-                start = i;
+    char line[TERM_COLS];
+    size_t n = 0;
+    for (size_t i = 0; i < len; i++) {
+        char c = text[i];
+        if (c == '\n') {
+            term_add_line(r, line, n);
+            n = 0;
+            continue;
+        }
+        size_t count = 1;
+        if (c == '\t') {
+            c = ' ';
+            count = TERM_TAB_COLS - n % TERM_TAB_COLS;
+        }
+        while (count-- > 0) {
+            if (n == TERM_COLS) {
+                term_add_line(r, line, n);
+                n = 0;
             }
+            line[n++] = c;
         }
     }
+    if (n > 0)
+        term_add_line(r, line, n);
 }
 
+// Every change goes through term_redraw: display_flush swaps without copying,
+// so the row alone, drawn into the back buffer, would show an older frame.
 static int l_repl_readline(lua_State *L) {
     repl_state_t *r = repl_state(L);
     kbd_poll();
@@ -194,20 +219,20 @@ static int l_repl_readline(lua_State *L) {
     if (pressed & BTN_BACKSPACE) {
         if (r->input_len > 0) {
             r->input_buffer[--r->input_len] = '\0';
-            term_draw_input(r);
-            display_flush();
+            term_redraw(r);
         }
         kbd_clear_state();
         lua_pushnil(L);
         return 1;
     }
 
+    // Printable characters only: the keyboard's Tab and control codes have no
+    // glyph in a cell.
     char c = kbd_get_char();
-    if (c && r->input_len < MAX_INPUT_LEN - 1) {
+    if (c >= 0x20 && c < 0x7F && r->input_len < MAX_INPUT_LEN - 1) {
         r->input_buffer[r->input_len++] = c;
         r->input_buffer[r->input_len] = '\0';
-        term_draw_input(r);
-        display_flush();
+        term_redraw(r);
     }
 
     lua_pushnil(L);
