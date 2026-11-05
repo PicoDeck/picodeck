@@ -1825,7 +1825,7 @@ mySprite:remove()
 ---
 
 #### `sprite:draw([x, y])`
-Draws the sprite to the framebuffer immediately (not via the manager).
+Draws the sprite (its image, or its tilemap if it has one) to the framebuffer immediately, not via the manager. A hidden sprite draws nothing.
 
 - **Parameters:**
   - `x`, `y` (number, optional): Position to draw. Defaults to sprite's stored position.
@@ -1839,7 +1839,7 @@ mySprite:draw(50, 100)  -- Draw at custom position
 ---
 
 #### `sprite:update()`
-Updates and draws a single sprite (alternative to using the manager).
+Draws a single sprite at its stored position, if it is visible and has updates enabled. It calls no callback.
 
 - **Returns:** None
 
@@ -1856,7 +1856,7 @@ Sets the sprite's image.
   - `image` (userdata): Image object
   - `flip` (boolean, optional): Enable horizontal flip
   - `scale` (number, optional): Scale factor
-  - `yscale` (number, optional): Y scale factor (only applied when given; it does not default to `scale`, unlike `sprite:setScale`)
+  - `yscale` (number, optional): Stored and returned by `getScale`, but drawing uses one factor: see [`setScale`](#spritesetscalescale--yscale)
 - **Returns:** None
 
 ```lua
@@ -1997,16 +1997,15 @@ Gets the sprite's dimensions.
 ---
 
 #### `sprite:setScale(scale [, yScale])`
-Sets the sprite's scale factor(s).
+Sets the sprite's scale. Sprites scale uniformly: both axes draw at `scale`. For a non-uniform size, draw the image with [`img:drawStretched`](#imagedrawstretchedx-y-w-h--srcrect).
 
 - **Parameters:**
   - `scale` (number): Scale factor
-  - `yScale` (number, optional): Y scale (defaults to scale)
+  - `yScale` (number, optional): Stored and returned by `getScale`, but not applied (defaults to `scale`)
 - **Returns:** None
 
 ```lua
-sprite:setScale(2.0)     -- Uniform 2x
-sprite:setScale(2.0, 1.5)  -- Non-uniform
+sprite:setScale(2.0)     -- 2x
 ```
 
 ---
@@ -2019,7 +2018,7 @@ Gets the sprite's scale factors.
 ---
 
 #### `sprite:setScaleNN(scale)`
-Sets an integer scale factor using nearest-neighbor interpolation. Sharp for pixel art.
+Sets an integer scale factor using nearest-neighbor interpolation. Sharp for pixel art. Above 1 it takes the place of `setScale`'s factor. Setting `sprite.scale_nn` does the same.
 
 - **Parameters:**
   - `scale` (number): Positive integer scale (1, 2, 3...)
@@ -2040,9 +2039,9 @@ Sets a per-sprite transparent color, overriding the global transparent color.
 Sets the sprite's rotation angle in radians.
 
 - **Parameters:**
-  - `angle` (number): Rotation in radians
-  - `scale` (number, optional): Scale X
-  - `yScale` (number, optional): Scale Y
+  - `angle` (number): Rotation in radians, clockwise, about the center of the drawn image
+  - `scale` (number, optional): Sets the scale, as `setScale` does
+  - `yScale` (number, optional): Stored, not applied, as in `setScale`
 - **Returns:** None
 
 ```lua
@@ -2163,7 +2162,7 @@ Gets the sprite's tag.
 ---
 
 #### `sprite:setImageFlip(flip)`
-Sets horizontal flip.
+Sets horizontal flip. A flipped sprite that is also scaled or rotated draws through a temporary mirrored copy of its pixels each time, so it costs more than either alone.
 
 - **Parameters:**
   - `flip` (boolean): Flip enabled
@@ -2427,7 +2426,7 @@ Accepted for compatibility; has no effect. The callback is ignored and never cal
 ---
 
 #### `sprite:alphaCollision(other)`
-Pixel-perfect overlap test between two sprites: true only if at least one pixel that is not the transparent color in this sprite lies on a non-transparent pixel of `other`. Each sprite's own transparent color is used, falling back to the display's. Flips are honoured. Falls back to a plain bounding-box overlap test when either sprite has no image, is rotated, or is scaled (other than integer nearest-neighbour scaling) or has a vertical scale other than 1.
+Pixel-perfect overlap test between two sprites: true only if at least one pixel that is not the transparent color in this sprite lies on a non-transparent pixel of `other`, as drawn: nearest-neighbour scaling and flips are honoured. Each sprite's own transparent color is used, falling back to the global one. Falls back to a plain overlap test of the drawn boxes when either sprite has no image, is rotated, or has a scale from `setScale` other than 1.
 
 - **Parameters:**
   - `other` (userdata): The other sprite
@@ -2442,7 +2441,7 @@ end
 ---
 
 #### `sprite:setTilemap(tilemap)`
-Assigns a tilemap to this sprite. When set, the sprite renders the tilemap instead of a single image. The sprite's position acts as the tilemap scroll offset. Pass `nil` to clear.
+Assigns a tilemap to this sprite. When set, the sprite renders the tilemap instead of a single image, through `graphics.sprite.update()`, `sprite:draw()` and `sprite:update()`. The sprite's position is where the map's top-left corner draws, which is the opposite sign to [`tilemap:draw(scrollX, scrollY)`](#tilemapdrawscrollx--scrolly): `moveTo(-8, 0)` shows what `tilemap:draw(8, 0)` shows. Pass `nil` to clear.
 
 - **Parameters:**
   - `tilemap` (userdata or nil): Tilemap object, or `nil` to clear

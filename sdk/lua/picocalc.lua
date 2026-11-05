@@ -1920,7 +1920,8 @@ function picocalc.graphics.sprite.addSprite(sprite) end
 ---@param sprite PicoDeckSprite
 function picocalc.graphics.sprite.removeSprite(sprite) end
 
----Update all sprites (calls each sprite's update callback).
+---Draw every visible sprite with updates enabled, lowest z-index first. No
+---callback is called and neither a clear nor a flush is done.
 function picocalc.graphics.sprite.update() end
 
 ---Return all sprites in the global list.
@@ -1997,7 +1998,7 @@ function picocalc.graphics.sprite.addEmptyCollisionSprite(x, y, w, h) end
 ---@param image PicoDeckImage|nil `nil` clears the image
 ---@param flip? boolean Horizontal flip
 ---@param scale? number Only applied when given
----@param scale_y? number Only applied when given (unlike `setScale`, it does not default to `scale`)
+---@param scale_y? number Stored when given, not applied: sprites draw at one factor
 function PicoDeckSprite:setImage(image, flip, scale, scale_y) end
 
 ---@return PicoDeckImage?
@@ -2054,7 +2055,7 @@ function PicoDeckSprite:setSize(w, h) end
 function PicoDeckSprite:getSize() end
 
 ---@param scale number
----@param scale_y? number Defaults to `scale`
+---@param scale_y? number Defaults to `scale`. Stored, not applied: sprites draw at one factor
 function PicoDeckSprite:setScale(scale, scale_y) end
 
 ---@return number scale
@@ -2147,7 +2148,7 @@ function PicoDeckSprite:setBackgroundDrawingCallback(fn) end
 ---@param y? integer Defaults to the sprite's y
 function PicoDeckSprite:draw(x, y) end
 
----Update this sprite (calls its registered update callback).
+---Draw this sprite if it is visible and has updates enabled. No callback is called.
 function PicoDeckSprite:update() end
 
 ---@param enabled boolean

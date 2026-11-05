@@ -1472,21 +1472,53 @@ static const uint16_t *sprite_pixels(const lua_sprite_t *s, int *w, int *h) {
   return NULL;
 }
 
+// The integer scale a sprite draws at: 1 when it is not NN-scaled. Above 1 it
+// replaces the float scale, as in sprite_draw_at.
+static int sprite_nn_scale(const lua_sprite_t *s) {
+  return (s->use_nn_scaling && s->scale_nn > 1) ? s->scale_nn : 1;
+}
+
 // Draw a sprite's pixels at (x, y) with its scale/rotation/flip settings.
 static void sprite_draw_at(const lua_sprite_t *s, int x, int y) {
   int src_w, src_h;
   const uint16_t *data = sprite_pixels(s, &src_w, &src_h);
   if (!data || src_w <= 0 || src_h <= 0) return;
-  if (s->use_nn_scaling && s->scale_nn > 1) {
-    display_draw_image_scaled_nn(x, y, data, src_w, src_h, src_w * s->scale_nn,
-                                 src_h * s->scale_nn, s->transparent_color);
-  } else if (s->rotation != 0.0f || s->scale != 1.0f || s->scale_y != 1.0f) {
-    display_draw_image_scaled(x, y, src_w, src_h, data, s->scale, s->rotation,
-                              s->transparent_color);
-  } else {
+  const int nn = sprite_nn_scale(s);
+  if (nn == 1 && s->rotation == 0.0f && s->scale == 1.0f && s->scale_y == 1.0f) {
     display_draw_image_partial(x, y, src_w, src_h, data, 0, 0, src_w, src_h,
                                s->flip_x, s->flip_y, s->transparent_color);
+    return;
   }
+  // The scaling paths take no flip, so a flipped sprite draws a mirrored copy.
+  uint16_t *mirror = NULL;
+  if (s->flip_x || s->flip_y)
+    mirror = (uint16_t *)umm_malloc((size_t)src_w * src_h * sizeof(uint16_t));
+  if (mirror) {
+    for (int row = 0; row < src_h; row++) {
+      const uint16_t *from = data + (size_t)(s->flip_y ? src_h - 1 - row : row) * src_w;
+      uint16_t *to = mirror + (size_t)row * src_w;
+      for (int col = 0; col < src_w; col++)
+        to[col] = from[s->flip_x ? src_w - 1 - col : col];
+    }
+    data = mirror;
+  }
+  if (nn > 1) {
+    display_draw_image_scaled_nn(x, y, data, src_w, src_h, src_w * nn, src_h * nn,
+                                 s->transparent_color);
+  } else {
+    display_draw_image_scaled(x, y, src_w, src_h, data, s->scale, s->rotation,
+                              s->transparent_color);
+  }
+  if (mirror) umm_free(mirror);
+}
+
+// A sprite with a tilemap draws the map, its position being the map's top-left
+// corner; any other sprite draws its pixels.
+static void sprite_render(const lua_sprite_t *s, int x, int y) {
+  if (s->tilemap)
+    tilemap_draw((lua_tilemap_t *)s->tilemap, -x, -y);
+  else
+    sprite_draw_at(s, x, y);
 }
 
 static int l_sprite_new(lua_State *L) {
@@ -1567,14 +1599,8 @@ static int l_sprite_remove(lua_State *L) {
 static int l_sprite_update(lua_State *L) {
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *s = s_sprites[i];
-    // Tilemap sprites: draw tilemap at sprite position as scroll offset
-    if (s->updates_enabled && s->visible && s->tilemap) {
-      lua_tilemap_t *tm = (lua_tilemap_t *)s->tilemap;
-      tilemap_draw(tm, -s->x, -s->y);
-      continue;
-    }
-    if (s->updates_enabled && s->visible && s->image)
-      sprite_draw_at(s, s->x, s->y);
+    if (s->updates_enabled && s->visible)
+      sprite_render(s, s->x, s->y);
   }
   return 0;
 }
@@ -1935,16 +1961,15 @@ static int l_sprite_draw(lua_State *L) {
   int x = lb_optint(L, 2, s->x);
   int y = lb_optint(L, 3, s->y);
   
-  if (!s->visible || !s->image)
-    return 0;
-  sprite_draw_at(s, x, y);
+  if (s->visible)
+    sprite_render(s, x, y);
   return 0;
 }
 
 static int l_sprite_updateSingle(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
-  if (s->updates_enabled && s->visible && s->image)
-    sprite_draw_at(s, s->x, s->y);
+  if (s->updates_enabled && s->visible)
+    sprite_render(s, s->x, s->y);
   return 0;
 }
 
@@ -2905,6 +2930,19 @@ static int l_graphics_setStencilPattern(lua_State *L) {
 
 // ── Alpha (Pixel-Perfect) Collision ─────────────────────────────────────────
 
+// The box a sprite's src_w x src_h pixels draw in (rotation aside).
+static void sprite_drawn_size(const lua_sprite_t *s, int src_w, int src_h,
+                              int *w, int *h) {
+  const int nn = sprite_nn_scale(s);
+  if (nn > 1) {
+    *w = src_w * nn;
+    *h = src_h * nn;
+  } else {
+    *w = (int)(src_w * s->scale);
+    *h = (int)(src_h * s->scale);
+  }
+}
+
 static int l_sprite_alphaCollision(lua_State *L) {
   lua_sprite_t *a = check_sprite(L, 1);
   lua_sprite_t *b = check_sprite(L, 2);
@@ -2917,34 +2955,30 @@ static int l_sprite_alphaCollision(lua_State *L) {
   if (!a_data) { a_w = a->width; a_h = a->height; }
   if (!b_data) { b_w = b->width; b_h = b->height; }
 
-  // If either sprite has no image data, fall back to AABB overlap
-  if (!a_data || !b_data || a_w <= 0 || a_h <= 0 || b_w <= 0 || b_h <= 0) {
-    // Simple AABB overlap check
-    bool overlap = !(a->x + a_w <= b->x || b->x + b_w <= a->x ||
-                     a->y + a_h <= b->y || b->y + b_h <= a->y);
-    lua_pushboolean(L, overlap);
-    return 1;
-  }
-
-  // If either sprite is scaled or rotated, fall back to AABB
-  if (a->rotation != 0.0f || b->rotation != 0.0f ||
-      (a->scale != 1.0f && !a->use_nn_scaling) ||
-      (b->scale != 1.0f && !b->use_nn_scaling) ||
-      a->scale_y != 1.0f || b->scale_y != 1.0f) {
-    bool overlap = !(a->x + a_w <= b->x || b->x + b_w <= a->x ||
-                     a->y + a_h <= b->y || b->y + b_h <= a->y);
-    lua_pushboolean(L, overlap);
-    return 1;
-  }
+  // On screen, each sprite covers its drawn box.
+  int a_dw, a_dh, b_dw, b_dh;
+  sprite_drawn_size(a, a_w, a_h, &a_dw, &a_dh);
+  sprite_drawn_size(b, b_w, b_h, &b_dw, &b_dh);
 
   // Compute AABB overlap region in screen coordinates
   int overlap_left   = (a->x > b->x) ? a->x : b->x;
   int overlap_top    = (a->y > b->y) ? a->y : b->y;
-  int overlap_right  = ((a->x + a_w) < (b->x + b_w)) ? (a->x + a_w) : (b->x + b_w);
-  int overlap_bottom = ((a->y + a_h) < (b->y + b_h)) ? (a->y + a_h) : (b->y + b_h);
+  int overlap_right  = ((a->x + a_dw) < (b->x + b_dw)) ? (a->x + a_dw) : (b->x + b_dw);
+  int overlap_bottom = ((a->y + a_dh) < (b->y + b_dh)) ? (a->y + a_dh) : (b->y + b_dh);
 
   if (overlap_left >= overlap_right || overlap_top >= overlap_bottom) {
     lua_pushboolean(L, false);
+    return 1;
+  }
+
+  const int a_nn = sprite_nn_scale(a), b_nn = sprite_nn_scale(b);
+
+  // No pixels to test, or a rotated or float-scaled sprite (its pixels do not map
+  // one to one): the boxes overlapping is the answer.
+  if (!a_data || !b_data || a_w <= 0 || a_h <= 0 || b_w <= 0 || b_h <= 0 ||
+      a->rotation != 0.0f || b->rotation != 0.0f ||
+      (a_nn == 1 && a->scale != 1.0f) || (b_nn == 1 && b->scale != 1.0f)) {
+    lua_pushboolean(L, true);
     return 1;
   }
 
@@ -2953,15 +2987,15 @@ static int l_sprite_alphaCollision(lua_State *L) {
 
   for (int sy = overlap_top; sy < overlap_bottom; sy++) {
     for (int sx = overlap_left; sx < overlap_right; sx++) {
-      // Map screen coord to sprite A's local coord
-      int a_lx = sx - a->x;
-      int a_ly = sy - a->y;
+      // Map screen coord to sprite A's source pixel
+      int a_lx = (sx - a->x) / a_nn;
+      int a_ly = (sy - a->y) / a_nn;
       if (a->flip_x) a_lx = a_w - 1 - a_lx;
       if (a->flip_y) a_ly = a_h - 1 - a_ly;
 
-      // Map screen coord to sprite B's local coord
-      int b_lx = sx - b->x;
-      int b_ly = sy - b->y;
+      // Map screen coord to sprite B's source pixel
+      int b_lx = (sx - b->x) / b_nn;
+      int b_ly = (sy - b->y) / b_nn;
       if (b->flip_x) b_lx = b_w - 1 - b_lx;
       if (b->flip_y) b_ly = b_h - 1 - b_ly;
 
