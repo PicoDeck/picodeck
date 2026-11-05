@@ -131,14 +131,14 @@ Omitting the argument is `1` everywhere. The C calls `playerPlay`, `filePlayerPl
 ### Top-Level Functions
 
 #### `picocalc.sound.getCurrentTime()`
-Returns the current audio clock time in milliseconds since the last `resetTime()` call.
+Returns the audio clock: milliseconds of audio output since the last `resetTime()`, or since the app started. It counts what the output has played, so it advances only while the output runs: it reads `0` until the app's first sound of any kind, and from then on it keeps running, through silence too, until the app exits. It wraps to `0` after about 27 hours.
 
-- **Returns:** (number) Milliseconds
+- **Returns:** (number) Milliseconds, a whole number
 
 ---
 
 #### `picocalc.sound.resetTime()`
-Resets the audio clock to zero.
+Resets the audio clock (`getCurrentTime()`) to zero.
 
 - **Returns:** None
 

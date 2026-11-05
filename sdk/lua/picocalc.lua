@@ -990,7 +990,9 @@ local PicoDeckMp3Player = {}
 
 -- ── picocalc.sound top-level constructors ────────────────────────────────────
 
----Return the audio clock time in milliseconds since the last `resetTime()`.
+---Return the audio clock in milliseconds since the last `resetTime()` (or the
+---app's start). It advances only while the audio output runs: from the app's
+---first sound on, through silence too. Wraps after about 27 hours.
 ---@return integer ms
 function picocalc.sound.getCurrentTime() end
 

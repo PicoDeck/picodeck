@@ -20,7 +20,7 @@
 static struct {
     sound_sample_t *samples;
     sound_player_t players[SOUND_MAX_PLAYERS];
-    uint32_t time_offset_us;
+    uint32_t time_frames;   // output frames rendered (the public audio clock)
 } s_context;
 
 /* The mixer runs in audio.c's DMA refill ISR on Core 1 and reads
@@ -176,8 +176,9 @@ void __time_critical_func(sound_mixer_process)(int32_t *out_l, int32_t *out_r, i
             }
         }
     }
-    // Keep the public time base advancing (~us of audio mixed)
-    s_context.time_offset_us += (uint32_t)(((uint64_t)frames * 1000000) / AUDIO_OUT_RATE);
+    // The public time base. In frames: converting here, at 32 frames a chunk,
+    // lost 0.6 of every 725 us, and a 64-bit division called out to flash.
+    s_context.time_frames += (uint32_t)frames;
     mix_unlock();
 }
 
@@ -543,9 +544,11 @@ int sound_get_playing_source_count(void) {
 }
 
 uint32_t sound_get_current_time(void) {
-    return s_context.time_offset_us / 1000000;
+    return (uint32_t)((uint64_t)s_context.time_frames * 1000 / AUDIO_OUT_RATE);
 }
 
 void sound_reset_time(void) {
-    s_context.time_offset_us = 0;
+    mix_lock();
+    s_context.time_frames = 0;
+    mix_unlock();
 }

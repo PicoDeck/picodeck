@@ -78,5 +78,8 @@ sound_sample_t *sound_sample_new_blank(float seconds, uint32_t sample_rate, uint
 sound_sample_t *sound_sample_get_subsample(const sound_sample_t *sample, uint32_t start_frame, uint32_t end_frame);
 int sound_get_playing_source_count(void);
 
+/* The audio clock: milliseconds of output rendered since sound_init() or
+ * sound_reset_time(). It stands still until the output starts (the app's first
+ * sound) and wraps after ~27 hours (2^32 frames at 44.1 kHz). */
 uint32_t sound_get_current_time(void);
 void sound_reset_time(void);

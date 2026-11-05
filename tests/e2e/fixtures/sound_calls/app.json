@@ -1,0 +1,8 @@
+{
+    "id": "com.test.soundcalls",
+    "name": "Sound Calls",
+    "description": "E2E fixture: play() results, clearing callbacks, the audio clock and the blank sample",
+    "version": "1.0",
+    "author": "PicoDeck E2E",
+    "requirements": ["audio"]
+}
