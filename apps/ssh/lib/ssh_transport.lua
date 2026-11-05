@@ -87,16 +87,16 @@ end
 -- ── Low-level I/O ───────────────────────────────────────────────────────────
 
 -- Read available data from TCP into recv_buf.
--- Returns false if the connection is dead.
+-- Returns false if the connection is dead and nothing is left to read. Read first:
+-- data the peer sent before closing stays readable, and a server's last packet is
+-- often the DISCONNECT that says why.
 function transport:fill_buf()
-    if not self.conn:isConnected() then
-        return false
-    end
     local data = self.conn:read(8192)
     if data then
         self.recv_buf = self.recv_buf .. data
+        return true
     end
-    return true
+    return self.conn:isConnected()
 end
 
 -- Read exactly n bytes from recv_buf, blocking with timeout
@@ -268,8 +268,8 @@ function transport:recv_packet_skip(timeout_ms)
         if msg_type == MSG.IGNORE or msg_type == MSG.DEBUG then
             -- skip
         elseif msg_type == MSG.DISCONNECT then
-            local _, reason, desc = wire.read_uint32(payload, 2)
-            desc = wire.read_string(payload, desc) or "unknown"
+            local _, desc_pos = wire.read_uint32(payload, 2)  -- reason code
+            local desc = wire.read_string(payload, desc_pos) or "unknown"
             self.error = "server disconnected: " .. desc
             return nil
         else

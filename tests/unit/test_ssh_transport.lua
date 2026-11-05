@@ -7,10 +7,11 @@ local transport = require("lib.ssh_transport")
 local auth = require("lib.ssh_auth")
 local crypto = picocalc.crypto
 
--- A socket that replays bytes, and keeps what the client wrote.
-local function fake_conn(rx)
+-- A socket that replays bytes, and keeps what the client wrote. With peer_closed it
+-- behaves as lua_bridge_tcp.c does after the peer's FIN: the data is still readable.
+local function fake_conn(rx, peer_closed)
     local conn = {rx = rx or "", tx = ""}
-    function conn:isConnected() return true end
+    function conn:isConnected() return not peer_closed end
     function conn:read(max)
         if #self.rx == 0 then return nil end
         local out = self.rx:sub(1, max)
@@ -200,6 +201,21 @@ local function test_mpint()
     check(wire.mpint("\0\128") == "\0\0\0\2\0\128", "mpint: stripped, then a sign byte")
 end
 
+-- A server's reason reaches the user, including when it hung up straight after giving it.
+local function test_disconnect_reason()
+    local payload = string.char(transport.MSG.DISCONNECT) .. wire.uint32(3)
+                 .. wire.string("key exchange refused") .. wire.string("")
+    for _, peer_closed in ipairs({false, true}) do
+        local t = transport.new(fake_conn(wire.build_packet(payload), peer_closed))
+        check(t:recv_packet_skip(1000) == nil, "DISCONNECT ends the receive")
+        check(t.error == "server disconnected: key exchange refused", "DISCONNECT reason: " .. tostring(t.error))
+    end
+
+    local t = transport.new(fake_conn("", true))
+    check(t:recv_packet_skip(1000) == nil, "a closed socket with nothing left ends the receive")
+    check(t.error and t.error:find("connection closed", 1, true), "reported as closed: " .. tostring(t.error))
+end
+
 -- ── A real sshd ─────────────────────────────────────────────────────────────
 
 local function live_session(key, kex, algo)
@@ -231,6 +247,17 @@ local function live_refused(key, kex, algo, expect)
     conn:close()
 end
 
+-- sshd says why it is hanging up, then closes at once.
+local function live_disconnect(key, kex, algo)
+    local conn = LIVE.sshd_connect(key, kex, algo, "MaxAuthTries=1")
+    local t = transport.new(conn)
+    check(t:handshake() and auth.request_service(t), "reaches authentication: " .. tostring(t.error))
+    check(auth.password(t, "picodeck-test", "not-a-password") == false, "the login fails")
+    check(t.error == "server disconnected: Too many authentication failures", "reason: " .. tostring(t.error))
+    t:close()
+    conn:close()
+end
+
 local function run_live()
     local ec_key = LIVE.keygen("ecdsa", "256")
     local rsa_key = LIVE.keygen("rsa", "3072")
@@ -242,6 +269,7 @@ local function run_live()
         live_session(ec_key, kex, "ecdsa-sha2-nistp256")
         live_session(rsa_key, kex, "rsa-sha2-256")
     end
+    live_disconnect(ec_key, "curve25519-sha256", "ecdsa-sha2-nistp256")
     if LIVE.sshd_usable(rsa_key, "curve25519-sha256", "ssh-rsa") then
         live_refused(rsa_key, "curve25519-sha256", "ssh-rsa", "no common hostkey algorithm")
     end
@@ -268,4 +296,5 @@ else
     test_what_is_offered()
     test_packet_framing()
     test_mpint()
+    test_disconnect_reason()
 end
