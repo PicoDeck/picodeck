@@ -8,7 +8,5 @@
     "root-filesystem",
     "audio"
   ],
-  "category": "tools",
-  "repo": "PicoDeck/picodeck",
-  "min_firmware": "1.0.0"
+  "category": "tools"
 }

@@ -6,6 +6,5 @@
     "author": "PicoDeck",
     "system_clock_khz": 300000,
     "requirements": ["filesystem", "audio"],
-    "category": "emulators",
-    "min_firmware": "1.0.0"
+    "category": "emulators"
 }

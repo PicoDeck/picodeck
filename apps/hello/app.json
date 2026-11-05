@@ -4,7 +4,5 @@
     "description": "A basic drawing demo",
     "version": "1.0",
     "author": "PicoDeck",
-    "category": "demos",
-    "repo": "PicoDeck/picodeck",
-    "min_firmware": "1.0.0"
+    "category": "demos"
 }
