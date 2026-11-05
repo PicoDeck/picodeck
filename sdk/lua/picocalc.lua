@@ -2980,7 +2980,7 @@ function picocalc.game.scene.new() end
 ---@param scene PicoDeckScene
 function picocalc.game.scene.add(name, scene) end
 
----Remove a named scene.
+---Remove a named scene, and take it off the stack with no `exit()`.
 ---@param name string
 function picocalc.game.scene.remove(name) end
 
@@ -3011,11 +3011,32 @@ function picocalc.game.scene.update(dt) end
 ---Call `draw()` on the current scene.
 function picocalc.game.scene.draw() end
 
----Return (or create) an object pool associated with a scene.
----@param name string Scene name
+---Create an object pool, up to 8 per app. Each call makes a new one. An error
+---in the factory is raised from `acquire` and `prewarm`.
+---@param name string A label: it becomes the table's `name` field
 ---@param factory fun(): any Factory function for new objects
----@return table pool
+---@return PicoDeckObjectPool pool
 function picocalc.game.scene.objectPool(name, factory) end
+
+---Holds up to 64 idle objects.
+---@class PicoDeckObjectPool
+---@field name string
+local PicoDeckObjectPool = {}
+
+---Take the most recently released object, or call the factory for a new one.
+---@return any
+function PicoDeckObjectPool:acquire() end
+
+---Return an object for reuse. With 64 idle already, it is dropped.
+---@param obj any
+function PicoDeckObjectPool:release(obj) end
+
+---Add `count` new idle objects (at most 64, and stopping when the pool is full).
+---@param count integer
+function PicoDeckObjectPool:prewarm(count) end
+
+---Discard every idle object.
+function PicoDeckObjectPool:clear() end
 
 ---Set a global value accessible to all scenes.
 ---@param key string

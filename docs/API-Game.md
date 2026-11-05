@@ -249,11 +249,11 @@ Create a new (empty) scene object.
 ---
 
 #### `picocalc.game.scene.add(name, scene)`
-Register a scene under a name.
+Register a scene under a name. Adding a name that exists replaces the scene it stands for, on the stack too, and calls neither `exit()` nor `enter()`.
 
 - **Parameters:**
   - `name` (string): Scene name
-  - `scene` (table): Scene object with lifecycle methods
+  - `scene` (table): Scene table with its functions
 - **Returns:** None
 
 ```lua
@@ -263,7 +263,7 @@ picocalc.game.scene.add("menu", menuScene)
 ---
 
 #### `picocalc.game.scene.remove(name)`
-Remove a registered scene.
+Remove a registered scene, and take it off the stack if it is there. Its `exit()` does not run, and the scene below it becomes current without an `enter()`. An unknown name does nothing.
 
 - **Parameters:**
   - `name` (string): Scene name
@@ -339,10 +339,10 @@ Call `draw()` on the current scene. Call once per frame.
 ---
 
 #### `picocalc.game.scene.objectPool(name, factory)`
-Creates an object pool with the given name. Each call creates a new pool, up to 8 per app (further calls raise an error).
+Creates an object pool with the given name. Each call creates a new pool, even with a name used before, up to 8 per app (further calls raise an error).
 
 - **Parameters:**
-  - `name` (string): Pool name
+  - `name` (string): Pool name, a label only: it becomes the table's `name` field
   - `factory` (function): Factory used to create the pool's objects (required)
 - **Returns:** (table) The object pool
 
@@ -354,22 +354,22 @@ local bullets = picocalc.game.scene.objectPool("bullets", function() return {} e
 
 ### Object Pool Methods
 
-A pool holds up to 64 idle objects. Call these with method syntax on the table returned by `objectPool()`.
+A pool holds up to 64 idle objects. Call these with method syntax on the table returned by `objectPool()`. A pool hands objects back as they were released and does not reset them, and does not keep count of the ones you hold.
 
 #### `pool:acquire()`
-Takes an idle object from the pool, or calls the factory to make a new one if the pool is empty.
+Takes the most recently released object from the pool, or calls the factory to make a new one if the pool is empty. An error in the factory is raised to the caller.
 
 - **Returns:** (any) The object
 
 #### `pool:release(obj)`
-Returns an object to the pool for reuse. If the pool already holds 64 objects, the object is silently dropped.
+Returns an object to the pool for reuse. If the pool already holds 64 objects, the object is silently dropped. Don't release one twice: the pool would hand it out twice.
 
 - **Parameters:**
   - `obj` (any): Object to return
 - **Returns:** None
 
 #### `pool:prewarm(count)`
-Calls the factory to fill the pool with idle objects ahead of time, up to the 64-object limit.
+Calls the factory to add idle objects to the pool ahead of time, stopping when it holds 64. An error in the factory is raised to the caller.
 
 - **Parameters:**
   - `count` (number): Number of objects to create (clamped to 0-64)
