@@ -1128,7 +1128,7 @@ static bool menu_loop(lua_State *L, int context) {
   display_set_scroll_offset(0);
 
   // Start from a clean keyboard: an edge from before the menu opened (a key
-  // typed during a sys.sleep whose background polls also saw the Sym press,
+  // typed during a sys.sleep whose background polls also saw the menu key press,
   // or the app's own last poll) must not select or activate an item. This
   // also ends any background-poll run, so the first kbd_poll below starts a
   // normal poll. The app loses those edges; closing the menu clears the
@@ -1171,7 +1171,7 @@ static bool menu_loop(lua_State *L, int context) {
       running = false;
       continue;
     }
-    // The menu key (Sym, or a pad's Home) toggles: pressed with the menu
+    // The menu key (Shift+F5, or a pad's Home) toggles: pressed with the menu
     // open it closes the whole menu, from any page, like Esc at the top
     // level. Taking the press here is also what stops it opening the menu
     // again once this one has closed (issue #59).

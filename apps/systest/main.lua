@@ -87,7 +87,7 @@ local BTN_LABELS = {
     { input.BTN_RIGHT, "RIGHT" },
     { input.BTN_ENTER, "Enter" },
     { input.BTN_ESC,   "Esc" },
-    { input.BTN_MENU,  "Sym" },
+    { input.BTN_MENU,  "Menu" },
     { input.BTN_TAB,   "Tab" },
 }
 

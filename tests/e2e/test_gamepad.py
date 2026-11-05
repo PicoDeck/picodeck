@@ -430,7 +430,7 @@ def _menu_open(sim, timeout=10.0):
 
 
 def test_pad_home_opens_the_menu_and_a_pad_leaves_the_game(simulator):
-    """Home on a pad opens the system menu (the Sym key's path), the pad
+    """Home on a pad opens the system menu (the menu key's path), the pad
     drives the menu (A selects), and with only a pad the player can leave:
     Home, Up (wraps to Exit App), A."""
     sim = simulator

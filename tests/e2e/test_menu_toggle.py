@@ -424,7 +424,7 @@ def test_menu_key_toggles_the_launcher_menu(target, how, pad_cleanup):
 
 @pytest.mark.native
 def test_menu_key_closes_the_menu_over_a_native_app(simulator):
-    # Sym only: the simulator's native trampolines do not pump the `pad` dev
+    # The menu key only: the simulator's native trampolines do not pump the `pad` dev
     # command (the Lua runner and the menu loop do), so Home cannot be sent
     # to a native app here. Its path into the menu is the same latch.
     how = "menu"

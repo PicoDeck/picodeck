@@ -5,6 +5,5 @@
     "version": "1.1.0",
     "author": "PicoDeck",
     "category": "games",
-    "requirements": ["audio", "http"],
-    "min_firmware": "1.0.0"
+    "requirements": ["audio", "http"]
 }

@@ -7,7 +7,5 @@
     "requirements": [
         "http"
     ],
-    "category": "network",
-    "repo": "PicoDeck/picodeck",
-    "min_firmware": "1.0.0"
+    "category": "network"
 }

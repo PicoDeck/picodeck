@@ -63,7 +63,7 @@ static inline bool lua_bridge_is_exit_sentinel(lua_State *L, int idx) {
 // One service pass, shared by the count hook, sys.sleep and the terminal's
 // blocking waits so they cannot drift apart: feeds the watchdog, raises a
 // pending exit, fires HTTP/TCP/sound callbacks, runs dev commands (and their
-// reboot/exit flags), opens the system menu on a pending Sym press, latches
+// reboot/exit flags), opens the system menu on a pending menu key press, latches
 // screenshot requests, and collects garbage when the PSRAM heap runs low.
 // It does not poll the keyboard (that would steal the app's key edges); a
 // menu press is seen once the app's own input polling has read it. May
@@ -71,7 +71,7 @@ static inline bool lua_bridge_is_exit_sentinel(lua_State *L, int idx) {
 void lua_bridge_service(lua_State *L);
 
 // The count hook's form of it, also called by input.update(): the watchdog,
-// exit and Sym checks every time, the rest only when work is pending or the
+// exit and menu key checks every time, the rest only when work is pending or the
 // last full pass is more than 5 ms old. Apps that spend their time in C
 // calls (few instructions, so few hook calls) are still served every frame.
 void lua_bridge_service_poll(lua_State *L);

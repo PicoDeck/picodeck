@@ -171,7 +171,7 @@ Must use `display_spi_lock()` / `display_spi_unlock()` around all CYW43 SPI acce
 
 ## System menu overlay — implemented
 
-The Menu/Sym key (`BTN_MENU`) pauses the running app and shows an OS-level overlay.
+The system menu key (`BTN_MENU`: Shift+F5, reported as F10) pauses the running app and shows an OS-level overlay.
 
 - [x] Create `src/os/system_menu.c` / `system_menu.h`
 - [x] Intercept `BTN_MENU` via Lua instruction-count hook (fires every 256 opcodes) + `kbd_consume_menu_press()` edge-detect in `keyboard.c`

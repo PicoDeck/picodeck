@@ -2,8 +2,5 @@
   "name": "Graphics Test",
   "version": "1.0",
   "author": "PicoDeck",
-  "icon": "",
-  "category": "demos",
-  "repo": "PicoDeck/picodeck",
-  "min_firmware": "1.0.0"
+  "category": "demos"
 }

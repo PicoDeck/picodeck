@@ -5,7 +5,5 @@
     "version": "1.0",
     "author": "PicoDeck",
     "requirements": ["sysconfig"],
-    "category": "demos",
-    "repo": "PicoDeck/picodeck",
-    "min_firmware": "1.0.0"
+    "category": "demos"
 }

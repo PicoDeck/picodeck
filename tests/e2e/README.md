@@ -5,6 +5,9 @@ over its JSON-RPC control channel.
 
 ## Running
 
+The simulator needs a clone with its submodules: `git clone --recurse-submodules`, or
+`git submodule update --init --recursive` afterwards.
+
 ```bash
 pip install -r tests/e2e/requirements.txt
 make simulator

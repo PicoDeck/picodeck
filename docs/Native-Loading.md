@@ -34,7 +34,7 @@ Place these files in `/apps/<your_app_name>/` on the SD card.
 }
 ```
 
-See [Global Variables and Permissions](Global-Variables-and-Permissions.md) for available requirements (`filesystem`, `root-filesystem`, `http`, `audio`).
+The [`app.json` reference](App-Json-Reference.md) has every field, including `min_psram_kb` and `system_clock_khz`, which big native apps usually want. See [Global Variables and Permissions](Global-Variables-and-Permissions.md) for available requirements (`filesystem`, `root-filesystem`, `http`, `audio`).
 
 ## Development Environment
 
@@ -64,7 +64,7 @@ void picodeck_main(const PicoCalcAPI *api,
 
     while (true) {
         s->poll();  // REQUIRED: polls keyboard, feeds the watchdog,
-                    // handles system menu (Sym key)
+                    // handles the system menu key (Shift+F5, reported as F10)
 
         if (s->shouldExit())  // User selected "Exit App" from system menu
             return;

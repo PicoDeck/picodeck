@@ -3,15 +3,17 @@
 -- This file is never executed — it exists solely to provide IDE autocomplete,
 -- hover documentation, and type checking for PicoDeck app development.
 --
--- Place `.luarc.json` at the project root and set:
---   "Lua.workspace.library": ["sdk/lua"]
+-- Copy this file into your project and point `.luarc.json` at it:
+--   "workspace.library": ["libs/picocalc.lua"]
+-- sdk/README.md has the whole setup.
 --
 -- Generated from src/os/lua_bridge_*.c — keep in sync with the bridge sources.
 -- tools/check_lua_stub.py (run by `pytest tests/unit`) compares every signature
 -- here with the C function behind it: parameter count, optional parameters and
 -- return count.
--- Note: only base/table/string/math stdlib is available (no utf8, no coroutine,
--- no io/os/package/debug).
+-- Note: the stdlib is base, table, string, math, coroutine and utf8. io, os,
+-- package and debug are nil on the device, and dofile and loadfile too; require
+-- is PicoDeck's own (docs: Standard Lua Libraries).
 
 -- =============================================================================
 -- App globals (injected by launcher before app starts)
@@ -346,7 +348,7 @@ function picocalc.display.rgb(r, g, b) end
 ---@field BTN_RIGHT     integer D-pad right
 ---@field BTN_ENTER     integer Enter / OK
 ---@field BTN_ESC       integer Escape / back
----@field BTN_MENU      integer System menu (Sym key)
+---@field BTN_MENU      integer The system menu key (Shift+F5, reported as F10)
 ---@field BTN_F1        integer Function key 1
 ---@field BTN_F2        integer Function key 2
 ---@field BTN_F3        integer Function key 3

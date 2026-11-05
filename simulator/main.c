@@ -9,6 +9,8 @@
 #include <unistd.h>
 #ifndef __EMSCRIPTEN__
 #include <execinfo.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #endif
 #include "hal/web_platform.h"  // sim_core1_service(); the web build's hooks
 #include <fcntl.h>
@@ -73,6 +75,7 @@
 // can extern it for shutdown propagation during Lua app execution.
 volatile int g_running = 1;
 static char g_sd_card_path[512] = SIM_DEFAULT_SD_CARD;
+static int g_sd_card_given = 0;      // --sd-card on the command line
 static char g_launch_app[128] = "";  // App to auto-launch
 static int g_auto_launch_done = 0;   // Flag to track if auto-launch was attempted
 static int g_show_splash = 0;        // Show boot splash screen
@@ -163,11 +166,85 @@ static void crash_handler(int sig) {
     _exit(128 + sig);
 }
 
+#ifndef __EMSCRIPTEN__
+static bool path_is_dir(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+// Does a folder directly under `path` hold an app's files?
+static bool holds_app_folders(const char *path) {
+    static const char *const k_app_files[] = {"app.json", "main.lua", "main.elf"};
+    DIR *dir = opendir(path);
+    if (!dir)
+        return false;
+    bool found = false;
+    struct dirent *e;
+    while (!found && (e = readdir(dir)) != NULL) {
+        if (e->d_name[0] == '.')
+            continue;
+        for (size_t i = 0; i < sizeof(k_app_files) / sizeof(k_app_files[0]); i++) {
+            char file[1024];
+            struct stat st;
+            snprintf(file, sizeof(file), "%s/%s/%s", path, e->d_name, k_app_files[i]);
+            if (stat(file, &st) == 0 && S_ISREG(st.st_mode))
+                found = true;
+        }
+    }
+    closedir(dir);
+    return found;
+}
+
+// The card folder, checked before anything is created in it. hal_sdcard_init
+// makes apps/, data/ and system/ in whatever it is given and ignores a failure,
+// so the mistakes below used to end in an empty launcher with no message: the
+// apps folder passed for the card (apps/ inside apps/), a mistyped path, and a
+// published binary with no flag, whose default is the CI runner's checkout.
+static void check_sd_card_path(void) {
+    if (!g_sd_card_given) {
+        if (path_is_dir(g_sd_card_path))
+            return;
+        fprintf(stderr,
+                "No SD card folder: this build's default, the source tree it was\n"
+                "built from (%s), is not on this computer.\n"
+                "Make a folder for the card, put each app in <folder>/apps/<name>/\n"
+                "and run with --sd-card <folder>.\n",
+                g_sd_card_path);
+        exit(2);
+    }
+    if (!path_is_dir(g_sd_card_path)) {
+        fprintf(stderr,
+                "--sd-card %s: not a folder. Create it first, or fix the path.\n"
+                "--sd-card takes the card's root, with each app in <root>/apps/<name>/.\n",
+                g_sd_card_path);
+        exit(2);
+    }
+    char apps[600];
+    snprintf(apps, sizeof(apps), "%s/apps", g_sd_card_path);
+    if (!path_is_dir(apps) && holds_app_folders(g_sd_card_path)) {
+        fprintf(stderr,
+                "--sd-card %s: this holds app folders but no apps/ folder.\n"
+                "--sd-card takes the card's root, with each app in <root>/apps/<name>/.\n"
+                "If this is your apps folder, pass the folder that contains it.\n",
+                g_sd_card_path);
+        exit(2);
+    }
+}
+#endif
+
 // Print usage
 static void print_usage(const char* program) {
     printf("Usage: %s [options]\n", program);
     printf("Options:\n");
-    printf("  --sd-card PATH       Path to simulated SD card (default: %s)\n", SIM_DEFAULT_SD_CARD);
+    printf("  --sd-card PATH       The card's root folder: apps are in PATH/apps/<name>/\n");
+#ifndef __EMSCRIPTEN__
+    if (path_is_dir(SIM_DEFAULT_SD_CARD))
+        printf("                       (default: the source tree it was built from: %s)\n",
+               SIM_DEFAULT_SD_CARD);
+    else
+        printf("                       (required: the source tree it was built from is not\n"
+               "                       on this computer)\n");
+#endif
     printf("  --launch APP         Auto-launch app on startup\n");
     printf("  --port PORT          TCP port for RPC socket (default: 7878, 0=auto)\n");
     printf("  --instance-id ID     Unique instance ID (for parallel simulators)\n");
@@ -211,6 +288,7 @@ static void parse_args(int argc, char** argv) {
         } else if (strcmp(argv[i], "--sd-card") == 0 && i + 1 < argc) {
             strncpy(g_sd_card_path, argv[i + 1], sizeof(g_sd_card_path) - 1);
             g_sd_card_path[sizeof(g_sd_card_path) - 1] = '\0';
+            g_sd_card_given = 1;
             i++;
         } else if (strcmp(argv[i], "--launch") == 0 && i + 1 < argc) {
             strncpy(g_launch_app, argv[i + 1], sizeof(g_launch_app) - 1);
@@ -563,7 +641,10 @@ int main(int argc, char** argv) {
     
     // Parse arguments
     parse_args(argc, argv);
-    
+#ifndef __EMSCRIPTEN__
+    check_sd_card_path();
+#endif
+
     printf("Configuration:\n");
     printf("  SD Card: %s\n", g_sd_card_path);
     printf("  Display: 960x960 (3x scale)\n");

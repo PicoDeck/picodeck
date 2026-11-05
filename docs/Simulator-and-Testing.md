@@ -2,58 +2,288 @@
 title: "Simulator and Testing"
 ---
 
-## Overview
-
-The PC simulator (`make simulator`, binary `build_sim/picodeck_simulator`) runs the firmware's Lua bridge and launcher on your computer with an SDL2 window in place of the LCD, so you can run and debug apps without a device. See `simulator/README.md` for building and running it.
+The PC simulator runs the firmware's Lua bridge and launcher on your computer, with an SDL2 window in place of the LCD, so you can run and debug apps without a device.
 
 - **Lua apps** run on the same bridge as the device.
 - **Native (ELF) apps** run under the Unicorn CPU emulator, against the same `PicoCalcAPI` table as on the device. They are much slower than on the RP2350's real cores, so judge performance on hardware.
-- **Game controllers** plugged into the computer drive `picocalc.gamepad`; the keyboard drives everything else.
-- **Differences from the device** that matter to app code: `picocalc.crypto` is absent, networking uses the host's network, Bluetooth is a scripted radio, there is far more memory (`--real-umm` uses the firmware's heap allocator for realistic fragmentation), and the display post-effects (`effectInvert` to `effectPosterize`) do nothing in native apps. `simulator/CLAUDE.md` has the complete list.
 - **In the browser**, [picodeck.net/try](https://picodeck.net/try/) runs the same sources compiled to WebAssembly (built by [PicoDeck/web-sim](https://github.com/PicoDeck/web-sim)). It runs Lua apps and native apps compiled into the page, but has no networking and cannot run ELF apps.
 
-## Simulator control protocol (TCP 127.0.0.1, or the ./picodeck_control UNIX socket)
+The simulator is not the device: read [the differences](#simulator-vs-device) before trusting a result. The first half of this page is for app authors. [Working on PicoDeck itself](#working-on-picodeck-itself) comes after.
 
-- `launch_app` → `{queued, busy, launch_id}`; `app.exited` notifications carry
-  `{name, id, found, result: returned|error|exit_sentinel|load_failed, error,
-  runtime_ms, launch_id}`; `get_last_outcome` returns the last one.
-- `get_log_buffer {since_seq, tail}` → `{lines:[{seq,t_ms,src,text}], next_seq,
-  dropped, more}`; `subscribe {"logs":true}` pushes `log` notifications.
-- `inject_*` return `input_seq`; `get_input_state` reports `consumed_seq`.
-- `dev_command {"cmd": "..."}` runs `ping`/`exit`/`unzip`/`rm`/`mv`/`list [all]`/`pad`/`bt`
-  through the firmware's handlers.
-- Bluetooth controllers are a scripted radio in the simulator: `bt sim add
-  <addr> <class hex> <name>` puts a device in pairing mode in range (`bt sim
-  clear` empties it), `bt sim press <buttons|none>` sends the connected pad's
-  state, `bt sim drop` drops its link and `bt sim wake <addr>` makes a paired
-  pad reconnect. The Bluetooth page, the setting and the pairing file are
-  the firmware's.
-- `step_time {ms}` and `set_time_multiplier` drive the virtual clock.
-- Flags: `--test-mode` (error screens return at once; constant `math.random`
-  seed and string hash seed; clock pinned to 2026-01-01), `--virtual-time`,
-  `--unix-socket PATH|none`, `--real-umm` (firmware allocator; real
-  fragmentation), `--build-info`, `--gamepad` / `--no-gamepad`.
-- A game controller plugged into the computer drives `picocalc.gamepad`
-  (D-pad or left stick, A/B/X/Y, shoulders = L/R, Start, Back = Select, Guide
-  opens or closes the system menu; both sticks and the triggers for `getAxis`),
-  with hotplug. It is read unless
-  `--no-gamepad`, and not under `--test-mode` unless `--gamepad` is given, so
-  tests never see the host's controller. The browser demo
-  ([picodeck.net/try](https://picodeck.net/try/)) reads controllers too, once
-  the browser has seen one of their buttons pressed.
+## Get the simulator
 
-## Running the tests
+**Download it (x86-64 Linux).** Each [release](https://github.com/PicoDeck/picodeck/releases/latest) has a `picodeck-simulator-linux`. It needs the SDL2 and libcurl shared libraries, and it comes with no apps and no card, so make a [card folder](#the-sd-card-is-a-folder) first.
 
-- `SDL_VIDEODRIVER=dummy pytest tests/e2e -n auto` (release simulator).
-- Sanitizers: `make simulator-asan` / `simulator-tsan`, then
-  `PICODECK_SIM_BINARY=build_sim_asan/picodeck_simulator pytest tests/e2e -n auto`.
-- Firmware network stack in the simulator: `make simulator-net`,
-  `PICODECK_SIM_BINARY=build_sim_net/picodeck_simulator pytest tests/e2e/test_network_firmware.py`.
-- On a real device: `pytest tests/e2e --target hw:/dev/serial/by-id/<PicoDeck device>`
-  runs the `hardware`/`both` tests.
-- Host unit tests: `make test-unit`; fuzzers: `make fuzz`.
+```sh
+curl -LO https://github.com/PicoDeck/picodeck/releases/latest/download/picodeck-simulator-linux
+chmod +x picodeck-simulator-linux
+./picodeck-simulator-linux --sd-card mycard
+```
 
-## Dev commands (USB serial)
+**Or build it.** You need CMake, C and C++ compilers, and the SDL2, SDL2_image and libcurl development packages (Fedora: `SDL2-devel SDL2_image-devel libcurl-devel`; Debian/Ubuntu: `libsdl2-dev libsdl2-image-dev libcurl4-openssl-dev`). The Pico SDK and an ARM toolchain are not needed. The first build downloads Lua, mbedTLS and Unicorn. CI builds and tests on Ubuntu; other systems are not tested.
+
+```sh
+git clone --recurse-submodules https://github.com/PicoDeck/picodeck.git
+cd picodeck
+make simulator           # build_sim/picodeck_simulator
+make simulator-run       # build it and run it, with the checkout as the card
+```
+
+Without `--recurse-submodules`, `make simulator` stops and gives the command that fetches them. A source archive from GitHub has no submodules, so it does not build.
+
+## The SD card is a folder
+
+`--sd-card` names the card's **root**, not the apps folder. Each app is in `<root>/apps/<name>/`, as on a real card:
+
+```
+mycard/
+├── apps/
+│   └── myapp/
+│       ├── app.json
+│       └── main.lua
+├── data/               created for you: each app's saved data
+└── system/
+    └── lib/            copy from the repo if you use loadlib
+```
+
+```sh
+./picodeck_simulator --sd-card mycard
+```
+
+The simulator creates `apps/`, `data/` and `system/` in an empty folder, so it starts with a blank card. It stops with a message, and creates nothing, if the path is not a folder, or if the folder holds app folders but no `apps/` (you passed `mycard/apps`).
+
+With no `--sd-card`, a simulator you built uses the source tree it was built from as the card, with the repository's `apps/` and `system/lib/`. A downloaded one has no source tree, so it needs the flag and says so. Files your app writes land in that folder's `data/`: delete it to start clean. An app needing `/system/lib` needs that folder on your card too: copy `system/lib` from the [repository](https://github.com/PicoDeck/picodeck/tree/master/system/lib), or [bundle the library](Publishing-Apps.md#bundle-the-libraries-you-use).
+
+## Launching your app
+
+Pick it in the launcher with the arrow keys and Enter, or start it from the command line. `--launch` takes the app's id, its name or its folder name:
+
+```sh
+./picodeck_simulator --sd-card mycard --launch myapp
+```
+
+The launcher reads `/apps` at boot and each time an app exits. `main.lua` is read on every launch, so to try an edit, press Esc in your app (if it handles that) or use the system menu's Exit App, then Enter.
+
+An error stops the app with its message on screen, as on the device; press Esc to return. It also goes to `/system/error.log` in the card folder.
+
+`sys.log` prints `[APP] message` on the simulator's standard output, and `print` prints there too.
+
+## Keys
+
+| On your computer | PicoCalc key |
+|---|---|
+| Arrow keys, Enter, Esc, Tab, Backspace, Delete | The same keys |
+| F1 to F5 | F1 to F5 |
+| **F10** | The system menu key (Shift+F5, reported as F10, on the device). Shift+F5 does not open it here |
+| F12 | Saves a screenshot to `/screenshots/` on the card (Shift+Esc on the device) |
+| Letters, digits, punctuation | The same characters, unshifted: Shift makes no capitals or symbols here. `inject_char`, [below](#driving-it-from-a-script), types anything |
+| Shift, Ctrl | Shift, Ctrl |
+| Home | Sym (`BTN_FN`) |
+
+F6 to F9 and Alt have no key. A game controller plugged into the computer drives `picocalc.gamepad`: D-pad or left stick, A/B/X/Y, shoulders as L/R, Start, Back as Select, Guide to open or close the system menu, and both sticks and the triggers for `getAxis`. It works with hotplug, unless `--no-gamepad` is given.
+
+## Driving it from a script
+
+The simulator listens on a control port: TCP on `127.0.0.1`, port **7878** by default. `--port N` picks another, and `--port 0` picks a free one and prints it as `[Socket] TCP port: N`. It also opens a UNIX socket, `./picodeck_control`, in the current folder (`--unix-socket PATH` or `none` changes that).
+
+The framing is **one JSON-RPC 2.0 message per line**, in both directions. A reply carries your `id`. Lines with no `id` are notifications, such as `app.exited`. This drives an app with nothing but Python's standard library:
+
+```python
+import base64, json, socket, time
+
+sock = socket.create_connection(("127.0.0.1", 7878))
+lines = sock.makefile("r")
+last_id = 0
+
+def call(method, **params):
+    global last_id
+    last_id += 1
+    message = {"jsonrpc": "2.0", "id": last_id, "method": method, "params": params}
+    sock.sendall((json.dumps(message) + "\n").encode())
+    while True:
+        reply = json.loads(lines.readline())
+        if reply.get("id") == last_id:
+            return reply.get("result", reply.get("error"))
+
+call("launch_app", name="myapp")
+time.sleep(1)
+print(call("get_running_app"))
+open("shot.png", "wb").write(base64.b64decode(call("screenshot")["data"]))
+call("inject_button", button="esc", action="click")
+time.sleep(1)
+print(call("get_last_outcome"))
+for line in call("get_log_buffer", tail=20)["lines"]:
+    print(line["src"], line["text"])
+```
+
+| Method | Does |
+|---|---|
+| `launch_app {name}` | Starts an app; replies `{queued, busy, launch_id}`. It rescans `/apps` once if the name is not found |
+| `exit_app`, `get_running_app`, `get_last_outcome` | Asks the app to exit; what runs; how the last one ended: `result` is `returned`, `error`, `exit_sentinel` (Exit App, `sys.exit`) or `load_failed` |
+| `rescan_apps` | Reads `/apps` again, after editing an `app.json` |
+| `inject_button {button, action}` | `action` is `click`, `press` or `release`; `button` is `up down left right enter esc menu tab backspace del shift ctrl fn f1`-`f5` |
+| `inject_char {char}` | Types one character |
+| `screenshot {format}` | The screen, base64 in `data`: `png` (default) or `raw` (RGB565) |
+| `get_pixel`, `display_stats`, `display_diff` | Read a pixel, count frames, compare frames |
+| `get_log_buffer {since_seq, tail}` | Log lines with their source: `lua`, `native`, `os` or `err` |
+| `subscribe {"logs": true}` | Pushes `log` notifications |
+| `read_file`, `write_file`, `delete_file`, `list_dir`, `disk_info` | Files on the card |
+| `dev_command {cmd}` | Runs a [dev command](#dev-commands) |
+| `get_heap_info`, `get_audio_state`, `get_mp3_stats`, `get_terminal_buffer`, `get_crash_log` | Reads state |
+| `set_wifi_state`, `set_battery` | Pretend the WiFi or the battery changed |
+| `set_time_multiplier`, `step_time {ms}` | Drive the virtual clock (below) |
+| `shutdown` | Quits the simulator |
+
+### Testing your own app
+
+Run with `--test-mode` for repeatable runs: error screens return at once, `math.random` and the string hash get a constant seed, and the clock starts at 2026-01-01. Add `--virtual-time` to make the clock the OS and apps read virtual: sleeps cost almost no real time, and `step_time` moves it by hand. `--real-umm` puts the firmware's heap allocator under your app, for real fragmentation and the real heap size.
+
+A repository checkout has more help. [`tests/e2e/picodeck_simulator.py`](https://github.com/PicoDeck/picodeck/blob/master/tests/e2e/picodeck_simulator.py) is a Python client for all of the above. [`tests/e2e/lib/picotest.lua`](https://github.com/PicoDeck/picodeck/blob/master/tests/e2e/lib/picotest.lua) is a small test kit for inside a Lua app: copy it into your app, `require("picotest")`, and each case reports to the log and to a results file.
+
+`make test-lua` checks the syntax of the apps in the repository's `apps/` only. A Lua 5.4 `luac -p main.lua` does the same for yours.
+
+### Coding assistants: MCP
+
+[`tools/picodeck_mcp.py`](https://github.com/PicoDeck/picodeck/blob/master/tools/picodeck_mcp.py) is a [Model Context Protocol](https://modelcontextprotocol.io/) server, the way a coding assistant such as Claude Code calls external tools. It offers the simulator and a USB-connected device as tools: `start_simulator`, `push_app`, `launch_app`, `keypress`, `pad`, `screenshot`, `get_log_buffer` and more. It needs `pip install mcp pyserial`; the repository's `.mcp.json` registers it for tools that read that file.
+
+It picks a running simulator if one answers, and otherwise a connected device, whatever you meant: **with a device plugged in, check `get_status` first.** Pass `sd_card_path` to `start_simulator`, and `push_app` replaces the app's folder on the target, so never push from a folder inside the card it writes to.
+
+## Simulator vs device
+
+Checked against the firmware and simulator from the same source, at firmware API version 10 (commit `272bb8c`, after v0.6.0). Where a row gives what the device does, that comes from reading the firmware's source unless the page for that API says it has been measured. Some of these may have been closed since. **Colour, timing and performance are only ever right on the device.**
+
+### Missing
+
+| API | Simulator | Device |
+|---|---|---|
+| `picocalc.crypto` | `nil` in Lua. Native: stubs that return 0 or NULL and write nothing, except `randomBytes`, which works | Present |
+| `picocalc.video` | `player()` returns `nil, "failed to create video player"`. Native: `newPlayer` returns NULL, the rest do nothing | Decodes MJPEG |
+| PIO PSRAM | `pioPsramSize()` is 0, writes return 0, reads return nil. Native: `pioAvailable()` is false and the other `pio*` calls are unimplemented | 8 MB, apps from `0x48000` |
+| Bluetooth pads | A scripted radio (`bt sim ...`, below) | Real pads |
+| USB Disk Mode | Does nothing | [Works](Getting-started-on-a-device.md#5-copy-your-own-apps) |
+| `system_clock_khz` | Accepted, with no effect on speed | Changes the clock, and can [drop WiFi](App-Json-Reference.md#system_clock_khz) |
+| Watchdog | None | Resets a stuck app |
+| Idle dim | Off, unless `--idle-dim`. Then nothing draws dim | Dims after 60 s, and the waking key is swallowed |
+
+### Memory
+
+| What | Simulator | Device |
+|---|---|---|
+| Lua heap | Host memory, reported as 8 MB. `psram_largest_block` is roughly the free total and fragmentation is always 0. `--real-umm` gives the firmware's allocator, though objects are about twice their device size on a 64-bit host | About 6 MB, shared with images, and it fragments |
+| Native `qmiAlloc` | 4 MB bump allocator: `qmiFree` frees nothing, so recycling buffers runs out here and not on the device. `--real-umm` does not change this | The same heap as Lua |
+| Native image size | Anything under 8 MB loads | About 6 MB in practice, shared with the stack; 7 MB is a hard limit |
+| Native stack | 256 KB, and pages below it are mapped on demand, so deep recursion passes | 64 KB; overflowing it faults |
+| Native bad pointers | NULL and wild reads and writes succeed. A wild call hangs | Fault |
+
+### Network
+
+The default build uses your computer's network through libcurl, not the firmware's stack, and is always online. So the `http` requirement, a dropped link and the boot's auto-disconnect never show. `make simulator-net` builds the firmware's own stack, without TLS.
+
+| Case | Simulator | Device |
+|---|---|---|
+| Missing `"http"` requirement | Works | WiFi may be off, and the connection fails |
+| HTTP body larger than the receive ring (4 KB by default) | **Silently cut**: 100 KB delivers 4096 bytes, reports complete, no error | All delivered, or fails with `receive buffer overflow` if you don't read it |
+| Body cut short (`Content-Length: 1000`, 3 bytes sent) | Complete, no error | Fails: `connection closed after 3 of 1000 bytes` |
+| `get` while a request runs | Returns `true` | `false, "a request is already in progress..."` |
+| `conn:setByteRange` | Sends the `Range` header | Sends no header |
+| `setReadTimeout` | Ignored, on HTTP and TCP | Fails at the timeout |
+| TCP `connect()` while connecting or connected | `true` | `false, err` |
+| HTTP `setInsecure(true)` | Ignored: a self-signed server still fails | Skips verification |
+| Certificates and the clock | Your system's, through libcurl; no wait | The bundled CA list; waits for SNTP to set the clock |
+| Error text | `curl error: ...`, `connect: Connection refused` | `Mongoose error: socket error`, and others |
+
+### Files
+
+| Case | Simulator | Device |
+|---|---|---|
+| Path case | Case-sensitive, on a case-sensitive host: `/SYSTEM/LIB/x.lua` is not found | FAT: not case-sensitive |
+| `"r+"` | Reads and writes | Read-only, and a write returns -1 |
+| `"w+"` | Reads and writes | Write-only, and reads fail |
+| `rename` onto an existing file | Overwrites | Fails: `false, "rename failed"`. A write-temp-then-rename save works here and fails there |
+| `write` on a read handle | Returns 0 | Returns -1 |
+| `seek` past the end | Neither clamps nor extends the file before a write | Grows the file at once, with undefined data in the gap |
+| `fs.stat`, `fs.listDir` dates | `stat` has none; `listDir` says 2020-01-01 for everything | The file's real date |
+| `fs.deleteRecursive("/")` with `root-filesystem` | **Deletes the whole card folder**, and the folder itself | Refused |
+| `fs.diskInfo` | The host's disk, capped at 32 GB | The card |
+| Directory order | The host's: tmpfs newest first, ext4 hashed | FAT order. With more than 64 apps, which ones list differs |
+| A file open for writing, opened again | Allowed | Refused. Both allow 16 open files in all |
+
+### Display and graphics
+
+The simulator has its own display code, so it can differ in any primitive. These are known.
+
+| What | Simulator | Device |
+|---|---|---|
+| Colour | RGB on your monitor | The panel's: check colour on hardware |
+| `fillVLineGradient` | Solid in the top colour | A gradient |
+| `img:drawScaled(x, y, scale, angle)`, `sprite:setRotation` | Angle ignored, nearest-neighbour | Rotates |
+| `graphics.setTransparentColor` (global) | Does nothing; `getTransparentColor` is always nil | Applies |
+| `graphics.image.preload` | Always `false` | Decodes on Core 1 |
+| Native `effect*` post-effects | Do nothing (Lua's work) | Work |
+| Native `getBackBuffer` writes | Lost in any frame that also uses a draw call; a `clear` then raw pixels shows only the clear. Raw-only frames are right | Draw calls and raw writes mix |
+| Native `getBackBuffer` pointer | One fixed address | Changes at every `flush()`; fetch it each frame |
+| Native `graphics->pixels` | NULL for a valid image | The pixels |
+
+### Input
+
+| What | Simulator | Device |
+|---|---|---|
+| `input.getChar`, `input.getRawKey` | Consume the value: a second call in a frame gives nil or 0 | The same value until the next `update()`. A `while c do ... c = getChar() end` loop ends here and never ends there |
+| `input.getRawKey` for Delete, F5, Shift | 0 | The keycode |
+| `pollEvent`'s `repeat` for held arrows, letters, Enter, Tab, Backspace, Delete | `true` | Absent: the keyboard repeats these as fresh presses, about every 100 ms |
+| Menu key | F10 | Shift+F5 |
+| Typing with Shift | Gives the unshifted character | Capitals and symbols |
+| Native `ui->textInput`, `textInputSimple`, `confirm` | Return false at once, with no dialog | Dialogs |
+
+### System
+
+| What | Simulator | Device |
+|---|---|---|
+| `sys.reboot()` | Hangs (Lua); stops the app and returns to the launcher (native) | Reboots |
+| `sys.triggerFault()` | The simulator crashes (exit status 139), leaving `running.txt` | HardFault, crash record, reboot |
+| Battery | 100%, not charging, unless `set_battery` | Real |
+| Tracebacks | Sent to the test log | None |
+| Speed | Faster for Lua, far slower for native | Much of the time goes to PSRAM cache misses |
+| Native `sys->log` | Adds `[APP]`. No width or precision (`%5d` prints `2`), `%f` prints `<float>` and misaligns what follows, `%lld` misaligns too, and it stops after 7 arguments | `vprintf`, with no prefix |
+| Native `sys->setAudioCallback` | Ignored | Calls back on Core 1 |
+| Native `soundplayer->playerSetLoop` | Does nothing | Sets the loop |
+
+## Dev commands
+
+A running device takes text commands over its USB serial port, at 115200 baud (`/dev/serial/by-id/usb-Raspberry_Pi_PicoDeck_Device_*` on Linux; try `picocom` or `screen`). Type `help` for the list. Each reply line starts with `[DEV]`. The log shares the port.
+
+In the simulator, send the same words through the [`dev_command`](#driving-it-from-a-script) method. Only some exist there, and the rest reply `Unknown command`; the last column gives what to use instead.
+
+| Command | Does | Device | Simulator |
+|---|---|---|---|
+| `ping` | Checks the link | yes | yes |
+| `help` | Lists commands | yes | no |
+| `ver`, `status` | Build; app, uptime, WiFi, SD, battery | yes | no (`get_running_app`, `--build-info`) |
+| `launch <app>` | Starts an app by id, name or folder | yes | no (`launch_app`) |
+| `exit` | Asks the running app to exit | yes | yes |
+| `list [all]` | Lists apps; `all` adds hidden ones | yes | yes (to the log) |
+| `keypress <key>`, `keydown`, `keyup` | Injects keys | yes | no (`inject_button`, `inject_char`) |
+| `pad <buttons> [ms]` | Drives a test gamepad | yes | yes |
+| `bt ...` | Bluetooth pads | yes | yes, with `bt sim ...` |
+| `screenshot`, `screenshot64` | The screen: binary, or base64 | yes | no (`screenshot`) |
+| `ls <dir>`, `mkdir <path>` | Lists; creates recursively | yes | no (`list_dir`) |
+| `put <path> <size>`, `get <path>` | Sends or fetches a file, over USB | yes | no (`write_file`, `read_file`) |
+| `putb64 <path> <size>`, `getb64 <path>` | The same as base64, on any serial link | yes | no (`write_file`, `read_file`) |
+| `unzip <zip> <dest>` | Extracts an archive on the card | yes | yes |
+| `rm <path>` | Deletes a file or folder, recursively | yes | yes |
+| `mv <src> <dst>` | Moves within the card, never overwriting | yes | yes |
+| `crashlog [clear]` | Prints or deletes `/system/crashlog.txt` | yes | no (`get_crash_log`) |
+| `reboot`, `reboot-flash` | Reboots, or reboots to BOOTSEL | yes | no |
+| `reboot-ota` | Applies a staged, signed update | yes | no |
+| `usb` | USB Disk Mode | yes | no |
+| `audiostat [reset]` | Audio timing | yes | yes |
+| `stack` | Stack peaks | yes | no |
+| `psram [full]`, `mp3stats` | PSRAM test; MP3 counts | yes | no (`get_heap_info`, `get_mp3_stats`) |
+| `alarmpool`, `kbdstat`, `xipstat`, `splash`, `lognoise`, `mp3bench`, `prof` | Firmware diagnostics | yes | no |
+
+While an app runs: `reboot` and `reboot-flash` act at once (no teardown); `reboot-ota` is dropped; `usb` waits for the launcher. Exit to the launcher before flashing. `get`, `put`, `screenshot` and the base64 forms share the port with the log, so each ends with a checksum to check against, and other log lines are dropped during a transfer and counted when it ends. On the device, a native app that never calls `sys->poll()` does not see commands until the launcher.
+
+### Details
 
 - `stack` prints `msp_peak`, `core1_peak`, the running app's stack peak and
   `os_cmd_peak` (the last launcher command's peak on its 32 KB PSRAM stack).
@@ -105,6 +335,49 @@ The PC simulator (`make simulator`, binary `build_sim/picodeck_simulator`) runs 
   `radio_in_use`, `bus_errors`, then `note="..."`); `bt on|off`, `bt
   scan`, `bt scan stop`, `bt found`, `bt paired`, `bt connect <addr>`, `bt
   disconnect` and `bt forget <addr>` do what the Bluetooth page does.
-- While an app runs: `reboot` and `reboot-flash` act at once (no teardown);
-  `reboot-ota` (apply a staged, signed update) is dropped; `usb` waits for the
-  launcher. Exit to the launcher before flashing.
+- Bluetooth controllers are a scripted radio in the simulator: `bt sim add
+  <addr> <class hex> <name>` puts a device in pairing mode in range (`bt sim
+  clear` empties it), `bt sim press <buttons|none>` sends the connected pad's
+  state, `bt sim drop` drops its link and `bt sim wake <addr>` makes a paired
+  pad reconnect. The Bluetooth page, the setting and the pairing file are
+  the firmware's.
+
+## Working on PicoDeck itself
+
+This part is for changing the firmware and simulator. It needs a [clone with submodules](#get-the-simulator).
+
+### Running the tests
+
+- `pip install -r tests/e2e/requirements.txt`, then
+  `SDL_VIDEODRIVER=dummy pytest tests/e2e -n auto` (release simulator).
+- Sanitizers: `make simulator-asan` / `simulator-tsan`, then
+  `PICODECK_SIM_BINARY=build_sim_asan/picodeck_simulator pytest tests/e2e -n auto`.
+- Firmware network stack in the simulator: `make simulator-net`,
+  `PICODECK_SIM_BINARY=build_sim_net/picodeck_simulator pytest tests/e2e/test_network_firmware.py`.
+- On a real device: `pytest tests/e2e --target hw:/dev/serial/by-id/<PicoDeck device>`
+  runs the `hardware`/`both` tests.
+- Host unit tests: `make test-unit`; fuzzers: `make fuzz`.
+
+[`tests/e2e/README.md`](https://github.com/PicoDeck/picodeck/blob/master/tests/e2e/README.md) has the rest.
+
+### More on the control protocol
+
+The [method table](#driving-it-from-a-script) covers an app author's needs. Further details:
+
+- `launch_app` → `{queued, busy, launch_id}`; `app.exited` notifications carry
+  `{name, id, found, result: returned|error|exit_sentinel|load_failed, error,
+  runtime_ms, launch_id}`; `get_last_outcome` returns the last one.
+- `get_log_buffer {since_seq, tail}` → `{lines:[{seq,t_ms,src,text}], next_seq,
+  dropped, more}`; `subscribe {"logs":true}` pushes `log` notifications.
+- `inject_*` return `input_seq`; `get_input_state` reports `consumed_seq`.
+- `dev_command {"cmd": "..."}` runs `ping`/`exit`/`unzip`/`rm`/`mv`/`list [all]`/`pad`/`bt`/`audiostat [reset]`
+  through the firmware's handlers.
+- `step_time {ms}` and `set_time_multiplier` drive the virtual clock.
+- Flags: `--test-mode` (error screens return at once; constant `math.random`
+  seed and string hash seed; clock pinned to 2026-01-01), `--virtual-time`,
+  `--unix-socket PATH|none`, `--real-umm` (firmware allocator; real
+  fragmentation), `--build-info`, `--gamepad` / `--no-gamepad`. A host game
+  controller is not read under `--test-mode` unless `--gamepad` is given, so
+  tests never see it. The browser demo
+  ([picodeck.net/try](https://picodeck.net/try/)) reads controllers too, once
+  the browser has seen one of their buttons pressed.

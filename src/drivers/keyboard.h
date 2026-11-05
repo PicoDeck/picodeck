@@ -102,7 +102,7 @@ void kbd_set_backlight(uint8_t brightness);
 
 void kbd_apply_clock(void);
 
-// Returns true (once) when F10 (the system menu key) was pressed since last call,
+// Returns true (once) when the system menu key (Shift+F5, reported as F10) was pressed since last call,
 // or a pad source's Home button (pad_source.h). The press is consumed and
 // will not appear in kbd_get_buttons() — the OS intercepts BTN_MENU before
 // apps can see it.
@@ -214,7 +214,7 @@ bool kbd_poll_event(kbd_event_t *out);
 bool kbd_is_key_down(uint8_t keycode);
 
 // Read pending key input without starting a new app-facing poll (used by
-// sys.sleep, which must see the Sym key): events and chars queue up and
+// sys.sleep, which must see the system menu key): events and chars queue up and
 // press edges accumulate, so the app's next kbd_poll() still delivers what
 // arrived meanwhile. Sets the menu/screenshot flags at once.
 void kbd_poll_background(void);

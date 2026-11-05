@@ -42,7 +42,7 @@
 //     until it comes up (or any source presses it anew);
 //   - a disconnect clears the source's state, so nothing stays held;
 //   - Home (PAD_SOURCE_HOME) is not a PAD_* button: its press raises the
-//     system menu through kbd_consume_menu_press, like the Sym key.
+//     system menu through kbd_consume_menu_press, like the menu key.
 //
 // Axes (AXIS_* in os.h; issue #68). A source also reports its sticks and
 // triggers, pad_source_publish_axes, with its raw readings: the dead zone is
@@ -133,7 +133,7 @@ void pad_source_test_off(void);
 // masks on (prev = the last poll's, curr = what is held now plus the taps
 // since); a background one only gathers them for the next foreground poll.
 // Returns true when a source's Home went down since the previous poll (the
-// caller raises the menu flag, as for the Sym key).
+// caller raises the menu flag, as for the menu key).
 bool pad_sources_poll(bool bg, uint32_t now_ms);
 
 // The presses that poll found new (a foreground poll: its press edges; a

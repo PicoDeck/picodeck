@@ -438,7 +438,7 @@ static void test_bg_two_keys_in_separate_polls(void) {
   CHECK_EQ_U32(btn.curr, BTN_ENTER);
 }
 
-// Enter tapped, then Sym, in one sleep: the system menu clears the keyboard
+// Enter tapped, then the menu key, in one sleep: the system menu clears the keyboard
 // state on entry (system_menu.c menu_loop), which also ends the background
 // run, so its first poll sees no Enter edge to activate an item with.
 static void test_menu_after_bg_sees_no_earlier_edge(void) {
