@@ -227,6 +227,7 @@ bool decode_gif_buffer(const uint8_t *data, size_t len,
   AnimatedGIF *gif = (AnimatedGIF *)umm_malloc(sizeof(AnimatedGIF));
   if (!gif)
     return false;
+  gif->begin(GIF_PALETTE_RGB565_LE);  // zeroes the decoder: umm_malloc does not
 
   if (gif->open((uint8_t *)data, (int)len, my_GIFDraw)) {
     int w = gif->getCanvasWidth();
@@ -450,6 +451,7 @@ bool decode_gif_file(const char *path, image_decode_result_t *result) {
   if (!gif) {
     return false;
   }
+  gif->begin(GIF_PALETTE_RGB565_LE);  // zeroes the decoder: umm_malloc does not
 
   if (gif->open(path, my_file_open, my_file_close, my_gif_read, my_gif_seek,
                 my_GIFDraw)) {
