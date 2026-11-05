@@ -70,7 +70,8 @@ typedef enum {
     ELF_ERR_CLASS,             // not ELFCLASS32 little-endian
     ELF_ERR_NOT_PIE,           // e_type != ET_DYN
     ELF_ERR_NOT_ARM,           // e_machine != EM_ARM
-    ELF_ERR_PHENTSIZE,         // e_phentsize != sizeof(Elf32_Phdr)
+    ELF_ERR_FLOAT_ABI,         // built with -mfloat-abi=hard
+    ELF_ERR_PHENTSIZE,        // e_phentsize != sizeof(Elf32_Phdr)
     ELF_ERR_PHNUM,             // e_phnum 0 or > ELF_PLAN_MAX_PHNUM
     ELF_ERR_PHDR_BOUNDS,       // phdr table outside the file (or wraps)
     ELF_ERR_SEG_FILESZ,        // PT_LOAD p_filesz > p_memsz

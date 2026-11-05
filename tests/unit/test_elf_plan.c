@@ -254,6 +254,7 @@ static void m_class64(elf_img_t *e, uint32_t *len) { (void)len; e->b[4] = 2; }
 static void m_big_endian(elf_img_t *e, uint32_t *len) { (void)len; e->b[5] = 2; }
 static void m_et_exec(elf_img_t *e, uint32_t *len) { (void)len; ehdr(e)->e_type = 2; }
 static void m_not_arm(elf_img_t *e, uint32_t *len) { (void)len; ehdr(e)->e_machine = 62; }
+static void m_hard_float(elf_img_t *e, uint32_t *len) { (void)len; ehdr(e)->e_flags = 0x05000400; }
 static void m_phnum0(elf_img_t *e, uint32_t *len) { (void)len; ehdr(e)->e_phnum = 0; }
 static void m_phnum_ffff(elf_img_t *e, uint32_t *len) { (void)len; ehdr(e)->e_phnum = 0xFFFF; }
 static void m_phentsize8(elf_img_t *e, uint32_t *len) { (void)len; ehdr(e)->e_phentsize = 8; }
@@ -386,6 +387,21 @@ static void test_malformed(void) {
   }
 }
 
+// The API passes floats in core registers: soft and softfp builds load, a hard
+// one is refused (its drawPlane arguments would be garbage).
+static void test_float_abi(void) {
+  elf_img_t e;
+  elf_plan_t p;
+  make_elf(&e);
+  ehdr(&e)->e_flags = 0x05000200;  // EABI5, EF_ARM_ABI_FLOAT_SOFT: soft, softfp
+  CHECK_EQ_INT(plan_file(e.b, FILE_LEN, &p), ELF_OK);
+  ehdr(&e)->e_flags = 0x05000000;  // EABI5, no float flag: elfgen's images
+  CHECK_EQ_INT(plan_file(e.b, FILE_LEN, &p), ELF_OK);
+  m_hard_float(&e, NULL);
+  CHECK_EQ_INT(plan_file(e.b, FILE_LEN, &p), ELF_ERR_FLOAT_ABI);
+  CHECK(strstr(elf_strerror(ELF_ERR_FLOAT_ABI), "hard") != NULL);
+}
+
 // Split mode is only offered for a code-first layout: a data segment below
 // the code segment would underflow the data offset.
 static void test_code_first(void) {
@@ -511,6 +527,7 @@ int main(int argc, char **argv) {
   test_no_dynamic();
   test_exact_bounds_ok();
   test_malformed();
+  test_float_abi();
   test_code_first();
   test_null_args();
   test_real_apps();

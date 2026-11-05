@@ -82,8 +82,10 @@ CASES = {
     "not_arm": (dict(e_machine=62), "ELF: must be ARM"),
     "entry_outside_image": (dict(e_entry=0x10001),
                             "ELF: entry point out of bounds"),
-    "image_too_large": (  # > the simulator's 8 MB code region
+    "image_too_large": (  # > the loaders' 7 MB limit
         dict(load=dict(p_memsz=0x01000000)), "ELF: image too large"),
+    "hard_float": (dict(e_flags=0x05000400),  # EF_ARM_ABI_FLOAT_HARD
+                   "ELF: hard-float ABI (-mfloat-abi=hard) not supported"),
     "no_pt_load": (dict(load=dict(p_type=6)),  # PT_PHDR
                    "ELF: no PT_LOAD segments"),
     # R_ARM_PC24 (1): ABS32/GLOB_DAT/JUMP_SLOT are known (skipped but
