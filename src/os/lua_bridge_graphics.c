@@ -9,6 +9,7 @@
 
 static uint16_t s_graphics_color = COLOR_WHITE;
 static uint16_t s_graphics_bg_color = COLOR_BLACK;
+static bool s_graphics_bg_transparent = false;  // setBackgroundColor(false)
 
 // ── Destroyed objects ────────────────────────────────────────────────────────
 // __gc is not reachable from Lua (lb_register_type), but a finaliser that
@@ -35,6 +36,32 @@ static void anchor_set(lua_State *L, int idx, int slot, int valueidx) {
   lua_setiuservalue(L, idx, slot);
 }
 
+// ── Image memory and the collector ───────────────────────────────────────────
+// Pixels live in umm_malloc, outside Lua's accounting, so dropped images put no
+// pressure on the collector and the heap can be full of garbage when a new image
+// is asked for. Every image allocation therefore gets one full collection and
+// one retry before it fails. (Core 1's preload cannot run the collector.)
+static void *gc_umm_malloc(lua_State *L, size_t bytes) {
+  void *p = umm_malloc(bytes);
+  if (!p) {
+    lua_gc(L, LUA_GCCOLLECT, 0);
+    p = umm_malloc(bytes);
+  }
+  return p;
+}
+
+// image_load with the same retry. A file that is missing or is not an image
+// fails the header probe, and a collection would not help it.
+static pc_image_t *gc_image_load(lua_State *L, const char *path) {
+  pc_image_t *img = image_load(path);
+  int w, h;
+  if (!img && image_probe(path, &w, &h)) {
+    lua_gc(L, LUA_GCCOLLECT, 0);
+    img = image_load(path);
+  }
+  return img;
+}
+
 static int l_graphics_image_gc(lua_State *L) {
   lua_image_t *img = (lua_image_t *)lb_checkudata(L, 1, GRAPHICS_IMAGE_MT);
   if (img->data) {
@@ -49,14 +76,21 @@ static int l_graphics_setColor(lua_State *L) {
   return 0;
 }
 
+// A colour, or false for a transparent text background (the last colour stays
+// what graphics.clear() and imageWithText use).
 static int l_graphics_setBackgroundColor(lua_State *L) {
+  if (lua_isboolean(L, 1) && !lua_toboolean(L, 1)) {
+    s_graphics_bg_transparent = true;
+    return 0;
+  }
   s_graphics_bg_color = l_checkcolor(L, 1);
+  s_graphics_bg_transparent = false;
   return 0;
 }
 
 static int l_graphics_setTransparentColor(lua_State *L) {
   uint16_t color = 0;
-  if (!lua_isnil(L, 1))
+  if (!lua_isnoneornil(L, 1))
     color = l_checkcolor(L, 1);
   display_set_transparent_color(color);
   return 0;
@@ -73,7 +107,7 @@ static int l_graphics_getTransparentColor(lua_State *L) {
 
 static int l_graphics_clear(lua_State *L) {
   uint16_t color =
-      (lua_gettop(L) >= 1) ? l_checkcolor(L, 1) : s_graphics_bg_color;
+      lua_isnoneornil(L, 1) ? s_graphics_bg_color : l_checkcolor(L, 1);
   display_clear(color);
   return 0;
 }
@@ -81,8 +115,14 @@ static int l_graphics_clear(lua_State *L) {
 static int l_graphics_image_new(lua_State *L) {
   int w = lb_checkint(L, 1);
   int h = lb_checkint(L, 2);
+  if (w <= 0 || h <= 0 || w > 2048 || h > 2048)
+    return luaL_error(L, "image size %dx%d out of range (1..2048)", w, h);
 
   pc_image_t *loaded = image_new_blank(w, h);
+  if (!loaded) {
+    lua_gc(L, LUA_GCCOLLECT, 0);
+    loaded = image_new_blank(w, h);
+  }
   if (!loaded)
     return luaL_error(L, "out of memory allocating image");
 
@@ -105,7 +145,7 @@ static int l_graphics_image_load(lua_State *L) {
     return luaL_error(L, "access denied");
   }
 
-  pc_image_t *loaded = image_load(path);
+  pc_image_t *loaded = gc_image_load(L, path);
   if (!loaded)
     return luaL_error(L, "failed to load image: %s", path);
 
@@ -136,7 +176,7 @@ static int l_graphics_image_copy(lua_State *L) {
   dst->w = src->w;
   dst->h = src->h;
   dst->transparent_color = src->transparent_color;
-  dst->data = (uint16_t *)umm_malloc(dst->w * dst->h * sizeof(uint16_t));
+  dst->data = (uint16_t *)gc_umm_malloc(L, dst->w * dst->h * sizeof(uint16_t));
   if (!dst->data)
     return luaL_error(L, "out of memory allocating image copy");
   memcpy(dst->data, src->data, dst->w * dst->h * sizeof(uint16_t));
@@ -144,27 +184,62 @@ static int l_graphics_image_copy(lua_State *L) {
   return 1;
 }
 
-// Reads the srcRect table at stack index idx into sx, sy, sw, sh. It is either
-// named {x=, y=, w=, h=} or positional {x, y, w, h}; a named field wins over the
-// same array slot, and a missing one defaults to 0, 0, image width, image
-// height. Errors name the field as "srcRect.x". Used by img:draw and
-// img:drawStretched.
-static void read_src_rect(lua_State *L, int idx, const lua_image_t *img,
-                          int *sx, int *sy, int *sw, int *sh) {
-  static const char *const names[4] = {"x", "y", "w", "h"};
-  static const char *const whats[4] = {"srcRect.x", "srcRect.y", "srcRect.w",
-                                       "srcRect.h"};
-  int def[4] = {0, 0, img->w, img->h};
-  int v[4];
-  for (int i = 0; i < 4; i++) {
+// Reads n integer fields of the table at stack index idx into out. Each is the
+// named field or, when that is nil, the array slot of the same position, so
+// {x=, y=, w=, h=} and {x, y, w, h} are the same table and a named field wins.
+// A missing field takes def[i]; with def NULL it raises. A field that is not a
+// number raises naming whats[i].
+static void read_table_ints(lua_State *L, int idx, const char *const *names,
+                            const char *const *whats, int n, const int *def,
+                            int *out) {
+  idx = lua_absindex(L, idx);
+  for (int i = 0; i < n; i++) {
     lua_getfield(L, idx, names[i]);
     if (lua_isnil(L, -1)) {  // not named: fall back to the array slot
       lua_pop(L, 1);
       lua_rawgeti(L, idx, i + 1);
     }
-    v[i] = (int)lb_optint_at(L, -1, idx, whats[i], def[i]);
+    out[i] = def ? (int)lb_optint_at(L, -1, idx, whats[i], def[i])
+                 : (int)lb_checkint_at(L, -1, idx, whats[i]);
     lua_pop(L, 1);
   }
+}
+
+static const char *const k_xywh[4] = {"x", "y", "w", "h"};
+static const char *const k_xywh_what[4] = {"field 'x'", "field 'y'", "field 'w'",
+                                           "field 'h'"};
+
+// {x, y, w, h} in either form (read_table_ints); def NULL makes all four required.
+static void read_rect(lua_State *L, int idx, const int *def, int *out) {
+  read_table_ints(L, idx, k_xywh, k_xywh_what, 4, def, out);
+}
+
+// {x, y} in either form.
+static void read_point(lua_State *L, int idx, int def_x, int def_y, int *x, int *y) {
+  const int def[2] = {def_x, def_y};
+  int v[2];
+  read_table_ints(L, idx, k_xywh, k_xywh_what, 2, def, v);
+  *x = v[0];
+  *y = v[1];
+}
+
+// {x1, y1, x2, y2} in either form, all required.
+static void read_line(lua_State *L, int idx, int *out) {
+  static const char *const names[4] = {"x1", "y1", "x2", "y2"};
+  static const char *const whats[4] = {"field 'x1'", "field 'y1'", "field 'x2'",
+                                       "field 'y2'"};
+  read_table_ints(L, idx, names, whats, 4, NULL, out);
+}
+
+// The srcRect table of img:draw and img:drawStretched: a missing field defaults
+// to 0, 0, image width, image height, and errors name it as "srcRect.x".
+static void read_src_rect(lua_State *L, int idx, const lua_image_t *img,
+                          int *sx, int *sy, int *sw, int *sh) {
+  static const char *const whats[4] = {"srcRect.x", "srcRect.y", "srcRect.w",
+                                       "srcRect.h"};
+  int def[4] = {0, 0, img->w, img->h};
+  int v[4];
+  read_table_ints(L, idx, k_xywh, whats, 4, def, v);
   *sx = v[0]; *sy = v[1]; *sw = v[2]; *sh = v[3];
 }
 
@@ -466,55 +541,67 @@ static const luaL_Reg l_graphics_image_methods[] = {
     {"setPixels", l_graphics_image_setPixels},
     {NULL, NULL}};
 
-// loadFromBuffer(string) or loadFromBuffer(qmibuf, [len]): the only
-// buffers accepted are a Lua string and a sys.qmiPsramAlloc handle, whose
-// length is checked against the handle's size. Any other userdata was once
-// read as raw bytes (an 8-byte handle read `len` bytes past its end).
+// Decodes by the magic bytes. *known is false for a format none of them matches.
+static bool decode_buffer(const uint8_t *data, size_t len,
+                          image_decode_result_t *res, bool *known,
+                          const char **err_msg) {
+  *known = true;
+  if (data[0] == 'B' && data[1] == 'M') {
+    *err_msg = "BMP decoding failed";
+    return decode_bmp_buffer(data, len, res);
+  }
+  if (data[0] == 0xFF && data[1] == 0xD8) {
+    *err_msg = "JPEG decoding failed";
+    return decode_jpeg_buffer(data, len, res);
+  }
+  if (data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47) {
+    *err_msg = "PNG decoding failed";
+    return decode_png_buffer(data, len, res);
+  }
+  if (data[0] == 'G' && data[1] == 'I' && data[2] == 'F') {
+    *err_msg = "GIF decoding failed";
+    return decode_gif_buffer(data, len, res);
+  }
+  *known = false;
+  *err_msg = "unsupported image format";
+  return false;
+}
+
+// loadFromBuffer(data, [len]): the only buffers accepted are a Lua string and a
+// sys.qmiPsramAlloc handle, and len (default all of it) is checked against its
+// size. Any other userdata was once read as raw bytes (an 8-byte handle read
+// `len` bytes past its end).
 static int l_graphics_image_loadFromBuffer(lua_State *L) {
-  size_t len;
+  size_t size;
   const uint8_t *data;
 
   if (lua_type(L, 1) == LUA_TSTRING) {
-    data = (const uint8_t *)lua_tolstring(L, 1, &len);
+    data = (const uint8_t *)lua_tolstring(L, 1, &size);
   } else {
     qmi_buf_t *b = (qmi_buf_t *)lb_testudata(L, 1, QMI_BUF_MT);
     if (!b)
       return luaL_typeerror(L, 1, "string or qmibuf");
     if (!b->p)
       return luaL_error(L, "loadFromBuffer: qmibuf freed");
-    lua_Integer n = luaL_optinteger(L, 2, (lua_Integer)b->size);
-    luaL_argcheck(L, n >= 0 && (uint64_t)n <= (uint64_t)b->size, 2,
-                  "length exceeds the buffer");
     data = b->p;
-    len = (size_t)n;
+    size = b->size;
   }
+  lua_Integer n = luaL_optinteger(L, 2, (lua_Integer)size);
+  luaL_argcheck(L, n >= 0 && (uint64_t)n <= (uint64_t)size, 2,
+                "length exceeds the buffer");
+  size_t len = (size_t)n;
 
   if (!data || len < 16) {
     return luaL_error(L, "buffer too small or invalid");
   }
 
-  bool is_bmp = (data[0] == 'B' && data[1] == 'M');
-  bool is_jpeg = (data[0] == 0xFF && data[1] == 0xD8);
-  bool is_png = (data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E &&
-                 data[3] == 0x47);
-  bool is_gif = (data[0] == 'G' && data[1] == 'I' && data[2] == 'F');
-
   image_decode_result_t res = {0, 0, NULL};
-  bool success = false;
-  const char *err_msg = "unsupported image format";
-
-  if (is_bmp) {
-    success = decode_bmp_buffer(data, len, &res);
-    err_msg = "BMP decoding failed";
-  } else if (is_jpeg) {
-    success = decode_jpeg_buffer(data, len, &res);
-    err_msg = "JPEG decoding failed";
-  } else if (is_png) {
-    success = decode_png_buffer(data, len, &res);
-    err_msg = "PNG decoding failed";
-  } else if (is_gif) {
-    success = decode_gif_buffer(data, len, &res);
-    err_msg = "GIF decoding failed";
+  const char *err_msg;
+  bool known;
+  bool success = decode_buffer(data, len, &res, &known, &err_msg);
+  if (!success && known) {  // perhaps memory: see gc_umm_malloc
+    lua_gc(L, LUA_GCCOLLECT, 0);
+    success = decode_buffer(data, len, &res, &known, &err_msg);
   }
 
   if (success && res.data) {
@@ -527,7 +614,7 @@ static int l_graphics_image_loadFromBuffer(lua_State *L) {
     return 1;
   }
 
-  return luaL_error(L, err_msg);
+  return luaL_error(L, "%s", err_msg);
 }
 
 // getInfo(path) — parse just the image header, no pixel decode.
@@ -566,7 +653,7 @@ static int l_graphics_image_loadRegion(lua_State *L) {
   if (!fs_sandbox_check(L, path, false))
     return luaL_error(L, "access denied");
 
-  pc_image_t *loaded = image_load(path);
+  pc_image_t *loaded = gc_image_load(L, path);
   if (!loaded)
     return luaL_error(L, "failed to load image: %s", path);
 
@@ -588,7 +675,7 @@ static int l_graphics_image_loadRegion(lua_State *L) {
   rw = (int)(x1 - x0);
   rh = (int)(y1 - y0);
 
-  uint16_t *crop = (uint16_t *)umm_malloc((size_t)rw * rh * sizeof(uint16_t));
+  uint16_t *crop = (uint16_t *)gc_umm_malloc(L, (size_t)rw * rh * sizeof(uint16_t));
   if (!crop) {
     image_free(loaded);
     return luaL_error(L, "out of memory");
@@ -620,11 +707,11 @@ static int l_graphics_image_loadScaled(lua_State *L) {
   if (dw <= 0 || dh <= 0 || dw > 2048 || dh > 2048)
     return luaL_error(L, "invalid target size");
 
-  pc_image_t *loaded = image_load(path);
+  pc_image_t *loaded = gc_image_load(L, path);
   if (!loaded)
     return luaL_error(L, "failed to load image: %s", path);
 
-  uint16_t *out = (uint16_t *)umm_malloc((size_t)dw * dh * sizeof(uint16_t));
+  uint16_t *out = (uint16_t *)gc_umm_malloc(L, (size_t)dw * dh * sizeof(uint16_t));
   if (!out) {
     image_free(loaded);
     return luaL_error(L, "out of memory");
@@ -921,8 +1008,8 @@ static int l_graphics_draw3DWireframe(lua_State *L) {
   int   scy = lb_checkint(L, 7);
   float fov = (float)luaL_checknumber(L, 8);
   uint16_t edge_color = l_checkcolor(L, 9);
-  uint16_t vert_color = (lua_gettop(L) >= 10) ? l_checkcolor(L, 10) : 0;
-  int vert_size       = (lua_gettop(L) >= 11) ? (int)lb_checkint(L, 11) : 3;
+  uint16_t vert_color = lua_isnoneornil(L, 10) ? 0 : l_checkcolor(L, 10);
+  int vert_size       = (int)lb_optint(L, 11, 3);
 
   // Build combined rotation matrix M = Rz(aZ) * Ry(aY) * Rx(aX).
   // Applying M*v is equivalent to rotateX then rotateY then rotateZ.
@@ -1033,7 +1120,7 @@ static void tilemap_draw(lua_tilemap_t *tm, int scroll_x, int scroll_y) {
       display_draw_image_partial(dst_x, dst_y, tm->tileset->w, tm->tileset->h,
                                   tm->tileset->data, src_x, src_y,
                                   tw, th,
-                                  false, false, 0);
+                                  false, false, tm->tileset->transparent_color);
     }
   }
 }
@@ -1107,10 +1194,34 @@ static int wrap_lines(const pc_font_t *f, const char *text,
   return lines;
 }
 
-typedef struct { uint16_t fg, bg; } emit_fb_t;
+typedef struct { uint16_t fg, bg; bool transparent; } emit_fb_t;
 static void emit_to_display(int x, int y, const char *line, void *user) {
   emit_fb_t *e = (emit_fb_t *)user;
-  display_draw_text(x, y, line, e->fg, e->bg);
+  if (e->transparent)
+    display_draw_text_transparent(x, y, line, e->fg);
+  else
+    display_draw_text(x, y, line, e->fg, e->bg);
+}
+
+// The bg argument of the font methods: false is a transparent background (as in
+// display.drawText), nil or absent the given default.
+static void read_text_bg(lua_State *L, int idx, emit_fb_t *e, uint16_t def,
+                         bool def_transparent) {
+  e->bg = def;
+  e->transparent = def_transparent;
+  if (lua_isnoneornil(L, idx)) return;
+  if (lua_isboolean(L, idx) && !lua_toboolean(L, idx)) {
+    e->transparent = true;
+    return;
+  }
+  e->bg = l_checkcolor(L, idx);
+  e->transparent = false;
+}
+
+// One line, opaque or transparent; returns its pixel width.
+static int draw_text_line(int x, int y, const char *text, const emit_fb_t *e) {
+  return e->transparent ? display_draw_text_transparent(x, y, text, e->fg)
+                        : display_draw_text(x, y, text, e->fg, e->bg);
 }
 
 typedef struct { uint16_t *buf; int w, h; uint16_t fg, bg; } emit_buf_t;
@@ -1181,7 +1292,10 @@ static lua_sprite_t *check_sprite(lua_State *L, int idx) {
 }
 
 // ── Display list ─────────────────────────────────────────────────────────────
-// s_sprites[] is the draw order. The registry table keyed by the address of
+// s_sprites[] is the draw order: sorted by z_index, lowest (drawn first, so under
+// the rest) first, and within one z in the order the sprites took it. Every
+// z_index change of a listed sprite goes through sprite_set_z, and every
+// insertion through sprite_list_insert. The registry table keyed by the address of
 // s_sprites maps lightuserdata(sprite) -> sprite userdata, so a listed sprite
 // is always reachable from Lua and is never collected while displayed; it is
 // also how enumeration (getAllSprites, query*, collisions) hands out the real
@@ -1191,6 +1305,14 @@ static int sprite_list_find(const lua_sprite_t *s) {
   for (int i = 0; i < s_sprite_count; i++)
     if (s_sprites[i] == s) return i;
   return -1;
+}
+
+// Insert after every sprite of the same or a lower z (the caller checked for room).
+static void sprite_list_insert(lua_sprite_t *s) {
+  int at = s_sprite_count++;
+  for (; at > 0 && s_sprites[at - 1]->z_index > s->z_index; at--)
+    s_sprites[at] = s_sprites[at - 1];
+  s_sprites[at] = s;
 }
 
 // Add the sprite at idx (idempotent). False when the list is full.
@@ -1203,7 +1325,7 @@ static bool sprite_list_add(lua_State *L, int idx) {
   lua_pushvalue(L, idx);
   lua_rawsetp(L, -2, s);  // anchor first: this may raise out-of-memory
   lua_pop(L, 1);
-  s_sprites[s_sprite_count++] = s;
+  sprite_list_insert(s);
   return true;
 }
 
@@ -1211,6 +1333,15 @@ static void sprite_list_unlink(int i) {
   for (int j = i; j < s_sprite_count - 1; j++)
     s_sprites[j] = s_sprites[j + 1];
   s_sprite_count--;
+}
+
+// A z that does not change leaves the sprite where it is among its equals.
+static void sprite_set_z(lua_sprite_t *s, int z) {
+  if (s->z_index == z) return;
+  int i = sprite_list_find(s);
+  if (i >= 0) sprite_list_unlink(i);
+  s->z_index = z;
+  if (i >= 0) sprite_list_insert(s);
 }
 
 static void sprite_list_remove(lua_State *L, lua_sprite_t *s) {
@@ -1376,21 +1507,60 @@ static const uint16_t *sprite_pixels(const lua_sprite_t *s, int *w, int *h) {
   return NULL;
 }
 
+// The integer scale a sprite draws at: 1 when it is not NN-scaled. Above 1 it
+// replaces the float scale, as in sprite_draw_at.
+static int sprite_nn_scale(const lua_sprite_t *s) {
+  return (s->use_nn_scaling && s->scale_nn > 1) ? s->scale_nn : 1;
+}
+
 // Draw a sprite's pixels at (x, y) with its scale/rotation/flip settings.
 static void sprite_draw_at(const lua_sprite_t *s, int x, int y) {
   int src_w, src_h;
   const uint16_t *data = sprite_pixels(s, &src_w, &src_h);
   if (!data || src_w <= 0 || src_h <= 0) return;
-  if (s->use_nn_scaling && s->scale_nn > 1) {
-    display_draw_image_scaled_nn(x, y, data, src_w, src_h, src_w * s->scale_nn,
-                                 src_h * s->scale_nn, s->transparent_color);
-  } else if (s->rotation != 0.0f || s->scale != 1.0f || s->scale_y != 1.0f) {
-    display_draw_image_scaled(x, y, src_w, src_h, data, s->scale, s->rotation,
-                              s->transparent_color);
-  } else {
+  const int nn = sprite_nn_scale(s);
+  if (nn == 1 && s->rotation == 0.0f && s->scale == 1.0f && s->scale_y == 1.0f) {
     display_draw_image_partial(x, y, src_w, src_h, data, 0, 0, src_w, src_h,
                                s->flip_x, s->flip_y, s->transparent_color);
+    return;
   }
+  // A scale TGX cannot draw (see IMAGE_SCALE_MAX_DST): nothing, rather than
+  // overflowing its edge functions. img:drawScaled raises for the same values, but
+  // setScale takes anything and a sprite's scale can be left over from anywhere.
+  if (nn == 1) {
+    const float edge = (float)(src_w > src_h ? src_w : src_h) * s->scale;
+    if (!(edge > 0.0f && edge <= IMAGE_SCALE_MAX_DST)) return;
+  }
+  // The scaling paths take no flip, so a flipped sprite draws a mirrored copy.
+  uint16_t *mirror = NULL;
+  if (s->flip_x || s->flip_y)
+    mirror = (uint16_t *)umm_malloc((size_t)src_w * src_h * sizeof(uint16_t));
+  if (mirror) {
+    for (int row = 0; row < src_h; row++) {
+      const uint16_t *from = data + (size_t)(s->flip_y ? src_h - 1 - row : row) * src_w;
+      uint16_t *to = mirror + (size_t)row * src_w;
+      for (int col = 0; col < src_w; col++)
+        to[col] = from[s->flip_x ? src_w - 1 - col : col];
+    }
+    data = mirror;
+  }
+  if (nn > 1) {
+    display_draw_image_scaled_nn(x, y, data, src_w, src_h, src_w * nn, src_h * nn,
+                                 s->transparent_color);
+  } else {
+    display_draw_image_scaled(x, y, src_w, src_h, data, s->scale, s->rotation,
+                              s->transparent_color);
+  }
+  if (mirror) umm_free(mirror);
+}
+
+// A sprite with a tilemap draws the map, its position being the map's top-left
+// corner; any other sprite draws its pixels.
+static void sprite_render(const lua_sprite_t *s, int x, int y) {
+  if (s->tilemap)
+    tilemap_draw((lua_tilemap_t *)s->tilemap, -x, -y);
+  else
+    sprite_draw_at(s, x, y);
 }
 
 static int l_sprite_new(lua_State *L) {
@@ -1471,14 +1641,8 @@ static int l_sprite_remove(lua_State *L) {
 static int l_sprite_update(lua_State *L) {
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *s = s_sprites[i];
-    // Tilemap sprites: draw tilemap at sprite position as scroll offset
-    if (s->updates_enabled && s->visible && s->tilemap) {
-      lua_tilemap_t *tm = (lua_tilemap_t *)s->tilemap;
-      tilemap_draw(tm, -s->x, -s->y);
-      continue;
-    }
-    if (s->updates_enabled && s->visible && s->image)
-      sprite_draw_at(s, s->x, s->y);
+    if (s->updates_enabled && s->visible)
+      sprite_render(s, s->x, s->y);
   }
   return 0;
 }
@@ -1492,7 +1656,7 @@ static int l_sprite_setImage(lua_State *L) {
     s->frame_w = 0;
     s->frame_h = 0;
   }
-  if (lua_isnil(L, 2)) {
+  if (lua_isnoneornil(L, 2)) {
     s->image = NULL;
     s->width = 0;
     s->height = 0;
@@ -1543,7 +1707,7 @@ static int l_sprite_getPosition(lua_State *L) {
 
 static int l_sprite_setZIndex(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
-  s->z_index = lb_checkint(L, 2);
+  sprite_set_z(s, lb_checkint(L, 2));
   return 0;
 }
 
@@ -1633,20 +1797,23 @@ static int l_sprite_getRotation(lua_State *L) {
   return 1;
 }
 
-static int l_sprite_setScaleNN(lua_State *L) {
-  lua_sprite_t *s = check_sprite(L, 1);
-  int scale = lb_checkint(L, 2);
+// Value at idx: setScaleNN's argument and the sprite.scale_nn field.
+static void sprite_set_scale_nn(lua_State *L, lua_sprite_t *s, int idx) {
+  int scale = lb_checkint(L, idx);
   if (scale <= 0)
-    return luaL_error(L, "scale must be positive integer");
-  
+    luaL_error(L, "scale must be positive integer");
   s->scale_nn = scale;
   s->use_nn_scaling = true;
+}
+
+static int l_sprite_setScaleNN(lua_State *L) {
+  sprite_set_scale_nn(L, check_sprite(L, 1), 2);
   return 0;
 }
 
 static int l_sprite_setTransparentColor(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
-  if (lua_isnil(L, 2)) {
+  if (lua_isnoneornil(L, 2)) {
     s->transparent_color = 0;  // use global setting
   } else {
     s->transparent_color = l_checkcolor(L, 2);
@@ -1666,11 +1833,13 @@ static int l_sprite_copy(lua_State *L) {
   // Deep-copy extracted frame data so each sprite owns its buffer
   if (src->frame_data && src->frame_w > 0 && src->frame_h > 0) {
     int sz = src->frame_w * src->frame_h * sizeof(uint16_t);
-    dst->frame_data = (uint16_t *)umm_malloc(sz);
-    if (dst->frame_data)
+    dst->frame_data = (uint16_t *)gc_umm_malloc(L, sz);
+    if (dst->frame_data) {
       memcpy(dst->frame_data, src->frame_data, sz);
-    else
-      dst->frame_data = NULL;
+    } else {
+      dst->frame_w = 0;
+      dst->frame_h = 0;
+    }
   }
   luaL_setmetatable(L, GRAPHICS_SPRITE_MT);
   return 1;
@@ -1701,8 +1870,12 @@ static int l_sprite_setSourceRect(lua_State *L) {
     s->frame_data = NULL;
   }
 
-  s->frame_data = (uint16_t *)umm_malloc(sw * sh * sizeof(uint16_t));
-  if (!s->frame_data) return 0;
+  s->frame_data = (uint16_t *)gc_umm_malloc(L, sw * sh * sizeof(uint16_t));
+  if (!s->frame_data) {
+    s->frame_w = 0;
+    s->frame_h = 0;
+    return 0;
+  }
 
   for (int row = 0; row < sh; row++)
     for (int col = 0; col < sw; col++)
@@ -1775,15 +1948,13 @@ static int l_sprite_setBounds(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
   
   if (lua_istable(L, 2)) {
-    lua_getfield(L, 2, "x");
-    lua_getfield(L, 2, "y");
-    lua_getfield(L, 2, "w");
-    lua_getfield(L, 2, "h");
-    s->bounds_x = lb_optint_at(L, -4, 2, "field 'x'", 0);
-    s->bounds_y = lb_optint_at(L, -3, 2, "field 'y'", 0);
-    s->bounds_w = lb_optint_at(L, -2, 2, "field 'w'", 0);
-    s->bounds_h = lb_optint_at(L, -1, 2, "field 'h'", 0);
-    lua_pop(L, 4);
+    static const int def[4] = {0, 0, 0, 0};
+    int v[4];
+    read_rect(L, 2, def, v);
+    s->bounds_x = v[0];
+    s->bounds_y = v[1];
+    s->bounds_w = v[2];
+    s->bounds_h = v[3];
   } else {
     s->bounds_x = lb_checkint(L, 2);
     s->bounds_y = lb_checkint(L, 3);
@@ -1833,16 +2004,15 @@ static int l_sprite_draw(lua_State *L) {
   int x = lb_optint(L, 2, s->x);
   int y = lb_optint(L, 3, s->y);
   
-  if (!s->visible || !s->image)
-    return 0;
-  sprite_draw_at(s, x, y);
+  if (s->visible)
+    sprite_render(s, x, y);
   return 0;
 }
 
 static int l_sprite_updateSingle(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
-  if (s->updates_enabled && s->visible && s->image)
-    sprite_draw_at(s, s->x, s->y);
+  if (s->updates_enabled && s->visible)
+    sprite_render(s, s->x, s->y);
   return 0;
 }
 
@@ -1901,7 +2071,7 @@ static int l_sprite_newindex(lua_State *L) {
   } else if (!strcmp(key, "height")) {
     s->height = lb_checkint(L, 3);
   } else if (!strcmp(key, "z")) {
-    s->z_index = lb_checkint(L, 3);
+    sprite_set_z(s, lb_checkint(L, 3));
   } else if (!strcmp(key, "visible")) {
     s->visible = lua_toboolean(L, 3);
   } else if (!strcmp(key, "scale")) {
@@ -1910,6 +2080,8 @@ static int l_sprite_newindex(lua_State *L) {
     s->rotation = (float)luaL_checknumber(L, 3);
   } else if (!strcmp(key, "tag")) {
     s->tag = luaL_checkinteger(L, 3);
+  } else if (!strcmp(key, "scale_nn")) {
+    sprite_set_scale_nn(L, s, 3);
   }
   return 0;
 }
@@ -1923,7 +2095,9 @@ static const luaL_Reg l_sprite_methods[] = {
     {"setImage", l_sprite_setImage},
     {"getImage", l_sprite_getImage},
     {"add", l_sprite_add},
+    {"addSprite", l_sprite_add},
     {"remove", l_sprite_remove},
+    {"removeSprite", l_sprite_remove},
     {"moveTo", l_sprite_moveTo},
     {"moveBy", l_sprite_moveBy},
     {"getPosition", l_sprite_getPosition},
@@ -2066,15 +2240,13 @@ static int l_sprite_setCollideRect(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
   
   if (lua_istable(L, 2)) {
-    lua_getfield(L, 2, "x");
-    lua_getfield(L, 2, "y");
-    lua_getfield(L, 2, "w");
-    lua_getfield(L, 2, "h");
-    s->collide_x = lb_optint_at(L, -4, 2, "field 'x'", 0);
-    s->collide_y = lb_optint_at(L, -3, 2, "field 'y'", 0);
-    s->collide_w = lb_optint_at(L, -2, 2, "field 'w'", s->width);
-    s->collide_h = lb_optint_at(L, -1, 2, "field 'h'", s->height);
-    lua_pop(L, 4);
+    const int def[4] = {0, 0, s->width, s->height};
+    int v[4];
+    read_rect(L, 2, def, v);
+    s->collide_x = v[0];
+    s->collide_y = v[1];
+    s->collide_w = v[2];
+    s->collide_h = v[3];
   } else {
     s->collide_x = lb_checkint(L, 2);
     s->collide_y = lb_checkint(L, 3);
@@ -2093,14 +2265,43 @@ static int l_sprite_getCollideRect(lua_State *L) {
   return 4;
 }
 
+// Returns the effective on-screen pixel dimensions of a sprite.
+// Uses frame dimensions if a source rect has been extracted, otherwise the
+// sprite's size, then applies NN or float scaling (one factor: as it draws).
+static void sprite_visual_size(const lua_sprite_t *s, int *w, int *h) {
+  int bw = s->frame_w > 0 ? s->frame_w : s->width;
+  int bh = s->frame_h > 0 ? s->frame_h : s->height;
+  const int nn = sprite_nn_scale(s);
+  if (nn > 1) {
+    *w = bw * nn;
+    *h = bh * nn;
+  } else {
+    *w = (int)(bw * s->scale);
+    *h = (int)(bh * s->scale);
+  }
+}
+
+// A sprite's collision box with the sprite at (px, py): its collide rect, or the
+// box it draws in if it has none. What every collision and query call tests.
+static void sprite_collide_bounds_at(const lua_sprite_t *s, int px, int py,
+                                      int *ox, int *oy, int *ow, int *oh) {
+  int cw, ch;
+  if (s->collide_w > 0) { cw = s->collide_w; ch = s->collide_h; }
+  else                   { sprite_visual_size(s, &cw, &ch); }
+  *ox = px + s->collide_x;
+  *oy = py + s->collide_y;
+  *ow = cw;
+  *oh = ch;
+}
+
 static int l_sprite_getCollideBounds(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
-  int bx = s->x + s->collide_x;
-  int by = s->y + s->collide_y;
+  int bx, by, bw, bh;
+  sprite_collide_bounds_at(s, s->x, s->y, &bx, &by, &bw, &bh);
   lua_pushinteger(L, bx);
   lua_pushinteger(L, by);
-  lua_pushinteger(L, s->collide_w);
-  lua_pushinteger(L, s->collide_h);
+  lua_pushinteger(L, bw);
+  lua_pushinteger(L, bh);
   return 4;
 }
 
@@ -2111,21 +2312,6 @@ static int l_sprite_clearCollideRect(lua_State *L) {
   s->collide_w = s->width;
   s->collide_h = s->height;
   return 0;
-}
-
-// Returns the effective on-screen pixel dimensions of a sprite.
-// Uses frame dimensions if a source rect has been extracted, otherwise the
-// full image dimensions, then applies NN or bilinear scaling.
-static void sprite_visual_size(const lua_sprite_t *s, int *w, int *h) {
-  int bw = s->frame_w > 0 ? s->frame_w : s->width;
-  int bh = s->frame_h > 0 ? s->frame_h : s->height;
-  if (s->use_nn_scaling && s->scale_nn > 1) {
-    *w = bw * s->scale_nn;
-    *h = bh * s->scale_nn;
-  } else {
-    *w = (int)(bw * s->scale);
-    *h = (int)(bh * s->scale_y);
-  }
 }
 
 static bool spritesOverlap(lua_sprite_t *a, lua_sprite_t *b) {
@@ -2243,21 +2429,17 @@ static int l_sprite_checkCollisions(lua_State *L) {
   int px, py;
   
   if (lua_istable(L, 2)) {
-    lua_getfield(L, 2, "x");
-    lua_getfield(L, 2, "y");
-    px = lb_optint_at(L, -2, 2, "field 'x'", 0);
-    py = lb_optint_at(L, -1, 2, "field 'y'", 0);
-    lua_pop(L, 2);
+    read_point(L, 2, 0, 0, &px, &py);
   } else {
     px = lb_checkint(L, 2);
     py = lb_checkint(L, 3);
   }
   
-  int sx = s->x + s->collide_x;
-  int sy = s->y + s->collide_y;
+  int sx, sy, sw, sh;
+  sprite_collide_bounds_at(s, s->x, s->y, &sx, &sy, &sw, &sh);
   
-  bool hit = (px >= sx && px < sx + s->collide_w &&
-              py >= sy && py < sy + s->collide_h);
+  bool hit = (px >= sx && px < sx + sw &&
+              py >= sy && py < sy + sh);
   lua_pushboolean(L, hit);
   return 1;
 }
@@ -2266,11 +2448,7 @@ static int l_sprite_querySpritesAtPoint(lua_State *L) {
   int px, py;
   
   if (lua_istable(L, 1)) {
-    lua_getfield(L, 1, "x");
-    lua_getfield(L, 1, "y");
-    px = lb_optint_at(L, -2, 1, "field 'x'", 0);
-    py = lb_optint_at(L, -1, 1, "field 'y'", 0);
-    lua_pop(L, 2);
+    read_point(L, 1, 0, 0, &px, &py);
   } else {
     px = lb_checkint(L, 1);
     py = lb_checkint(L, 2);
@@ -2281,11 +2459,11 @@ static int l_sprite_querySpritesAtPoint(lua_State *L) {
   
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *s = s_sprites[i];
-    int sx = s->x + s->collide_x;
-    int sy = s->y + s->collide_y;
+    int sx, sy, sw, sh;
+    sprite_collide_bounds_at(s, s->x, s->y, &sx, &sy, &sw, &sh);
     
-    if (px >= sx && px < sx + s->collide_w &&
-        py >= sy && py < sy + s->collide_h) {
+    if (px >= sx && px < sx + sw &&
+        py >= sy && py < sy + sh) {
       push_sprite(L, s);
       lua_rawseti(L, -2, ++count);
     }
@@ -2297,15 +2475,13 @@ static int l_sprite_querySpritesInRect(lua_State *L) {
   int rx, ry, rw, rh;
   
   if (lua_istable(L, 1)) {
-    lua_getfield(L, 1, "x");
-    lua_getfield(L, 1, "y");
-    lua_getfield(L, 1, "w");
-    lua_getfield(L, 1, "h");
-    rx = lb_optint_at(L, -4, 1, "field 'x'", 0);
-    ry = lb_optint_at(L, -3, 1, "field 'y'", 0);
-    rw = lb_optint_at(L, -2, 1, "field 'w'", 320);
-    rh = lb_optint_at(L, -1, 1, "field 'h'", 320);
-    lua_pop(L, 4);
+    static const int def[4] = {0, 0, 320, 320};
+    int v[4];
+    read_rect(L, 1, def, v);
+    rx = v[0];
+    ry = v[1];
+    rw = v[2];
+    rh = v[3];
   } else {
     rx = lb_checkint(L, 1);
     ry = lb_checkint(L, 2);
@@ -2318,11 +2494,11 @@ static int l_sprite_querySpritesInRect(lua_State *L) {
   
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *s = s_sprites[i];
-    int sx = s->x + s->collide_x;
-    int sy = s->y + s->collide_y;
+    int sx, sy, sw, sh;
+    sprite_collide_bounds_at(s, s->x, s->y, &sx, &sy, &sw, &sh);
     
-    if (sx < rx + rw && sx + s->collide_w > rx &&
-        sy < ry + rh && sy + s->collide_h > ry) {
+    if (sx < rx + rw && sx + sw > rx &&
+        sy < ry + rh && sy + sh > ry) {
       push_sprite(L, s);
       lua_rawseti(L, -2, ++count);
     }
@@ -2340,55 +2516,92 @@ static int l_sprite_querySpritesInRect(lua_State *L) {
 #define COLLISION_OVERLAP 3
 #define COLLISION_BOUNCE  4
 
-// Helper: get collision bounds for a sprite at position (px, py)
-static void sprite_collide_bounds_at(const lua_sprite_t *s, int px, int py,
-                                      int *ox, int *oy, int *ow, int *oh) {
-  int cw, ch;
-  if (s->collide_w > 0) { cw = s->collide_w; ch = s->collide_h; }
-  else                   { sprite_visual_size(s, &cw, &ch); }
-  *ox = px + s->collide_x;
-  *oy = py + s->collide_y;
-  *ow = cw;
-  *oh = ch;
+// Does sprite `s` collide with `other` at all (collisions on, group masks)?
+static bool sprite_can_hit(const lua_sprite_t *s, const lua_sprite_t *other) {
+  if (other == s || !other->collisions_enabled) return false;
+  // Group mask check: if both masks are non-zero, require overlap
+  return !(s->collides_with_mask && other->group_mask &&
+           !(s->collides_with_mask & other->group_mask));
 }
 
-// Helper: check if sprite `s` at position (sx, sy) overlaps any other sprite
-// in the active list, respecting group masks.
-static bool sprite_overlaps_any_at(lua_sprite_t *s, int sx, int sy,
-                                    lua_sprite_t **hit_out) {
+// How far `s` can move along one axis from (start_x, start_y) towards `delta`
+// (the other axis fixed), and what stops it. The answer is exact for any length
+// and costs one pass over the list, not one per pixel. A sprite that overlaps
+// `s` at the start blocks only if `s` would still overlap it at the goal, so a
+// sprite caught inside another can leave but not go further in.
+static int sprite_sweep(const lua_sprite_t *s, int start_x, int start_y,
+                        bool along_x, int delta, lua_sprite_t **hit_out) {
   int ax, ay, aw, ah;
-  sprite_collide_bounds_at(s, sx, sy, &ax, &ay, &aw, &ah);
+  sprite_collide_bounds_at(s, start_x, start_y, &ax, &ay, &aw, &ah);
+  // a0/a1: the mover's box along the axis of travel; c0/c1: across it.
+  const int a0 = along_x ? ax : ay, alen = along_x ? aw : ah;
+  const int c0 = along_x ? ay : ax, clen = along_x ? ah : aw;
+  int allowed = delta;
+  *hit_out = NULL;
 
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *other = s_sprites[i];
-    if (other == s || !other->collisions_enabled) continue;
-    // Group mask check: if both masks are non-zero, require overlap
-    if (s->collides_with_mask && other->group_mask &&
-        !(s->collides_with_mask & other->group_mask)) continue;
-
+    if (!sprite_can_hit(s, other)) continue;
     int bx, by, bw, bh;
     sprite_collide_bounds_at(other, other->x, other->y, &bx, &by, &bw, &bh);
-    if (ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by) {
-      if (hit_out) *hit_out = other;
-      return true;
+    if (bw <= 0 || bh <= 0) continue;
+    const int b0 = along_x ? bx : by, blen = along_x ? bw : bh;
+    const int d0 = along_x ? by : bx, dlen = along_x ? bh : bw;
+    if (!(c0 < d0 + dlen && c0 + clen > d0)) continue;  // never in its way
+
+    int reach;
+    if (a0 < b0 + blen && a0 + alen > b0) {  // overlapping already
+      if (!(a0 + delta < b0 + blen && a0 + delta + alen > b0)) continue;
+      reach = 0;
+    } else if (delta > 0) {
+      if (b0 < a0 + alen || a0 + delta + alen <= b0) continue;  // behind, or short
+      reach = b0 - (a0 + alen);
+    } else {
+      if (b0 + blen > a0 || a0 + delta >= b0 + blen) continue;
+      reach = (b0 + blen) - a0;
+    }
+    if (delta > 0 ? reach < allowed : reach > allowed) {  // the nearest stops it
+      allowed = reach;
+      *hit_out = other;
     }
   }
-  return false;
+  return allowed;
+}
+
+// One entry of the collisions table on top of the stack, for the sprite at index 1.
+static void push_collision(lua_State *L, const lua_sprite_t *hit, int nx, int ny,
+                           int touch_x, int touch_y, int n) {
+  lua_createtable(L, 0, 5);
+  lua_pushvalue(L, 1);
+  lua_setfield(L, -2, "sprite");
+  push_sprite(L, hit);
+  lua_setfield(L, -2, "other");
+  lua_pushinteger(L, COLLISION_SLIDE);
+  lua_setfield(L, -2, "type");
+  lua_createtable(L, 0, 2);
+  lua_pushinteger(L, nx);
+  lua_setfield(L, -2, "x");
+  lua_pushinteger(L, ny);
+  lua_setfield(L, -2, "y");
+  lua_setfield(L, -2, "normal");
+  lua_createtable(L, 0, 2);
+  lua_pushinteger(L, touch_x);
+  lua_setfield(L, -2, "x");
+  lua_pushinteger(L, touch_y);
+  lua_setfield(L, -2, "y");
+  lua_setfield(L, -2, "touch");
+  lua_rawseti(L, -2, n);
 }
 
 // sprite:moveWithCollisions(goalX, goalY)
 // Returns: actualX, actualY, collisions
-// Collisions is a table of {sprite, other, type, normal, touch, move}
+// Collisions is a table of {sprite, other, type, normal, touch}
 static int l_sprite_moveWithCollisions(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
   int goalX, goalY;
 
   if (lua_istable(L, 2)) {
-    lua_getfield(L, 2, "x");
-    lua_getfield(L, 2, "y");
-    goalX = lb_optint_at(L, -2, 2, "field 'x'", s->x);
-    goalY = lb_optint_at(L, -1, 2, "field 'y'", s->y);
-    lua_pop(L, 2);
+    read_point(L, 2, s->x, s->y, &goalX, &goalY);
   } else {
     goalX = lb_checkint(L, 2);
     goalY = lb_checkint(L, 3);
@@ -2403,109 +2616,29 @@ static int l_sprite_moveWithCollisions(lua_State *L) {
     return 3;
   }
 
-  int startX = s->x, startY = s->y;
-  int dx = goalX - startX;
-  int dy = goalY - startY;
-
   lua_createtable(L, 0, 0); // collisions table
   int coll_count = 0;
 
-  // Try X movement first, then Y (axis-separated resolution)
-  int finalX = startX, finalY = startY;
+  // X first, then Y from where X ended (axis-separated, so a blocked axis slides
+  // along the other). Always swept: a goal that is clear says nothing about what
+  // lies between it and the start.
+  int finalX = s->x, finalY = s->y;
+  lua_sprite_t *hit;
 
-  // --- X axis ---
-  if (dx != 0) {
-    lua_sprite_t *hit = NULL;
-    if (!sprite_overlaps_any_at(s, goalX, startY, &hit)) {
-      finalX = goalX;
-    } else {
-      int step = (dx > 0) ? 1 : -1;
-      int best = startX;
-      // Simple sweep: step pixel by pixel (capped at 320 iterations max)
-      int steps = abs(dx);
-      if (steps > FB_WIDTH) steps = FB_WIDTH;
-      for (int i = 1; i <= steps; i++) {
-        int testX = startX + step * i;
-        if (sprite_overlaps_any_at(s, testX, startY, &hit)) {
-          // Record collision
-          coll_count++;
-          lua_createtable(L, 0, 6);
-
-          // sprite (self)
-          lua_pushvalue(L, 1);
-          lua_setfield(L, -2, "sprite");
-          // other
-          push_sprite(L, hit);
-          lua_setfield(L, -2, "other");
-          // type (default: slide)
-          lua_pushinteger(L, COLLISION_SLIDE);
-          lua_setfield(L, -2, "type");
-          // normal
-          lua_createtable(L, 0, 2);
-          lua_pushinteger(L, dx > 0 ? -1 : 1);
-          lua_setfield(L, -2, "x");
-          lua_pushinteger(L, 0);
-          lua_setfield(L, -2, "y");
-          lua_setfield(L, -2, "normal");
-          // touch point
-          lua_createtable(L, 0, 2);
-          lua_pushinteger(L, best);
-          lua_setfield(L, -2, "x");
-          lua_pushinteger(L, startY);
-          lua_setfield(L, -2, "y");
-          lua_setfield(L, -2, "touch");
-
-          lua_rawseti(L, -2, coll_count);
-          break;
-        }
-        best = testX;
-      }
-      finalX = best;
-    }
+  if (goalX != finalX) {
+    int dx = goalX - finalX;
+    int moved = sprite_sweep(s, finalX, finalY, true, dx, &hit);
+    finalX += moved;
+    if (hit)
+      push_collision(L, hit, dx > 0 ? -1 : 1, 0, finalX, finalY, ++coll_count);
   }
 
-  // --- Y axis ---
-  if (dy != 0) {
-    lua_sprite_t *hit = NULL;
-    if (!sprite_overlaps_any_at(s, finalX, goalY, &hit)) {
-      finalY = goalY;
-    } else {
-      int step = (dy > 0) ? 1 : -1;
-      int best = startY;
-      int steps = abs(dy);
-      if (steps > FB_HEIGHT) steps = FB_HEIGHT;
-      for (int i = 1; i <= steps; i++) {
-        int testY = startY + step * i;
-        if (sprite_overlaps_any_at(s, finalX, testY, &hit)) {
-          coll_count++;
-          lua_createtable(L, 0, 6);
-
-          lua_pushvalue(L, 1);
-          lua_setfield(L, -2, "sprite");
-          push_sprite(L, hit);
-          lua_setfield(L, -2, "other");
-          lua_pushinteger(L, COLLISION_SLIDE);
-          lua_setfield(L, -2, "type");
-          lua_createtable(L, 0, 2);
-          lua_pushinteger(L, 0);
-          lua_setfield(L, -2, "x");
-          lua_pushinteger(L, dy > 0 ? -1 : 1);
-          lua_setfield(L, -2, "y");
-          lua_setfield(L, -2, "normal");
-          lua_createtable(L, 0, 2);
-          lua_pushinteger(L, finalX);
-          lua_setfield(L, -2, "x");
-          lua_pushinteger(L, best);
-          lua_setfield(L, -2, "y");
-          lua_setfield(L, -2, "touch");
-
-          lua_rawseti(L, -2, coll_count);
-          break;
-        }
-        best = testY;
-      }
-      finalY = best;
-    }
+  if (goalY != finalY) {
+    int dy = goalY - finalY;
+    int moved = sprite_sweep(s, finalX, finalY, false, dy, &hit);
+    finalY += moved;
+    if (hit)
+      push_collision(L, hit, 0, dy > 0 ? -1 : 1, finalX, finalY, ++coll_count);
   }
 
   s->x = finalX;
@@ -2518,8 +2651,9 @@ static int l_sprite_moveWithCollisions(lua_State *L) {
   return 3;
 }
 
-// sprite:collisionResponse(other) — returns response type string
-// Default is "slide". Apps can override this method in Lua.
+// sprite:collisionResponse(other) — returns response type string. Always
+// "slide": moveWithCollisions does not call it, and a sprite has no user fields
+// to override it with.
 static int l_sprite_collisionResponse(lua_State *L) {
   (void)check_sprite(L, 1); // self
   // Default response is "slide"
@@ -2531,15 +2665,13 @@ static int l_sprite_setClipRect(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
   
   if (lua_istable(L, 2)) {
-    lua_getfield(L, 2, "x");
-    lua_getfield(L, 2, "y");
-    lua_getfield(L, 2, "w");
-    lua_getfield(L, 2, "h");
-    s->clip_x = lb_optint_at(L, -4, 2, "field 'x'", 0);
-    s->clip_y = lb_optint_at(L, -3, 2, "field 'y'", 0);
-    s->clip_w = lb_optint_at(L, -2, 2, "field 'w'", s->width);
-    s->clip_h = lb_optint_at(L, -1, 2, "field 'h'", s->height);
-    lua_pop(L, 4);
+    const int def[4] = {0, 0, s->width, s->height};
+    int v[4];
+    read_rect(L, 2, def, v);
+    s->clip_x = v[0];
+    s->clip_y = v[1];
+    s->clip_w = v[2];
+    s->clip_h = v[3];
     s->has_clip = true;
   } else if (lua_gettop(L) >= 5) {
     s->clip_x = lb_checkint(L, 2);
@@ -2625,10 +2757,12 @@ static bool sprite_line_intersect(int x1, int y1, int x2, int y2,
 static int l_sprite_querySpritesAlongLine(lua_State *L) {
   int x1, y1, x2, y2;
   if (lua_istable(L, 1)) {
-    lua_getfield(L, 1, "x1"); x1 = lb_checkint_at(L, -1, 1, "field 'x1'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "y1"); y1 = lb_checkint_at(L, -1, 1, "field 'y1'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "x2"); x2 = lb_checkint_at(L, -1, 1, "field 'x2'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "y2"); y2 = lb_checkint_at(L, -1, 1, "field 'y2'"); lua_pop(L, 1);
+    int v[4];
+    read_line(L, 1, v);
+    x1 = v[0];
+    y1 = v[1];
+    x2 = v[2];
+    y2 = v[3];
   } else {
     x1 = lb_checkint(L, 1);
     y1 = lb_checkint(L, 2);
@@ -2641,10 +2775,8 @@ static int l_sprite_querySpritesAlongLine(lua_State *L) {
   
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *s = s_sprites[i];
-    int sx = s->x;
-    int sy = s->y;
-    int sw = s->width > 0 ? s->width : s->collide_w;
-    int sh = s->height > 0 ? s->height : s->collide_h;
+    int sx, sy, sw, sh;
+    sprite_collide_bounds_at(s, s->x, s->y, &sx, &sy, &sw, &sh);
     
     if (sprite_line_intersect(x1, y1, x2, y2, sx, sy, sw, sh)) {
       push_sprite(L, s);
@@ -2699,10 +2831,12 @@ static bool sprite_line_rect_intersection(int x1, int y1, int x2, int y2,
 static int l_sprite_querySpriteInfoAlongLine(lua_State *L) {
   int x1, y1, x2, y2;
   if (lua_istable(L, 1)) {
-    lua_getfield(L, 1, "x1"); x1 = lb_checkint_at(L, -1, 1, "field 'x1'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "y1"); y1 = lb_checkint_at(L, -1, 1, "field 'y1'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "x2"); x2 = lb_checkint_at(L, -1, 1, "field 'x2'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "y2"); y2 = lb_checkint_at(L, -1, 1, "field 'y2'"); lua_pop(L, 1);
+    int v[4];
+    read_line(L, 1, v);
+    x1 = v[0];
+    y1 = v[1];
+    x2 = v[2];
+    y2 = v[3];
   } else {
     x1 = lb_checkint(L, 1);
     y1 = lb_checkint(L, 2);
@@ -2715,10 +2849,8 @@ static int l_sprite_querySpriteInfoAlongLine(lua_State *L) {
   
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *s = s_sprites[i];
-    int sx = s->x;
-    int sy = s->y;
-    int sw = s->width > 0 ? s->width : s->collide_w;
-    int sh = s->height > 0 ? s->height : s->collide_h;
+    int sx, sy, sw, sh;
+    sprite_collide_bounds_at(s, s->x, s->y, &sx, &sy, &sw, &sh);
     
     int ix, iy;
     if (sprite_line_rect_intersection(x1, y1, x2, y2, sx, sy, sw, sh, &ix, &iy)) {
@@ -2803,6 +2935,19 @@ static int l_graphics_setStencilPattern(lua_State *L) {
 
 // ── Alpha (Pixel-Perfect) Collision ─────────────────────────────────────────
 
+// The box a sprite's src_w x src_h pixels draw in (rotation aside).
+static void sprite_drawn_size(const lua_sprite_t *s, int src_w, int src_h,
+                              int *w, int *h) {
+  const int nn = sprite_nn_scale(s);
+  if (nn > 1) {
+    *w = src_w * nn;
+    *h = src_h * nn;
+  } else {
+    *w = (int)(src_w * s->scale);
+    *h = (int)(src_h * s->scale);
+  }
+}
+
 static int l_sprite_alphaCollision(lua_State *L) {
   lua_sprite_t *a = check_sprite(L, 1);
   lua_sprite_t *b = check_sprite(L, 2);
@@ -2815,34 +2960,30 @@ static int l_sprite_alphaCollision(lua_State *L) {
   if (!a_data) { a_w = a->width; a_h = a->height; }
   if (!b_data) { b_w = b->width; b_h = b->height; }
 
-  // If either sprite has no image data, fall back to AABB overlap
-  if (!a_data || !b_data || a_w <= 0 || a_h <= 0 || b_w <= 0 || b_h <= 0) {
-    // Simple AABB overlap check
-    bool overlap = !(a->x + a_w <= b->x || b->x + b_w <= a->x ||
-                     a->y + a_h <= b->y || b->y + b_h <= a->y);
-    lua_pushboolean(L, overlap);
-    return 1;
-  }
-
-  // If either sprite is scaled or rotated, fall back to AABB
-  if (a->rotation != 0.0f || b->rotation != 0.0f ||
-      (a->scale != 1.0f && !a->use_nn_scaling) ||
-      (b->scale != 1.0f && !b->use_nn_scaling) ||
-      a->scale_y != 1.0f || b->scale_y != 1.0f) {
-    bool overlap = !(a->x + a_w <= b->x || b->x + b_w <= a->x ||
-                     a->y + a_h <= b->y || b->y + b_h <= a->y);
-    lua_pushboolean(L, overlap);
-    return 1;
-  }
+  // On screen, each sprite covers its drawn box.
+  int a_dw, a_dh, b_dw, b_dh;
+  sprite_drawn_size(a, a_w, a_h, &a_dw, &a_dh);
+  sprite_drawn_size(b, b_w, b_h, &b_dw, &b_dh);
 
   // Compute AABB overlap region in screen coordinates
   int overlap_left   = (a->x > b->x) ? a->x : b->x;
   int overlap_top    = (a->y > b->y) ? a->y : b->y;
-  int overlap_right  = ((a->x + a_w) < (b->x + b_w)) ? (a->x + a_w) : (b->x + b_w);
-  int overlap_bottom = ((a->y + a_h) < (b->y + b_h)) ? (a->y + a_h) : (b->y + b_h);
+  int overlap_right  = ((a->x + a_dw) < (b->x + b_dw)) ? (a->x + a_dw) : (b->x + b_dw);
+  int overlap_bottom = ((a->y + a_dh) < (b->y + b_dh)) ? (a->y + a_dh) : (b->y + b_dh);
 
   if (overlap_left >= overlap_right || overlap_top >= overlap_bottom) {
     lua_pushboolean(L, false);
+    return 1;
+  }
+
+  const int a_nn = sprite_nn_scale(a), b_nn = sprite_nn_scale(b);
+
+  // No pixels to test, or a rotated or float-scaled sprite (its pixels do not map
+  // one to one): the boxes overlapping is the answer.
+  if (!a_data || !b_data || a_w <= 0 || a_h <= 0 || b_w <= 0 || b_h <= 0 ||
+      a->rotation != 0.0f || b->rotation != 0.0f ||
+      (a_nn == 1 && a->scale != 1.0f) || (b_nn == 1 && b->scale != 1.0f)) {
+    lua_pushboolean(L, true);
     return 1;
   }
 
@@ -2851,15 +2992,15 @@ static int l_sprite_alphaCollision(lua_State *L) {
 
   for (int sy = overlap_top; sy < overlap_bottom; sy++) {
     for (int sx = overlap_left; sx < overlap_right; sx++) {
-      // Map screen coord to sprite A's local coord
-      int a_lx = sx - a->x;
-      int a_ly = sy - a->y;
+      // Map screen coord to sprite A's source pixel
+      int a_lx = (sx - a->x) / a_nn;
+      int a_ly = (sy - a->y) / a_nn;
       if (a->flip_x) a_lx = a_w - 1 - a_lx;
       if (a->flip_y) a_ly = a_h - 1 - a_ly;
 
-      // Map screen coord to sprite B's local coord
-      int b_lx = sx - b->x;
-      int b_ly = sy - b->y;
+      // Map screen coord to sprite B's source pixel
+      int b_lx = (sx - b->x) / b_nn;
+      int b_ly = (sy - b->y) / b_nn;
       if (b->flip_x) b_lx = b_w - 1 - b_lx;
       if (b->flip_y) b_ly = b_h - 1 - b_ly;
 
@@ -2887,10 +3028,12 @@ static int l_sprite_setClipRectsInRange(lua_State *L) {
 
   if (lua_istable(L, 1)) {
     // Table variant: ({x, y, w, h}, startz, endz)
-    lua_getfield(L, 1, "x"); clip_x = lb_checkint_at(L, -1, 1, "field 'x'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "y"); clip_y = lb_checkint_at(L, -1, 1, "field 'y'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "w"); clip_w = lb_checkint_at(L, -1, 1, "field 'w'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "h"); clip_h = lb_checkint_at(L, -1, 1, "field 'h'"); lua_pop(L, 1);
+    int v[4];
+    read_rect(L, 1, NULL, v);
+    clip_x = v[0];
+    clip_y = v[1];
+    clip_w = v[2];
+    clip_h = v[3];
     startz = lb_checkint(L, 2);
     endz   = lb_checkint(L, 3);
   } else {
@@ -2935,10 +3078,12 @@ static int l_sprite_addEmptyCollisionSprite(lua_State *L) {
   int x, y, w, h;
 
   if (lua_istable(L, 1)) {
-    lua_getfield(L, 1, "x"); x = lb_checkint_at(L, -1, 1, "field 'x'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "y"); y = lb_checkint_at(L, -1, 1, "field 'y'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "w"); w = lb_checkint_at(L, -1, 1, "field 'w'"); lua_pop(L, 1);
-    lua_getfield(L, 1, "h"); h = lb_checkint_at(L, -1, 1, "field 'h'"); lua_pop(L, 1);
+    int v[4];
+    read_rect(L, 1, NULL, v);
+    x = v[0];
+    y = v[1];
+    w = v[2];
+    h = v[3];
   } else {
     x = lb_checkint(L, 1);
     y = lb_checkint(L, 2);
@@ -3139,7 +3284,7 @@ static int l_spritesheet_drawFrame(lua_State *L) {
                             ss->image->data,
                             ss->frame_x[frame_idx], ss->frame_y[frame_idx],
                             ss->frame_w[frame_idx], ss->frame_h[frame_idx],
-                            flip, false, 0);
+                            flip, false, ss->image->transparent_color);
   return 0;
 }
 
@@ -3191,7 +3336,8 @@ static int l_tilemap_setSize(lua_State *L) {
 
   if (tm->tiles) umm_free(tm->tiles);
   size_t sz = (size_t)w * h * sizeof(uint16_t);
-  tm->tiles = (uint16_t *)umm_malloc(sz);
+  tm->tiles = NULL;
+  tm->tiles = (uint16_t *)gc_umm_malloc(L, sz);
   if (!tm->tiles) return luaL_error(L, "out of memory for tilemap");
   memset(tm->tiles, 0, sz);
   tm->map_w = w;
@@ -3300,17 +3446,22 @@ static int l_sprite_setTilemap(lua_State *L) {
   return 0;
 }
 
-// sprite.addWallSprites(tilemap, wallIDs, [xOffset], [yOffset])
-// wallIDs is a table of tile indices that should have collision
+// sprite.addWallSprites(tilemap, wallIDs, [xOffset], [yOffset]) -> count, skipped
+// wallIDs is a table of tile indices that should have collision; skipped counts
+// the wall tiles past MAX_SPRITES, which got no sprite.
 static int l_sprite_addWallSprites(lua_State *L) {
   lua_tilemap_t *tm = check_tilemap(L, 1);
   luaL_checktype(L, 2, LUA_TTABLE);
   int x_off = (int)lb_optint(L, 3, 0);
   int y_off = (int)lb_optint(L, 4, 0);
 
-  if (!tm->tiles) return 0;
+  if (!tm->tiles) {
+    lua_pushinteger(L, 0);
+    lua_pushinteger(L, 0);
+    return 2;
+  }
 
-  int count = 0;
+  int count = 0, skipped = 0;
   for (int row = 0; row < tm->map_h; row++) {
     for (int col = 0; col < tm->map_w; col++) {
       uint16_t tile = tm->tiles[row * tm->map_w + col];
@@ -3326,7 +3477,9 @@ static int l_sprite_addWallSprites(lua_State *L) {
         if (is_wall) break;
       }
 
-      if (is_wall && s_sprite_count < MAX_SPRITES) {
+      if (is_wall && s_sprite_count >= MAX_SPRITES) {
+        skipped++;
+      } else if (is_wall) {
         // Create an invisible collision sprite at this tile position
         lua_sprite_t *ws = new_sprite_ud(L);
         ws->x = col * tm->tile_w + x_off;
@@ -3335,6 +3488,7 @@ static int l_sprite_addWallSprites(lua_State *L) {
         ws->height = tm->tile_h;
         ws->scale = 1.0f;
         ws->scale_y = 1.0f;
+        ws->scale_nn = 1;
         ws->visible = false;
         ws->updates_enabled = false;
         ws->collisions_enabled = true;
@@ -3354,7 +3508,8 @@ static int l_sprite_addWallSprites(lua_State *L) {
   }
 
   lua_pushinteger(L, count);
-  return 1;
+  lua_pushinteger(L, skipped);
+  return 2;
 }
 
 // Defined with the other text renderers below; used by spriteWithText here.
@@ -3394,6 +3549,7 @@ static int l_sprite_spriteWithText(lua_State *L) {
   s->height = max_h;
   s->scale = 1.0f;
   s->scale_y = 1.0f;
+  s->scale_nn = 1;
   s->visible = true;
   s->updates_enabled = true;
   s->opaque = true;
@@ -3517,7 +3673,7 @@ static int l_animation_loop_new(lua_State *L) {
   if (top >= 2 && lua_istable(L, 2))
     loop_set_frames(L, loop, -1, 2);
 
-  if (top >= 3) {
+  if (top >= 3 && !lua_isnil(L, 3)) {
     loop->looping = lua_toboolean(L, 3);
   }
 
@@ -3540,7 +3696,8 @@ static int l_animation_loop_draw(lua_State *L) {
   if (!img->data)
     return luaL_error(L, "attempt to use a freed image");
   display_draw_image_partial(x, y, img->w, img->h, img->data,
-                            0, 0, img->w, img->h, flip, false, 0);
+                            0, 0, img->w, img->h, flip, false,
+                            img->transparent_color);
   return 0;
 }
 
@@ -3644,11 +3801,11 @@ static float easing_linear(float t) {
 }
 
 static float easing_sineIn(float t) {
-  return sinf(t * (float)M_PI_2);
+  return 1.0f - sinf((1.0f - t) * (float)M_PI_2);
 }
 
 static float easing_sineOut(float t) {
-  return 1.0f - sinf((1.0f - t) * (float)M_PI_2);
+  return sinf(t * (float)M_PI_2);
 }
 
 static float easing_sineInOut(float t) {
@@ -3715,6 +3872,7 @@ typedef struct {
   int repeat_count;
   int current_repeat;
   bool reverses;
+  bool reversing;  // on the way back: from end_value to start_value
   bool ended;
   easing_fn easing;
   bool destroyed;  // set by __gc
@@ -3770,6 +3928,7 @@ static int l_animator_new(lua_State *L) {
   a->repeat_count = 1;
   a->current_repeat = 0;
   a->reverses = false;
+  a->reversing = false;
   a->ended = false;
   a->easing = easing_f;
   a->destroyed = false;
@@ -3794,12 +3953,9 @@ static int l_animator_currentValue(lua_State *L) {
       a->current_repeat++;
       a->start_time_ms = now;
       t = 0.0f;
-    } else if (a->reverses) {
-      float tmp = a->start_value;
-      a->start_value = a->end_value;
-      a->end_value = tmp;
+    } else if (a->reverses && !a->reversing) {
+      a->reversing = true;
       a->start_time_ms = now;
-      a->reverses = false;
       t = 0.0f;
     } else {
       t = 1.0f;
@@ -3811,8 +3967,9 @@ static int l_animator_currentValue(lua_State *L) {
   if (t > 1.0f) t = 1.0f;
 
   float eased = a->easing(t);
-  float value = a->start_value + (a->end_value - a->start_value) * eased;
-  lua_pushnumber(L, value);
+  float from = a->reversing ? a->end_value : a->start_value;
+  float to = a->reversing ? a->start_value : a->end_value;
+  lua_pushnumber(L, from + (to - from) * eased);
   return 1;
 }
 
@@ -3849,6 +4006,7 @@ static int l_animator_reset(lua_State *L) {
   lua_animator_t *a = check_animator(L, 1);
   a->start_time_ms = to_ms_since_boot(get_absolute_time());
   a->ended = false;
+  a->reversing = false;
   a->current_repeat = 0;
 
   if (lua_isnumber(L, 2)) {
@@ -3923,6 +4081,7 @@ typedef struct {
   int current_cycle;
   uint32_t start_time_ms;
   bool running;
+  bool started;    // ever started or stopped: only the first update auto-starts
   bool state;
   bool destroyed;  // set by __gc; a dead blinker must never re-enter the list
 } lua_animation_blinker_t;
@@ -3979,14 +4138,15 @@ static int l_animation_blinker_new(lua_State *L) {
   b->current_cycle = 0;
   b->start_time_ms = to_ms_since_boot(get_absolute_time());
   b->running = false;
+  b->started = false;
   b->state = true;
   b->destroyed = false;
 
-  if (top >= 1) b->on_duration_ms = lb_checkint(L, 1);
-  if (top >= 2) b->off_duration_ms = lb_checkint(L, 2);
-  if (top >= 3) b->loop = lua_toboolean(L, 3);
-  if (top >= 4) b->cycles = lb_checkint(L, 4);
-  if (top >= 5) b->state = !lua_toboolean(L, 5);
+  if (top >= 1 && !lua_isnil(L, 1)) b->on_duration_ms = lb_checkint(L, 1);
+  if (top >= 2 && !lua_isnil(L, 2)) b->off_duration_ms = lb_checkint(L, 2);
+  if (top >= 3 && !lua_isnil(L, 3)) b->loop = lua_toboolean(L, 3);
+  if (top >= 4 && !lua_isnil(L, 4)) b->cycles = lb_checkint(L, 4);
+  if (top >= 5 && !lua_isnil(L, 5)) b->state = !lua_toboolean(L, 5);
 
   if (s_blinker_count < MAX_BLINKERS) {
     s_blinkers[s_blinker_count++] = b;
@@ -4000,6 +4160,11 @@ static int l_animation_blinker_update(lua_State *L) {
   lua_animation_blinker_t *b = check_blinker(L, 1);
 
   if (!b->running) {
+    if (b->started) {  // stopped or finished: it stays so until start()
+      lua_pushboolean(L, false);
+      return 1;
+    }
+    b->started = true;
     b->running = true;
     b->start_time_ms = to_ms_since_boot(get_absolute_time());
     b->current_cycle = 0;
@@ -4040,16 +4205,16 @@ static int l_animation_blinker_start(lua_State *L) {
   lua_animation_blinker_t *b = check_blinker(L, 1);
 
   // Argument 1 is self; the optional durations/flags start at 2.
-  int top = lua_gettop(L);
-  if (top >= 2) b->on_duration_ms = lb_checkint(L, 2);
-  if (top >= 3) b->off_duration_ms = lb_checkint(L, 3);
-  if (top >= 4) b->loop = lua_toboolean(L, 4);
-  if (top >= 5) b->cycles = lb_checkint(L, 5);
-  if (top >= 6) b->state = !lua_toboolean(L, 6);
+  if (!lua_isnoneornil(L, 2)) b->on_duration_ms = lb_checkint(L, 2);
+  if (!lua_isnoneornil(L, 3)) b->off_duration_ms = lb_checkint(L, 3);
+  if (!lua_isnoneornil(L, 4)) b->loop = lua_toboolean(L, 4);
+  if (!lua_isnoneornil(L, 5)) b->cycles = lb_checkint(L, 5);
+  if (!lua_isnoneornil(L, 6)) b->state = !lua_toboolean(L, 6);
 
   b->start_time_ms = to_ms_since_boot(get_absolute_time());
   b->current_cycle = 0;
   b->running = true;
+  b->started = true;
   b->state = true;
   return 0;
 }
@@ -4061,6 +4226,7 @@ static int l_animation_blinker_startLoop(lua_State *L) {
   b->start_time_ms = to_ms_since_boot(get_absolute_time());
   b->current_cycle = 0;
   b->running = true;
+  b->started = true;
   b->state = true;
   return 0;
 }
@@ -4068,6 +4234,7 @@ static int l_animation_blinker_startLoop(lua_State *L) {
 static int l_animation_blinker_stop(lua_State *L) {
   lua_animation_blinker_t *b = check_blinker(L, 1);
   b->running = false;
+  b->started = true;
   return 0;
 }
 
@@ -4112,6 +4279,7 @@ static int l_animation_blinker_stopAll(lua_State *L) {
   (void)L;
   for (int i = 0; i < s_blinker_count; i++) {
     s_blinkers[i]->running = false;
+    s_blinkers[i]->started = true;
   }
   return 0;
 }
@@ -4147,7 +4315,8 @@ static int l_font_new(lua_State *L) {
   if      (strcmp(name, "6x8") == 0)              font_id = 0;
   else if (strcmp(name, "8x12") == 0)             font_id = 1;
   else if (strcmp(name, "scientifica") == 0)      font_id = 2;
-  else if (strcmp(name, "scientifica-bold") == 0) font_id = 3;
+  else if (strcmp(name, "scientifica-bold") == 0 ||
+           strcmp(name, "scientifica_bold") == 0) font_id = 3;
   else {
     // A path has a '/' or ends in ".pfn"; anything else is a bare font name
     // that matched no built-in, and must not be blamed on the sandbox.
@@ -4196,10 +4365,10 @@ static int l_font_drawText(lua_State *L) {
   int x = lb_checkint(L, 2);
   int y = lb_checkint(L, 3);
   const char *text = luaL_checkstring(L, 4);
-  uint16_t fg = l_checkcolor(L, 5);
-  uint16_t bg = (lua_gettop(L) >= 6) ? l_checkcolor(L, 6) : COLOR_BLACK;
+  emit_fb_t e = { .fg = l_checkcolor(L, 5) };
+  read_text_bg(L, 6, &e, COLOR_BLACK, false);
   int width = 0;
-  WITH_FONT_ARG(L, 1, width = display_draw_text(x, y, text, fg, bg));
+  WITH_FONT_ARG(L, 1, width = draw_text_line(x, y, text, &e));
   lua_pushinteger(L, width);
   return 1;
 }
@@ -4232,12 +4401,12 @@ static int l_font_drawTextAligned(lua_State *L) {
   int y = lb_checkint(L, 3);
   const char *text = luaL_checkstring(L, 4);
   int alignment = luaL_checkinteger(L, 5);
-  uint16_t fg = l_checkcolor(L, 6);
-  uint16_t bg = (lua_gettop(L) >= 7) ? l_checkcolor(L, 7) : COLOR_BLACK;
+  emit_fb_t e = { .fg = l_checkcolor(L, 6) };
+  read_text_bg(L, 7, &e, COLOR_BLACK, false);
   int tw = font_text_width(font_for_arg(L, 1), text);
   if (alignment == 1) x -= tw / 2;
   else if (alignment == 2) x -= tw;
-  WITH_FONT_ARG(L, 1, display_draw_text(x, y, text, fg, bg));
+  WITH_FONT_ARG(L, 1, draw_text_line(x, y, text, &e));
   return 0;
 }
 
@@ -4251,8 +4420,8 @@ static int l_font_drawTextInRect(lua_State *L) {
   const char *text = luaL_checkstring(L, 6);
   int alignment = (int)luaL_optinteger(L, 7, 0);
   emit_fb_t e = {
-    (lua_gettop(L) >= 8) ? l_checkcolor(L, 8) : s_graphics_color,
-    (lua_gettop(L) >= 9) ? l_checkcolor(L, 9) : s_graphics_bg_color };
+    .fg = lua_isnoneornil(L, 8) ? s_graphics_color : l_checkcolor(L, 8) };
+  read_text_bg(L, 9, &e, s_graphics_bg_color, s_graphics_bg_transparent);
   const pc_font_t *f = font_for_arg(L, 1);
   WITH_FONT_ARG(L, 1, wrap_lines(f, text, rx, ry, rw, rh, alignment, emit_to_display, &e));
   return 0;
@@ -4265,8 +4434,9 @@ static int l_graphics_drawText(lua_State *L) {
   const char *text = luaL_checkstring(L, 1);
   int x = lb_checkint(L, 2);
   int y = lb_checkint(L, 3);
+  emit_fb_t e = { s_graphics_color, s_graphics_bg_color, s_graphics_bg_transparent };
   int width = 0;
-  WITH_FONT_ARG(L, 4, width = display_draw_text(x, y, text, s_graphics_color, s_graphics_bg_color));
+  WITH_FONT_ARG(L, 4, width = draw_text_line(x, y, text, &e));
   lua_pushinteger(L, width);
   return 1;
 }
@@ -4280,7 +4450,8 @@ static int l_graphics_drawTextAligned(lua_State *L) {
   int tw = font_text_width(font_for_arg(L, 5), text);
   if (alignment == 1) x -= tw / 2;
   else if (alignment == 2) x -= tw;
-  WITH_FONT_ARG(L, 5, display_draw_text(x, y, text, s_graphics_color, s_graphics_bg_color));
+  emit_fb_t e = { s_graphics_color, s_graphics_bg_color, s_graphics_bg_transparent };
+  WITH_FONT_ARG(L, 5, draw_text_line(x, y, text, &e));
   return 0;
 }
 
@@ -4292,7 +4463,7 @@ static int l_graphics_drawTextInRect(lua_State *L) {
   int rw = lb_checkint(L, 4);
   int rh = lb_checkint(L, 5);
   int alignment = (int)luaL_optinteger(L, 6, 0);
-  emit_fb_t e = { s_graphics_color, s_graphics_bg_color };
+  emit_fb_t e = { s_graphics_color, s_graphics_bg_color, s_graphics_bg_transparent };
   const pc_font_t *f = font_for_arg(L, 7);
   WITH_FONT_ARG(L, 7, wrap_lines(f, text, rx, ry, rw, rh, alignment, emit_to_display, &e));
   return 0;
@@ -4340,7 +4511,7 @@ static uint16_t *render_text_image(lua_State *L, const char *text, int w, int h,
   // and w=h=-1 made (size_t)w*h*2 wrap to a 2-byte allocation.
   if (w <= 0 || h <= 0 || w > 2048 || h > 2048)
     luaL_error(L, "text image size %dx%d out of range (1..2048)", w, h);
-  uint16_t *pixels = (uint16_t *)umm_malloc((size_t)w * h * sizeof(uint16_t));
+  uint16_t *pixels = (uint16_t *)gc_umm_malloc(L, (size_t)w * h * sizeof(uint16_t));
   if (!pixels) return NULL;
   for (int i = 0; i < w * h; i++) pixels[i] = bg;
   emit_buf_t e = { pixels, w, h, s_graphics_color, bg };
@@ -4387,6 +4558,11 @@ static const luaL_Reg l_font_lib[] = {
 void lua_bridge_graphics_init(lua_State *L) {
   sprite_list_clear(L);  // reset on each app launch (a fresh lua_State)
   s_blinker_count = 0;  // reset blinkers on each app launch
+  // Nor do drawing colours and the global key reach the next app.
+  s_graphics_color = COLOR_WHITE;
+  s_graphics_bg_color = COLOR_BLACK;
+  s_graphics_bg_transparent = false;
+  display_set_transparent_color(0);
   s_has_global_stencil = false;
   memset(s_global_stencil, 0, sizeof(s_global_stencil));
 

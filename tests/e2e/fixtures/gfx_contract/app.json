@@ -1,0 +1,8 @@
+{
+  "id": "com.test.gfx_contract",
+  "name": "gfx_contract",
+  "description": "picocalc.graphics contract cases from the SDK review",
+  "version": "1.0",
+  "author": "PicoDeck E2E",
+  "requirements": []
+}

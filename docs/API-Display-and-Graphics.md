@@ -8,7 +8,9 @@ Graphics and display functions. The display is **320×320 pixels** with RGB565 c
 
 Coordinates and sizes may be floats: they round to nearest (`fillRect(10.5, …)`
 draws at x = 11). NaN, inf and values beyond ±2^24 are argument errors.
-Colour components, brightness and effect factors clamp to their range.
+Colour components, brightness and effect factors clamp to their range. An
+optional argument can be left out or passed as `nil`, here and throughout
+`picocalc.graphics`.
 
 Every primitive clips to the clip rect (`setClipRect`, default the screen)
 once, before drawing, so huge or off-screen shapes (a line to 1e7, a
@@ -374,7 +376,7 @@ picocalc.display.fillTriangle(160, 40, 60, 280, 260, 280, picocalc.display.RED)
 ---
 
 #### `picocalc.display.fillVLineGradient(x, y0, y1, colorTop, colorBottom)`
-Draw a vertical line with gradient between two colors.
+Draw a vertical line with gradient between two colors. The gradient belongs to the whole line: where the clip rect cuts the line off, the part that shows is the same as without the clip.
 
 - **Parameters:**
   - `x` (number): X coordinate
@@ -698,7 +700,7 @@ picocalc.display.applyEffect("darken", 64)   -- heavy darken
 Brightens the framebuffer by blending each pixel toward white.
 
 - **Parameters:**
-  - `factor` (number, optional): 0 = no change, 255 = fully white. Default: 128. Cumulative, like `darken`.
+  - `factor` (number, optional): 0 = no change, 255 = fully white. Default: 128. Cumulative, like `darken`. Between the two the result truncates, so a factor just under 255 can stop short of white.
 
 ```lua
 picocalc.display.applyEffect("brighten", 80)
@@ -914,7 +916,13 @@ API version 6 (`api->version >= 6`) adds the font system to the same vtable. `PC
 
 Image loading, drawing, and state management. Images are stored in PSRAM and support BMP, JPEG, PNG, and GIF formats.
 
+**Calls that do nothing yet.** The sprite and graphics APIs are modelled on the Playdate SDK's, and some calls are kept so code written that way runs. A call marked *Accepted but not applied* below takes its arguments, may store them to read back, and changes nothing on screen.
+
+**Image memory and the collector.** An image's pixels live outside Lua's memory accounting, so dropping images does not prompt a collection. When an image allocation fails, the call runs a full collection and tries once more before it reports out of memory. A `collectgarbage()` after dropping big images still frees that memory sooner, and keeps the heap in larger pieces.
+
 ### State Functions
+
+Every app starts with white text on a black background and no global colour key: an app's `setColor`, `setBackgroundColor` and `setTransparentColor` do not reach the next one.
 
 #### `picocalc.graphics.setColor(color)`
 Sets the current drawing color for graphics operations.
@@ -926,10 +934,10 @@ Sets the current drawing color for graphics operations.
 ---
 
 #### `picocalc.graphics.setBackgroundColor(color)`
-Sets the background color for graphics operations.
+Sets the background color for graphics operations. `false` makes the background of `graphics.drawText`, `drawTextAligned` and `drawTextInRect` transparent, so text can sit over art; the last color stays in use for `graphics.clear()` and `imageWithText`.
 
 - **Parameters:**
-  - `color` (number): RGB565 color value
+  - `color` (number or false): RGB565 color value, or `false` for a transparent text background
 - **Returns:** None
 
 ---
@@ -938,7 +946,7 @@ Sets the background color for graphics operations.
 Sets the global colour key for image and sprite drawing. Pixels exactly equal to this colour are not drawn, by every image draw call (see [`img:setTransparentColor`](#imgsettransparentcolorcolor)). It is a colour key, not alpha, and applies only to images and sprites that have no key of their own.
 
 - **Parameters:**
-  - `color` (number or nil): RGB565 color value, or `nil` (or `0`) to disable the key.
+  - `color` (number or nil): RGB565 color value, or `nil`, `0` or nothing to disable the key.
 - **Returns:** None
 
 ---
@@ -951,7 +959,7 @@ Returns the current global transparent color.
 ---
 
 #### `picocalc.graphics.setStencilPattern(pattern)`
-Sets a global 8-byte stencil pattern applied to subsequent drawing.
+*Accepted but not applied:* stores a global 8-byte stencil pattern. No drawing call reads it.
 
 - **Parameters:**
   - `pattern` (table or nil): Array of 8 bytes (one per row of the 8×8 pattern), or `nil` to clear the stencil
@@ -1013,10 +1021,10 @@ picocalc.graphics.fillBorderedRect(10, 10, 50, 50, picocalc.display.BLUE, picoca
 ---
 
 #### `picocalc.graphics.drawPlayfield(playfield, ox, oy, block_size, cols, rows, grid_color)`
-Draws a 2D block grid in a single C call — ideal for falling-block games. `playfield[row][col]` holds an RGB565 color, or `0` for an empty cell. Blocks are filled; the grid lines are drawn in `grid_color`.
+Draws a 2D block grid in a single C call — ideal for falling-block games. `playfield[row][col]` holds an RGB565 color, or `nil` for an empty cell, which leaves what is already on screen showing through. A `0` is a color like any other: it draws a black block. Blocks are filled; the grid lines are drawn in `grid_color`.
 
 - **Parameters:**
-  - `playfield` (table): 2D array indexed `playfield[row][col]` (1-based); RGB565 color or `0` = empty
+  - `playfield` (table): 2D array indexed `playfield[row][col]` (1-based); RGB565 color, or `nil` = empty
   - `ox`, `oy` (number): Top-left corner of the playfield in pixels
   - `block_size` (number): Width and height of each block in pixels
   - `cols`, `rows` (number): Playfield dimensions in blocks
@@ -1026,8 +1034,7 @@ Draws a 2D block grid in a single C call — ideal for falling-block games. `pla
 ```lua
 local playfield = {}
 for r = 1, 20 do
-    playfield[r] = {}
-    for c = 1, 10 do playfield[r][c] = 0 end
+    playfield[r] = {}   -- every cell nil: empty
 end
 playfield[20][5] = picocalc.display.RED
 
@@ -1054,25 +1061,27 @@ local live = picocalc.graphics.updateDrawParticles(particles, delta / 1000)
 #### `picocalc.graphics.draw3DWireframe(verts, edges, aX, aY, aZ, scx, scy, fov, edgeColor [, vertColor [, vertSize]])`
 Rotates, projects, and draws a 3D wireframe model in a single C call. All trigonometry and matrix math runs in C — suitable for real-time use in game loops.
 
+Model coordinates are pixels: at `z = 0` a vertex lands `x, y` pixels from `scx, scy`, so a cube of size 1 is about 2 pixels across. A vertex at depth `z` is scaled by `fov / (fov + z)`, which puts the camera at `z = -fov` looking along +z, with x to the right and y down the screen.
+
 - **Parameters:**
-  - `verts` (table): Flat sequence `{x1, y1, z1, x2, y2, z2, ...}` — `n/3` vertices
+  - `verts` (table): Flat sequence `{x1, y1, z1, x2, y2, z2, ...}` — `n/3` vertices. Only the first 64 are used.
   - `edges` (table): Flat sequence `{a1, b1, a2, b2, ...}` — 1-based vertex index pairs
   - `aX`, `aY`, `aZ` (number): Rotation angles in radians, applied in X→Y→Z order
   - `scx`, `scy` (number): Screen-space center point (projection origin)
-  - `fov` (number): Field-of-view scale factor (larger = more perspective, try 200–400)
+  - `fov` (number): Distance from the camera to the plane `z = 0`, in the same units. **Larger means less perspective**: try 200–400 for a model about 100 units across, and keep it greater than the model's depth (this call does not clip against the camera).
   - `edgeColor` (number): RGB565 color for edges
-  - `vertColor` (number, optional): RGB565 color for vertex dots. Defaults to `edgeColor`.
+  - `vertColor` (number, optional): RGB565 color for vertex dots. Absent or `0`: no dots.
   - `vertSize` (number, optional): Dot size in pixels for vertex dots. Defaults to 3.
 - **Returns:** None
 
 ```lua
 local verts = {
-    -1,-1,-1,  1,-1,-1,  1,1,-1, -1,1,-1,  -- back face
-    -1,-1, 1,  1,-1, 1,  1,1, 1, -1,1, 1,  -- front face
+    -50,-50,-50,  50,-50,-50,  50,50,-50, -50,50,-50,  -- near face
+    -50,-50, 50,  50,-50, 50,  50,50, 50, -50,50, 50,  -- far face
 }
 local edges = {
-    1,2, 2,3, 3,4, 4,1,  -- back
-    5,6, 6,7, 7,8, 8,5,  -- front
+    1,2, 2,3, 3,4, 4,1,  -- near
+    5,6, 6,7, 7,8, 8,5,  -- far
     1,5, 2,6, 3,7, 4,8,  -- sides
 }
 local angle = 0
@@ -1088,23 +1097,24 @@ end
 ---
 
 #### `draw3DWireframeEx(verts, edges, angleX, angleY, angleZ, scx, scy, fov, edgeColor [, fillColor [, fillMode [, vertSize [, faces]]]])`
-Enhanced 3D wireframe with optional filled triangles. **Note:** this is a global function, not under `picocalc.*`.
+Enhanced 3D wireframe with optional filled, lit triangles, using the same coordinates and `fov` as `draw3DWireframe`. It also clips edges where they reach the camera. **Note:** this is a global function, not under `picocalc.*`.
 
 - **Parameters:**
-  - `verts` (table): Flat sequence `{x1, y1, z1, x2, y2, z2, ...}` — `n/3` vertices
+  - `verts` (table): Flat sequence `{x1, y1, z1, x2, y2, z2, ...}` — `n/3` vertices. Only the first 64 are used.
   - `edges` (table): Flat sequence `{a1, b1, a2, b2, ...}` — 1-based vertex index pairs
   - `angleX`, `angleY`, `angleZ` (number): Rotation angles in radians
   - `scx`, `scy` (number): Screen-space center point
-  - `fov` (number): Field-of-view scale factor
-  - `edgeColor` (number): RGB565 color for edges
-  - `fillColor` (number, optional): RGB565 fill color. Defaults to `0` (black).
+  - `fov` (number): Distance from the camera to the plane `z = 0` (larger means less perspective)
+  - `edgeColor` (number): RGB565 color for edges and vertex dots
+  - `fillColor` (number, optional): RGB565 base color of the faces, shaded per face. Defaults to `0`, which means no fill rather than black.
   - `fillMode` (number, optional): 0 = wireframe only, 1 = fill only, 2 = both. Defaults to `0`.
-  - `vertSize` (number, optional): Vertex dot size in pixels. Defaults to `3`.
-  - `faces` (table, optional): Flat sequence of vertex-index triples `{v1, v2, v3, ...}` defining the triangles to fill
+  - `vertSize` (number, optional): Vertex dot size in pixels, drawn in `edgeColor` with the edges; `0` for none. Defaults to `3`.
+  - `faces` (table, optional): Flat sequence of 1-based vertex-index triples `{v1, v2, v3, ...}` defining the triangles to fill. Faces are one-sided: a triangle is drawn only when its vertices run counter-clockwise on screen, so list them that way as seen from outside the model.
 - **Returns:** None
 
 ```lua
-local faces = {1,2,3, 1,3,4,  5,6,7, 5,7,8}  -- two quads as triangles
+-- The cube above. Each quad, seen from outside, runs counter-clockwise on screen.
+local faces = {4,3,2, 4,2,1,  5,6,7, 5,7,8}
 draw3DWireframeEx(verts, edges, angle, angle*0.7, 0,
     160, 160, 300, picocalc.display.WHITE, picocalc.display.BLUE, 2, 3, faces)
 ```
@@ -1113,6 +1123,16 @@ For scenes (a camera, many objects, clipping and depth order), use [picocalc.gfx
 ---
 
 ### Text Rendering
+
+There are three families of text call. They draw the same pixels; they differ in where the colors and the font come from, and in the order of their arguments.
+
+| Call | Arguments | Colors | Font | Use it for |
+|---|---|---|---|---|
+| `display.drawText` | `x, y, text, fg [, bg]` | arguments | the active font (`display.setFont`, a font id) | most text: **start here** |
+| `font:drawText`, `font:drawTextAligned`, `font:drawTextInRect` | `x, y, ...` | arguments | that font object | a font kept in a variable, aligned or word-wrapped text with explicit colors |
+| `graphics.drawText`, `graphics.drawTextAligned`, `graphics.drawTextInRect` | `text, x, y, ...` | `setColor`, `setBackgroundColor` | the active font, or a font object as the last argument | many lines in one style |
+
+A transparent background is `false` as `bg` for `display.drawText` and the `font:` methods, and `setBackgroundColor(false)` for the `graphics.` calls. Of these, only `drawTextInRect` wraps. Font ids and font objects are not interchangeable: `display.setFont` takes an id (a `FONT_*` constant or what `display.loadFont` returns), and the `font` arguments here take an object from `graphics.font.new`. Both kinds of loaded font share the same 8 slots. For a console-style grid of text, use [picocalc.terminal](API-Terminal.md) or [picocalc.chargrid](API-Chargrid.md).
 
 #### `picocalc.graphics.drawText(text, x, y [, font])`
 Draws text using the current graphics color and background color. Optionally specify a font object.
@@ -1229,10 +1249,10 @@ end
 Creates a new blank image in PSRAM, initialized to all zeros (black).
 
 - **Parameters:**
-  - `width` (number): Image width in pixels
-  - `height` (number): Image height in pixels
+  - `width` (number): Image width in pixels, 1 to 2048
+  - `height` (number): Image height in pixels, 1 to 2048
 - **Returns:** (userdata) Image object
-- **Errors:** If dimensions are invalid or memory allocation fails
+- **Errors:** `image size WxH out of range (1..2048)` for any other size, or `out of memory allocating image` if the allocation fails after a collection
 
 ```lua
 local canvas = picocalc.graphics.image.new(64, 64)
@@ -1241,15 +1261,33 @@ local canvas = picocalc.graphics.image.new(64, 64)
 ---
 
 #### `picocalc.graphics.image.load(path)`
-Loads an image from the SD card. Supports **BMP**, **JPEG**, **PNG**, and **GIF** (first frame only) formats.
+Loads an image from the SD card. Supports **BMP**, **JPEG**, **PNG**, and **GIF** (first frame only) formats. The result is RGB565: 2 bytes a pixel.
+
+Sizes: at most 2048 pixels a side, and a PNG or GIF of at most 2 million pixels. A JPEG file above 360,000 pixels loads at 1/2, 1/4 or 1/8 of its size, whichever first brings it under that, so check `img:getSize()` for a large photo.
+
+**PNG transparency is not kept.** Images have no alpha channel. A PNG's alpha is blended against black as it decodes, so a fully transparent pixel becomes black, a half-transparent one a dark shade, and black can never be keyed out, which draws a sprite exported on a transparent background as an opaque box. Transparency here is a colour key:
+
+1. Export the art on a flat colour that appears nowhere in it, such as magenta (255, 0, 255), with anti-aliased edges turned off: a blended edge pixel is not the key colour and shows as a fringe.
+2. Call [`img:setTransparentColor`](#imgsettransparentcolorcolor) with that colour after loading.
+
+With Python and Pillow, this turns a PNG with alpha into one on magenta, treating pixels under half opacity as transparent:
+
+```python
+from PIL import Image
+src = Image.open("hero.png").convert("RGBA")
+out = Image.new("RGB", src.size, (255, 0, 255))
+out.paste(src, mask=src.getchannel("A").point(lambda a: 255 if a >= 128 else 0))
+out.save("hero_keyed.png")
+```
 
 - **Parameters:**
   - `path` (string): Absolute file path
 - **Returns:** (userdata) Image object
-- **Errors:** If file not found, format unsupported, or memory allocation fails
+- **Errors:** `failed to load image: <path>` if the file is missing, is not a supported image or is too large, or if the allocation fails after a collection; `access denied` outside the sandbox
 
 ```lua
-local img = picocalc.graphics.image.load("/apps/myapp/sprite.bmp")
+local img = picocalc.graphics.image.load(APP_DIR .. "/hero_keyed.png")
+img:setTransparentColor(picocalc.display.rgb(255, 0, 255))
 ```
 
 ---
@@ -1257,12 +1295,13 @@ local img = picocalc.graphics.image.load("/apps/myapp/sprite.bmp")
 #### `picocalc.graphics.image.loadFromBuffer(data [, len])`
 Decodes an image from an in-memory buffer. The format is auto-detected from the magic bytes — BMP, JPEG, PNG, and GIF are all supported.
 
-`data` is a string or a `sys.qmiPsramAlloc` handle (`len` is checked against its size). Decoded images are capped at 2048×2048.
+Decoded images are capped at 2048×2048. Unlike `image.load`, a large JPEG is not reduced.
 
 - **Parameters:**
-  - `data` (string or userdata): Image file data
+  - `data` (string or userdata): Image file data: a string or a `sys.qmiPsramAlloc` handle
+  - `len` (number, optional): How many bytes of `data` to decode. Defaults to all of it; more than `data` holds raises `length exceeds the buffer`.
 - **Returns:** (userdata) Image object
-- **Errors:** If format unsupported or decoding fails
+- **Errors:** If fewer than 16 bytes are given, the format is unsupported, or decoding fails
 
 ```lua
 local raw = picocalc.fs.readFile("/apps/myapp/photo.jpg")
@@ -1276,7 +1315,7 @@ Reads an image's dimensions from its header only — no full decode.
 
 - **Parameters:**
   - `path` (string): Absolute file path
-- **Returns:** (table) `{width=number, height=number, format=string}`
+- **Returns:** (table) `{width=number, height=number, format=string}`. `format` is lower case: `"bmp"`, `"jpeg"`, `"png"` or `"gif"`.
 - **Errors:** If the file is not a recognized image
 
 ```lua
@@ -1322,14 +1361,16 @@ local thumb = picocalc.graphics.image.loadScaled("/apps/myapp/photo.jpg", 64, 64
 ---
 
 #### `picocalc.graphics.image.preload(path)`
-Starts an asynchronous decode of an image on Core 1. Only one preload can be in flight at a time. Poll for completion with `pollPreload()`.
+Starts an asynchronous decode of an image on Core 1. Poll for completion with `pollPreload()`.
+
+Only one preload can be in flight. Calling `preload` while one is decoding **cancels that one** and returns `false` without starting the new one, so nothing is pending any more: try again on a later frame, until it returns `true`. Starting one also drops a finished image nobody has polled for.
 
 - **Parameters:**
   - `path` (string): Absolute file path
 - **Returns:** (boolean) `true` if the preload was started
 
 ```lua
-picocalc.graphics.image.preload("/apps/myapp/level2.png")
+local started = picocalc.graphics.image.preload(APP_DIR .. "/level2.png")
 ```
 
 ---
@@ -1337,16 +1378,18 @@ picocalc.graphics.image.preload("/apps/myapp/level2.png")
 #### `picocalc.graphics.image.pollPreload()`
 Checks the state of the pending preload.
 
-- **Returns:** (userdata or nil, boolean) `image, ready` — `ready` is `true` once the preload has finished (successfully or not); `image` is the decoded image, or `nil` while still decoding or on failure
+- **Returns:** (userdata or nil, boolean) `image, ready` — `ready` is `true` once, when the preload has finished (successfully or not); `image` is the decoded image, or `nil` while still decoding or on failure
+
+With nothing pending, after a delivery, a `cancelPreload` or a `preload` that returned `false`, this returns `nil, false` for ever, so only wait for a preload that returned `true`. The decode runs on Core 1, which cannot run the Lua collector: if a preload fails for lack of memory, call `collectgarbage()` and preload again, or use `image.load`, which collects by itself.
 
 ```lua
-while true do
-    local img, ready = picocalc.graphics.image.pollPreload()
-    if ready then
-        if img then levelArt = img end
-        break
-    end
-    picocalc.sys.sleep(10)
+local levelArt
+if picocalc.graphics.image.preload(APP_DIR .. "/level2.png") then
+    repeat
+        local img, ready = picocalc.graphics.image.pollPreload()
+        levelArt = img
+        picocalc.sys.sleep(10)
+    until ready
 end
 ```
 
@@ -1362,7 +1405,7 @@ Cancels the pending preload.
 #### `picocalc.graphics.image.getSupportedFormats()`
 Returns a table of supported image format names.
 
-- **Returns:** (table) Array of format strings (e.g., `{"BMP", "JPEG", "PNG", "GIF"}`)
+- **Returns:** (table) Array of format strings: `{"BMP", "JPEG", "PNG", "GIF"}` (upper case, unlike `getInfo`'s `format`)
 
 ---
 
@@ -1512,7 +1555,7 @@ Sets this image's colour key. Pixels that exactly equal `color` are skipped when
 
 `0` (or `nil`) means no key, so black (`0x0000`) can never be keyed. An image with no key falls back to the global key set with [`graphics.setTransparentColor`](#picocalcgraphicssettransparentcolorcolor); an image key overrides it.
 
-The key is honoured by every image draw call: `img:draw`, `drawAnchored`, `drawTiled`, `drawScaled`, `drawScaledNN` and `drawStretched`. Sprites have their own key (`sprite:setTransparentColor`) with the same fall-back to the global one. `applyEffect("blend", img)` ignores it.
+The key is honoured by every image draw call: `img:draw`, `drawAnchored`, `drawTiled`, `drawScaled`, `drawScaledNN` and `drawStretched`, and by what draws an image for you: `spritesheet:drawFrame`, `tilemap:draw` (the tileset's key) and `loop:draw` (each frame's key). Sprites have their own key (`sprite:setTransparentColor`) with the same fall-back to the global one, and do not read the image's. `applyEffect("blend", img)` ignores it.
 
 - **Parameters:**
   - `color` (number or nil): RGB565 value, or `nil`/`0` to clear
@@ -1631,6 +1674,12 @@ Sprite system for game and graphics applications. Sprites are 2D objects that ca
 
 **Object lifetimes:** a sprite added with `add()` stays alive while displayed (no need to keep a reference); `remove()`/`removeSprites()`/`removeAll()` release it. `add()` is idempotent. A sprite keeps its image, stencil and tilemap alive; a spritesheet its image; a tilemap its tileset; an animation loop its frames. Sprite `width`/`height` are bounds only; drawing uses the image's own size.
 
+**Limits:** at most 256 sprites in the manager at once (`add()` raises `max sprites reached`, and walls and empty collision sprites count). A sprite that is not added costs no slot and can still be drawn with `sprite:draw()`.
+
+**Collision box:** every collision and query call tests a sprite's collide rect (`setCollideRect`) or, if it has none, the box it draws in: its size (or source rectangle) times its scale, at its position. A sprite with no image, size or collide rect has an empty box.
+
+**Rectangles and points as tables:** wherever a call takes a table, `{x = 1, y = 2, w = 3, h = 4}` and `{1, 2, 3, 4}` mean the same (and `{x, y}` for points, `{x1, y1, x2, y2}` for lines). A named field wins over the same array slot, and a field that is not a number raises an error naming it.
+
 ### Constructor Functions
 
 #### `picocalc.graphics.sprite.new([image])`
@@ -1648,15 +1697,18 @@ local emptySprite = picocalc.graphics.sprite.new()
 ---
 
 #### `picocalc.graphics.sprite.update()`
-Updates and draws all sprites in the manager. Call once per frame.
+Draws all sprites in the manager that are visible and have updates enabled, in z-index order (see [`setZIndex`](#spritesetzindexz)), lowest first. Call once per frame, between clearing and flushing: it does neither. It calls no sprite callback, and it draws at raw screen coordinates, so a camera's offset does not apply: a scrolling game moves its sprites itself or draws them with `sprite:draw(x, y)`.
 
 - **Returns:** None
 
 ```lua
+local sprite1 = picocalc.graphics.sprite.new(picocalc.graphics.image.new(16, 16))
+sprite1:add()
 while true do
-    -- Update sprite positions
-    sprite1:moveBy(1, 0)
-    picocalc.graphics.sprite.update()
+    picocalc.display.clear(picocalc.display.BLUE)
+    sprite1:moveBy(1, 0)                 -- update sprite positions
+    picocalc.graphics.sprite.update()    -- draw them
+    picocalc.display.flush()
 end
 ```
 
@@ -1674,7 +1726,7 @@ local count = picocalc.graphics.sprite.spriteCount()
 ---
 
 #### `picocalc.graphics.sprite.getAllSprites()`
-Returns a table containing all sprites in the manager.
+Returns a table containing all sprites in the manager, in draw order.
 
 - **Returns:** (table) Array of sprite objects
 
@@ -1728,7 +1780,7 @@ end)
 
 #### `picocalc.graphics.sprite.querySpritesAtPoint(x, y)`  
 #### `picocalc.graphics.sprite.querySpritesAtPoint(point)`
-Queries all sprites at a specific point.
+Queries all sprites whose [collision box](#picocalcgraphicssprite) contains a point. This and the other `query` calls look at every sprite in the manager, whatever its `setCollisionsEnabled`, `setVisible` and group settings.
 
 - **Parameters:**
   - `x`, `y` (number): Coordinates, OR
@@ -1743,7 +1795,7 @@ local hits = picocalc.graphics.sprite.querySpritesAtPoint(160, 100)
 
 #### `picocalc.graphics.sprite.querySpritesInRect(x, y, w, h)`
 #### `picocalc.graphics.sprite.querySpritesInRect(rect)`
-Queries all sprites within a rectangular area.
+Queries all sprites whose [collision box](#picocalcgraphicssprite) overlaps a rectangle.
 
 - **Parameters:**
   - `x`, `y`, `w`, `h` (number), OR
@@ -1757,11 +1809,12 @@ local hits = picocalc.graphics.sprite.querySpritesInRect(0, 0, 100, 100)
 ---
 
 #### `picocalc.graphics.sprite.querySpritesAlongLine(x1, y1, x2, y2)`
-Queries all sprites that intersect a line segment.
+Queries all sprites whose [collision box](#picocalcgraphicssprite) a line segment touches.
 
 - **Parameters:**
   - `x1`, `y1` (number): Start point
   - `x2`, `y2` (number): End point
+  - (or one table `{x1, y1, x2, y2}`)
 - **Returns:** (table) Array of sprite objects
 
 ```lua
@@ -1771,20 +1824,25 @@ local hits = picocalc.graphics.sprite.querySpritesAlongLine(0, 0, 320, 320)
 ---
 
 #### `picocalc.graphics.sprite.querySpriteInfoAlongLine(x1, y1, x2, y2)`
-Queries all sprites that intersect a line segment, returning detailed intersection info.
+Queries all sprites whose collision box a line segment crosses, returning where it first crosses each. A segment wholly inside a box touches no edge, so it counts for `querySpritesAlongLine` but not here.
 
 - **Parameters:**
   - `x1`, `y1` (number): Start point
   - `x2`, `y2` (number): End point
-- **Returns:** (table) Array of intersection info tables: `{sprite, x, y}`
+  - (or one table `{x1, y1, x2, y2}`)
+- **Returns:** (table) Array of tables with the fields `sprite`, `x`, `y`
 
+---
+
+### Sprite Methods
 
 All methods are called on sprite objects with colon syntax.
 
 #### `sprite:add()` / `sprite:addSprite()`
-Adds the sprite to the global sprite manager.
+Adds the sprite to the global sprite manager. Also available as `picocalc.graphics.sprite.addSprite(sprite)`.
 
 - **Returns:** None
+- **Errors:** `max sprites reached` when the manager is full
 
 ```lua
 mySprite:add()
@@ -1793,7 +1851,7 @@ mySprite:add()
 ---
 
 #### `sprite:remove()` / `sprite:removeSprite()`
-Removes the sprite from the global sprite manager.
+Removes the sprite from the global sprite manager. Also available as `picocalc.graphics.sprite.removeSprite(sprite)`.
 
 - **Returns:** None
 
@@ -1804,7 +1862,7 @@ mySprite:remove()
 ---
 
 #### `sprite:draw([x, y])`
-Draws the sprite to the framebuffer immediately (not via the manager).
+Draws the sprite (its image, or its tilemap if it has one) to the framebuffer immediately, not via the manager. A hidden sprite draws nothing.
 
 - **Parameters:**
   - `x`, `y` (number, optional): Position to draw. Defaults to sprite's stored position.
@@ -1818,7 +1876,7 @@ mySprite:draw(50, 100)  -- Draw at custom position
 ---
 
 #### `sprite:update()`
-Updates and draws a single sprite (alternative to using the manager).
+Draws a single sprite at its stored position, if it is visible and has updates enabled. It calls no callback.
 
 - **Returns:** None
 
@@ -1835,7 +1893,7 @@ Sets the sprite's image.
   - `image` (userdata): Image object
   - `flip` (boolean, optional): Enable horizontal flip
   - `scale` (number, optional): Scale factor
-  - `yscale` (number, optional): Y scale factor (only applied when given; it does not default to `scale`, unlike `sprite:setScale`)
+  - `yscale` (number, optional): Stored and returned by `getScale`, but drawing uses one factor: see [`setScale`](#spritesetscalescale--yscale)
 - **Returns:** None
 
 ```lua
@@ -1889,7 +1947,7 @@ local x, y = sprite:getPosition()
 ---
 
 #### `sprite:setZIndex(z)`
-Sets the sprite's Z-index for draw ordering.
+Sets the sprite's Z-index, which orders `graphics.sprite.update()`: a lower z draws first, so a higher z draws on top. Sprites of equal z draw in the order they took that z, by `add()` or by this call, so a sprite that never sets one (they start at 0) draws in the order added. Setting the z a sprite already has does not move it.
 
 - **Parameters:**
   - `z` (number): Z-order value
@@ -1976,16 +2034,15 @@ Gets the sprite's dimensions.
 ---
 
 #### `sprite:setScale(scale [, yScale])`
-Sets the sprite's scale factor(s).
+Sets the sprite's scale. Sprites scale uniformly: both axes draw at `scale`. For a non-uniform size, draw the image with [`img:drawStretched`](#imagedrawstretchedx-y-w-h--srcrect).
 
 - **Parameters:**
-  - `scale` (number): Scale factor
-  - `yScale` (number, optional): Y scale (defaults to scale)
+  - `scale` (number): Scale factor. One that is not above 0, or takes the larger image edge past 4096 px, draws nothing.
+  - `yScale` (number, optional): Stored and returned by `getScale`, but not applied (defaults to `scale`)
 - **Returns:** None
 
 ```lua
-sprite:setScale(2.0)     -- Uniform 2x
-sprite:setScale(2.0, 1.5)  -- Non-uniform
+sprite:setScale(2.0)     -- 2x
 ```
 
 ---
@@ -1998,7 +2055,7 @@ Gets the sprite's scale factors.
 ---
 
 #### `sprite:setScaleNN(scale)`
-Sets an integer scale factor using nearest-neighbor interpolation. Sharp for pixel art.
+Sets an integer scale factor using nearest-neighbor interpolation. Sharp for pixel art. Above 1 it takes the place of `setScale`'s factor. Setting `sprite.scale_nn` does the same.
 
 - **Parameters:**
   - `scale` (number): Positive integer scale (1, 2, 3...)
@@ -2019,9 +2076,9 @@ Sets a per-sprite transparent color, overriding the global transparent color.
 Sets the sprite's rotation angle in radians.
 
 - **Parameters:**
-  - `angle` (number): Rotation in radians
-  - `scale` (number, optional): Scale X
-  - `yScale` (number, optional): Scale Y
+  - `angle` (number): Rotation in radians, clockwise, about the center of the drawn image
+  - `scale` (number, optional): Sets the scale, as `setScale` does
+  - `yScale` (number, optional): Stored, not applied, as in `setScale`
 - **Returns:** None
 
 ```lua
@@ -2087,7 +2144,7 @@ Checks if updates are enabled.
 ---
 
 #### `sprite:setAlwaysRedraw(flag)`
-Enables or disables forced redraw for this sprite every frame, even if it hasn't moved.
+*Accepted but not applied:* stores a flag that `getAlwaysRedraw` returns. `graphics.sprite.update()` redraws every sprite anyway.
 
 - **Parameters:**
   - `flag` (boolean)
@@ -2101,19 +2158,19 @@ Enables or disables forced redraw for this sprite every frame, even if it hasn't
 ---
 
 #### `sprite:markDirty()`
-Explicitly marks the sprite as needing to be redrawn in the next update. Accepted but not applied (no effect yet).
+*Accepted but not applied:* `graphics.sprite.update()` redraws every sprite anyway.
 
 - **Returns:** None
 
 ---
 
 #### `sprite:addDirtyRect(x, y, width, height)`
-Adds a dirty rectangle for partial redrawing. Accepted but not applied (no effect yet).
+*Accepted but not applied:* there is no partial redraw.
 
 ---
 
 #### `sprite:setRedrawsOnImageChange(flag)`
-Sets whether the sprite automatically redraws when its image is changed.
+*Accepted but not applied:* stores a flag nothing reads. A changed image shows at the next draw.
 
 - **Parameters:**
   - `flag` (boolean)
@@ -2142,7 +2199,7 @@ Gets the sprite's tag.
 ---
 
 #### `sprite:setImageFlip(flip)`
-Sets horizontal flip.
+Sets horizontal flip. A flipped sprite that is also scaled or rotated draws through a temporary mirrored copy of its pixels each time, so it costs more than either alone.
 
 - **Parameters:**
   - `flip` (boolean): Flip enabled
@@ -2158,7 +2215,7 @@ Gets horizontal flip state.
 ---
 
 #### `sprite:setIgnoresDrawOffset(flag)`
-Sets whether the sprite ignores global draw offsets. Accepted but not applied (no effect yet).
+*Accepted but not applied:* there is no global draw offset.
 
 - **Parameters:**
   - `flag` (boolean): Ignore offset
@@ -2167,11 +2224,11 @@ Sets whether the sprite ignores global draw offsets. Accepted but not applied (n
 ---
 
 #### `sprite:setBounds(x, y, w, h)` / `sprite:setBounds(rect)`
-Sets the sprite's bounding box for culling.
+*Accepted but not applied:* stores a rectangle that `getBounds` and `getBoundsRect` return. It does not move, clip or cull the sprite.
 
 - **Parameters:**
   - `x`, `y`, `w`, `h` (number), OR
-  - `rect` (table): `{x, y, w, h}`
+  - `rect` (table): `{x, y, w, h}`, which `getBoundsRect` returns
 - **Returns:** None
 
 ---
@@ -2191,7 +2248,7 @@ Gets the sprite's bounding box as a table.
 ---
 
 #### `sprite:setOpaque(flag)`
-Sets whether the sprite is opaque (affects collision detection).
+*Accepted but not applied:* stores a flag that `isOpaque` returns. Collisions do not read it.
 
 - **Parameters:**
   - `flag` (boolean): Opaque state
@@ -2207,7 +2264,7 @@ Gets the sprite's opaque state.
 ---
 
 #### `sprite:setCollisionsEnabled(flag)`
-Enables collision detection for this sprite.
+Enables collision detection for this sprite: `moveWithCollisions` and the `overlappingSprites` calls. Off by default, except for wall and empty collision sprites. The `query` calls and `checkCollisions` do not need it.
 
 - **Parameters:**
   - `flag` (boolean): Enable collisions
@@ -2223,7 +2280,7 @@ Checks if collisions are enabled.
 ---
 
 #### `sprite:setCollideRect(x, y, w, h)` / `sprite:setCollideRect(rect)`
-Sets the sprite's collision rectangle.
+Sets the sprite's collision rectangle, relative to its position. In a table, a missing `w` or `h` takes the sprite's size.
 
 - **Parameters:**
   - `x`, `y`, `w`, `h` (number), OR
@@ -2233,14 +2290,14 @@ Sets the sprite's collision rectangle.
 ---
 
 #### `sprite:getCollideRect()`
-Gets the sprite's collision rectangle.
+Gets the sprite's collision rectangle as set: `0, 0, 0, 0` until one is, while the sprite collides at its [drawn box](#picocalcgraphicssprite).
 
 - **Returns:** (number, number, number, number) `x, y, w, h`
 
 ---
 
 #### `sprite:getCollideBounds()`
-Gets the absolute collision bounds (sprite position + collide rect).
+Gets the absolute collision box: the collide rect, or the drawn box if there is none, at the sprite's position.
 
 - **Returns:** (number, number, number, number) `x, y, w, h`
 
@@ -2254,7 +2311,7 @@ Resets the collision rectangle to the full sprite size.
 ---
 
 #### `sprite:setClipRect(x, y, w, h)` / `sprite:setClipRect(rect)`
-Sets a clipping rectangle for the sprite, relative to the screen. The rectangle is stored but not applied when the sprite is drawn.
+*Accepted but not applied:* stores a clipping rectangle. For a clip that works, use `display.setClipRect` around the draw.
 
 - **Parameters:**
   - `x`, `y`, `w`, `h` (number), OR
@@ -2264,14 +2321,14 @@ Sets a clipping rectangle for the sprite, relative to the screen. The rectangle 
 ---
 
 #### `sprite:clearClipRect()`
-Clears the clipping rectangle.
+*Accepted but not applied:* clears the stored rectangle.
 
 - **Returns:** None
 
 ---
 
 #### `picocalc.graphics.sprite.setClipRectsInRange(x, y, w, h, startZ, endZ)` / `picocalc.graphics.sprite.setClipRectsInRange(rect, startZ, endZ)`
-Sets the same clipping rectangle on every sprite whose z-index is between `startZ` and `endZ` (inclusive). Like `sprite:setClipRect()`, the rectangle is stored but not applied when drawing.
+*Accepted but not applied:* stores the same clipping rectangle on every sprite whose z-index is between `startZ` and `endZ` (inclusive), as `sprite:setClipRect()` does.
 
 - **Parameters:**
   - `x`, `y`, `w`, `h` (number), OR
@@ -2282,7 +2339,7 @@ Sets the same clipping rectangle on every sprite whose z-index is between `start
 ---
 
 #### `picocalc.graphics.sprite.clearClipRectsInRange(startZ, endZ)`
-Clears the clipping rectangle of every sprite whose z-index is between `startZ` and `endZ` (inclusive).
+*Accepted but not applied:* clears the stored rectangle of every sprite whose z-index is between `startZ` and `endZ` (inclusive).
 
 - **Parameters:**
   - `startZ`, `endZ` (number): Z-index range, inclusive
@@ -2291,7 +2348,7 @@ Clears the clipping rectangle of every sprite whose z-index is between `startZ` 
 ---
 
 #### `sprite:overlappingSprites()`
-Gets all sprites that overlap with this sprite.
+Gets the sprites in the manager whose collision box overlaps this one's. Collisions must be enabled on **both** sprites (`setCollisionsEnabled(true)`, off by default), or the answer is empty. Group masks do not filter it: only `moveWithCollisions` reads them.
 
 - **Returns:** (table) Array of overlapping sprites
 
@@ -2302,14 +2359,14 @@ local hits = mySprite:overlappingSprites()
 ---
 
 #### `sprite:allOverlappingSprites()`
-Gets all sprite pairs that overlap each other.
+Gets all pairs of sprites in the manager that overlap, under the same conditions as `overlappingSprites`. The sprite it is called on plays no part.
 
 - **Returns:** (table) Array of `{sprite1, sprite2}` pairs
 
 ---
 
 #### `sprite:setGroups(groups)`
-Sets collision group membership.
+Sets the groups this sprite belongs to. `moveWithCollisions` passes through a sprite when the mover's collides-with mask and the other's group mask are both non-zero and share no bit; a mask of 0 (the default) collides with everything.
 
 - **Parameters:**
   - `groups` (number): Bitmask of groups
@@ -2318,7 +2375,7 @@ Sets collision group membership.
 ---
 
 #### `sprite:setCollidesWithGroups(groups)`
-Sets which collision groups this sprite collides with.
+Sets which collision groups this sprite collides with in `moveWithCollisions` (see `setGroups`).
 
 - **Parameters:**
   - `groups` (number): Bitmask
@@ -2327,12 +2384,12 @@ Sets which collision groups this sprite collides with.
 ---
 
 #### `sprite:setGroupMask(mask)` / `sprite:getGroupMask()`
-Sets/gets the group mask.
+Sets/gets the group mask (`setGroupMask` is `setGroups`).
 
 ---
 
 #### `sprite:setCollidesWithGroupsMask(mask)` / `sprite:getCollidesWithGroupsMask()`
-Sets/gets the collision-with-groups mask.
+Sets/gets the collides-with mask (`setCollidesWithGroupsMask` is `setCollidesWithGroups`).
 
 ---
 
@@ -2342,7 +2399,7 @@ Resets the group masks to 0.
 ---
 
 #### `sprite:checkCollisions(x, y)` / `sprite:checkCollisions(point)`
-Checks if a point collides with the sprite's collision rect.
+Checks if a point lies in the sprite's [collision box](#picocalcgraphicssprite).
 
 - **Parameters:**
   - `x`, `y` (number), OR
@@ -2352,31 +2409,43 @@ Checks if a point collides with the sprite's collision rect.
 ---
 
 #### `sprite:moveWithCollisions(goalX, goalY)`
-Moves the sprite toward a goal position, sliding along the collision rects of other sprites. Requires collisions to be enabled (`setCollisionsEnabled(true)`).
+Moves the sprite toward a goal position, X first and then Y, stopping at the first sprite in the way on each axis and carrying on along the other, so it slides along walls. The whole path is checked, so a fast sprite cannot pass through a thin wall. Only other sprites in the manager with collisions enabled, and not excluded by the [group masks](#spritesetgroupsgroups), stop it. A sprite with collisions off just moves to the goal.
+
+A sprite that starts inside another can move out of it, but stays put if the goal is still inside it.
+
+Every hit stops the sprite: there is no way to choose another response. For a trigger zone the player walks through, leave the zone out of the player's collides-with mask and test it with `overlappingSprites`.
 
 - **Parameters:**
-  - `goalX`, `goalY` (number): Desired position
-- **Returns:** (number, number, table) `actualX, actualY, collisions` — the position reached, plus a table of collision records `{sprite, other, type, x, y, normal = {x, y}, touch}`
+  - `goalX`, `goalY` (number): Desired position (or one table `{x, y}`)
+- **Returns:** (number, number, table) `actualX, actualY, collisions` — the position reached, plus an array with one record per axis that was stopped:
+  - `sprite`: this sprite
+  - `other`: the sprite it hit
+  - `type`: the integer `1`, meaning a slide
+  - `normal`: `{x, y}`, pointing away from what was hit: `{x = -1, y = 0}` for a move to the right
+  - `touch`: `{x, y}`, the sprite's position when it stopped
 
 ```lua
+local sprite = picocalc.graphics.sprite.new(picocalc.graphics.image.new(16, 16))
+sprite:add()
+picocalc.graphics.sprite.addEmptyCollisionSprite(100, 0, 8, 320)   -- a wall
 sprite:setCollisionsEnabled(true)
-local x, y, hits = sprite:moveWithCollisions(goalX, goalY)
+local x, y, hits = sprite:moveWithCollisions(300, 40)              -- stops at x = 84
 for i, c in ipairs(hits) do
-    print("bumped", c.type, c.normal.x, c.normal.y)
+    print("bumped", c.touch.x, c.touch.y, c.normal.x, c.normal.y)
 end
 ```
 
 ---
 
 #### `sprite:collisionResponse()`
-Returns the sprite's collision response type.
+Always returns `"slide"`. `moveWithCollisions` does not call it, and it cannot be overridden, since assigning to a sprite field it does not know is ignored (see [Sprite Properties](#sprite-properties)).
 
-- **Returns:** (string) Response type (default `"slide"`)
+- **Returns:** (string) `"slide"`
 
 ---
 
 #### `sprite:setStencilImage(image)`
-Sets a stencil image for the sprite. Accepted but not applied (no effect yet).
+*Accepted but not applied:* keeps a stencil image for the sprite.
 
 - **Parameters:**
   - `image` (userdata): Image object to use as the stencil
@@ -2385,28 +2454,37 @@ Sets a stencil image for the sprite. Accepted but not applied (no effect yet).
 ---
 
 #### `sprite:clearStencil()`
-Removes the sprite's stencil image and stencil pattern. Since stencils are not applied when drawing, this has no visible effect.
+*Accepted but not applied:* drops the sprite's stencil image and stencil pattern.
 
 - **Returns:** None
 
 ---
 
+#### `sprite:setStencilPattern(level)`
+*Accepted but not applied:* stores an 8×8 dither pattern for a level from 0 to 1.
+
+- **Parameters:**
+  - `level` (number): Coverage, clamped to 0 to 1
+- **Returns:** None
+
+---
+
 #### `sprite:setImageDrawMode(mode)`
-Accepted for compatibility; has no effect. Arguments are ignored.
+*Accepted but not applied:* the arguments are ignored.
 
 - **Returns:** None
 
 ---
 
 #### `sprite:setBackgroundDrawingCallback(callback)`
-Accepted for compatibility; has no effect. The callback is ignored and never called.
+*Accepted but not applied:* the callback is ignored and never called.
 
 - **Returns:** None
 
 ---
 
 #### `sprite:alphaCollision(other)`
-Pixel-perfect overlap test between two sprites: true only if at least one pixel that is not the transparent color in this sprite lies on a non-transparent pixel of `other`. Each sprite's own transparent color is used, falling back to the display's. Flips are honoured. Falls back to a plain bounding-box overlap test when either sprite has no image, is rotated, or is scaled (other than integer nearest-neighbour scaling) or has a vertical scale other than 1.
+Pixel-perfect overlap test between two sprites: true only if at least one pixel that is not the transparent color in this sprite lies on a non-transparent pixel of `other`, as drawn: nearest-neighbour scaling and flips are honoured. Each sprite's own transparent color is used, falling back to the global one. Falls back to a plain overlap test of the drawn boxes when either sprite has no image, is rotated, or has a scale from `setScale` other than 1.
 
 - **Parameters:**
   - `other` (userdata): The other sprite
@@ -2421,7 +2499,7 @@ end
 ---
 
 #### `sprite:setTilemap(tilemap)`
-Assigns a tilemap to this sprite. When set, the sprite renders the tilemap instead of a single image. The sprite's position acts as the tilemap scroll offset. Pass `nil` to clear.
+Assigns a tilemap to this sprite. When set, the sprite renders the tilemap instead of a single image, through `graphics.sprite.update()`, `sprite:draw()` and `sprite:update()`. The sprite's position is where the map's top-left corner draws, which is the opposite sign to [`tilemap:draw(scrollX, scrollY)`](#tilemapdrawscrollx--scrolly): `moveTo(-8, 0)` shows what `tilemap:draw(8, 0)` shows. Pass `nil` to clear.
 
 - **Parameters:**
   - `tilemap` (userdata or nil): Tilemap object, or `nil` to clear
@@ -2439,7 +2517,7 @@ bgSprite:add()
 ---
 
 #### `picocalc.graphics.sprite.addEmptyCollisionSprite(x, y, w, h)` / `picocalc.graphics.sprite.addEmptyCollisionSprite(rect)`
-Creates an invisible sprite with no image, positioned at `x, y` with a `w` by `h` collision rectangle, collisions enabled, and adds it to the sprite list. Useful for walls and trigger zones.
+Creates an invisible sprite with no image, positioned at `x, y` with a `w` by `h` collision rectangle, collisions enabled, and adds it to the sprite list. Useful for walls and, with group masks (see [`moveWithCollisions`](#spritemovewithcollisionsgoalx-goaly)), trigger zones.
 
 - **Parameters:**
   - `x`, `y`, `w`, `h` (number), OR
@@ -2454,19 +2532,24 @@ local zone = picocalc.graphics.sprite.addEmptyCollisionSprite(0, 200, 320, 8)
 ---
 
 #### `picocalc.graphics.sprite.addWallSprites(tilemap, wallIDs [, xOffset [, yOffset]])`
-Creates invisible collision sprites for each tile whose index appears in the `wallIDs` table. Useful for tile-based collision detection with the sprite system.
+Creates one invisible collision sprite for each tile whose index appears in the `wallIDs` table. Useful for tile-based collision detection with the sprite system.
+
+Each wall takes a slot of the manager's 256, and a map can hold far more wall tiles than that. Walls that do not fit are not made and raise no error, which leaves holes in the level, so check the second return value. Afterwards, `add()` raises if the manager is full.
 
 - **Parameters:**
   - `tilemap` (userdata): Tilemap object
   - `wallIDs` (table): Array of tile indices that are solid/collidable
   - `xOffset` (number, optional): X offset applied to all wall sprite positions
   - `yOffset` (number, optional): Y offset applied to all wall sprite positions
-- **Returns:** (number) Count of wall sprites created
+- **Returns:** (number, number) `count, skipped`: wall sprites created, and wall tiles left out because the manager was full
 
 ```lua
+local tilemap = picocalc.graphics.tilemap.new(picocalc.graphics.image.new(16, 16), 16, 16)
+tilemap:setSize(4, 4)
+tilemap:setTileAtPosition(0, 0, 1)
 -- Create wall collision sprites for tile indices 1, 2, and 5
-local wallCount = picocalc.graphics.sprite.addWallSprites(tilemap, {1, 2, 5})
-print("Created " .. wallCount .. " wall sprites")
+local wallCount, skipped = picocalc.graphics.sprite.addWallSprites(tilemap, {1, 2, 5})
+print("Created " .. wallCount .. " wall sprites, " .. skipped .. " did not fit")
 ```
 
 ---
@@ -2496,6 +2579,7 @@ label:add()
 Sprites support direct property access via Lua:
 
 ```lua
+local sprite = picocalc.graphics.sprite.new()
 sprite.x = 100      -- Set X position
 sprite.y = 50      -- Set Y position
 sprite.width = 64  -- Set width
@@ -2503,10 +2587,18 @@ sprite.height = 64 -- Set height
 sprite.z = 10      -- Set Z-index
 sprite.visible = true   -- Show/hide
 sprite.scale = 2.0      -- Set uniform scale
-sprite.scale_nn = 1     -- Get/set integer NN scale
+sprite.scale_nn = 2     -- Set integer NN scale, as setScaleNN does
 sprite.rotation = 0.5   -- Set rotation (radians)
 sprite.tag = 123        -- Set tag
-sprite.image            -- Get image (userdata or nil)
+local img = sprite.image   -- Read-only: the image (userdata or nil)
+```
+
+These are all the fields a sprite has. **Writing any other field is silently ignored**: `sprite.health = 3` raises no error and `sprite.health` then reads `nil`, a mistyped name fails the same way, and `sprite.image = img` does nothing (use `setImage`). Keep game state in your own table, keyed by the sprite if you need to get back to it: enumeration and collision calls return the same sprite objects.
+
+```lua
+local stats = setmetatable({}, { __mode = "k" })   -- entries go when the sprite does
+local enemy = picocalc.graphics.sprite.new()
+stats[enemy] = { health = 3 }
 ```
 
 ---
@@ -2531,7 +2623,7 @@ local ss = picocalc.graphics.spritesheet.new(myImage)
 ---
 
 #### `picocalc.graphics.spritesheet.newGrid(image, cols, rows, frameWidth, frameHeight)`
-Creates a spritesheet from a grid layout. Automatically calculates frame positions.
+Creates a spritesheet from a grid layout. Automatically calculates frame positions. A sheet holds at most 64 frames: past that, the rest of the grid is left out without an error.
 
 - **Parameters:**
   - `image` (userdata): Image object containing the spritesheet
@@ -2557,6 +2649,7 @@ Manually adds a frame to the spritesheet.
   - `x`, `y` (number): Top-left position of frame in the image
   - `width`, `height` (number): Dimensions of the frame
 - **Returns:** (number) Frame index (0-based)
+- **Errors:** `max frames reached` past 64 frames
 
 ```lua
 ss:addFrame(0, 0, 32, 32)   -- Frame 0
@@ -2598,7 +2691,7 @@ Returns the base image.
 ---
 
 #### `spritesheet:drawFrame(frameIndex, x, y [, flip])`
-Draws a specific frame to the screen.
+Draws a specific frame to the screen, honouring the sheet image's colour key.
 
 - **Parameters:**
   - `frameIndex` (number): Which frame to draw
@@ -2654,7 +2747,7 @@ Creates an animation loop.
 ### Loop Methods
 
 - `loop:update()` advances to the next frame if the interval has elapsed. Does nothing if the loop is not valid. Without looping, it stays on the last frame.
-- `loop:draw(x, y [, flip])` draws the current frame at `x, y`, horizontally flipped if `flip` is true. Does nothing if the loop is not valid.
+- `loop:draw(x, y [, flip])` draws the current frame at `x, y`, horizontally flipped if `flip` is true, honouring that image's colour key. Does nothing if the loop is not valid.
 - `loop:image()` returns the current frame's image, or nothing if the loop is not valid.
 - `loop:reset()` goes back to frame 0 and restarts the interval timer.
 - `loop:isValid()` returns `true` if the loop has at least one frame.
@@ -2664,10 +2757,14 @@ Creates an animation loop.
 - `loop:setLooping(flag)` sets whether the loop wraps after the last frame.
 
 ```lua
-local loop = picocalc.graphics.animation.loop.new(80, {img1, img2, img3})
+local img1 = picocalc.graphics.image.new(16, 16)
+local img2 = picocalc.graphics.image.new(16, 16)
+local loop = picocalc.graphics.animation.loop.new(80, {img1, img2})
 while true do
+    picocalc.display.clear(picocalc.display.BLUE)
     loop:update()
     loop:draw(100, 100)
+    picocalc.display.flush()
 end
 ```
 
@@ -2683,13 +2780,13 @@ Creates a blinker. It does not run until started.
 - **Parameters:**
   - `onMs`, `offMs` (number, optional): Durations of the on and off phases in milliseconds (default 500 each)
   - `loop` (boolean, optional): Repeat forever (default `true`)
-  - `cycles` (number, optional): With `loop` false, the number of on/off cycles to run before stopping
+  - `cycles` (number, optional): With `loop` false, the number of on/off cycles to run before stopping. With none, the blinker runs until stopped, as a looping one does.
   - `startOff` (boolean, optional): Intended to start in the off state; the blinker is reported on at first regardless
 - **Returns:** (userdata) Blinker object
 
 ### Blinker Methods
 
-- `blinker:update()` returns the current state (`true` = on). The first call starts the blinker. Returns `false` once a non-looping blinker has finished or been stopped.
+- `blinker:update()` returns the current state (`true` = on). The first call starts a blinker that has never been started or stopped. Once a non-looping blinker has finished or any blinker has been stopped, it returns `false` until `start` or `startLoop`.
 - `blinker:start([onMs [, offMs [, loop [, cycles [, startOff]]]]])` (re)starts the blinker, optionally changing its settings, beginning in the on state.
 - `blinker:startLoop()` starts the blinker as an endless loop, keeping its on/off durations.
 - `blinker:stop()` stops the blinker.
@@ -2710,9 +2807,11 @@ Stops every blinker.
 local b = picocalc.graphics.animation.blinker.new(400, 200)
 b:startLoop()
 while true do
+    picocalc.display.clear(picocalc.display.BLACK)
     if b:update() then
-        -- draw the cursor
+        picocalc.display.fillRect(100, 100, 8, 12, picocalc.display.WHITE)  -- the cursor
     end
+    picocalc.display.flush()
 end
 ```
 
@@ -2737,7 +2836,9 @@ Creates and starts an animator. The duration comes first.
 local a = picocalc.graphics.animation.animator.new(500, 0, 100, "cubicOut")
 while not a:ended() do
     local x = a:currentValue()   -- 0 to 100 over half a second
-    -- draw at x ...
+    picocalc.display.clear(picocalc.display.BLACK)
+    picocalc.display.fillRect(x, 100, 8, 8, picocalc.display.WHITE)
+    picocalc.display.flush()
 end
 ```
 
@@ -2747,7 +2848,7 @@ end
 - `animator:valueAtTime(ms)` returns the value `ms` milliseconds into the animation, without changing it.
 - `animator:progress()` returns completion from 0 to 1.
 - `animator:ended()` returns `true` once `currentValue()` has seen the animation finish.
-- `animator:reset([durationMs])` restarts it, optionally with a new duration.
+- `animator:reset([durationMs])` restarts it from `from`, optionally with a new duration, keeping `repeatCount` and `reverses`.
 
 ### Animator Properties
 
@@ -2765,7 +2866,7 @@ Custom font loading and text rendering. Font objects can be passed to text rende
 Creates a new font object, either from one of the four built-in fonts or by loading a custom `.pfn` file from the SD card.
 
 - **Parameters:**
-  - `nameOrPath` (string): One of the built-in names `"6x8"`, `"8x12"`, `"scientifica"`, `"scientifica-bold"`, or an absolute path to a `.pfn` file inside the app's sandbox
+  - `nameOrPath` (string): One of the built-in names `"6x8"`, `"8x12"`, `"scientifica"`, `"scientifica-bold"` (`"scientifica_bold"` also works), or an absolute path to a `.pfn` file inside the app's sandbox
 - **Returns:** (userdata) Font object. **Raises a Lua error** (never returns `nil`); the message names the real problem:
   - a bare name that is not a built-in (no `/`, not ending in `.pfn`): `no such built-in font 'x' (built-ins: ...)`
   - a path (contains `/` or ends in `.pfn`) outside the sandbox: `access denied: <path>`
@@ -2791,11 +2892,13 @@ Draws text at the specified position using this font.
   - `y` (number): Y coordinate
   - `text` (string): Text to draw
   - `fg` (number): Foreground RGB565 color
-  - `bg` (number, optional): Background RGB565 color
-- **Returns:** None
+  - `bg` (number or false, optional): Background RGB565 color, default `BLACK`. `false` for a transparent background.
+- **Returns:** (number) Pixel width of the drawn text
 
 ```lua
-font:drawText(10, 10, "Hello!", picocalc.display.WHITE)
+local font = picocalc.graphics.font.new("8x12")
+local width = font:drawText(10, 10, "Hello!", picocalc.display.WHITE)
+font:drawText(10, 30, "Over art", picocalc.display.WHITE, false)
 ```
 
 ---
@@ -2809,7 +2912,7 @@ Draws text with alignment using this font.
   - `text` (string): Text to draw
   - `alignment` (number): 0 = left, 1 = center, 2 = right
   - `fg` (number): Foreground RGB565 color
-  - `bg` (number, optional): Background RGB565 color
+  - `bg` (number or false, optional): Background RGB565 color, default `BLACK`. `false` for a transparent background.
 - **Returns:** None
 
 ```lua
@@ -2828,8 +2931,8 @@ Draws word-wrapped text within a bounding rectangle using this font. Wrapping br
   - `h` (number): Height of bounding rectangle
   - `text` (string): Text to draw
   - `alignment` (number, optional): 0 = left (default), 1 = center, 2 = right
-  - `fg` (number, optional): Foreground RGB565 color
-  - `bg` (number, optional): Background RGB565 color
+  - `fg` (number, optional): Foreground RGB565 color, default the `setColor` color
+  - `bg` (number or false, optional): Background RGB565 color, default the `setBackgroundColor` one. `false` for a transparent background.
 - **Returns:** None
 
 ```lua
@@ -3038,12 +3141,12 @@ local pw, ph = tilemap:getPixelSize()
 
 ---
 
-#### `tilemap:draw(scrollX, scrollY)`
-Draws visible tiles to the framebuffer with scroll offset. Only draws tiles visible on the 320x320 screen.
+#### `tilemap:draw([scrollX [, scrollY]])`
+Draws visible tiles to the framebuffer with scroll offset. Only draws tiles visible on the 320x320 screen. Pixels equal to the tileset image's colour key are skipped, as with the image's own draw calls.
 
 - **Parameters:**
-  - `scrollX` (number): Horizontal scroll offset in pixels
-  - `scrollY` (number): Vertical scroll offset in pixels
+  - `scrollX` (number, optional): Horizontal scroll offset in pixels: the map point drawn at the screen's left edge. Default 0.
+  - `scrollY` (number, optional): Vertical scroll offset in pixels. Default 0.
 - **Returns:** None
 
 ```lua
@@ -3073,7 +3176,7 @@ for x = 0, 39 do
 end
 
 -- Create wall collision sprites for tile index 2
-local wallCount = picocalc.graphics.sprite.addWallSprites(tilemap, {2})
+local wallCount, skipped = picocalc.graphics.sprite.addWallSprites(tilemap, {2})
 
 -- Scroll camera
 local scrollX, scrollY = 0, 0

@@ -416,8 +416,9 @@ void display_fill_vline(int x, int y0, int y1, uint16_t color) {
     display_draw_line(x, y0, x, y1, color);
 }
 void display_fill_vline_gradient(int x, int y0, int y1, uint16_t color_top, uint16_t color_bottom) {
-    (void)color_bottom;
-    display_draw_line(x, y0, x, y1, color_top);
+    disp_clip_t c = cur_clip();
+    disp_fill_vline_gradient(display_get_back_buffer(), 320, &c, x, y0, y1,
+                             color_top, color_bottom, false);
 }
 // ── Clip rect API (state declared at top of file) ────────────────────────────
 
@@ -519,8 +520,10 @@ void display_set_scroll_offset(int offset) {
 }
 int display_get_scroll_offset(void) { return s_scroll_offset; }
 uint32_t display_get_scroll_offset_writes(void) { return s_scroll_offset_writes; }
-void display_set_transparent_color(uint16_t color) { (void)color; }
-uint16_t display_get_transparent_color(void) { return 0; }
+// The global colour key: a draw whose key is 0 uses it, as in the firmware.
+static uint16_t s_transparent_color = 0;
+void display_set_transparent_color(uint16_t color) { s_transparent_color = color; }
+uint16_t display_get_transparent_color(void) { return s_transparent_color; }
 uint16_t* display_get_framebuffer(void) { return display_get_back_buffer(); }
 uint16_t* display_get_screen_buffer(void) {
     // Return the buffer most recently presented — after display_flush() that
@@ -565,7 +568,8 @@ void display_draw_image_partial(int x, int y, int img_w, int img_h,
     // Clip once, specialised loops (shared with the firmware, no swap).
     disp_clip_t c = cur_clip();
     disp_blit(display_get_back_buffer(), 320, &c, x, y, data, img_w, img_h, sx,
-              sy, sw, sh, flip_x, flip_y, transparent_color, false);
+              sy, sw, sh, flip_x, flip_y,
+              transparent_color ? transparent_color : s_transparent_color, false);
 }
 
 void display_draw_image_scaled_nn(int x, int y, const uint16_t *data,
@@ -573,7 +577,9 @@ void display_draw_image_scaled_nn(int x, int y, const uint16_t *data,
                                   uint16_t transparent_color) {
     disp_clip_t c = cur_clip();
     disp_blit_scaled(display_get_back_buffer(), 320, &c, x, y, data, src_w,
-                     src_h, dst_w, dst_h, transparent_color, false);
+                     src_h, dst_w, dst_h,
+                     transparent_color ? transparent_color : s_transparent_color,
+                     false);
 }
 
 void display_draw_image_stretched(int x, int y, int dst_w, int dst_h,
@@ -587,16 +593,34 @@ void display_draw_image_stretched(int x, int y, int dst_w, int dst_h,
     if (sw <= 0 || sh <= 0) return;
     disp_clip_t c = cur_clip();
     disp_blit_scaled_rect(display_get_back_buffer(), 320, &c, x, y, data, img_w,
-                          sx, sy, sw, sh, dst_w, dst_h, transparent_color, false);
+                          sx, sy, sw, sh, dst_w, dst_h,
+                          transparent_color ? transparent_color : s_transparent_color,
+                          false);
 }
+
+// The firmware's path (src/drivers/display.c) without its byte swaps: TGX, in the
+// host byte order this framebuffer already has. (x, y) is the top-left corner of
+// the unrotated result.
+#include "../../src/os/image_decoders.h"
 
 void display_draw_image_scaled(int x, int y, int img_w, int img_h,
                                const uint16_t *data, float scale, float angle,
                                uint16_t transparent_color) {
     if (!data || img_w <= 0 || img_h <= 0) return;
-    int dst_w = (int)(img_w * scale);
-    int dst_h = (int)(img_h * scale);
-    display_draw_image_scaled_nn(x, y, data, img_w, img_h, dst_w, dst_h, transparent_color);
+    if (transparent_color == 0) transparent_color = s_transparent_color;
+    const float cx = x + img_w * scale * 0.5f;
+    const float cy = y + img_h * scale * 0.5f;
+    const float angle_deg = angle * (180.0f / (float)M_PI);
+    uint16_t *fb = display_get_back_buffer();
+    if (transparent_color != 0) {
+        tgx_draw_image_scaled_masked(fb, 320, 320, s_clip_x0, s_clip_y0,
+                                     s_clip_x1 + 1, s_clip_y1 + 1, data, img_w, img_h,
+                                     cx, cy, scale, angle_deg, transparent_color);
+    } else {
+        tgx_draw_image_scaled(fb, 320, 320, s_clip_x0, s_clip_y0, s_clip_x1 + 1,
+                              s_clip_y1 + 1, data, img_w, img_h, cx, cy, scale,
+                              angle_deg);
+    }
 }
 
 // Keyboard stubs are now in keyboard_stub.c
@@ -978,6 +1002,8 @@ void display_effect_brighten(uint8_t factor) {
     uint16_t *fb = display_get_back_buffer();
     size_t n = SIM_FB_W * SIM_FB_H;
 
+    if (factor == 255) { memset(fb, 0xFF, n * sizeof(uint16_t)); return; }
+
     for (size_t i = 0; i < n; i++) {
         uint16_t p = fb[i];
         uint8_t r = blend8((p >> 11) & 0x1F, 31, factor);  // max 5-bit
@@ -997,6 +1023,11 @@ void display_effect_tint(uint8_t r_tint, uint8_t g_tint, uint8_t b_tint,
     uint8_t tr = r_tint >> 3;  // 5-bit
     uint8_t tg = g_tint >> 2;  // 6-bit
     uint8_t tb = b_tint >> 3;  // 5-bit
+
+    if (strength == 255) {
+        display_clear((uint16_t)((tr << 11) | (tg << 5) | tb));
+        return;
+    }
 
     for (size_t i = 0; i < n; i++) {
         uint16_t p = fb[i];
@@ -1034,6 +1065,12 @@ void display_effect_blend(const uint16_t *src, int w, int h, uint8_t alpha) {
 
     int max_h = (h < SIM_FB_H) ? h : SIM_FB_H;
     int max_w = (w < SIM_FB_W) ? w : SIM_FB_W;
+
+    if (alpha == 255) {
+        for (int y = 0; y < max_h; y++)
+            memcpy(&fb[y * SIM_FB_W], &src[y * w], (size_t)max_w * sizeof(uint16_t));
+        return;
+    }
 
     for (int y = 0; y < max_h; y++) {
         for (int x = 0; x < max_w; x++) {
@@ -1424,10 +1461,41 @@ void pio_psram_debug_test(bool full) { (void)full; }
 
 // --- Image preload stubs ---
 #include "../../src/drivers/image_api.h"
-void image_preload_init(void) {}
-bool image_preload_start(const char *path) { (void)path; return false; }
-pc_image_t *image_preload_poll(bool *ready) { if (ready) *ready = false; return NULL; }
-void image_preload_cancel(void) {}
+// image_preload.c's state machine without Core 1: the decode runs on the app's
+// thread, in the poll after the one that "picks it up", so an app sees one poll
+// of (nil, false) as it would while Core 1 decodes. As in the firmware, a second
+// start while one is in flight cancels it and returns false.
+enum { SIM_PRELOAD_IDLE, SIM_PRELOAD_REQUESTED, SIM_PRELOAD_DECODING };
+static int s_sim_preload_state = SIM_PRELOAD_IDLE;
+static char s_sim_preload_path[256];
+
+void image_preload_init(void) { s_sim_preload_state = SIM_PRELOAD_IDLE; }
+
+bool image_preload_start(const char *path) {
+    if (!path) return false;
+    if (s_sim_preload_state != SIM_PRELOAD_IDLE) {
+        s_sim_preload_state = SIM_PRELOAD_IDLE;
+        return false;
+    }
+    strncpy(s_sim_preload_path, path, sizeof(s_sim_preload_path) - 1);
+    s_sim_preload_path[sizeof(s_sim_preload_path) - 1] = '\0';
+    s_sim_preload_state = SIM_PRELOAD_REQUESTED;
+    return true;
+}
+
+pc_image_t *image_preload_poll(bool *ready) {
+    if (ready) *ready = false;
+    if (s_sim_preload_state == SIM_PRELOAD_REQUESTED) {
+        s_sim_preload_state = SIM_PRELOAD_DECODING;
+    } else if (s_sim_preload_state == SIM_PRELOAD_DECODING) {
+        s_sim_preload_state = SIM_PRELOAD_IDLE;
+        if (ready) *ready = true;
+        return image_load(s_sim_preload_path);
+    }
+    return NULL;
+}
+
+void image_preload_cancel(void) { s_sim_preload_state = SIM_PRELOAD_IDLE; }
 void image_preload_update(void) {}
 
 // --- display_draw_text_to_buffer (host-order offscreen buffer) ---

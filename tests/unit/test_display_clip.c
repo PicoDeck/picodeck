@@ -507,6 +507,49 @@ static void test_blit_scaled(void) {
   CHECK_EQ_INT(bad, 0);
 }
 
+// A gradient is the ramp of the whole line, clipped: each visible pixel is what
+// the unclipped line has there, and the ends are the two colours exactly.
+static void test_vline_gradient_matches_reference(void) {
+  int bad = 0;
+  for (int i = 0; i < 20000; i++) {
+    disp_clip_t c = random_clip();
+    int x = rnd(-4, SW + 4), y0 = rnd(-200, SH + 200), y1 = rnd(-200, SH + 200);
+    uint16_t top = (uint16_t)rnd(0, 0xFFFF), bottom = (uint16_t)rnd(0, 0xFFFF);
+    bool swap = rnd(0, 1);
+    reset(0x7777);
+    disp_fill_vline_gradient(screen(s_got), CW, &c, x, y0, y1, top, bottom, swap);
+    int a = y0, b = y1;
+    uint16_t ca = top, cb = bottom;
+    if (a > b) { int t = a; a = b; b = t; ca = bottom; cb = top; }
+    int span = b == a ? 1 : b - a;
+    for (int y = a; y <= b; y++) {
+      int t = y - a;
+      int r = ((ca >> 11) & 31) + (((cb >> 11) & 31) - ((ca >> 11) & 31)) * t / span;
+      int g = ((ca >> 5) & 63) + (((cb >> 5) & 63) - ((ca >> 5) & 63)) * t / span;
+      int bl = (ca & 31) + ((cb & 31) - (ca & 31)) * t / span;
+      ref_plot(screen(s_want), &c, x, y,
+               disp_px((uint16_t)((r << 11) | (g << 5) | bl), swap));
+    }
+    if (!same("gradient") && bad++ < 5)
+      printf("  gradient x %d y %d..%d\n", x, y0, y1);
+  }
+  CHECK_EQ_INT(bad, 0);
+}
+
+static void test_vline_gradient_reaches_both_ends_and_huge_coords(void) {
+  disp_clip_t c = {0, 0, SW - 1, SH - 1};
+  reset(0);
+  disp_fill_vline_gradient(screen(s_got), CW, &c, 3, 0, SH - 1, 0xF800, 0x001F, false);
+  CHECK_EQ_INT(screen(s_got)[3], 0xF800);
+  CHECK_EQ_INT(screen(s_got)[(SH - 1) * CW + 3], 0x001F);
+  // Off-screen ends: no overflow, and the middle of the ramp is what shows.
+  reset(0);
+  disp_fill_vline_gradient(screen(s_got), CW, &c, 3, -2000000000, 2000000000, 0xF800,
+                           0, false);
+  int r = screen(s_got)[3] >> 11;
+  CHECK(r >= 14 && r <= 16);
+}
+
 // Sub-rect stretch: destination (dx, dy) of the unclipped rect samples source
 // (sx + dx*sw/dw, sy + dy*sh/dh) of an img_w-wide image.
 static void test_blit_scaled_rect_matches_reference(void) {
@@ -810,6 +853,8 @@ int main(void) {
   test_copy_row_alignments();
   test_blit_scaled();
   test_blit_scaled_rect_matches_reference();
+  test_vline_gradient_matches_reference();
+  test_vline_gradient_reaches_both_ends_and_huge_coords();
   test_tri_f_inside_outside_and_clip();
   test_tri_f_shared_edges_fill_once();
   test_tri_f_degenerate_and_huge();

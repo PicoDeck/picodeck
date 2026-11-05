@@ -626,6 +626,11 @@ if(PICODECK_SIM_SANITIZE)
         # -fsanitize=bounds checks. Decoding any MP3 tripped it.
         set_source_files_properties(${LIBMAD_DIR}/synth.c PROPERTIES
             COMPILE_OPTIONS -fno-sanitize=bounds)
+        # AnimatedGIF defines ALLOWS_UNALIGNED on a 64-bit host and copies LZW
+        # output a uint64_t at a time (gif.inl). The firmware's 32-bit build
+        # copies bytes. Loading any GIF tripped it.
+        set_source_files_properties(${GIF_DIR}/src/AnimatedGIF.cpp PROPERTIES
+            COMPILE_OPTIONS -fno-sanitize=alignment)
     endif()
     target_link_options(picodeck_simulator PRIVATE -fsanitize=${_picodeck_san})
     message(STATUS "  - Sanitizers: ${_picodeck_san}")

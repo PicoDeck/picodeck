@@ -581,6 +581,41 @@ DISP_HOT static inline void disp_blit_scaled(uint16_t *fb, int stride,
                         dst_w, dst_h, key, swap);
 }
 
+// Vertical gradient from `top` at y0 to `bottom` at y1 (swapped if y0 > y1),
+// each RGB565 channel interpolated, clipped once. The ramp is that of the whole
+// line: clipping shows part of it and never compresses it. A line too long for
+// the channel product in int32 is shifted down, which loses nothing visible.
+static inline void disp_fill_vline_gradient(uint16_t *fb, int stride,
+                                            const disp_clip_t *c, int x, int y0,
+                                            int y1, uint16_t top, uint16_t bottom,
+                                            bool swap) {
+  if (x < c->x0 || x > c->x1) return;
+  if (y0 > y1) {
+    int t = y0; y0 = y1; y1 = t;
+    uint16_t tc = top; top = bottom; bottom = tc;
+  }
+  const int first = y0 < c->y0 ? c->y0 : y0;
+  const int last = y1 > c->y1 ? c->y1 : y1;
+  if (first > last) return;
+
+  int64_t full = (int64_t)y1 - y0;
+  int shift = 0;
+  while ((full >> shift) > 0xFFFFFF) shift++;
+  const int span = full ? (int)(full >> shift) : 1;
+
+  const int r0 = (top >> 11) & 0x1F, g0 = (top >> 5) & 0x3F, b0 = top & 0x1F;
+  const int r1 = (bottom >> 11) & 0x1F, g1 = (bottom >> 5) & 0x3F, b1 = bottom & 0x1F;
+
+  uint16_t *p = fb + (size_t)first * stride + x;
+  for (int y = first; y <= last; y++, p += stride) {
+    const int t = (int)(((int64_t)y - y0) >> shift);
+    const int r = r0 + (r1 - r0) * t / span;
+    const int g = g0 + (g1 - g0) * t / span;
+    const int b = b0 + (b1 - b0) * t / span;
+    *p = disp_px((uint16_t)((r << 11) | (g << 5) | b), swap);
+  }
+}
+
 // ── Bulk pixel blocks (Lua fb:setPixels / getPixels) ────────────────────────
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__

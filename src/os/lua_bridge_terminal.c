@@ -175,7 +175,8 @@ static int l_terminal_setFont(lua_State* L) {
     
     if (strcmp(font_name, "scientifica") == 0) {
         terminal_setFont(t->term, TERM_FONT_SCIENTIFICA);
-    } else if (strcmp(font_name, "scientifica_bold") == 0) {
+    } else if (strcmp(font_name, "scientifica_bold") == 0 ||
+               strcmp(font_name, "scientifica-bold") == 0) {
         terminal_setFont(t->term, TERM_FONT_SCIENTIFICA_BOLD);
     } else {
         return luaL_error(L, "unknown font: %s (use 'scientifica' or 'scientifica_bold')", font_name);

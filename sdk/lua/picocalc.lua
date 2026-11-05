@@ -1616,12 +1616,13 @@ picocalc.graphics = {}
 ---@param color integer RGB565
 function picocalc.graphics.setColor(color) end
 
----Set the background (erase) colour.
----@param color integer RGB565
+---Set the background (erase) colour. `false` makes the background of
+---graphics.drawText, drawTextAligned and drawTextInRect transparent.
+---@param color integer|false RGB565, or false
 function picocalc.graphics.setBackgroundColor(color) end
 
 ---Set a global transparent colour for image blitting (`nil` to disable).
----@param color integer|nil RGB565
+---@param color? integer RGB565; nil, 0 or nothing disables the key
 function picocalc.graphics.setTransparentColor(color) end
 
 ---Return the current global transparent colour, or `nil`.
@@ -1672,7 +1673,7 @@ function picocalc.graphics.drawPlayfield(playfield, ox, oy, block_size, cols, ro
 ---@return integer live_count Particles still alive
 function picocalc.graphics.updateDrawParticles(particles, dt) end
 
----Set a global stencil pattern (8 bytes, checkerboard phase).
+---Accepted but not applied: stores a global stencil pattern no drawing call reads.
 ---@param pattern integer[] 8 bytes
 function picocalc.graphics.setStencilPattern(pattern) end
 
@@ -1762,7 +1763,7 @@ function picocalc.graphics.image.loadScaled(path, w, h) end
 ---Load an image from a Lua string (in-memory buffer). Format is auto-detected
 ---from magic bytes (BMP, JPEG, PNG, GIF).
 ---@param data string|userdata Raw encoded image bytes, or a qmibuf
----@param length? integer With a qmibuf: how many bytes of it to decode (default: all)
+---@param length? integer How many bytes of it to decode (default: all)
 ---@return PicoDeckImage img Raises on an unsupported or corrupt buffer
 function picocalc.graphics.image.loadFromBuffer(data, length) end
 
@@ -1919,7 +1920,8 @@ function picocalc.graphics.sprite.addSprite(sprite) end
 ---@param sprite PicoDeckSprite
 function picocalc.graphics.sprite.removeSprite(sprite) end
 
----Update all sprites (calls each sprite's update callback).
+---Draw every visible sprite with updates enabled, lowest z-index first. No
+---callback is called and neither a clear nor a flush is done.
 function picocalc.graphics.sprite.update() end
 
 ---Return all sprites in the global list.
@@ -1991,12 +1993,22 @@ function picocalc.graphics.sprite.clearClipRectsInRange(z_start, z_end) end
 ---@return PicoDeckSprite
 function picocalc.graphics.sprite.addEmptyCollisionSprite(x, y, w, h) end
 
+---One invisible collision sprite per tile whose index is in wallIDs. Walls past
+---the manager's 256 sprites are not made.
+---@param tilemap PicoDeckTilemap
+---@param wallIDs integer[]
+---@param xOffset? integer
+---@param yOffset? integer
+---@return integer count Wall sprites created
+---@return integer skipped Wall tiles left out because the manager was full
+function picocalc.graphics.sprite.addWallSprites(tilemap, wallIDs, xOffset, yOffset) end
+
 -- PicoDeckSprite methods
 
----@param image PicoDeckImage|nil `nil` clears the image
+---@param image? PicoDeckImage `nil` or nothing clears the image
 ---@param flip? boolean Horizontal flip
 ---@param scale? number Only applied when given
----@param scale_y? number Only applied when given (unlike `setScale`, it does not default to `scale`)
+---@param scale_y? number Stored when given, not applied: sprites draw at one factor
 function PicoDeckSprite:setImage(image, flip, scale, scale_y) end
 
 ---@return PicoDeckImage?
@@ -2005,8 +2017,14 @@ function PicoDeckSprite:getImage() end
 ---Add this sprite to the global sprite list.
 function PicoDeckSprite:add() end
 
+---The same as add().
+function PicoDeckSprite:addSprite() end
+
 ---Remove this sprite from the global sprite list.
 function PicoDeckSprite:remove() end
+
+---The same as remove().
+function PicoDeckSprite:removeSprite() end
 
 ---@param x integer
 ---@param y integer
@@ -2053,18 +2071,18 @@ function PicoDeckSprite:setSize(w, h) end
 function PicoDeckSprite:getSize() end
 
 ---@param scale number
----@param scale_y? number Defaults to `scale`
+---@param scale_y? number Defaults to `scale`. Stored, not applied: sprites draw at one factor
 function PicoDeckSprite:setScale(scale, scale_y) end
 
 ---@return number scale
 ---@return number scale_y
 function PicoDeckSprite:getScale() end
 
----Enable nearest-neighbour scaling.
----@param nn boolean
+---Scale by a whole number, nearest-neighbour. Also `sprite.scale_nn = n`.
+---@param nn integer Positive
 function PicoDeckSprite:setScaleNN(nn) end
 
----@param color integer|nil RGB565
+---@param color? integer RGB565; nil or nothing uses the global key
 function PicoDeckSprite:setTransparentColor(color) end
 
 ---Set the rotation. The angle is in radians.
@@ -2116,7 +2134,8 @@ function PicoDeckSprite:getImageFlip() end
 ---@param ignore boolean
 function PicoDeckSprite:setIgnoresDrawOffset(ignore) end
 
----Set the sprite bounding box.
+---Accepted but not applied: stores a rectangle getBounds returns. Also takes one
+---table, `{x, y, w, h}` or `{x=, y=, w=, h=}`.
 ---@param x integer
 ---@param y integer
 ---@param w integer
@@ -2132,6 +2151,7 @@ function PicoDeckSprite:getBounds() end
 ---@return { x: integer, y: integer, w: integer, h: integer }
 function PicoDeckSprite:getBoundsRect() end
 
+---Accepted but not applied: stores a flag isOpaque returns.
 ---@param opaque boolean
 function PicoDeckSprite:setOpaque(opaque) end
 
@@ -2146,7 +2166,7 @@ function PicoDeckSprite:setBackgroundDrawingCallback(fn) end
 ---@param y? integer Defaults to the sprite's y
 function PicoDeckSprite:draw(x, y) end
 
----Update this sprite (calls its registered update callback).
+---Draw this sprite if it is visible and has updates enabled. No callback is called.
 function PicoDeckSprite:update() end
 
 ---@param enabled boolean
@@ -2198,9 +2218,10 @@ function PicoDeckSprite:setStencilPattern(level) end
 ---@return boolean
 function PicoDeckSprite:alphaCollision(other) end
 
----Move toward (goalX, goalY), sliding along any collision rects in the way.
+---Move toward (goalX, goalY), X then Y, stopping at the first sprite in the way
+---on each axis, so a fast sprite cannot pass through a wall.
 ---Returns the actual position reached plus a list of collisions; each
----collision is `{sprite, other, type, x, y, normal = {x, y}, touch}`.
+---collision is `{sprite, other, type = 1, normal = {x, y}, touch = {x, y}}`.
 ---@param goalX integer
 ---@param goalY integer
 ---@return integer actualX
@@ -2208,7 +2229,7 @@ function PicoDeckSprite:alphaCollision(other) end
 ---@return table[] collisions
 function PicoDeckSprite:moveWithCollisions(goalX, goalY) end
 
----Return this sprite's collision response mode (default `"slide"`).
+---Always `"slide"`: moveWithCollisions does not call it and it cannot be overridden.
 ---@return string
 function PicoDeckSprite:collisionResponse() end
 
@@ -2417,8 +2438,9 @@ function PicoDeckBlinker:remove() end
 ---@return boolean
 function PicoDeckBlinker:isRunning() end
 
----Advance the blinker timer by the elapsed time.
----@return boolean on Whether the blinker is currently on
+---Advance the blinker timer by the elapsed time. The first call starts a blinker
+---that has never been started or stopped.
+---@return boolean on Whether it is on; false once stopped or finished, until start()
 function PicoDeckBlinker:update() end
 
 -- ── Animator ──────────────────────────────────────────────────────────────────
@@ -2488,7 +2510,7 @@ function picocalc.graphics.font.new(name_or_path) end
 ---@param y integer
 ---@param text string
 ---@param fg integer RGB565 foreground colour
----@param bg? integer RGB565 background colour
+---@param bg? integer|false RGB565 background colour; false is transparent
 ---@return integer width Pixel width of the drawn text
 function PicoDeckFont:drawText(x, y, text, fg, bg) end
 
@@ -2498,7 +2520,7 @@ function PicoDeckFont:drawText(x, y, text, fg, bg) end
 ---@param text string
 ---@param alignment integer 0=left, 1=centre, 2=right
 ---@param fg integer RGB565
----@param bg? integer RGB565
+---@param bg? integer|false RGB565; false is transparent
 function PicoDeckFont:drawTextAligned(x, y, text, alignment, fg, bg) end
 
 ---Word-wrap text within a bounding rect. Wrapping breaks at spaces and uses
@@ -2511,7 +2533,7 @@ function PicoDeckFont:drawTextAligned(x, y, text, alignment, fg, bg) end
 ---@param text string
 ---@param alignment? integer 0=left (default), 1=centre, 2=right
 ---@param fg? integer RGB565
----@param bg? integer RGB565
+---@param bg? integer|false RGB565; false is transparent
 function PicoDeckFont:drawTextInRect(x, y, w, h, text, alignment, fg, bg) end
 
 ---Return the glyph height of this font.

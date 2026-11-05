@@ -549,46 +549,12 @@ void display_draw_textured_column(int x, int y0, int y1,
   }
 }
 
-// Gradient vertical line — interpolates RGB565 channels using fixed-point.
+// Gradient vertical line (display_clip.h): the ramp of the whole line, clipped.
 void display_fill_vline_gradient(int x, int y0, int y1, uint16_t color_top,
                                  uint16_t color_bottom) {
-  if (x < s_clip_x0 || x > s_clip_x1)
-    return;
-  if (y0 > y1) {
-    int t = y0;
-    y0 = y1;
-    y1 = t;
-    uint16_t tc = color_top;
-    color_top = color_bottom;
-    color_bottom = tc;
-  }
-
-  // Clip
-  int orig_y0 = y0;
-  if (y0 < s_clip_y0)
-    y0 = s_clip_y0;
-  if (y1 > s_clip_y1)
-    y1 = s_clip_y1;
-  if (y0 > y1)
-    return;
-
-  int span = (y1 == orig_y0) ? 1 : (y1 - orig_y0); // avoid divide by zero
-
-  // Extract RGB565 channels
-  int r0 = (color_top >> 11) & 0x1F, g0 = (color_top >> 5) & 0x3F,
-      b0 = color_top & 0x1F;
-  int r1 = (color_bottom >> 11) & 0x1F, g1 = (color_bottom >> 5) & 0x3F,
-      b1 = color_bottom & 0x1F;
-
-  uint16_t *p = &s_framebuffer[y0 * FB_WIDTH + x];
-  for (int y = y0; y <= y1; y++, p += FB_WIDTH) {
-    int t = y - orig_y0;
-    int r = r0 + (r1 - r0) * t / span;
-    int g = g0 + (g1 - g0) * t / span;
-    int b = b0 + (b1 - b0) * t / span;
-    uint16_t c = ((r & 0x1F) << 11) | ((g & 0x3F) << 5) | (b & 0x1F);
-    *p = (c >> 8) | (c << 8);
-  }
+  disp_clip_t c = cur_clip();
+  disp_fill_vline_gradient(s_framebuffer, FB_WIDTH, &c, x, y0, y1, color_top,
+                           color_bottom, true);
 }
 
 // Scanline triangle: rows clipped to the clip rect before the loop, each row
@@ -1267,6 +1233,11 @@ void display_effect_brighten(uint8_t factor) {
   size_t n = FB_WIDTH * FB_HEIGHT;
 
   if (factor == 0) return; // No change
+  // BLEND stops one step short of base1 at 255: the documented "fully white".
+  if (factor == 255) {
+    memset(fb, 0xFF, n * sizeof(uint16_t));
+    return;
+  }
 
   // Blend toward white: result = pixel + (max - pixel) * factor / 256
   // Using interpolator: base0=pixel, base1=max, accum1=factor
@@ -1313,6 +1284,12 @@ void display_effect_tint(uint8_t r_tint, uint8_t g_tint, uint8_t b_tint,
   uint8_t tr = r_tint >> 3;  // 5-bit
   uint8_t tg = g_tint >> 2;  // 6-bit
   uint8_t tb = b_tint >> 3;  // 5-bit
+
+  // BLEND stops one step short of base1 at 255: the documented "solid colour".
+  if (strength == 255) {
+    display_clear((uint16_t)((tr << 11) | (tg << 5) | tb));
+    return;
+  }
 
   // Interpolator BLEND: result = base0*(255-accum1)/256 + base1*accum1/256
   // base0 = pixel channel, base1 = tint channel, accum1 = strength
@@ -1375,6 +1352,14 @@ void display_effect_blend(const uint16_t *src, int w, int h, uint8_t alpha) {
   if (alpha == 0) return; // Fully transparent, no change
 
   uint16_t *fb = s_framebuffer;
+
+  // BLEND stops one step short of base1 at 255: the documented "fully opaque".
+  if (alpha == 255) {
+    disp_clip_t all = {0, 0, FB_WIDTH - 1, FB_HEIGHT - 1};
+    disp_blit(fb, FB_WIDTH, &all, 0, 0, src, w, h, 0, 0, w, h, false, false, 0,
+              true);
+    return;
+  }
 
   interp_config cfg0 = interp_default_config();
   interp_config_set_blend(&cfg0, true);
