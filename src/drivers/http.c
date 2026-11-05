@@ -251,13 +251,18 @@ void http_c1_send_request(struct mg_connection *nc, http_conn_t *c) {
       (strstr(c->extra_hdrs, "Accept-Encoding:") != NULL ||
        strstr(c->extra_hdrs, "accept-encoding:") != NULL);
 
+  // Host carries the port unless it is the scheme's default (RFC 9110 7.2).
+  char port_suffix[8] = "";
+  if (c->port != (c->use_ssl ? 443 : 80))
+    snprintf(port_suffix, sizeof(port_suffix), ":%u", (unsigned)c->port);
+
   int off = snprintf(buf, need,
       "%s %s HTTP/1.1\r\n"
-      "Host: %s\r\n"
+      "Host: %s%s\r\n"
       "%s"
       "%s"
       "Connection: %s\r\n",
-      c->method, c->path ? c->path : "/", c->server,
+      c->method, c->path ? c->path : "/", c->server, port_suffix,
       has_ua ? "" : "User-Agent: PicoDeck/1.0\r\n",
       has_ae ? "" : "Accept-Encoding: identity\r\n",
       c->req_keep_alive ? "keep-alive" : "close");

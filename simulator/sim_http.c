@@ -591,7 +591,10 @@ void sim_http_start(http_conn_t *c) {
 
     // Host header
     char host_hdr[256];
-    snprintf(host_hdr, sizeof(host_hdr), "Host: %s", c->server);
+    if (c->port != (c->use_ssl ? 443 : 80))
+        snprintf(host_hdr, sizeof(host_hdr), "Host: %s:%u", c->server, (unsigned)c->port);
+    else
+        snprintf(host_hdr, sizeof(host_hdr), "Host: %s", c->server);
     hdrs = curl_slist_append(hdrs, host_hdr);
 
     // Connection header

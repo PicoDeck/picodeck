@@ -5,17 +5,18 @@ the firmware's own network stack (make simulator-net). These are the ones that
 state what an app may rely on, so they must hold here as well: a developer
 trying the docs on the plain simulator should get what the device does.
 
-Plus what a Lua case cannot do by itself: an exit while a blocking wait runs.
+Plus what a Lua case cannot do by itself: an exit while a blocking wait runs,
+and a download onto a card that stops taking writes.
 """
 
 from __future__ import annotations
 
+import stat
 import time
-
 
 import pytest
 
-from helpers import run_lua_app, stage_lua_app
+from helpers import new_simulator, run_lua_app, stage_lua_app
 from test_network_firmware import APP, servers, stage  # noqa: F401 (fixture)
 
 CASES = [
@@ -48,6 +49,13 @@ CASES = [
     "tcp_wait_data_with_read_callback",
     "tcp_write_retry_pattern",
     "tcp_connect_timeout_zero_is_off",
+    "download_lib_big",
+    "download_replaces_existing",
+    "download_keeps_existing_on_failure",
+    "download_failure_leaves_no_file",
+    "download_relative_redirects",
+    "download_reports_the_real_error",
+    "download_progress_totals",
 ]
 
 
@@ -99,3 +107,68 @@ def test_exit_ends_a_wait_for_data(servers, simulator):  # noqa: F811
     out = simulator.wait_for_exit(timeout=5)
     assert time.monotonic() - t0 < 3, "the exit waited for the wait"
     assert out.get("result") in ("returned", "exit_sentinel"), out
+
+
+REFUSED_APP = """
+local T = picocalc.sys.loadlib("picotest")
+local dl = picocalc.sys.loadlib("download")
+T.case("download_refused_request_returns_at_once", function()
+    local t0 = picocalc.sys.getTimeMs()
+    local ok, err = dl.toFile("http://127.0.0.1:{port}/ok", picocalc.fs.appPath("x.bin"),
+                              {{ timeoutMs = 20000 }})
+    T.eq(ok, false, "returned true")
+    T.ok(err and err:find("WiFi", 1, true), "reason: " .. tostring(err))
+    T.ok(picocalc.sys.getTimeMs() - t0 < 5000, "waited out the timeout")
+end)
+T.done()
+"""
+
+
+def test_download_refused_request_returns_at_once(servers, simulator):  # noqa: F811
+    stage_lua_app(simulator.sd_card_path, "dl_refused",
+                  REFUSED_APP.format(port=servers["http"].port),
+                  requirements=["http"])
+    simulator.call("set_wifi_state", {"status": "not_available"})
+    run = run_lua_app(simulator, "dl_refused", timeout=40)
+    run.check_case("download_refused_request_returns_at_once")
+
+
+FULL_APP = """
+local T = picocalc.sys.loadlib("picotest")
+local fs = picocalc.fs
+local dl = picocalc.sys.loadlib("download")
+T.case("download_on_a_full_card", function()
+    local dest = fs.appPath("big.bin")
+    local f = T.ok(fs.open(dest, "w"), "open")
+    f:write("precious")
+    f:close()
+    local ok, err = dl.toFile("http://127.0.0.1:{port}/big", dest, {{ timeoutMs = 20000 }})
+    T.eq(ok, false, "toFile returned true on a card that stopped taking writes")
+    T.ok(err and err:find("write", 1, true), "reason: " .. tostring(err))
+    T.eq(fs.readFile(dest), "precious", "the old file is kept")
+    T.eq(fs.exists(dest .. ".part"), false, "no .part left")
+end)
+T.done()
+"""
+
+
+def test_download_short_write_fails(request, servers, simulator_binary,  # noqa: F811
+                                    test_sd_card, tmp_path):
+    """A card that stops taking writes: fs.write returns short (no error), and
+    the file must not be reported complete. The host's file-size limit stands
+    in for a full card (ulimit -f is in KiB; SIGXFSZ ignored, so writes return
+    short, as FatFS does on a full volume)."""
+    wrapper = tmp_path / "limited_sim.sh"
+    wrapper.write_text("#!/bin/bash\ntrap '' XFSZ\nulimit -f 200\n"
+                       f'exec "{simulator_binary}" "$@"\n')
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    sim = new_simulator(request.config, wrapper, test_sd_card,
+                        tmp_path / "crash.log")
+    try:
+        stage_lua_app(sim.sd_card_path, "dl_full",
+                      FULL_APP.format(port=servers["http"].port),
+                      requirements=["http"])
+        run = run_lua_app(sim, "dl_full", timeout=40)
+        run.check_case("download_on_a_full_card")
+    finally:
+        sim.stop()

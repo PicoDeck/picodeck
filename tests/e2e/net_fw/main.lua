@@ -911,6 +911,94 @@ case_fw("tcp_wait_survives_close_in_callback", function()
     conn:close()
 end)
 
+-- ── download.toFile ──────────────────────────────────────────────────────────
+
+local function dl_url(path) return "http://" .. HOST .. ":" .. cfg.http .. path end
+local function dl_dest(name) return "/data/" .. APP_ID .. "/" .. name end
+local function put(path, text)
+    local f = T.ok(pc.fs.open(path, "w"), "open " .. path)
+    f:write(text)
+    f:close()
+end
+
+case_fw("download_replaces_existing", function()
+    local dl = pc.sys.loadlib("download")
+    local dest = dl_dest("replace.bin")
+    put(dest, "old contents")
+    local ok, err = dl.toFile(dl_url("/ok"), dest)
+    T.ok(ok, "failed: " .. tostring(err))
+    T.eq(pc.fs.readFile(dest), "hello picodeck", "new contents")
+    T.eq(pc.fs.exists(dest .. ".part"), false, "no .part left")
+    T.eq(pc.fs.exists(dest .. ".old"), false, "no .old left")
+end)
+
+case_fw("download_keeps_existing_on_failure", function()
+    local dl = pc.sys.loadlib("download")
+    local dest = dl_dest("keep.bin")
+    put(dest, "precious")
+    for _, path in ipairs({ "/notfound", "/short", "/empty", "/redir-none" }) do
+        local ok, err = dl.toFile(dl_url(path), dest, { timeoutMs = 4000 })
+        T.eq(ok, false, path .. " returned true")
+        T.ok(err, path .. ": no reason")
+        T.eq(pc.fs.readFile(dest), "precious", path .. " lost the file")
+        T.eq(pc.fs.exists(dest .. ".part"), false, path .. " left a .part")
+    end
+    -- Nothing listening: refused before a byte arrives.
+    local ok = dl.toFile("http://" .. HOST .. ":1/x", dest, { timeoutMs = 4000 })
+    T.eq(ok, false, "refused connection returned true")
+    T.eq(pc.fs.readFile(dest), "precious", "the refused connection lost the file")
+end)
+
+case_fw("download_failure_leaves_no_file", function()
+    local dl = pc.sys.loadlib("download")
+    local dest = dl_dest("none.bin")
+    local ok, err = dl.toFile(dl_url("/short"), dest, { timeoutMs = 4000 })
+    T.eq(ok, false, "returned true")
+    T.eq(pc.fs.exists(dest), false, "a file was left")
+    T.eq(pc.fs.exists(dest .. ".part"), false, "a .part was left")
+end)
+
+case_fw("download_relative_redirects", function()
+    local dl = pc.sys.loadlib("download")
+    local dest = dl_dest("redir.bin")
+    for _, path in ipairs({ "/redir-abs", "/redir-root", "/redir-rel",
+                            "/redir-rel-up", "/redir-scheme",
+                            "/sub/dir/redir-rel", "/sub/dir/redir-rel-up" }) do
+        pc.fs.delete(dest)
+        local ok, err = dl.toFile(dl_url(path), dest, { timeoutMs = 4000 })
+        T.ok(ok, path .. ": " .. tostring(err))
+        T.eq(pc.fs.readFile(dest), "hello picodeck", path)
+    end
+    local ok, err = dl.toFile(dl_url("/redir-loop"), dest,
+                              { timeoutMs = 4000, maxRedirects = 2 })
+    T.eq(ok, false, "loop")
+    T.eq(err, "too many redirects", "loop reason")
+end)
+
+-- The failure reason is the connection's own, not "connection closed".
+case_fw("download_reports_the_real_error", function()
+    local dl = pc.sys.loadlib("download")
+    local dest = dl_dest("err.bin")
+    local ok, err = dl.toFile(dl_url("/short"), dest, { timeoutMs = 4000 })
+    T.eq(ok, false, "returned true")
+    T.ok(err and err ~= "connection closed", "reason: " .. tostring(err))
+    ok, err = dl.toFile(dl_url("/notfound"), dest, { timeoutMs = 4000 })
+    T.eq(err, "HTTP 404", "404 reason")
+end)
+
+case_fw("download_progress_totals", function()
+    local dl = pc.sys.loadlib("download")
+    local seen = {}
+    local ok, err = dl.toFile(dl_url("/chunked"), dl_dest("p.bin"), {
+        onProgress = function(r, t) seen[#seen + 1] = { r, t } end,
+    })
+    T.ok(ok, tostring(err))
+    T.ok(#seen >= 2, "progress calls")
+    T.eq(seen[1][2], 0, "total unknown while chunks arrive")
+    T.eq(seen[#seen][1], 14, "final received")
+    T.eq(seen[#seen][2], 14, "the final call passes received as total")
+end)
+
 -- ── Run the one selected case ───────────────────────────────────────────────
 
 local fn = cases[cfg.case]
