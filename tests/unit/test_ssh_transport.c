@@ -10,8 +10,13 @@
 //                               no port and no system configuration. Exits 77 (ctest:
 //                               skipped) when sshd or ssh-keygen is missing or unusable.
 //                               SSHD_LOG=<file> appends sshd's debug log to a file.
+//
+// An unprivileged sshd cannot check a password and the app only has password login, so
+// to reach a shell the live test logs in with a public key: client_sign() below and
+// publickey_login() in the .lua. That path is test code and is not part of the app.
 #include <errno.h>
 #include <fcntl.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <sys/socket.h>
@@ -24,6 +29,8 @@
 #include "lauxlib.h"
 #include "lua.h"
 #include "lualib.h"
+
+#include "mbedtls/pk.h"
 
 #include "crypto.h"
 #include "os.h"
@@ -344,11 +351,16 @@ static bool run_quiet(char *const argv[]) {
 }
 
 // argv for sshd with one host key, one key exchange and one host key algorithm, and
-// no configuration file. `extra` is one more option, or NULL.
-static void sshd_argv(char **argv, char opts[][128], const char *mode, const char *key,
-                      const char *kex, const char *algo, const char *extra) {
-    snprintf(opts[0], sizeof opts[0], "KexAlgorithms=%s", kex);
-    snprintf(opts[1], sizeof opts[1], "HostKeyAlgorithms=%s", algo);
+// no configuration file. `options` is the stack index of a list of more options
+// ("Name=value"), or 0. The strings stay valid while the caller's arguments do.
+#define SSHD_MAX_OPTIONS 12
+#define SSHD_MAX_ARGV (19 + 2 * SSHD_MAX_OPTIONS)
+
+static void sshd_argv(lua_State *L, char **argv, char opts[][128], const char *mode,
+                      int options) {
+    const char *key = luaL_checkstring(L, 1);
+    snprintf(opts[0], sizeof opts[0], "KexAlgorithms=%s", luaL_checkstring(L, 2));
+    snprintf(opts[1], sizeof opts[1], "HostKeyAlgorithms=%s", luaL_checkstring(L, 3));
     int n = 0;
     argv[n++] = s_sshd;
     argv[n++] = (char *)mode;
@@ -364,9 +376,15 @@ static void sshd_argv(char **argv, char opts[][128], const char *mode, const cha
     argv[n++] = opts[0];
     argv[n++] = "-o";
     argv[n++] = opts[1];
-    if (extra) {
-        argv[n++] = "-o";
-        argv[n++] = (char *)extra;
+    if (options) {
+        int count = (int)luaL_len(L, options);
+        luaL_argcheck(L, count <= SSHD_MAX_OPTIONS, options, "too many options");
+        for (int i = 1; i <= count; i++) {
+            lua_geti(L, options, i);
+            argv[n++] = "-o";
+            argv[n++] = (char *)luaL_checkstring(L, -1);  // the list keeps it alive
+            lua_pop(L, 1);
+        }
     }
     if (getenv("SSHD_LOG")) {
         argv[n++] = "-e";
@@ -390,20 +408,18 @@ static int l_keygen(lua_State *L) {
 
 // sshd_usable(key, kex, hostkey_algo): does sshd accept this configuration as this user?
 static int l_sshd_usable(lua_State *L) {
-    char *argv[24];
+    char *argv[SSHD_MAX_ARGV];
     char opts[2][128];
-    sshd_argv(argv, opts, "-t", luaL_checkstring(L, 1), luaL_checkstring(L, 2),
-              luaL_checkstring(L, 3), NULL);
+    sshd_argv(L, argv, opts, "-t", 0);
     lua_pushboolean(L, run_quiet(argv));
     return 1;
 }
 
-// sshd_connect(key, kex, hostkey_algo [, option]) -> a connection to a new sshd -i
+// sshd_connect(key, kex, hostkey_algo [, {options}]) -> a connection to a new sshd -i
 static int l_sshd_connect(lua_State *L) {
-    char *argv[24];
+    char *argv[SSHD_MAX_ARGV];
     char opts[2][128];
-    sshd_argv(argv, opts, "-i", luaL_checkstring(L, 1), luaL_checkstring(L, 2),
-              luaL_checkstring(L, 3), luaL_optstring(L, 4, NULL));
+    sshd_argv(L, argv, opts, "-i", lua_istable(L, 4) ? 4 : 0);
 
     int sv[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) return luaL_error(L, "socketpair failed");
@@ -420,10 +436,81 @@ static int l_sshd_connect(lua_State *L) {
     return 1;
 }
 
+// A login key for the test. Test code only: the app cannot log in with a key.
+static mbedtls_pk_context s_client_key;
+
+// client_key() -> the public key file of a new throwaway ECDSA key sshd will accept
+static int l_client_key(lua_State *L) {
+    char path[300];
+    snprintf(path, sizeof path, "%s/client_key", s_tmpdir);
+    char *argv[] = {s_keygen, "-q", "-m", "PEM", "-N", "", "-t", "ecdsa", "-b", "256", "-f", path, NULL};
+    if (!run_quiet(argv)) return luaL_error(L, "ssh-keygen for the client key failed");
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return luaL_error(L, "cannot read the client key");
+    static char pem[2048];
+    size_t len = fread(pem, 1, sizeof pem - 1, f);
+    fclose(f);
+    pem[len] = 0;
+    mbedtls_pk_init(&s_client_key);
+    if (mbedtls_pk_parse_key(&s_client_key, (const uint8_t *)pem, len + 1, NULL, 0,
+                             rng_mbedtls_random, NULL) != 0)
+        return luaL_error(L, "cannot parse the client key");
+
+    lua_pushfstring(L, "%s.pub", path);
+    return 1;
+}
+
+// client_sign(data) -> mpint(r) + mpint(s) over SHA-256(data). A DER INTEGER holds the
+// same bytes as an mpint, so each only needs its header changed for a length.
+static int l_client_sign(lua_State *L) {
+    size_t len;
+    const uint8_t *data = (const uint8_t *)luaL_checklstring(L, 1, &len);
+    uint8_t digest[32], der[MBEDTLS_PK_SIGNATURE_MAX_SIZE];
+    size_t der_len = 0;
+    crypto_sha256(data, (uint32_t)len, digest);
+    if (mbedtls_pk_sign(&s_client_key, MBEDTLS_MD_SHA256, digest, sizeof digest, der, sizeof der,
+                        &der_len, rng_mbedtls_random, NULL) != 0)
+        return luaL_error(L, "signing failed");
+
+    // 30 len [02 rlen r] [02 slen s]; a P-256 signature is short enough for 1-byte lengths.
+    size_t p = 2;
+    uint8_t out[80];
+    size_t n = 0;
+    for (int i = 0; i < 2; i++) {
+        size_t int_len = der[p + 1];
+        out[n++] = 0; out[n++] = 0; out[n++] = 0; out[n++] = (uint8_t)int_len;
+        memcpy(out + n, der + p + 2, int_len);
+        n += int_len;
+        p += 2 + int_len;
+    }
+    lua_pushlstring(L, (const char *)out, n);
+    return 1;
+}
+
+static int l_username(lua_State *L) {
+    struct passwd *pw = getpwuid(getuid());
+    if (!pw) return luaL_error(L, "no passwd entry for this user");
+    lua_pushstring(L, pw->pw_name);
+    return 1;
+}
+
+// Is there a pseudo-terminal device to log in on? Containers may have none.
+static int l_has_pty(lua_State *L) {
+    int fd = open("/dev/ptmx", O_RDWR | O_NOCTTY);
+    if (fd >= 0) close(fd);
+    lua_pushboolean(L, fd >= 0);
+    return 1;
+}
+
 static const luaL_Reg s_live_funcs[] = {
     {"keygen", l_keygen},
     {"sshd_usable", l_sshd_usable},
     {"sshd_connect", l_sshd_connect},
+    {"client_key", l_client_key},
+    {"client_sign", l_client_sign},
+    {"username", l_username},
+    {"has_pty", l_has_pty},
     {NULL, NULL},
 };
 
@@ -490,7 +577,9 @@ static int run_live(lua_State *L) {
     run_script(L);
 
     // Whether the script ran or skipped, the throwaway keys go.
-    const char *sub[] = {"ecdsa_key", "ecdsa_key.pub", "rsa_key", "rsa_key.pub"};
+    mbedtls_pk_free(&s_client_key);
+    const char *sub[] = {"ecdsa_key", "ecdsa_key.pub", "rsa_key", "rsa_key.pub",
+                         "client_key", "client_key.pub"};
     for (size_t i = 0; i < sizeof sub / sizeof sub[0]; i++) {
         char path[300];
         snprintf(path, sizeof path, "%s/%s", s_tmpdir, sub[i]);

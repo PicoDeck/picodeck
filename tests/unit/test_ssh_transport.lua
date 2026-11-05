@@ -884,13 +884,207 @@ end
 
 -- sshd says why it is hanging up, then closes at once.
 local function live_disconnect(key, kex, algo)
-    local conn = LIVE.sshd_connect(key, kex, algo, "MaxAuthTries=1")
+    local conn = LIVE.sshd_connect(key, kex, algo, {"MaxAuthTries=1"})
     local t = transport.new(conn)
     check(t:handshake() and auth.request_service(t), "reaches authentication: " .. tostring(t.error))
     check(auth.password(t, "picodeck-test", "not-a-password") == false, "the login fails")
     check(t.error == "server disconnected: Too many authentication failures", "reason: " .. tostring(t.error))
     t:close()
     conn:close()
+end
+
+-- ── A real shell ─────────────────────────────────────────────────────────────
+
+-- The second field of a public key file: base64 of the key blob.
+local function read_public_key(path)
+    local f = assert(io.open(path))
+    local b64 = f:read("a"):match("%S+%s+(%S+)")
+    f:close()
+    local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    local out, bits, nbits = {}, 0, 0
+    for c in b64:gmatch("[^=]") do
+        bits = (bits << 6) | (alphabet:find(c, 1, true) - 1)
+        nbits = nbits + 6
+        if nbits >= 8 then
+            nbits = nbits - 8
+            out[#out + 1] = string.char((bits >> nbits) & 0xFF)
+            bits = bits & ((1 << nbits) - 1)
+        end
+    end
+    return table.concat(out)
+end
+
+-- Test code, not in the app: an unprivileged sshd cannot check a password. RFC 4252 section 7.
+local function publickey_login(t, client_pub)
+    if not auth.request_service(t) then return false, t.error end
+    local algo = "ecdsa-sha2-nistp256"
+    local request = string.char(50) .. wire.string(LIVE.username()) .. wire.string("ssh-connection")
+                 .. wire.string("publickey") .. wire.boolean(true) .. wire.string(algo)
+                 .. wire.string(client_pub)
+    local signature = LIVE.client_sign(wire.string(t.session_id) .. request)
+    t:send_packet(request .. wire.string(wire.string(algo) .. wire.string(signature)))
+    while true do
+        local reply = t:recv_packet_skip(10000)
+        if not reply then return false, t.error end
+        local msg_type = reply:byte(1)
+        if msg_type == 52 then return true end
+        if msg_type == 51 then return false, "publickey refused" end
+        if msg_type ~= 53 then return false, "unexpected message " .. msg_type end
+    end
+end
+
+-- A shell without the user's own startup files, so nothing here depends on them.
+local function login_options(extra)
+    local options = {"AuthorizedKeysFile=" .. LIVE.client_pub_path, "StrictModes=no",
+                     "PrintMotd=no", "PrintLastLog=no", "ForceCommand=/bin/sh"}
+    for _, o in ipairs(extra or {}) do options[#options + 1] = o end
+    return options
+end
+
+-- Log in as far as an open shell. Returns the channel, or nil after reporting why.
+local function live_shell(what, key, kex, algo, options)
+    local conn = LIVE.sshd_connect(key, kex, algo, login_options(options))
+    local t = transport.new(conn)
+    local ok, err = t:handshake(), t.error
+    if ok then ok, err = publickey_login(t, LIVE.client_pub) end
+    check(ok, what .. ": logs in: " .. tostring(err))
+    if not ok then
+        t:close()
+        conn:close()
+        return nil
+    end
+    return connection.new(t), t, conn
+end
+
+local function open_shell(what, ch)
+    check(ch:open_session(), what .. ": session opens: " .. tostring(ch.error))
+    if not ch.error then
+        check(ch:request_pty("xterm-256color", 53, 26), what .. ": PTY: " .. tostring(ch.error))
+    end
+    if not ch.error then
+        check(ch:request_shell(), what .. ": shell: " .. tostring(ch.error))
+    end
+    return not ch.error
+end
+
+-- As the app types: what the keyboard gives (\\n for Enter, \\8 for Backspace), through the
+-- app's own key map, one packet per key.
+local function type_keys(what, ch, typed)
+    for i = 1, #typed do
+        local sent = ch:write(keys.translate_char(typed:sub(i, i)))
+        check(sent, what .. ": key " .. i .. " of " .. #typed .. " is sent, window " .. ch.remote_window)
+    end
+end
+
+-- As the app reads: poll and take what there is. Returns all output once `text` is in it.
+local function read_until(ch, text, timeout_ms)
+    local output = ""
+    local start = picocalc.sys.getTimeMs()
+    while picocalc.sys.getTimeMs() - start < timeout_ms do
+        ch:poll(0)
+        local data = ch:read()
+        if data then output = output .. data end
+        if text and output:find(text, 1, true) then break end
+        if ch.closed then break end
+        picocalc.sys.sleep(2)
+    end
+    return output
+end
+
+local function live_shell_session(key, kex, algo, options)
+    local what = kex .. " + " .. algo .. " " .. table.concat(options or {}, " ")
+    local ch, t, conn = live_shell(what, key, kex, algo, options)
+    if not ch then return end
+
+    if open_shell(what, ch) then
+        -- The window OpenSSH grants is 2 MB; the bug that misread it left 10 bytes. The
+        -- command's result is not in the echo of what was typed, so seeing it proves the
+        -- shell received every key and ran the line.
+        check(ch.remote_window > 1000, what .. ": the window is the server's, not " .. ch.remote_window)
+        type_keys(what, ch, "echo PICO_$((40+2))\n")
+        local output = read_until(ch, "PICO_42", 15000)
+        check(output:find("PICO_42", 1, true), what .. ": the typed command ran: " .. output:sub(1, 200):gsub("%c", "."))
+
+        -- A real tty's line editing: its erase character is what Backspace must send. The
+        -- shell has read lines from it with `read` in canonical mode, unlike its own prompt.
+        type_keys(what, ch, 'read x; echo "<$x>"\n')
+        read_until(ch, "\n", 5000)
+        type_keys(what, ch, "ab\8c\n")
+        output = read_until(ch, "<ac>", 15000)
+        check(output:find("<ac>", 1, true), what .. ": Backspace erases: " .. output:sub(1, 200):gsub("%c", "."))
+
+        -- More than the 64 KB window this client grants, so it must top it up, and every
+        -- byte must come through across packets and reads (the PTY sends \r\n).
+        type_keys(what, ch, "seq 1 20000; echo PICO_DONE_$((40+2))\n")
+        output = read_until(ch, "PICO_DONE_42", 30000)
+        local expected = {}
+        for i = 1, 20000 do expected[i] = tostring(i) end
+        check(output:find(table.concat(expected, "\r\n") .. "\r\n", 1, true), what .. ": 20000 lines intact, " .. #output .. " bytes")
+        check(output:find("PICO_DONE_42", 1, true), what .. ": and the shell is still there")
+        check(not ch.closed, what .. ": still open: " .. tostring(ch.error))
+
+        type_keys(what, ch, "exit\n")
+        read_until(ch, nil, 15000)
+        check(ch.closed, what .. ": exit closes the channel")
+        check(ch.error == nil, what .. ": a clean end: " .. tostring(ch.error))
+    end
+    ch:close()
+    t:close()
+    conn:close()
+end
+
+-- sshd's own keepalives want a reply and end the connection without one: a global request
+-- while no channel is open, a channel request once one is. With these settings the second
+-- one unanswered, at 2 seconds, is the end.
+local function live_keepalives(key, kex, algo)
+    local what = "keepalives"
+    local ch, t, conn = live_shell(what, key, kex, algo, {"ClientAliveInterval=1", "ClientAliveCountMax=1"})
+    if not ch then return end
+
+    check(t:recv_packet_skip(3000) == nil and not t.dead, what .. ": alive with no channel: " .. tostring(t.error))
+    if not t.dead and open_shell(what, ch) then
+        read_until(ch, nil, 3000)
+        check(not ch.closed, what .. ": alive in a session: " .. tostring(ch.error))
+        type_keys(what, ch, "echo PICO_$((40+2))\n")
+        check(read_until(ch, "PICO_42", 15000):find("PICO_42", 1, true), what .. ": the shell still answers")
+    end
+    ch:close()
+    t:close()
+    conn:close()
+end
+
+-- A real re-key, mid-session. A server sends nothing more until it is done, so this must end
+-- the session with a reason rather than leave it silently frozen.
+local function live_rekey(key, kex, algo)
+    local what = "re-key"
+    local ch, t, conn = live_shell(what, key, kex, algo, {"RekeyLimit=64K"})
+    if not ch then return end
+
+    if open_shell(what, ch) then
+        type_keys(what, ch, "seq 1 20000\n")
+        read_until(ch, nil, 30000)
+        check(ch.closed, what .. ": ends the session")
+        check(ch.error and ch.error:find("re-key", 1, true), what .. ": and says why: " .. tostring(ch.error))
+    end
+    ch:close()
+    t:close()
+    conn:close()
+end
+
+local function run_live_shell(ec_key, rsa_key)
+    if not LIVE.has_pty() then
+        print("NOTE test_ssh_transport --live: no pseudo-terminals here, so no shell tests")
+        return
+    end
+    LIVE.client_pub_path = LIVE.client_key()
+    LIVE.client_pub = read_public_key(LIVE.client_pub_path)
+
+    live_shell_session(ec_key, "curve25519-sha256", "ecdsa-sha2-nistp256")
+    live_shell_session(rsa_key, "ecdh-sha2-nistp256", "rsa-sha2-256")
+    -- The other cipher and MAC the client offers, which sshd would not otherwise pick.
+    live_shell_session(rsa_key, "curve25519-sha256", "rsa-sha2-256", {"Ciphers=aes256-ctr", "MACs=hmac-sha1"})
+    live_keepalives(ec_key, "curve25519-sha256", "ecdsa-sha2-nistp256")
+    live_rekey(ec_key, "curve25519-sha256", "ecdsa-sha2-nistp256")
 end
 
 local function run_live()
@@ -908,6 +1102,7 @@ local function run_live()
     if LIVE.sshd_usable(rsa_key, "curve25519-sha256", "ssh-rsa") then
         live_refused(rsa_key, "curve25519-sha256", "ssh-rsa", "no common hostkey algorithm")
     end
+    run_live_shell(ec_key, rsa_key)
 end
 
 -- ── Run ─────────────────────────────────────────────────────────────────────
