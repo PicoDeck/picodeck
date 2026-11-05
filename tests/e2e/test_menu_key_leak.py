@@ -62,7 +62,7 @@ local PADS = {
 }
 local CODES = {
     [0xB1] = "esc", [0x0A] = "enter", [0xB5] = "up", [0xB6] = "down",
-    [0x83] = "f3", [0x85] = "f5",
+    [0x83] = "f3", [0x85] = "f5", [0x77] = "w",
 }
 
 local seen = { polls = 0 }
@@ -492,18 +492,73 @@ def test_native_app_never_reads_the_closing_key(simulator):
 
 # SDL's key codes for the shim (SDL_keycode.h).
 SDLK_ESCAPE = 27
+SDLK_RETURN = 13
 SDLK_UP = 0x40000052
+SDLK_W = ord("w")
+
+# Keys that repeat with no press edge (Esc), with a fresh one each time (Up,
+# Enter), and one with no button at all, only events and chars (W).
+HOST_KEYS = {"esc": SDLK_ESCAPE, "up": SDLK_UP, "enter": SDLK_RETURN, "w": SDLK_W}
 
 
-@pytest.fixture(params=[(SDLK_ESCAPE, "esc"), (SDLK_UP, "up")],
-                ids=["esc", "up"])
+class HostKey:
+    """The shim's key: down at press(), up by itself KEYHOLD_MS later. Waits
+    are on the shim's own acks, so they hold on a loaded machine."""
+
+    def __init__(self, trigger, name):
+        self.trigger = trigger
+        self.name = name
+
+    def _wait(self, what, timeout=30.0):
+        ack = Path(f"{self.trigger}.{what}")
+        deadline = time.monotonic() + timeout
+        while not ack.exists():
+            if time.monotonic() >= deadline:
+                pytest.fail(f"the simulator never took the key's {what}")
+            time.sleep(0.01)
+
+    def press(self):
+        self.trigger.write_text("go")
+        self._wait("down")
+
+    def wait_released(self):
+        self._wait("up")
+
+
+@pytest.fixture(params=sorted(HOST_KEYS))
 def host_key(request, hold_shim, monkeypatch):  # noqa: F811
     """The shim holds this host key for 2 s (set before the simulator starts:
-    list this fixture before it); returns (the shim's trigger, the key)."""
-    sym, key = request.param
-    monkeypatch.setenv("KEYHOLD_SYM", str(sym))
+    list this fixture before it)."""
+    monkeypatch.setenv("KEYHOLD_SYM", str(HOST_KEYS[request.param]))
     monkeypatch.setenv("KEYHOLD_MS", "2000")
-    return hold_shim, key
+    return HostKey(hold_shim, request.param)
+
+
+@pytest.fixture
+def host_key_last_repeat(host_key, monkeypatch):
+    """The same, with a repeat and the release handed over in one poll."""
+    monkeypatch.setenv("KEYHOLD_LAST_REPEAT", "1")
+    return host_key
+
+
+def _close_menu_on_host_key(target, screen, key):
+    """The key goes down in the menu; Esc and Enter (on the first row, the
+    app's item) close it, the others are closed by a tap of Esc over them."""
+    _open_menu(target, screen)
+    key.press()
+    if key.name not in ("esc", "enter"):
+        target.keypress("esc")
+    screen.wait(False, "the menu did not close")
+
+
+def _press_again_reads(target, probe, name):
+    target.keypress(name)
+    if name == "w":      # a typed char: down, char and up in one go
+        seen = probe.wait("k.char.w")
+        assert seen["k.ev_down.w"] == 1, seen
+    else:
+        seen = probe.wait(f"k.released.{name}")
+        assert seen[f"k.pressed.{name}"] == 1, seen
 
 
 def test_host_key_auto_repeat_stays_hidden(host_key, simulator):
@@ -511,31 +566,44 @@ def test_host_key_auto_repeat_stays_hidden(host_key, simulator):
     fresh one each time (as the STM32's HOLD and PRESSED reports). The repeats
     of a key hidden when the menu closed read as nothing, for all 2 s it stays
     down; pressed again, it is a press."""
-    trigger, key = host_key
     target = hw_target.SimTarget(simulator)
     screen, probe = _start(target)
-    _open_menu(target, screen)
-    trigger.write_text("go")            # the key goes down here...
-    time.sleep(0.2)
-    if key != "esc":                    # ...an arrow only moves the cursor
-        target.keypress("esc")
-    screen.wait(False, "the menu did not close")
-    time.sleep(2.5)                     # past the key's repeats and release
+    _close_menu_on_host_key(target, screen, host_key)
+    host_key.wait_released()
     seen = probe.after_polls()
-    assert _about(seen, "k", key) == {}, "the app read the held key's repeats"
+    assert _about(seen, "k", host_key.name) == {}, \
+        "the app read the held key's repeats"
     assert seen.get("p.pressed.up", 0) == 0, seen
-    target.keypress(key)
-    seen = probe.wait(f"k.released.{key}")
-    assert seen[f"k.pressed.{key}"] == 1, seen
+    _press_again_reads(target, probe, host_key.name)
+    _finish(target)
+
+
+def test_repeat_and_release_in_one_poll(host_key_last_repeat, simulator):
+    """The HAL keeps press edges and chars apart from its events: a repeat's
+    edge and char, read in the poll whose events also bring the release, must
+    go with the repeat (the release ended the hiding by then). Left to chance,
+    a repeat every 40 ms against a poll every 20 ms, Up read as a press with no
+    level behind it in about one run of test_host_key_auto_repeat_stays_hidden
+    in fifteen; the shim hands both over together here, so it shows every time."""
+    key = host_key_last_repeat
+    target = hw_target.SimTarget(simulator)
+    screen, probe = _start(target)
+    _close_menu_on_host_key(target, screen, key)
+    key.wait_released()
+    seen = probe.after_polls()
+    assert _about(seen, "k", key.name) == {}, \
+        "the app read the last repeat of a hidden key"
+    assert seen.get("p.pressed.up", 0) == 0, seen
+    _press_again_reads(target, probe, key.name)
     _finish(target)
 
 
 @pytest.fixture
 def host_enter(hold_shim, monkeypatch):  # noqa: F811
     """The shim holds Enter for 2 s (list this before the simulator)."""
-    monkeypatch.setenv("KEYHOLD_SYM", "13")  # SDLK_RETURN
+    monkeypatch.setenv("KEYHOLD_SYM", str(SDLK_RETURN))
     monkeypatch.setenv("KEYHOLD_MS", "2000")
-    return hold_shim
+    return HostKey(hold_shim, "enter")
 
 
 def test_enter_held_on_exit_app_does_not_launch_the_next_app(host_enter, simulator):
@@ -547,8 +615,9 @@ def test_enter_held_on_exit_app_does_not_launch_the_next_app(host_enter, simulat
     _open_menu(target, screen)
     target.keypress("up")               # wraps to Exit App, the last row
     time.sleep(0.2)
-    host_enter.write_text("go")
+    host_enter.press()
     target.wait_for_exit(timeout=15)
-    time.sleep(2.5)                     # past the repeats and the release
+    host_enter.wait_released()
+    time.sleep(0.5)                     # a launch would have begun by now
     assert not simulator.call("get_running_app")["running"], \
         "the held Enter started an app from the launcher"

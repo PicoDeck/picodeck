@@ -394,6 +394,27 @@ char hal_input_get_char_ex(bool *injected) {
     return c;
 }
 
+bool hal_input_drop_host_char(char c) {
+    const int size = (int)sizeof(g_char_buffer);
+    uint8_t want = kbd_key_fold((uint8_t)c);
+    bool found = false;
+    pthread_mutex_lock(&s_input_mutex);
+    for (int i = g_char_tail; i != g_char_head; i = (i + 1) % size) {
+        if (g_char_seq[i] || kbd_key_fold((uint8_t)g_char_buffer[i]) != want)
+            continue;
+        // Close the gap, so what is behind it stays in order.
+        for (int n = (i + 1) % size; n != g_char_head; i = n, n = (n + 1) % size) {
+            g_char_buffer[i] = g_char_buffer[n];
+            g_char_seq[i] = g_char_seq[n];
+        }
+        g_char_head = i;
+        found = true;
+        break;
+    }
+    pthread_mutex_unlock(&s_input_mutex);
+    return found;
+}
+
 char hal_input_get_char(void) {
     bool injected;
     return hal_input_get_char_ex(&injected);
