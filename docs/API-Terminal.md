@@ -8,7 +8,7 @@ A cell is 6x12 px, so a terminal has its own font and metrics: it does not use t
 
 ## Creating a terminal
 
-```lua
+```
 local term = picocalc.terminal.new([cols [, rows [, scrollback]]])
 ```
 

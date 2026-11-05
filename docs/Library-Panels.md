@@ -200,11 +200,14 @@ Every layer needs at least one of `image`, `images`, or `text`.
 A panel with a `choices` table becomes a branching point: when it settles as the centre panel, a menu opens (Up/Down to select, Enter to confirm).
 
 ```lua
-choices = {
-    prompt = "What now?",                     -- optional heading
-    { text = "Stay and fight", target = 5, setVars = { stayed = true } },
-    { text = "Walk away",      target = 5, setVars = { stayed = false } },
-},
+local sequence = {
+    -- ...the sequence's panels...
+    choices = {
+        prompt = "What now?",                     -- optional heading
+        { text = "Stay and fight", target = 5, setVars = { stayed = true } },
+        { text = "Walk away",      target = 5, setVars = { stayed = false } },
+    },
+}
 ```
 
 | Field | Type | Required | Description |
@@ -222,10 +225,12 @@ choices = {
 
 ```lua
 -- Later sequence reacts to an earlier choice:
-{ text = "You stayed. The city remembers.", x = 30, y = 140,
-  renderCondition = { var = "stayed", equals = true } },
-{ text = "You walked. The road remembers.", x = 30, y = 140,
-  renderCondition = { var = "stayed", equals = false } },
+local layers = {
+    { text = "You stayed. The city remembers.", x = 30, y = 140,
+      renderCondition = { var = "stayed", equals = true } },
+    { text = "You walked. The road remembers.", x = 30, y = 140,
+      renderCondition = { var = "stayed", equals = false } },
+}
 ```
 
 ---
