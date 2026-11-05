@@ -49,16 +49,10 @@ extern char *uc_read_string(uc_engine *uc, uint32_t addr);
 #define EMU_API_BASE        0xE0000000u
 #define EMU_TRAMP_BASE      0xF0000000u
 #define EMU_REVCALL_BASE    0xF0010000u
-#define EMU_HEAP_BASE       0x40000000u
-#define EMU_HEAP_SIZE       (4u * 1024 * 1024)
 
 // From unicorn_runner.c
 extern uint32_t heap_alloc(uint32_t size);
 extern void heap_free(uint32_t addr);
-
-// Heap functions made accessible (they were static in unicorn_runner.c,
-// so we re-declare here and they will be moved to non-static later)
-// Actually, let's just include them as extern and make them non-static in runner.
 
 // Display functions (from simulator stubs)
 extern void display_clear(uint16_t color);
@@ -295,7 +289,7 @@ static void write_reg(uc_engine *uc, int reg, uint32_t val) {
 static uint32_t read_stack_arg(uc_engine *uc, int index) {
     // Args beyond r0-r3 are on the stack: SP + index*4
     uint32_t sp = read_reg(uc, UC_ARM_REG_SP);
-    uint32_t val;
+    uint32_t val = 0;  // sys->log reads 4 words whatever it was passed: past the stack's top, 0
     uc_mem_read(uc, sp + (uint32_t)index * 4, &val, 4);
     return val;
 }

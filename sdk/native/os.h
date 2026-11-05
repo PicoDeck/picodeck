@@ -1,20 +1,49 @@
 #pragma once
 
+#ifndef __cplusplus
 #include <stdatomic.h>
+#endif
 #include <stdint.h>
 #include <stdbool.h>
 
 #include "terminal.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // =============================================================================
-// PicoOS API
+// PicoDeck native API
 //
-// This is the central interface between the OS and apps. The OS owns all hardware;
-// apps borrow it through here.
+// This is the interface between the OS and native apps. The OS owns all
+// hardware; apps borrow it through here: a pointer to PicoCalcAPI is passed to
+// picodeck_main() by the native loader.
 //
-// In Lua, this is exposed as the `picocalc` global module.
-// In C, a pointer to this struct is passed to picodeck_main() by the native loader.
+// Lua apps reach the same OS through the `picocalc` global module, which is not
+// the same surface: docs/Native-Loading.md lists what only Lua has.
 // =============================================================================
+
+// The API version this header describes. A program built against it can still
+// run on older firmware, so test api->version at run time before using anything
+// newer than that firmware has (see the version comment in PicoCalcAPI below).
+#define PICODECK_API_VERSION 10
+
+// --- Colours ----------------------------------------------------------------
+// Colour arguments are RGB565 in host byte order. PC_RGB565 takes 8-bit
+// components (the OS's own RGB565 macro). Only pixels written straight through
+// display->getBackBuffer() are byte-swapped.
+#define PC_RGB565(r, g, b) \
+    ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | (((b) & 0xFF) >> 3)))
+
+#define PC_COLOR_BLACK   PC_RGB565(0, 0, 0)
+#define PC_COLOR_WHITE   PC_RGB565(255, 255, 255)
+#define PC_COLOR_RED     PC_RGB565(255, 0, 0)
+#define PC_COLOR_GREEN   PC_RGB565(0, 255, 0)
+#define PC_COLOR_BLUE    PC_RGB565(0, 0, 255)
+#define PC_COLOR_YELLOW  PC_RGB565(255, 255, 0)
+#define PC_COLOR_CYAN    PC_RGB565(0, 255, 255)
+#define PC_COLOR_GRAY    PC_RGB565(128, 128, 128)
+#define PC_COLOR_DKGRAY  PC_RGB565(64, 64, 64)
 
 // --- Input ------------------------------------------------------------------
 
@@ -131,7 +160,9 @@ typedef struct {
     // Returns display width/height
     int  (*getWidth)(void);
     int  (*getHeight)(void);
-    // Set display brightness 0-255 (controls backlight PWM)
+    // Set the backlight, 0 (off) to 255. The level holds until the app exits
+    // or the user changes the Brightness setting. The system menu shows at the
+    // user's level, and idle dimming still applies.
     void (*setBrightness)(uint8_t brightness);
     // Draw an integer-scaled image (nearest-neighbor, no transparency).
     // Input data in host byte order (RGB565). Ideal for emulator blits.
@@ -145,7 +176,11 @@ typedef struct {
     // transfers the specified row range. Useful for emulators with letterboxing.
     void (*flushRegion)(int y0, int y1);
     // Get writable pointer to the current back buffer (320x320 RGB565,
-    // big-endian / byte-swapped). For direct framebuffer writes.
+    // big-endian / byte-swapped). For direct framebuffer writes, which mix with
+    // the draw calls above. flush() swaps the buffers: fetch the pointer again
+    // after it, and expect the new back buffer to hold the frame before last, not
+    // the frame just presented. flushRegion() swaps too but copies the rows it
+    // sent across, so only the other rows are old there.
     uint16_t* (*getBackBuffer)(void);
     // Framebuffer post-processing effects (shaders)
     void (*effectInvert)(void);
@@ -175,8 +210,13 @@ typedef struct {
     void (*fillHLine)(int y, int x0, int x1, uint16_t color);
     void (*fillTriangle)(int x0, int y0, int x1, int y1,
                          int x2, int y2, uint16_t color);
-    // Hardware vertical scroll (ST7365P VSCRDEF/VSCRSADD).
-    // top_fixed + scroll_height + bottom_fixed must equal 320.
+    // Hardware vertical scroll (ST7365P VSCRDEF/VSCRSADD). The controller has
+    // 480 lines of frame memory and the panel shows 320, so top_fixed +
+    // scroll_height + bottom_fixed must equal 480. The standard setting is
+    // (0, 320, 160): screen row L then shows frame-memory row (offset + L) % 320.
+    // The OS resets the offset to 0 whenever it takes the screen (the system
+    // menu runs inside sys->poll()), and this API has no getter for it: send the
+    // offset every frame, and repaint the ring if poll() took unusually long.
     void (*setScrollArea)(int top_fixed, int scroll_height, int bottom_fixed);
     void (*setScrollOffset)(int offset);
     // Mode 7 perspective ground-plane render. Power-of-two texture dims wrap
@@ -206,17 +246,25 @@ typedef struct {
 typedef void* pcfile_t;   // opaque file handle
 
 typedef struct {
-    // Open a file. mode: "r", "w", "a", "rb", "wb" etc.
+    // Open a file. NULL on failure. mode: "r", "w", "a", "rb", "wb" etc.
+    // Only the letters r, w and a count: "r+" is read-only, and "w+" and "a+"
+    // are write-only. Read and write together needs a mode with both letters,
+    // "rw", which creates the file if it is missing and does not truncate it.
     pcfile_t (*open)(const char *path, const char *mode);
+    // Bytes read (0 at end of file), -1 on error.
     int      (*read)(pcfile_t f, void *buf, int len);
+    // Bytes written, -1 on error.
     int      (*write)(pcfile_t f, const void *buf, int len);
     void     (*close)(pcfile_t f);
     bool     (*exists)(const char *path);
+    // File size in bytes, -1 on error.
     int      (*size)(const char *path);
+    // Size of an open file in bytes, -1 on error.
     int      (*fsize)(pcfile_t f);
     bool     (*seek)(pcfile_t f, uint32_t offset);
     uint32_t (*tell)(pcfile_t f);
-    // List directory. Calls callback for each entry. Returns entry count.
+    // List directory. Calls callback for each entry. Returns entry count, -1 on
+    // error.
     int      (*listDir)(const char *path,
                         void (*callback)(const char *name, bool is_dir,
                                          uint32_t size, void *user),
@@ -258,7 +306,8 @@ typedef struct {
     // this currently reads false even on USB power. A fix (reading VBUS
     // through the CYW43) is pending.
     bool     (*isUSBPowered)(void);
-    // Add an item to the system menu overlay (max 4 items per app)
+    // Add an item to the system menu overlay (max 4 items per app; a 5th is
+    // silently ignored)
     // callback is called when the item is selected in the menu, after the
     // menu has closed and, when memory for the copy was available, given the
     // app its screen (both framebuffers) back; what it draws shows at the
@@ -266,21 +315,29 @@ typedef struct {
     void     (*addMenuItem)(const char *label, void (*callback)(void *user), void *user);
     // Clear all app-registered menu items (called automatically on app exit)
     void     (*clearMenuItems)(void);
-    // Log a message to UART serial debug output
+    // Log a message to USB serial, printf-style, with a newline added and no
+    // prefix on the device (the simulator's log adds "[APP] " and has a smaller
+    // formatter: no width or precision, no %f, 7 arguments at most).
     void     (*log)(const char *fmt, ...);
     // Single OS tick for native apps: polls the keyboard, feeds the watchdog,
     // reclaims released HTTP/TCP slots and serves dev commands.  Also checks
     // for the Sym (Menu) key and shows the system menu overlay automatically.
     // It fires no HTTP callbacks (native apps poll http->isComplete()).
-    // Call in your main loop.
+    // Call in your main loop. flush() does not count: an app that goes about
+    // 60 s without poll() is taken for hung and the watchdog resets the device,
+    // so call it during long loads too.
     void     (*poll)(void);
     // Returns true (once) after the user selects "Exit App" from the system
     // menu.  Native apps should check this each frame and return from
     // picodeck_main() when it fires.
     bool     (*shouldExit)(void);
-    // Register a callback to be called on Core 1 every 5ms, alongside
-    // audio updates.  Used by native apps (e.g. DOOM) to offload audio
-    // mixing from Core 0.  Pass NULL to deregister.
+    // Register a callback to be called on Core 1 on its 1 ms tick (less often
+    // under WiFi load: size work by what is due, never as a fixed slice per
+    // call), alongside audio updates.  Used by native apps (e.g. DOOM) to
+    // offload audio mixing from Core 0.  It shares Core 1 with WiFi and audio:
+    // return quickly, do not block and do not draw (Core 0 owns the display,
+    // keyboard and SD card).  Cleared when the app exits.  Pass NULL to
+    // deregister.
     void     (*setAudioCallback)(void (*cb)(void));
 } picocalc_sys_t;
 
@@ -332,7 +389,7 @@ typedef void* pctcp_t;   // opaque TCP connection handle
 typedef enum {
     TCP_CB_CONNECT  = (1 << 0),
     TCP_CB_READ     = (1 << 1),
-    TCP_CB_WRITE    = (1 << 2),
+    TCP_CB_WRITE    = (1 << 2),  // reserved: never set
     TCP_CB_CLOSED   = (1 << 3),
     TCP_CB_FAILED   = (1 << 4),
 } tcp_event_t;
@@ -344,7 +401,8 @@ typedef enum {
                                       // (self-signed dev servers only)
 
 typedef struct {
-    // Open a TCP connection to host:port. Non-blocking.
+    // Open a TCP connection to host:port. Non-blocking. NULL when all 4 sockets
+    // are in use.
     pctcp_t (*connect)(const char *host, uint16_t port, bool use_ssl);
     // Write data to the connection. Returns bytes sent or <0 on error.
     int     (*write)(pctcp_t c, const void *buf, int len);
@@ -357,7 +415,8 @@ typedef struct {
     int     (*available)(pctcp_t c);
     // Returns the last error string, or NULL.
     const char * (*getError)(pctcp_t c);
-    // Returns bitmask of pending events (TCP_CB_*).
+    // Returns bitmask of pending events (TCP_CB_*) and clears them, so each
+    // event is reported once.
     uint32_t (*getEvents)(pctcp_t c);
     // --- API version 8 ---
     // connect() with PCTCP_* flags. A TLS socket reports TCP_CB_CONNECT only
@@ -385,13 +444,25 @@ typedef struct {
 // --- PSRAM ------------------------------------------------------------------
 
 typedef struct {
+    // True if the mainboard's PIO PSRAM is present and working.
     bool (*pioAvailable)(void);
+    // True if its bulk driver is available.
     bool (*pioBulkAvailable)(void);
+    // PIO PSRAM transfers. addr is an offset into the 8 MB chip, and only 0x48000
+    // and up belongs to apps: a call overlapping the OS's region below it does
+    // nothing and logs "[NATIVE] psram->... refused". pioRead and pioWrite use
+    // the original driver (27-byte chunks), the bulk pair the bulk driver (8 KB
+    // chunks, much faster for large blocks).
     void (*pioRead)(uint32_t addr, uint8_t *dst, uint32_t len);
     void (*pioWrite)(uint32_t addr, const uint8_t *src, uint32_t len);
     void (*pioBulkRead)(uint32_t addr, uint8_t *dst, uint32_t len);
     void (*pioBulkWrite)(uint32_t addr, const uint8_t *src, uint32_t len);
+    // Allocate from the QMI PSRAM heap, shared with the app's image and stack:
+    // NULL when there is no free block that large (or for size 0). The memory is
+    // not zeroed. Each block costs at least 200 bytes, so pool small objects.
+    // Blocks still held when the app exits are freed for it.
     void *(*qmiAlloc)(uint32_t size);
+    // Free a qmiAlloc block. NULL and pointers it did not return are ignored.
     void (*qmiFree)(void *ptr);
 } picocalc_psram_t;
 
@@ -399,10 +470,12 @@ typedef struct {
 
 typedef struct {
     void (*beginFrame)(void);
-    // One frame of the app's own loop. While an app calls it, the OS FPS
-    // counter (Show FPS) shows endFrame calls per second, not presents.
+    // One frame of the app's own loop: sleeps until the setTargetFPS deadline,
+    // if one is set. While an app calls it, the OS FPS counter (Show FPS) shows
+    // endFrame calls per second, not presents.
     void (*endFrame)(void);
     int  (*getFPS)(void);
+    // Milliseconds from beginFrame to the last endFrame.
     uint32_t (*getFrameTime)(void);
     // "FPS: n" (getFPS) at (x, y) in the colour code; draws nothing while
     // the Show FPS setting is on: the OS counter replaces the app's own.
@@ -421,9 +494,12 @@ typedef struct {
     // Allocate a connection. server = hostname/IP, port = 0 → 80/443 default.
     // use_ssl = true for HTTPS. Returns NULL if pool exhausted.
     pchttp_t (*newConn)(const char *server, uint16_t port, bool use_ssl);
-    // Initiate GET request. extra_hdrs may be NULL. Non-blocking.
+    // Initiate GET request. extra_hdrs may be NULL. Non-blocking. A request the
+    // OS cannot start (no WiFi hardware, out of memory) completes at once:
+    // isComplete() turns true and getError() says why.
     void  (*get)(pchttp_t c, const char *path, const char *extra_hdrs);
-    // Initiate POST request. body/body_len may be 0/NULL. Non-blocking.
+    // Initiate POST request. body/body_len may be 0/NULL. Non-blocking. Fails as
+    // get() does.
     void  (*post)(pchttp_t c, const char *path, const char *extra_hdrs,
                   const char *body, uint32_t body_len);
     // Read up to len bytes of response body. Returns bytes read (0 if none).
@@ -481,11 +557,16 @@ typedef struct {
     bool     (*playerIsPlaying)(pcsound_player_t p);
     uint8_t  (*playerGetVolume)(pcsound_player_t p);
     void     (*playerSetVolume)(pcsound_player_t p, uint8_t vol);   // 0–100
+    // true: repeat until stopped, also through later playerPlay calls whatever
+    // their count. false: playerPlay counts again, and a sound now repeating for
+    // ever ends at the end of this pass.
     void     (*playerSetLoop)(pcsound_player_t p, bool loop);
     void     (*playerFree)(pcsound_player_t p);   // never frees the player's sample
 
     // --- File player (streaming from SD card) ---
     pcfileplayer_t (*filePlayerNew)(void);
+    // Reports no failure: after filePlayerPlay, filePlayerIsPlaying is false if
+    // the file did not load.
     void     (*filePlayerLoad)(pcfileplayer_t fp, const char *path);
     void     (*filePlayerPlay)(pcfileplayer_t fp, uint8_t repeat_count);  // 0 = loop until stopped, n = play n times (as playerPlay); setLoopRange loops regardless
     void     (*filePlayerStop)(pcfileplayer_t fp);
@@ -494,13 +575,15 @@ typedef struct {
     bool     (*filePlayerIsPlaying)(pcfileplayer_t fp);
     void     (*filePlayerSetVolume)(pcfileplayer_t fp, uint8_t vol);  // 0-100 (clamped), both L/R channels
     uint8_t  (*filePlayerGetVolume)(pcfileplayer_t fp);
-    uint32_t (*filePlayerGetOffset)(pcfileplayer_t fp);
-    void     (*filePlayerSetOffset)(pcfileplayer_t fp, uint32_t pos);
+    uint32_t (*filePlayerGetOffset)(pcfileplayer_t fp);       // seconds
+    void     (*filePlayerSetOffset)(pcfileplayer_t fp, uint32_t pos);  // seconds
     bool     (*filePlayerDidUnderrun)(pcfileplayer_t fp);  // this player's stream starved since the last call or play(); cleared by the call
     void     (*filePlayerFree)(pcfileplayer_t fp);
 
     // --- MP3 player (Core 1 decoding, PIO PSRAM ring buffer) ---
     pcmp3player_t (*mp3PlayerNew)(void);
+    // Reports no failure: after mp3PlayerPlay, mp3PlayerIsPlaying is false if the
+    // file did not load.
     void     (*mp3PlayerLoad)(pcmp3player_t mp, const char *path);
     void     (*mp3PlayerPlay)(pcmp3player_t mp, uint8_t repeat_count);  // 0 = loop until stopped, any other count plays once (the count is not honoured); as Lua play()
     void     (*mp3PlayerStop)(pcmp3player_t mp);
@@ -523,6 +606,8 @@ typedef struct {
     // Bind and load the running app's own config. Only the running app's id
     // is accepted (case-insensitive); another app's id returns false and
     // leaves the binding unchanged. Not called for you by the launcher.
+    // Also false on an app's first run, when there is no file yet: the store is
+    // bound all the same, so set() and save() work. Do not treat it as fatal.
     bool        (*load)(const char *app_id);
     // Save in-memory config to /data/<APP_ID>/config.json.
     bool        (*save)(void);
@@ -566,7 +651,8 @@ typedef struct {
                       const uint8_t *session_id, uint32_t sid_len,
                       uint8_t *out, uint32_t out_len);
     // --- AES-CTR ---
-    // Create AES-CTR context. klen = 16/24/32. nonce = 16 bytes.
+    // Create AES-CTR context. klen = 16/24/32. nonce = 16 bytes. NULL for any
+    // other key size or out of memory.
     pccrypto_aes_t (*aesNew)(const uint8_t *key, uint32_t klen,
                               const uint8_t *nonce);
     // Encrypt/decrypt in place (or in→out). Returns 0 on success.
@@ -577,14 +663,21 @@ typedef struct {
     // Create an X25519 or P-256 keypair.
     pccrypto_ecdh_t (*ecdhX25519)(void);
     pccrypto_ecdh_t (*ecdhP256)(void);
-    // Write public key bytes into out; sets *out_len.
+    // Write public key bytes into out. *out_len is out's size on entry and the
+    // key's length on return, which is 32 bytes for X25519 and 65 for P-256 (a
+    // key longer than out is cut short; 0 means it failed).
     void (*ecdhGetPublicKey)(pccrypto_ecdh_t ctx, uint8_t *out, uint32_t *out_len);
-    // Compute shared secret from remote public key. Returns 0 on success.
+    // Compute shared secret from remote public key. *out_len as above (the secret
+    // is 32 bytes). Returns 0 on success, -1 for a bad context or remote key
+    // over 127 bytes, or an mbedTLS error code (negative).
     int  (*ecdhComputeShared)(pccrypto_ecdh_t ctx,
                               const uint8_t *remote, uint32_t rlen,
                               uint8_t *out, uint32_t *out_len);
     void (*ecdhFree)(pccrypto_ecdh_t ctx);
     // --- Signature verification ---
+    // pubkey is an SSH wire-format blob, hash a 32-byte SHA-256. rsaVerify takes
+    // the raw signature bytes, exactly as long as the modulus; ecdsaP256Verify
+    // an SSH-format signature (mpint r + mpint s).
     bool (*rsaVerify)(const uint8_t *pubkey, uint32_t pklen,
                       const uint8_t *sig, uint32_t slen,
                       const uint8_t *hash, uint32_t hlen);
@@ -628,13 +721,15 @@ typedef struct {
 typedef void* pcvideo_t;  // opaque video player handle
 
 typedef struct {
-    pcvideo_t (*newPlayer)(void);
+    pcvideo_t (*newPlayer)(void);              // NULL on failure
     void      (*free)(pcvideo_t vp);
-    bool      (*load)(pcvideo_t vp, const char *path);
+    bool      (*load)(pcvideo_t vp, const char *path);  // false on failure
     void      (*play)(pcvideo_t vp);
     void      (*pause)(pcvideo_t vp);
     void      (*resume)(pcvideo_t vp);
     void      (*stop)(pcvideo_t vp);
+    // Call often from the main loop: it decodes the frame that is due by the
+    // wall clock, dropping frames when behind, and returns true if it drew one.
     bool      (*update)(pcvideo_t vp);
     void      (*seek)(pcvideo_t vp, uint32_t frame);
     float     (*getFPS)(pcvideo_t vp);
@@ -642,13 +737,14 @@ typedef struct {
     bool      (*isPlaying)(pcvideo_t vp);
     bool      (*isPaused)(pcvideo_t vp);
     void      (*setLoop)(pcvideo_t vp, bool loop);
+    // true: update() presents each frame itself. false: the app flushes.
     void      (*setAutoFlush)(pcvideo_t vp, bool af);
     bool      (*hasAudio)(pcvideo_t vp);
-    void      (*setVolume)(pcvideo_t vp, uint8_t vol);
+    void      (*setVolume)(pcvideo_t vp, uint8_t vol);   // 0-100
     uint8_t   (*getVolume)(pcvideo_t vp);
     void      (*setMuted)(pcvideo_t vp, bool muted);
     bool      (*getMuted)(pcvideo_t vp);
-    uint32_t  (*getDroppedFrames)(pcvideo_t vp);
+    uint32_t  (*getDroppedFrames)(pcvideo_t vp);         // since resetStats
     void      (*resetStats)(pcvideo_t vp);
 
     // --- API version 7 additions -------------------------------------------
@@ -706,7 +802,7 @@ typedef struct {
 
 typedef struct {
     bool (*extract)(const char *zip_path, const char *dest_dir);
-    // Returns number of files in archive, -1 on error.
+    // Returns number of entries in archive (files and directories), -1 on error.
     int  (*list)(const char *zip_path);
     // --- API version 5 additions: read-in-place archive handles ------------
     // Open an archive for random access without extracting it. At most 4
@@ -728,7 +824,7 @@ typedef struct {
 } picocalc_zip_t;
 
 // --- The complete OS API struct ---------------------------------------------
-// This is what gets passed to every Lua environment and future C app loaders.
+// This is what the native loader passes to picodeck_main().
 
 typedef struct PicoCalcAPI {
     const picocalc_input_t   *input;
@@ -765,10 +861,6 @@ typedef struct PicoCalcAPI {
     const picocalc_gamepad_t     *gamepad;     // logical gamepad (PAD_*)
 } PicoCalcAPI;
 
-// The global API instance, populated during os_init()
-extern PicoCalcAPI g_api;
-
-// Optional audio callback for native apps that need Core 1 mixing.
-// Set by the native app at startup, cleared on exit. Called every 5ms
-// from core1_entry() alongside mp3_player_update()/fileplayer_update().
-extern _Atomic(void (*)(void)) g_native_audio_callback;
+#ifdef __cplusplus
+}  // extern "C"
+#endif

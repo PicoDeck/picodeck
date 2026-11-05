@@ -140,8 +140,8 @@ def wait_stderr(sim, mark: int, pattern: str, timeout: float = 5.0) -> str:
 
 
 def expected_error(reason: str, case: str) -> str:
-    # image_too_large carries the simulator's code-region size as detail
-    return (reason + ": > 8388608 byte code region"
+    # image_too_large carries the limit as detail
+    return (reason + ": > 7340032 byte limit"
             if case == "image_too_large" else reason)
 
 

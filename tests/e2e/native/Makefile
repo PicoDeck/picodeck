@@ -3,8 +3,9 @@
 # native_pad_probe (pad_probe.c: the gbc / c64 gamepad adapters),
 # native_nopoll (nopoll.c: no sys->poll() for 4 s), native_drawfps
 # (drawfps.c: perf->drawFPS under Show FPS) and native_exit_probe
-# (exit_probe.c: ends only on shouldExit) and native_level_probe (level_probe.c:
-# logs every change of the held masks).
+# (exit_probe.c: ends only on shouldExit), native_level_probe (level_probe.c:
+# logs every change of the held masks) and native_fidelity (fidelity_probe.c:
+# one API or emulated-machine behaviour per mode, chosen by the app name).
 # The outputs are committed so the E2E job needs no ARM toolchain; rebuild
 # and commit them whenever sdk/native/os.h changes, and the pad probe also
 # whenever apps/gbc/input.[ch] or apps/c64/pad_input.h changes:
@@ -22,7 +23,8 @@ NOPOLL   ?= ../fixtures/native_nopoll
 DRAWFPS  ?= ../fixtures/native_drawfps
 EXITPROBE ?= ../fixtures/native_exit_probe
 LEVELPROBE ?= ../fixtures/native_level_probe
-GAMES   ?= ../../../apps
+FIDELITY ?= ../fixtures/native_fidelity
+GAMES  ?= ../../../apps
 CC       = arm-none-eabi-gcc
 CFLAGS   = -mcpu=cortex-m33 -mthumb -fpie -fno-plt \
            -ffunction-sections -fdata-sections -Os \
@@ -33,7 +35,8 @@ LDFLAGS  = -T $(SDK)/linker.ld -Wl,--entry=picodeck_main -Wl,-pie \
 
 .PHONY: all clean
 all: $(OUT)/main.elf $(LEAKY)/main.elf $(PADPROBE)/main.elf $(NOPOLL)/main.elf \
-     $(DRAWFPS)/main.elf $(EXITPROBE)/main.elf $(LEVELPROBE)/main.elf
+     $(DRAWFPS)/main.elf $(EXITPROBE)/main.elf $(LEVELPROBE)/main.elf \
+     $(FIDELITY)/main.elf
 
 $(OUT)/main.elf: api_probe.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker.ld
 	@mkdir -p $(OUT)
@@ -64,6 +67,13 @@ $(LEVELPROBE)/main.elf: level_probe.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker
 	@mkdir -p $(LEVELPROBE)
 	$(CC) $(CFLAGS) level_probe.c $(LDFLAGS) -o $@
 
+# -fno-delete-null-pointer-checks, -Wno-array-bounds: the fault modes
+# dereference NULL and fixed addresses on purpose.
+$(FIDELITY)/main.elf: fidelity_probe.c $(SDK)/os.h $(SDK)/app_abi.h $(SDK)/linker.ld
+	@mkdir -p $(FIDELITY)
+	$(CC) $(CFLAGS) -fno-delete-null-pointer-checks -Wno-array-bounds fidelity_probe.c $(LDFLAGS) -o $@
+
 clean:
 	rm -f $(OUT)/main.elf $(LEAKY)/main.elf $(PADPROBE)/main.elf $(NOPOLL)/main.elf \
-	      $(DRAWFPS)/main.elf $(EXITPROBE)/main.elf $(LEVELPROBE)/main.elf
+	      $(DRAWFPS)/main.elf $(EXITPROBE)/main.elf $(LEVELPROBE)/main.elf \
+	      $(FIDELITY)/main.elf
