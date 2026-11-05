@@ -1146,13 +1146,8 @@ static void sp_playerSetVolume(pcsound_player_t p, uint8_t vol) {
     sound_player_set_volume((sound_player_t *)p, vol);
 }
 
-// sound.h has no sound_player_set_loop; repeat_count=0 with playerPlay means
-// the player won't loop — callers should use repeat_count to control looping.
-// We store loop intent as repeat_count=255 (max repeats) when loop=true,
-// and stop the player when loop=false.
 static void sp_playerSetLoop(pcsound_player_t p, bool loop) {
-    sound_player_t *sp = (sound_player_t *)p;
-    sp->repeat_count = loop ? 255 : 0;
+    sound_player_set_loop((sound_player_t *)p, loop);
 }
 
 static void sp_playerFree(pcsound_player_t p) {

@@ -351,6 +351,7 @@ sound_player_t *sound_player_create(void) {
             // A free slot is stopped and detached (sound_player_destroy),
             // so the mixer skips it while it is being set up.
             player->volume = 100;
+            player->loop = false;
             player->play_start = 0;
             player->play_end = 0;
             player->rate = 1.0f;
@@ -404,7 +405,7 @@ void sound_player_play(sound_player_t *player, uint8_t repeat_count) {
         return;
     }
     player->paused = false;
-    player->repeat_count = repeat_count;
+    player->repeat_count = player->loop ? 0 : repeat_count;
     player->repeats_played = 0;
     player->position = 0;
     player->phase = 0;
@@ -422,6 +423,18 @@ void sound_player_stop(sound_player_t *player) {
         return;
     mix_lock();
     player_stop_locked(player);
+    mix_unlock();
+}
+
+void sound_player_set_loop(sound_player_t *player, bool loop) {
+    if (!player)
+        return;
+    mix_lock();
+    player->loop = loop;
+    if (loop)
+        player->repeat_count = 0;
+    else if (player->repeat_count == 0)
+        player->repeat_count = 1;
     mix_unlock();
 }
 

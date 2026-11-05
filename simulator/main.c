@@ -436,7 +436,7 @@ static void sp_playerStop(pcsound_player_t p) { sound_player_stop((sound_player_
 static bool sp_playerIsPlaying(pcsound_player_t p) { return sound_player_is_playing((const sound_player_t *)p); }
 static uint8_t sp_playerGetVolume(pcsound_player_t p) { return sound_player_get_volume((const sound_player_t *)p); }
 static void sp_playerSetVolume(pcsound_player_t p, uint8_t vol) { sound_player_set_volume((sound_player_t *)p, vol); }
-static void sp_playerSetLoop(pcsound_player_t p, bool loop) { ((sound_player_t *)p)->repeat_count = loop ? 255 : 0; }
+static void sp_playerSetLoop(pcsound_player_t p, bool loop) { sound_player_set_loop((sound_player_t *)p, loop); }
 static void sp_playerFree(pcsound_player_t p) { sound_player_destroy((sound_player_t *)p); }
 
 static pcfileplayer_t sp_filePlayerNew(void) { return (pcfileplayer_t)fileplayer_create(); }

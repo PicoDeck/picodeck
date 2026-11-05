@@ -179,6 +179,7 @@ extern void sound_player_stop(sound_player_t *player);
 extern bool sound_player_is_playing(const sound_player_t *player);
 extern uint8_t sound_player_get_volume(const sound_player_t *player);
 extern void sound_player_set_volume(sound_player_t *player, uint8_t volume);
+extern void sound_player_set_loop(sound_player_t *player, bool loop);
 
 // Fileplayer (from sim_audio.c)
 extern fileplayer_t *fileplayer_create(void);
@@ -2143,8 +2144,10 @@ static void tramp_snd_player_set_volume(uc_engine *uc) {
 }
 
 static void tramp_snd_player_set_loop(uc_engine *uc) {
-    // The sound_player doesn't have a direct set_loop, but repeat_count=0 with play means loop
-    (void)uc;
+    uint32_t handle = read_reg(uc, UC_ARM_REG_R0);
+    bool loop = read_reg(uc, UC_ARM_REG_R1) != 0;
+    sound_player_t *p = handle_unwrap(handle);
+    if (p) sound_player_set_loop(p, loop);
 }
 
 static void tramp_snd_player_free(uc_engine *uc) {
