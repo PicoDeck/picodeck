@@ -194,8 +194,8 @@ Native apps receive `PicoCalcAPI *api` as their entry point argument. Call `api-
 `requirements` in `app.json`:
 - `"filesystem"` (default): read `/apps/<dir>` and `/system/lib/`, read + write `/data/<app_id>`; relative paths and `..` are refused. The sandbox (`src/os/fs_path.c`) guards `picocalc.fs` and every loader that takes a path.
 - `"root-filesystem"`: full SD card read/write.
-- `"http"`: network access; WiFi stays connected after the boot time sync.
-- `"audio"`: audio output.
+- `"http"`: the launcher joins the saved WiFi at launch and keeps it up, through the boot time sync's auto-disconnect and a `system_clock_khz` change. Nothing enforces it: without it WiFi may just be off. Raw TCP needs it too.
+- `"audio"`: declared only (`APP_REQUIREMENTS.audio`, shown in the store); sound works without it.
 - `"clipboard"`: reserved.
 - `"sysconfig"`: registers `picocalc.sysconfig` (`wifi_pass` is write-only).
 - `"system-update"`: `sys.applyUpdate`, for the OS updater/store only. Updates are flashed only when signed: dev builds embed the TEST key in `tests/keys/` (`make flash-ota` signs with it); release builds need the `UPDATE_SIGNING_KEY` secret. The full OTA policy is in `src/os/CLAUDE.md`.
