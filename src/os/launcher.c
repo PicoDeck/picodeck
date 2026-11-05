@@ -955,6 +955,10 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   crashlog_describe_heap(heap, sizeof(heap));
   printf("[LAUNCHER] App '%s' exited (ok=%d), PSRAM %s\n", app->name, ok, heap);
 
+  // The app's quitting key, still down, must not start whatever the launcher
+  // has selected: a held Enter's repeats are press edges.
+  kbd_hide_held();
+
   return ok;
 }
 

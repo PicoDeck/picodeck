@@ -213,13 +213,11 @@ static bool file_browser_run(const char *start_path, const char *root_path,
     dev_commands_process();
     // Let a dev "exit" unwind this modal (cancel; the Lua hook handles exit).
     if (dev_commands_wants_exit()) {
-      kbd_clear_state();
       display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false;
     }
     // The menu key cancels the browser, like Esc (and takes the latch, so it
     // cannot open the system menu once the browser has returned).
     if (kbd_consume_menu_press()) {
-      kbd_clear_state();
       display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false;
     }
     uint32_t pressed = kbd_get_buttons_pressed();
@@ -258,10 +256,6 @@ static bool file_browser_run(const char *start_path, const char *root_path,
         } else {
           // File selected — return the full path
           snprintf(out_path, out_len, "%s/%s", cur_path, s_entries[sel].name);
-          // Clear the button edge-latch before returning (matches
-          // system_menu.c) so the caller's own button checks don't see a
-          // stale Enter/Esc edge from this modal's input handling.
-          kbd_clear_state();
           display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return true;
         }
       }
@@ -270,10 +264,6 @@ static bool file_browser_run(const char *start_path, const char *root_path,
     if (pressed & BTN_ESC) {
       // Go up one directory; cancel if already at (or above) root_path
       if (strcmp(cur_path, root_path) == 0) {
-        // Clear the button edge-latch before returning (matches
-        // system_menu.c) so the caller's own button checks don't see a
-        // stale Esc edge from this modal's input handling.
-        kbd_clear_state();
         display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false; // already at the sandbox root — cancel
       }
       char *last_slash = strrchr(cur_path, '/');
@@ -287,10 +277,6 @@ static bool file_browser_run(const char *start_path, const char *root_path,
         scroll = 0;
         need_redraw = true;
       } else {
-        // Clear the button edge-latch before returning (matches
-        // system_menu.c) so the caller's own button checks don't see a
-        // stale Esc edge from this modal's input handling.
-        kbd_clear_state();
         display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false;
       }
     }
@@ -307,6 +293,10 @@ bool file_browser_show(const char *start_path, const char *root_path,
   int saved_font = display_get_font();
   display_set_font(0);
   bool ok = file_browser_run(start_path, root_path, out_path, out_len);
+  // What is down, the answering key first of all, stays out of the caller's
+  // reads until it is released; the runner's exits leave the key-down set for
+  // this, so they must not clear it.
+  kbd_hide_held();
   display_set_font(saved_font);
   return ok;
 }
