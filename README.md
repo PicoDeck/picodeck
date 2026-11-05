@@ -14,7 +14,7 @@ An app platform for the ClockworkPi PicoCalc, built around a resident Lua runtim
 
 - **Apps in Lua or native C/C++.** Lua 5.4 apps get a `picocalc.*` API; native apps are position-independent ELF binaries using the same API through a C table (see [Native Loading](https://picodeck.net/docs/native-loading/)). The first-party emulators (C64, Game Boy Color, DOS/86, TIC-80) are native.
 - **Graphics.** Double-buffered 60 FPS display, images (BMP, JPEG, PNG, GIF), sprites and tilemaps, flat-shaded 3D (`gfx3d`), MJPEG video, and `picocalc.chargrid`, a character-cell grid with text, shapes, palettes and a small shader language (plus `picocalc.noise`).
-- **Audio.** WAV, MP3, QOA and tracker modules (MOD, XM, S3M), tones, and raw sample streaming.
+- **Audio.** WAV, MP3, QOA and MOD tracker modules, tones, and raw sample streaming.
 - **Input.** The built-in keyboard, a rebindable gamepad layer, and Bluetooth gamepads (Classic HID), paired from Settings.
 - **Networking.** WiFi, an HTTP/HTTPS client, TCP sockets, crypto primitives, and an SSH client app.
 - **System.** A launcher and system menu, an app store, signed over-the-air firmware updates, crash logging with a watchdog, and per-app config and save data.

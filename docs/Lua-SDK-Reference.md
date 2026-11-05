@@ -15,7 +15,7 @@ This document provides a complete reference for all Lua APIs available to PicoDe
 - [API Filesystem](API-Filesystem.md) — Filesystem (SD Card)
 - [API Gamepad](API-Gamepad.md) — Rebindable Gamepad Buttons, Analog Sticks and Triggers (`picocalc.gamepad`)
 - [API Input](API-Input.md) — Keyboard & Button Input
-- [API Modplayer](API-Modplayer.md) — Tracker Module Music (MOD, XM, S3M)
+- [API Modplayer](API-Modplayer.md) — Tracker Module Music (MOD)
 - [API Network and WiFi](API-Network-and-WiFi.md) — WiFi & HTTP Client
 - [API Performance](API-Performance.md) — Performance Monitoring
 - [API REPL](API-Repl.md) — Interactive Lua REPL

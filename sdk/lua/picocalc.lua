@@ -3297,9 +3297,10 @@ local PicoDeckModPlayer = {}
 ---@return string? error
 function picocalc.modplayer.create() end
 
----Load a .mod file.
+---Load a .mod file (at most 512 KB). XM, S3M and IT are not supported.
 ---@param path string
 ---@return boolean ok
+---@return string? error `"access denied"` outside the sandbox; otherwise none
 function PicoDeckModPlayer:load(path) end
 
 ---Start playback.
