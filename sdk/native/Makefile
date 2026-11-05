@@ -20,6 +20,9 @@ LDFLAGS = -T linker.ld \
           -Wl,--no-warn-rwx-segments \
           -nostartfiles -nodefaultlibs
 
+# -Os keeps this sample small. A game wants -O2, and -mfloat-abi=softfp
+# -mfpu=fpv5-sp-d16 if it uses float: docs/Writing-Fast-Apps.md.
+#
 # This sample uses no C library. To use one (malloc, snprintf, memcpy, float
 # maths, 64-bit division), add stubs.c to SRCS and link with -lc -lm -lgcc after
 # the sources, as docs/Native-Loading.md describes under "C library".

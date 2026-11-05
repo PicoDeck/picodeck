@@ -372,6 +372,7 @@ These calls differ from the device:
 
 ## See also
 
+- [Writing Fast Apps](Writing-Fast-Apps.md) — build flags, where your code runs, presenting a frame
 - [Lua SDK Reference](Lua-SDK-Reference.md) — Lua API documentation (the native table differs: [What only Lua has](#what-only-lua-has))
 - [Global Variables and Permissions](Global-Variables-and-Permissions.md) — App requirements
 - [Crash Logging and Watchdog](Crash-Logging-and-Watchdog.md) — Fault recovery and reboot behavior

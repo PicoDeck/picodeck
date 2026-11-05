@@ -337,6 +337,8 @@ local function main()
                 advance_debounce = now
             end
         end
+
+        pc.sys.sleep(16)  -- nothing above draws unless it is due: don't spin
     end
 end
 
