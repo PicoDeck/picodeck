@@ -15,6 +15,15 @@ from test_native_fidelity import _run
 pytestmark = [pytest.mark.native, pytest.mark.sd(fixtures=[], reserve=4)]
 
 
+def test_file_modes_mean_what_they_mean_on_the_device(simulator):
+    # src/drivers/sdcard.c reads only the letters r, w and a: "r+" is read-only.
+    _, log = _run(simulator, "file_modes")
+    assert "MODE rw creates A" in log, log
+    assert "MODE r+ leaves A" in log, log
+    assert "MODE rw writes C" in log, log
+
+
+
 def _beep(path: Path, ms=50):
     rate = 22050
     with wave.open(str(path), "wb") as w:

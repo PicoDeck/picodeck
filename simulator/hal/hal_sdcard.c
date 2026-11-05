@@ -125,7 +125,17 @@ void* hal_sdcard_open(const char* path, const char* mode) {
         atomic_fetch_sub(&s_open_count, 1);
         return NULL;
     }
-    FILE *fp = fopen(full_path, mode);
+    // FatFS parity (mode_to_fatfs, src/drivers/sdcard.c): only the letters r, w
+    // and a count, so "r+" is read-only there where stdio would let it write.
+    bool has_r = strchr(mode, 'r'), has_w = strchr(mode, 'w'), has_a = strchr(mode, 'a');
+    FILE *fp;
+    if (has_r && has_w) {
+        fp = fopen(full_path, "r+b");  // FA_READ | FA_WRITE | FA_OPEN_ALWAYS
+        if (!fp && errno == ENOENT)
+            fp = fopen(full_path, "w+b");
+    } else {
+        fp = fopen(full_path, has_a ? "ab" : has_w ? "wb" : has_r ? "rb" : mode);
+    }
     if (!fp) {
         atomic_fetch_sub(&s_open_count, 1);
         return NULL;
