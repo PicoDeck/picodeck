@@ -21,9 +21,16 @@ local MSG = {
     CHANNEL_FAILURE       = 100,
 }
 
-local INITIAL_WINDOW = 64 * 1024    -- 64KB
-local MAX_PACKET     = 32 * 1024    -- 32KB
-local WINDOW_THRESHOLD = 32 * 1024  -- replenish at 32KB consumed
+-- The window is the only brake on the server: the device's TCP layer fails the socket once
+-- a reader is ~40 KB behind (its 8 KB ring + TCP_RECV_OVERFLOW, src/drivers/tcp.h), and its
+-- stack advertises a fixed window however much is unread. A window counts channel data, not
+-- bytes on the wire, and OpenSSH sends a tty's lines in small packets with about 70 bytes of
+-- framing each: into a stalled reader, 32 KB left 48 KB unread on a real sshd, 16 KB 35 KB,
+-- 12 KB 27 KB (tests/unit/test_ssh_transport.lua). Nothing is given up for the margin: a
+-- terminal loop reads 8 KB a pass, and the TCP window, 6000 bytes, sets the pace on a slow link.
+local INITIAL_WINDOW = 12 * 1024
+local MAX_PACKET     = 12 * 1024
+local WINDOW_THRESHOLD = 6 * 1024   -- replenish at half of it consumed
 -- A window is a uint32, but a read past 2^31 is negative on the device's 32-bit
 -- integers, and no keyboard needs that much: stop there.
 local MAX_REMOTE_WINDOW = 0x7FFFFFFF

@@ -36,6 +36,7 @@
 #include "os.h"
 #include "rng.h"
 #include "ssh_handshake_vectors.h"
+#include "tcp.h"
 
 #define EXIT_SKIP 77
 
@@ -536,6 +537,9 @@ static lua_State *new_state(void) {
 
     lua_pushcfunction(L, l_check);
     lua_setglobal(L, "check");
+
+    lua_pushinteger(L, TCP_RECV_BUF_DEFAULT + TCP_RECV_OVERFLOW);
+    lua_setglobal(L, "TCP_UNREAD_LIMIT");
 
     lua_getglobal(L, "package");
     lua_pushstring(L, PICODECK_ROOT "/apps/ssh/?.lua");

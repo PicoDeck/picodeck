@@ -22,11 +22,6 @@ static spin_lock_t *s_lock;  // the pool lock (see tcp.h)
 // Unconsumed bytes in Mongoose past which reading pauses (tcp_drain).
 #define TCP_RECV_PAUSE (16u * 1024u)
 
-// Unconsumed bytes in Mongoose past which the socket fails: the device's
-// TCP stack ignores is_full, so a reader that falls this far behind would
-// run Core 1's Mongoose pool out (as HTTP_RECV_OVERFLOW in http.c).
-#define TCP_RECV_OVERFLOW (32u * 1024u)
-
 // How long tcp_alloc waits for a slot that is being released.
 #define TCP_ALLOC_WAIT_MS 100
 

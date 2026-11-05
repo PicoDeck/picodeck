@@ -752,6 +752,60 @@ local function test_large_windows()
     server:close()
 end
 
+-- ── How far the server can get ahead ─────────────────────────────────────────
+
+-- The device's TCP layer fails a reader more than TCP_UNREAD_LIMIT bytes behind, and
+-- nothing slows the sender there: its stack advertises a fixed window and ignores a full
+-- buffer. So the channel window this client grants is the only flow control there is.
+-- A server that uses all of it, into a reader that has stalled, has to stay under the
+-- limit, framing included, and the credit has to go on coming as the reader catches up.
+local function test_window_stays_under_the_tcp_limit()
+    for _, size in ipairs({"max", 4096, 1024, 256, 64}) do
+        local what = "packets of " .. size .. ": "
+        local ch, _, server, conn = new_channel()
+        server:send(channel_confirm(0))
+        check(ch:open_session(), what .. "opens: " .. tostring(ch.error))
+        local open = server:received()[1]
+        local _, pos = wire.read_string(open, 2)
+        local _
+        _, pos = wire.read_uint32(open, pos)  -- our channel
+        local window
+        window, pos = wire.read_uint32(open, pos)
+        local max_packet = wire.read_uint32(open, pos)
+        check(max_packet <= window, what .. "a packet fits the window")
+
+        local chunk = math.min(size == "max" and max_packet or size, max_packet)
+        local total, sent, got, worst = 256 * 1024, 0, 0, 0
+        local credit = window
+        while got < total do
+            -- As the reader stalls, the server sends all it may.
+            while credit > 0 and sent < total do
+                local n = math.min(chunk, credit, total - sent)
+                server:send(channel_data(string.rep("x", n)))
+                credit, sent = credit - n, sent + n
+            end
+            worst = math.max(worst, #conn.rx)
+            local before = got
+            ch:poll(0)
+            local data = ch:read()
+            if data then got = got + #data end
+            for _, msg in ipairs(server:received()) do
+                check(msg:byte(1) == 93, what .. "only window adjusts come back")
+                local _, at = wire.read_uint32(msg, 2)
+                credit = credit + wire.read_uint32(msg, at)
+            end
+            if got == before and #conn.rx == 0 and credit == 0 then
+                check(false, what .. "the window shut for good after " .. got .. " bytes")
+                break
+            end
+        end
+        check(worst <= TCP_UNREAD_LIMIT, what .. worst .. " bytes unread, over the limit of " .. TCP_UNREAD_LIMIT)
+        check(got == total, what .. "every byte arrives: " .. got)
+        check(not ch.closed, what .. "and the channel stays open: " .. tostring(ch.error))
+        server:close()
+    end
+end
+
 -- ── Framing and encodings (RFC 4253 section 6) ──────────────────────────────
 
 local function test_packet_framing()
@@ -991,6 +1045,32 @@ local function read_until(ch, text, timeout_ms)
     return output
 end
 
+-- Run a command with a reader that stalls for longer than the window lasts, draining the
+-- socket as the TCP layer's ring would be read. Returns the most that was ever waiting.
+local function live_stalled_reader(what, ch, t, conn, command)
+    type_keys(what, ch, command .. "; echo PICO_DONE_$((40+2))\n")
+    local output, worst = "", 0
+    local start = picocalc.sys.getTimeMs()
+    while picocalc.sys.getTimeMs() - start < 60000 do
+        picocalc.sys.sleep(100)
+        local waiting = 0
+        local data = conn:read(8192)
+        while data do
+            waiting = waiting + #data
+            t.recv_buf = t.recv_buf .. data
+            data = conn:read(8192)
+        end
+        worst = math.max(worst, waiting)
+        ch:poll(0)
+        data = ch:read()
+        if data then output = output .. data end
+        if ch.closed or output:find("PICO_DONE_42", 1, true) then break end
+    end
+    check(output:find("PICO_DONE_42", 1, true), what .. ": it finished")
+    check(not ch.closed, what .. ": still open: " .. tostring(ch.error))
+    return worst
+end
+
 local function live_shell_session(key, kex, algo, options)
     local what = kex .. " + " .. algo .. " " .. table.concat(options or {}, " ")
     local ch, t, conn = live_shell(what, key, kex, algo, options)
@@ -1013,7 +1093,7 @@ local function live_shell_session(key, kex, algo, options)
         output = read_until(ch, "<ac>", 15000)
         check(output:find("<ac>", 1, true), what .. ": Backspace erases: " .. output:sub(1, 200):gsub("%c", "."))
 
-        -- More than the 64 KB window this client grants, so it must top it up, and every
+        -- Several times the window this client grants, so it must top it up, and every
         -- byte must come through across packets and reads (the PTY sends \r\n).
         type_keys(what, ch, "seq 1 20000; echo PICO_DONE_$((40+2))\n")
         output = read_until(ch, "PICO_DONE_42", 30000)
@@ -1022,6 +1102,15 @@ local function live_shell_session(key, kex, algo, options)
         check(output:find(table.concat(expected, "\r\n") .. "\r\n", 1, true), what .. ": 20000 lines intact, " .. #output .. " bytes")
         check(output:find("PICO_DONE_42", 1, true), what .. ": and the shell is still there")
         check(not ch.closed, what .. ": still open: " .. tostring(ch.error))
+
+        -- A real sshd against a stalled reader, held to what the device's TCP layer allows
+        -- (test_window_stays_under_the_tcp_limit). Output in blocks is nearly all data.
+        local worst = live_stalled_reader(what .. ": blocks", ch, t, conn, "head -c 150000 /dev/zero | tr '\\0' x")
+        check(worst <= TCP_UNREAD_LIMIT, what .. ": blocks: " .. worst .. " bytes unread, over the limit of " .. TCP_UNREAD_LIMIT)
+        -- A line at a time (seq on a tty) has as much framing as data, how much depending
+        -- on how this machine's sshd and seq keep time: what chose the window, not checked.
+        worst = live_stalled_reader(what .. ": lines", ch, t, conn, "seq 1 25000")
+        print("NOTE test_ssh_transport --live: " .. what .. ": a line at a time, at most " .. worst .. " bytes unread of " .. TCP_UNREAD_LIMIT)
 
         type_keys(what, ch, "exit\n")
         read_until(ch, nil, 15000)
@@ -1143,6 +1232,7 @@ else
     test_requests_before_reply()
     test_typing_after_shell()
     test_large_windows()
+    test_window_stays_under_the_tcp_limit()
     test_packet_framing()
     test_mpint()
     test_disconnect_reason()
