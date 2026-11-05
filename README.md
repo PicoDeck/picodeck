@@ -298,7 +298,6 @@ picodeck/
 ├── README.md, CLAUDE.md        ← CLAUDE.md is the contributor guide (nested ones sit beside the code)
 ├── TODO.md                     ← roadmap and open API gaps
 ├── docs/                       ← app-facing SDK reference, published at picodeck.net/docs
-├── docs_coverage.md            ← which Lua functions the docs cover (scripts/list_lua_api)
 ├── src/
 │   ├── hardware.h              ← ALL pin definitions here
 │   ├── main.c                  ← boot, init, calls launcher_run()
