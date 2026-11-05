@@ -26,8 +26,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -q
-          # clang: its compiler-rt carries ASan/UBSan; lua5.4: make test-lua
-          sudo apt-get install -y cmake clang curl unzip lua5.4 python3-venv
+          # clang: its compiler-rt carries ASan/UBSan; lua5.4: make test-lua;
+          # openssh-server: test_ssh_transport_live, which skips without sshd
+          sudo apt-get install -y cmake clang curl unzip lua5.4 python3-venv openssh-server
           command -v lua >/dev/null || sudo ln -sf "$(command -v lua5.4)" /usr/local/bin/lua
           python3 -m venv .venv
           .venv/bin/pip install --upgrade pip

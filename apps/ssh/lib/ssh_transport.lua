@@ -39,7 +39,12 @@ transport.MSG = MSG
 
 -- Algorithm preferences
 local CLIENT_KEX       = {"curve25519-sha256", "ecdh-sha2-nistp256"}
+-- Only what picocalc.crypto can verify: never "ssh-rsa", whose signatures are SHA-1.
 local CLIENT_HOSTKEY   = {"rsa-sha2-256", "ecdsa-sha2-nistp256"}
+local HOSTKEY_KEY_TYPE = {
+    ["rsa-sha2-256"] = "ssh-rsa",  -- RFC 8332: the key blob keeps its old name
+    ["ecdsa-sha2-nistp256"] = "ecdsa-sha2-nistp256",
+}
 local CLIENT_CIPHER    = {"aes128-ctr", "aes256-ctr"}
 local CLIENT_MAC       = {"hmac-sha2-256", "hmac-sha1"}
 local CLIENT_COMPRESS  = {"none"}
@@ -390,14 +395,25 @@ function transport:verify_host_key(K_S, H, sig_blob)
         return false
     end
 
-    if algo == "rsa-sha2-256" or algo == "ssh-rsa" then
-        return crypto.rsaVerify(K_S, sig_data, H)
-    elseif algo == "ecdsa-sha2-nistp256" then
-        return crypto.ecdsaP256Verify(K_S, sig_data, H)
-    else
-        self.error = "unsupported signature algorithm: " .. algo
+    -- The server must sign with the algorithm the exchange agreed on, using a key
+    -- of that algorithm's type. The verifiers do not read the key's type field.
+    if algo ~= self.hostkey_algo then
+        self.error = "unexpected signature algorithm: " .. algo
         return false
     end
+    local key_type = wire.read_string(K_S, 1)
+    if key_type ~= HOSTKEY_KEY_TYPE[algo] then
+        self.error = "unexpected host key type: " .. tostring(key_type)
+        return false
+    end
+
+    -- A host signs H with the scheme's usual hash, so the digest under the
+    -- signature is SHA-256(H), not H (RFC 5656 section 3.1.2, RFC 8332 section 3).
+    local digest = crypto.sha256(H)
+    if algo == "rsa-sha2-256" then
+        return crypto.rsaVerify(K_S, sig_data, digest)
+    end
+    return crypto.ecdsaP256Verify(K_S, sig_data, digest)
 end
 
 -- Perform ECDH key exchange (curve25519-sha256 or ecdh-sha2-nistp256)

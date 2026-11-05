@@ -2,13 +2,15 @@
 // crypto_ecdsa_p256_verify in src/os/crypto.c) against the same mbedTLS the
 // firmware links: good SSH-format vectors verify, a flipped bit does not, and
 // malformed blobs return false without reading outside the buffer.  The blob
-// parsing itself is tested in test_ssh_blob.c.
+// parsing itself is tested in test_ssh_blob.c, and the app's use of these
+// verifiers in test_ssh_transport.c.
 #include <stdlib.h>
 
 #include "check.h"
 #include "crypto.h"
 #include "crypto_vectors.h"
 #include "rng.h"
+#include "ssh_handshake_vectors.h"
 
 // crypto.c's RNG hooks (src/drivers/rng.c needs the TRNG); the verifiers use none.
 bool rng_bytes(void *buf, size_t len) { memset(buf, 0, len); return true; }
@@ -81,8 +83,57 @@ static void test_rsa(void) {
     CHECK(!rsa((const uint8_t *)"junk", 4, (const uint8_t *)"junk", 4, VEC_HASH, 32));
 }
 
+// A hex field of a recorded vector on an exact-size heap block.
+static uint8_t *unhex(const char *hex, uint32_t *len) {
+    *len = (uint32_t)(strlen(hex) / 2);
+    uint8_t *b = malloc(*len ? *len : 1);
+    for (uint32_t i = 0; i < *len; i++) {
+        unsigned v;
+        sscanf(hex + 2 * i, "%2x", &v);
+        b[i] = (uint8_t)v;
+    }
+    return b;
+}
+
+// The host's signature over the exchange hash H, as OpenSSH sends it. A host
+// signs H with the scheme's usual hash, so what verifies is SHA-256(H), never H.
+static void check_host_signature(const char *algo, const char *k_s_hex, const char *h_hex,
+                                 const char *sig_blob_hex) {
+    uint32_t kl, hl, bl;
+    uint8_t *k = unhex(k_s_hex, &kl), *h = unhex(h_hex, &hl), *blob = unhex(sig_blob_hex, &bl);
+    bool is_rsa = strcmp(algo, "rsa-sha2-256") == 0;
+    bool (*verify)(const uint8_t *, uint32_t, const uint8_t *, uint32_t,
+                   const uint8_t *, uint32_t) = is_rsa ? rsa : ec;
+
+    // string(algorithm name) + string(signature)
+    uint32_t name_len = ((uint32_t)blob[0] << 24) | ((uint32_t)blob[1] << 16) |
+                        ((uint32_t)blob[2] << 8) | blob[3];
+    CHECK(name_len == strlen(algo) && memcmp(blob + 4, algo, name_len) == 0);
+    const uint8_t *sig = blob + 4 + name_len + 4;
+    uint32_t sig_len = bl - name_len - 8;
+
+    uint8_t digest[32];
+    crypto_sha256(h, hl, digest);
+    CHECK_EQ_U32(hl, 32);
+    CHECK(verify(k, kl, sig, sig_len, digest, 32));
+    CHECK(!verify(k, kl, sig, sig_len, h, hl));
+    free(k); free(h); free(blob);
+}
+
+static void test_recorded_handshakes(void) {
+    for (size_t i = 0; i < sizeof SSH_HANDSHAKES / sizeof SSH_HANDSHAKES[0]; i++) {
+        const ssh_handshake_t *v = &SSH_HANDSHAKES[i];
+        check_host_signature(v->hostkey_algo, v->K_S, v->H, v->sig_blob);
+    }
+    for (size_t i = 0; i < sizeof SSH_SIGNATURES / sizeof SSH_SIGNATURES[0]; i++) {
+        const ssh_signature_t *v = &SSH_SIGNATURES[i];
+        check_host_signature(v->hostkey_algo, v->K_S, v->H, v->sig_blob);
+    }
+}
+
 int main(void) {
     test_ecdsa();
     test_rsa();
+    test_recorded_handshakes();
     return check_report("test_crypto_verify");
 }
