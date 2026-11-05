@@ -224,6 +224,9 @@ function Panels.validate(comicData)
                                  or not comicData.sequences[seq.nextSequence]) then
             vfail(spath, "nextSequence must index an existing sequence")
         end
+        if seq.choices then
+            vfail(spath, "choices belongs on a panel, not on a sequence")
+        end
         for pi, p in ipairs(seq.panels) do
             validatePanel(p, spath .. ".panels[" .. pi .. "]")
             if p.choices then
