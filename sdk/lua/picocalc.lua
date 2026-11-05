@@ -197,7 +197,9 @@ function picocalc.display.fillVLineGradient(x, y0, y1, color_top, color_bottom) 
 ---  "fade"     (r, g, b, factor? default 128) — tint toward target colour
 ---  "grayscale"
 ---  "blend"    (image: PicoDeckImage, alpha? 0-255, default 128)
----  "palette"  (lut: integer[] 1-256 RGB565 entries — remap each pixel to nearest entry)
+---  "palette"  (lut: integer[] 1-256 RGB565 entries — a lookup, not nearest colour: each
+---             pixel becomes entry (r3 << 5 | g3 << 2 | b2) + 1, and a shorter table
+---             uses its last entry for every higher index)
 ---  "dither"   (levels? default 4)
 ---  "scanline" (intensity? 0=none, 255=black lines, default 128)
 ---  "posterize"(levels? 2-32 per channel, default 4)
@@ -995,9 +997,10 @@ picocalc.sysconfig = {}
 ---@return string? value `nil` if key does not exist
 function picocalc.sysconfig.get(key) end
 
----Write a system config value (pass `nil` to delete the key).
+---Write a system config value in memory (`save()` keeps it). A number reads back
+---as a string. A value of `nil` or `""`, or none at all, deletes the key.
 ---@param key string
----@param value string|nil
+---@param value? string|number
 function picocalc.sysconfig.set(key, value) end
 
 ---Persist system config to `/system/config.json`.
@@ -1149,7 +1152,8 @@ function PicoDeckSample:getSampleRate() end
 ---@return { bits: integer, channels: integer, sampleRate: integer }
 function PicoDeckSample:getFormat() end
 
----Decompress the sample (if compressed). Returns `self` for chaining.
+---Return the sample itself: a no-op, kept for API compatibility, since samples
+---are always stored decompressed.
 ---@return PicoDeckSample
 function PicoDeckSample:decompress() end
 
@@ -1544,7 +1548,8 @@ function PicoDeckHttpConn:getProgress() end
 function PicoDeckHttpConn:getBytesAvailable() end
 
 ---Read up to `length` bytes from the response body (max 131072 per call).
----Returns `nil` when done.
+---`nil` means nothing is available yet, not the end of the body: a loop that stops
+---on it stops early. `setRequestCompleteCallback` reports the end.
 ---@param length? integer Max bytes to read
 ---@return string?
 function PicoDeckHttpConn:read(length) end
@@ -1895,7 +1900,9 @@ function picocalc.perf.setTargetFPS(fps) end
 ---@class picocalc.graphics
 picocalc.graphics = {}
 
----Set the default drawing colour used by `clear()` and filled graphic operations.
+---Set the text colour of `graphics.drawText`, `drawTextAligned`, `drawTextInRect`
+---and `imageWithText`. `graphics.clear()` uses the background colour instead
+---(`setBackgroundColor`).
 ---@param color integer RGB565
 function picocalc.graphics.setColor(color) end
 
@@ -1935,9 +1942,10 @@ function picocalc.graphics.drawGrid(x, y, cell_w, cell_h, cols, rows, color) end
 ---@param border integer RGB565 outline colour
 function picocalc.graphics.fillBorderedRect(x, y, w, h, fill, border) end
 
----Draw a 2D block-grid playfield (Tetris/Puzzle-style): grid lines plus a
----filled block for every non-zero cell. `playfield[row][col]` = colour (0 = empty).
----@param playfield integer[][] 2D array [row][col] of RGB565 colours
+---Draw a 2D block-grid playfield (Tetris/Puzzle-style): grid lines plus a filled
+---block for every cell with a colour. `nil` = empty, and what is on screen shows
+---through. `0` is a colour like any other: it draws a black block.
+---@param playfield (integer?)[][] 2D array [row][col] of RGB565 colours, 1-based
 ---@param ox integer Origin x
 ---@param oy integer Origin y
 ---@param block_size integer Pixels per cell
@@ -2107,12 +2115,13 @@ function PicoDeckImage:getSize() end
 ---@return PicoDeckImage
 function PicoDeckImage:copy() end
 
----Draw the image at (x, y). Optional options table can include `flipX` and `flipY`.
----Optional `rect` clips the source region `{x, y, w, h}`.
+---Draw the image at (x, y). The third argument is a table with `flipX` and `flipY`,
+---or a boolean: `true` flips horizontally. Optional `rect` clips the source region.
 ---@param x integer
 ---@param y integer
 ---@param options? { flipX?: boolean, flipY?: boolean }
----@param rect? { x: integer, y: integer, w: integer, h: integer }
+---@param rect? PicoDeckRect
+---@overload fun(self: PicoDeckImage, x: integer, y: integer, flipX: boolean, rect?: PicoDeckRect)
 function PicoDeckImage:draw(x, y, options, rect) end
 
 ---Draw the image with an anchor point. `ax`, `ay` in [0,1] — (0,0) = top-left, (0.5,0.5) = centre.
@@ -2447,7 +2456,7 @@ function PicoDeckSprite:setTransparentColor(color) end
 ---Set the rotation. The angle is in radians.
 ---@param radians number
 ---@param scale? number Also sets the scale
----@param scale_y? number Also sets the vertical scale
+---@param scale_y? number Stored, not applied: sprites draw at one factor, as in `setScale`
 function PicoDeckSprite:setRotation(radians, scale, scale_y) end
 
 ---Return the sprite's rotation angle in radians.
@@ -2829,7 +2838,7 @@ function PicoDeckAnimationLoop:update() end
 ---@return PicoDeckImage?
 function PicoDeckAnimationLoop:image() end
 
----Return `true` if the animation still has frames (always `true` for loops).
+---Return `true` if the loop has at least one frame.
 ---@return boolean
 function PicoDeckAnimationLoop:isValid() end
 
@@ -3676,9 +3685,10 @@ function PicoDeckTerminal:getDirtyRange() end
 ---@return integer
 function PicoDeckTerminal:getScrollbackCount() end
 
----Return the content of scrollback line `line` as an array of cell values.
+---Return scrollback line `line` (1-based) as a plain string: characters only, no
+---colours. Raises if `line` is out of range.
 ---@param line integer
----@return integer[]
+---@return string
 function PicoDeckTerminal:getScrollbackLine(line) end
 
 ---Return the current scrollback display offset.
@@ -4043,7 +4053,7 @@ function picocalc.zip.open(path) end
 ---@return { name: string, size: integer, compressed_size: integer }[] entries
 function PicoDeckZipArchive:list() end
 
----Return `true` if an entry with this exact name exists.
+---Return `true` if an entry with this name exists. Names are compared ignoring case.
 ---@param name string
 ---@return boolean
 function PicoDeckZipArchive:exists(name) end
@@ -4061,7 +4071,7 @@ function PicoDeckZipArchive:size(name) end
 function PicoDeckZipArchive:numEntries() end
 
 ---The index of an entry (0-based, as in the C API), as `statIndex()` and
----`extractEntry()` address it, or `nil` if no entry has that exact name.
+---`extractEntry()` address it, or `nil` if no entry has that name (ignoring case).
 ---@param name string
 ---@return integer? index
 function PicoDeckZipArchive:locate(name) end
