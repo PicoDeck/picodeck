@@ -84,7 +84,7 @@ What single calls cost, from one firmware build (±40% between builds, as above)
 
 - SD reads are polled by the CPU, so they stop your app while they run: a 16 KB `readFile` takes about 24 ms. Load at a level's start, not during a frame.
 - Music costs frame time, because the second core shares the cache. For a real-time game: MP3 if the game paces itself with `setTargetFPS` and its frames leave time to spare, otherwise QOA, then WAV. The figures are in [API Audio and Sound](API-Audio-and-Sound.md#mp3player).
-- `gfx3d` keeps a scene's working data in about 24 KB of fast memory that the MP3 decoder lends it until the app first loads an MP3 (`mp3player:load`) or plays a video with audio. From then until the app exits, scenes run from slower memory. So in a `gfx3d` game, QOA or WAV music keeps that speed and MP3 music gives it up. Nothing else changes: the picture is the same either way.
+- `gfx3d` keeps a scene's working data in about 24 KB of fast memory that the MP3 decoder lends it until the app first loads an MP3 (`mp3player:load`) or plays a video with audio. From then until the app exits, scenes run from slower memory. So in a `gfx3d` game, QOA or WAV music keeps that speed and MP3 music gives it up: about 30% of the frame's work on the device in a scene of about 800 triangles (8.4 ms against 12.0 ms at 200 MHz). Nothing else changes: the picture is the same either way.
 
 ## Native apps
 

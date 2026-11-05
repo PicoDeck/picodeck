@@ -206,6 +206,10 @@ T.case("sampleplayers_hold_voices_while_referenced", function()
 end)
 
 T.case("dropped_sampleplayers_are_collected_for_a_voice", function()
+    -- A full collection for a voice runs at most once a second (voice_new), and
+    -- the case above has just used it when the fixture runs in one go, as on
+    -- the device.
+    sys.sleep(1100)
     local s = T.ok(sound.sample(SHORT), "sample")
     collectgarbage("stop")
     for i = 1, VOICES do

@@ -12,14 +12,18 @@ ahead in Core 0's idle windows), each granule's decode, synthesis and ring
 write time, and the MP3 underruns (`audiostat`). The "off" rows decode only
 when the ring runs low (`xipstat mp3idle off`), the "on" rows also decode
 ahead while the paced frame waits; "idle" rows run no game (Core 1's own
-traffic); "prio" sets Core 0 high bus priority (`xipstat prio core0`).
+traffic); "prio" sets Core 0 high bus priority (`xipstat prio core0`);
+"held" loads the music and never plays it.
 
 What it asserts is loose: every run produced frames, decoding ahead was used
 where it can be, no run underran, and a paced game's frame work with music
-decoded ahead stays within 15% of the same game with none, with no late
-frame (with the decoder's hot state in SRAM and a granule at a time it was
-the same: 18.7 ms at 44.1 kHz stereo and with no music, 200 MHz, Nova
-Rail's music). The numbers are the point: run with -s.
+decoded ahead stays within 15% of the same game with the music held, with no
+late frame (with the decoder's hot state in SRAM and a granule at a time it
+was the same: 18.7 ms at 44.1 kHz stereo and with no music, 200 MHz, Nova
+Rail's music). "none" is not that baseline: until an MP3 is loaded gfx3d has
+the decoder's SRAM lent to it (`src/os/CLAUDE.md`), which takes about 30% off
+this scene (8.4 ms against 12.0 ms). Decoding itself costs 3-5%, the same on
+every firmware since October. The numbers are the point: run with -s.
 
     pytest tests/e2e/test_mp3_contention_hw.py -s \\
         --target hw:/dev/serial/by-id/<PicoDeck device>
@@ -57,6 +61,7 @@ FORMATS = {           # file: (rate, channels, bitrate)
 # (name, music, fps, mode, decode ahead, Core 0 bus priority)
 SCENARIOS = [
     ("game_none",        "",        30, "game", True,  False),
+    ("game_held",        "s44.mp3", 30, "game", True,  False),
     ("game_s44_off",     "s44.mp3", 30, "game", False, False),
     ("game_s44_on",      "s44.mp3", 30, "game", True,  False),
     ("game_m22_off",     "m22.mp3", 30, "game", False, False),
@@ -91,7 +96,8 @@ def reply(target, cmd: str, tag: str) -> dict:
 
 def run(target, name, music, fps, mode, ahead, prio) -> dict:
     target.write_file(f"/data/{APP_ID}/bench.json", json.dumps(
-        {"music": music, "seconds": SECONDS, "fps": fps, "mode": mode}).encode())
+        {"music": music, "seconds": SECONDS, "fps": fps, "mode": mode,
+         "hold": name.endswith("_held")}).encode())
     target.delete_file(f"/data/{APP_ID}/bench_result.json")
     reply(target, "xipstat mp3idle " + ("on" if ahead else "off"), "XIP")
     reply(target, "xipstat prio " + ("core0" if prio else "none"), "XIP")
@@ -159,7 +165,7 @@ def test_mp3_contention(target):
     for name, r in results.items():
         if r["app"]["mode"] == "game":
             assert r["app"].get("frames", 0) > 0, r
-        if r["app"]["music"]:
+        if r["app"]["music"] and not name.endswith("_held"):
             assert r["app"].get("mp3_playing"), r
     for fmt in ("s44", "m22"):
         on, off = results[f"game_{fmt}_on"], results[f"game_{fmt}_off"]
@@ -168,7 +174,7 @@ def test_mp3_contention(target):
     assert results["unpaced_s44"]["xip"]["mp3_idle_frames"] == 0
     for name, r in results.items():
         assert r["audio"]["mp3_underruns"] == 0, (name, r)
-    none = results["game_none"]["app"]["work_avg"]
+    none = results["game_held"]["app"]["work_avg"]
     for name in ("game_s44_on", "game_m22_on"):
         app = results[name]["app"]
         assert app["late"] == 0, (name, app)

@@ -6,6 +6,8 @@
 --
 -- /data/com.test.mp3_bench/bench.json configures one run:
 --   music    file in this app's directory, looping ("" = no music)
+--   hold     load the music and never play it: the decoder owns its SRAM, so
+--            gfx3d has none lent, and decodes nothing
 --   seconds  how long to run (default 10)
 --   fps      perf.setTargetFPS (0 = unpaced; default 30)
 --   mode     "game" (default) or "idle" (no drawing: sys.sleep while the
@@ -72,7 +74,7 @@ if music ~= "" then
     mp3 = pc.sound.mp3player()
     assert(mp3:load(APP_DIR .. "/" .. music), "cannot load " .. music)
     mp3:setVolume(50)
-    mp3:play(0)  -- loop
+    if not cfg.hold then mp3:play(0) end  -- loop
 end
 
 local works, late = {}, 0
