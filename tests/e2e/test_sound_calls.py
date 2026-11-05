@@ -35,3 +35,16 @@ def test_sound_calls(calls_run, case):
 
 def test_sound_calls_exit_cleanly(calls_run):
     calls_run.assert_clean_exit()
+
+
+@pytest.mark.hardware
+def test_sound_calls_on_the_device(target, tmp_path):
+    """The audio clock runs on the output's refill interrupt there, and the
+    results come from the same bridge."""
+    app = tmp_path / APP
+    shutil.copytree(FIXTURE, app)
+    write_wav(app / "short.wav", seconds=0.05)
+    write_wav(app / "long.wav", seconds=0.25)
+    target.push_app(app, APP)
+    run = target.run_lua_app(APP, timeout=120)
+    run.assert_all_passed(CASES)
