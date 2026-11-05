@@ -34,7 +34,7 @@ Place these files in `/apps/<your_app_name>/` on the SD card.
 }
 ```
 
-The [`app.json` reference](App-Json-Reference.md) has every field, including `min_psram_kb` and `system_clock_khz`, which big native apps usually want. See [Global Variables and Permissions](Global-Variables-and-Permissions.md) for available requirements (`filesystem`, `root-filesystem`, `http`, `audio`).
+The [`app.json` reference](App-Json-Reference.md) has every field, including `min_psram_kb` and `system_clock_khz`, which big native apps usually want. See [Global Variables and Permissions](Global-Variables-and-Permissions.md) for available requirements (`filesystem`, `root-filesystem`, `http`, `audio`). The filesystem ones do not bind a native app: `api->fs` has no sandbox, so a native app can read and write the whole card, `/system/config.json` included.
 
 ## Development Environment
 

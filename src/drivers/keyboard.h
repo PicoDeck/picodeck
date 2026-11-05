@@ -194,7 +194,7 @@ void kbd_inject_char(char c);
 #define KBD_MOD_CTRL 0x02
 #define KBD_MOD_ALT 0x04
 #define KBD_MOD_FN 0x08
-#define KBD_EVF_REPEAT 0x80 // down/char produced by the STM32's HOLD report
+#define KBD_EVF_REPEAT 0x80 // down/char of a key already down (HOLD or PRESSED)
 
 typedef struct kbd_event_s {
   uint8_t type;  // KBD_EV_*

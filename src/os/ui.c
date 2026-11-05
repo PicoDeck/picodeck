@@ -536,6 +536,7 @@ bool ui_text_input(const char *prompt, const char *default_val,
   int saved_font = display_get_font();
   display_set_font(0);
   bool ok = ui_text_input_run(prompt, default_val, out_buf, out_len);
+  kbd_hide_held();  // the answering key and what was typed are not the app's
   display_set_font(saved_font);
   return ok;
 }
@@ -544,6 +545,7 @@ bool ui_confirm(const char *message) {
   int saved_font = display_get_font();
   display_set_font(0);
   bool ok = ui_confirm_run(message);
+  kbd_hide_held();  // the answering key is not the app's
   display_set_font(saved_font);
   return ok;
 }

@@ -172,8 +172,11 @@ static void lua_vm_body(void *arg) {
   display_clear(C_BG);
   display_flush();
 
-  // Text only: app bundles must not smuggle in unverified bytecode.
-  int load_err = luaL_loadbufferx(L, ctx->lua_src, ctx->lua_len, app->name, "t");
+  // Text only: app bundles must not smuggle in unverified bytecode. The chunk
+  // name is the file's, so errors read /apps/x/main.lua:3: as a module's do.
+  char chunk_name[sizeof(app->path) + 12];
+  snprintf(chunk_name, sizeof(chunk_name), "@%s/main.lua", app->path);
+  int load_err = luaL_loadbufferx(L, ctx->lua_src, ctx->lua_len, chunk_name, "t");
   umm_free(ctx->lua_src);
 
   if (load_err != LUA_OK) {
@@ -254,10 +257,10 @@ static bool lua_run_app(const app_entry_t *app) {
   printf("[LUA] Loaded %d bytes, PSRAM free: %zu\n",
          lua_len, lua_psram_alloc_free_size());
 
-  // A key held through the launch must not carry its down/unseen state into
-  // the app (the native loader does the same); lua_bridge_input_init only
-  // flushes the event queue.
-  kbd_clear_state();
+  // A key held through the launch, the launcher's Enter first of all, is not
+  // the app's: hidden until released (the native loader does the same).
+  // lua_bridge_input_init only flushes the event queue.
+  kbd_hide_held();
 
   lua_vm_ctx_t ctx = {app, lua_src, lua_len, false};
   app_stack_run(stack, LUA_VM_STACK_SIZE, APP_STACK_LUA, lua_vm_body, &ctx);

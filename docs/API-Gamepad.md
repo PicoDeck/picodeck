@@ -11,7 +11,7 @@ A logical gamepad with 12 buttons, two analog sticks and two analog triggers. Re
 - **One button per key.** Within one map a key drives at most one button.
 - **Same polling as the input masks.** `picocalc.input.update()` updates the gamepad too. A tap shorter than one frame still gives one press edge and, on the next frame, one release edge.
 - **Esc is not a gamepad button.** Keep Esc as back/quit.
-- **What is down at the system menu stays hidden.** A button down when the menu opens or closes (B closing it, a direction held on through it), from a key or a controller, reads as not held, with no edges, until it is released; pressed again it reads normally. Other buttons are not affected. See [`update()`](API-Input.md).
+- **What is down at the system menu stays hidden.** A button down when the menu opens or closes (B closing it, a direction held on through it), when an OS dialog returns, or when your app starts, from a key or a controller, reads as not held, with no edges, until it is released; pressed again it reads normally. Other buttons are not affected. See [`update()`](API-Input.md).
 - **A connected controller drives the same buttons.** A game controller and the keyboard work together: a button is held while either holds it, with one press edge and one release edge, and your game cannot tell which one pressed it, so it needs no code for controllers. `getLabel()` still names the keyboard key. A controller's Home button opens the system menu (and closes it again when pressed while it is open, like the menu key), and the D-pad and A/B move through it and the launcher, so a player with only a controller can leave a game. The header shows a gamepad icon while one is connected. On the device that is a [Bluetooth controller](#bluetooth-controllers); in the simulator, a controller plugged into the computer.
 
 ### Default bindings
@@ -138,7 +138,7 @@ The controller is remembered (up to 4; pairing a fifth forgets the oldest). Next
 - **Home (or PS) opens the system menu**, where the D-pad and A/B move: a player with only a controller can always leave a game.
 - A controller that drops (switched off, out of range, flat battery) releases every button it held: nothing stays stuck.
 
-Supported: Bluetooth Classic HID controllers. PicoDeck has a button layout for the DualShock 4, DualSense, Switch Pro Controller (in its simple mode) and 8BitDo pads; any other gamepad is read with the common Android/Xbox numbering, which most Bluetooth "Android" pads use. Not supported: Bluetooth LE-only controllers (the Xbox Wireless Controller with current firmware, Stadia, Steam), a single Joy-Con, and Wii remotes. If a controller pairs but its buttons come out wrong, [tell us](https://github.com/PicoDeck/picodeck/issues/26) which one.
+Supported: Bluetooth Classic HID controllers. PicoDeck has a button layout for the DualShock 4, DualSense, Switch Pro Controller (in its simple mode) and 8BitDo pads; any other gamepad is read with the common Android/Xbox numbering, which most Bluetooth "Android" pads use. Not supported: Bluetooth LE-only controllers (the Xbox Wireless Controller with current firmware, Stadia, Steam), a single Joy-Con, and Wii remotes. If a controller pairs but its buttons come out wrong, [open an issue](https://github.com/PicoDeck/picodeck/issues) saying which one.
 
 ## picocalc.gamepad
 
@@ -277,7 +277,9 @@ Both are plain JSON you can edit by hand. Each button lists its primary key, the
 }
 ```
 
-Button names are `up`, `down`, `left`, `right`, `a`, `b`, `x`, `y`, `l`, `r`, `start`, `select`; key names are those above. Both ignore case. A missing or corrupt file means the defaults (or no override), never a failed launch. Unknown button and key names are ignored and logged on the serial console as `[GAMEPAD]` lines.
+Button names are `up`, `down`, `left`, `right`, `a`, `b`, `x`, `y`, `l`, `r`, `start`, `select`; key names are those above. Both ignore case. A missing or corrupt file, or one over 2 KB, means the defaults (or no override), never a failed launch.
+
+An unknown button name is ignored. An unknown key name leaves that slot unbound, and it does not bring back the button's default: `{"b":["Delete"]}` leaves B with no key, since the key's name is `Del`. Both are logged on the serial console as `[GAMEPAD]` lines.
 
 ## Native API (C)
 

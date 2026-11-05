@@ -61,7 +61,7 @@ The id names your data folder, `/data/<id>/`, so changing it later leaves your u
 | If invalid | The launcher refuses to start the app, with a reason on screen and an entry in `/system/error.log` | The repository is not listed (`bad-id` on the [status page](https://store.picodeck.net/status)) |
 | Uniqueness | None | First repository to publish an id owns it (`id-claimed-by:<repo>`) |
 
-So write ids like `com.example.myapp`. `myapp`, `my_co.game` and `com.Example.App` all run on the device and are all refused by the store. A longer id than 79 characters is cut to 79 by the launcher, not refused, so two long ids that agree that far share a data folder.
+So write ids like `com.example.myapp`. `myapp`, `my_co.game` and `com.Example.App` all run on the device and are all refused by the store. The launcher refuses an id longer than 79 characters, with the reason on screen and in `/system/error.log`.
 
 `APP_ID` holds the folded id.
 

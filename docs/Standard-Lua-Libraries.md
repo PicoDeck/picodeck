@@ -16,10 +16,13 @@ Apps run on **Lua 5.4** (5.4.7, `third_party/lua-5.4`), built without the `LUA_C
 **Not available** (for sandboxing): `io`, `os`, `package`, `debug`. The base
 functions `dofile` and `loadfile` are removed. `load` accepts text chunks only
 (bytecode is rejected), as do app `main.lua` files and `sys.loadlib`.
+`string.dump` still exists, but nothing here can load what it returns.
+
+`print` writes to the USB serial console, not the screen; `picocalc.sys.log` does the same with an `[APP]` prefix, and in the simulator it also reaches the test log.
 
 ### Names removed since Lua 5.1-5.3
 
-Code written for older Lua fails at run time, not at load, with `attempt to call a nil value`. Replace:
+Code written for older Lua fails at run time, not at load, with `attempt to call a nil value` (or `attempt to index a nil value` for a whole library such as `bit32`). Replace:
 
 | Old | Lua 5.4 |
 |-----|---------|
@@ -59,8 +62,10 @@ PicoDeck Lua uses **32-bit integers and single-precision floats** (`LUA_32BITS`)
 - Integers wrap at ±2^31 (`0xDEADBEEF` is negative; `%x` still prints the
   32-bit pattern). `sys.getTimeMs()` goes negative after ~24.8 days of uptime
   (differences still wrap correctly).
-- Floats have ~7 significant digits; integers are exact only up to 2^24;
-  `1e39 == math.huge`. JSON numbers above 2^24 lose precision the same way.
+- Floats have ~7 significant digits; integers are exact only up to 2^24 once
+  they become floats; `1e39 == math.huge`. JSON integers decode exactly up to
+  2^31-1 (`2147483647` is an integer); larger ones become floats and lose
+  precision, as do numbers with a `.` or an exponent.
 - Float formatting (`tostring`, `..`, `string.format`, JSON, REPL) is the same
   on the device and the simulator and matches glibc: `tostring(51.0)` is
   `"51.0"`, NaN prints `nan`. Subnormals (< 1.2e-38) print `0.0` on the device.
@@ -74,7 +79,7 @@ PicoDeck Lua uses **32-bit integers and single-precision floats** (`LUA_32BITS`)
 
 - `LUAI_MAXSTACK = 1000` slots (a typical frame costs 10-13 slots: recursion
   tops out around 80-100 Lua levels; the smallest frames cost about 1, up to
-  ~990 levels). Unbounded recursion ends in a catchable `"stack overflow"`.
+  ~980 levels). Unbounded recursion ends in a catchable `"stack overflow"`.
 - `LUAI_MAXCCALLS = 60`: Lua→C→Lua nesting (e.g. `string.gsub` callbacks
   calling `gsub`) stops at ~58 levels with a catchable `"C stack overflow"`.
 - The Lua VM runs on its own 64 KB stack in PSRAM.

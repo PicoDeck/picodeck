@@ -11,17 +11,17 @@ from pathlib import Path
 
 import pytest
 
-from helpers import case_params, lua_case_names, run_lua_app
+from helpers import (case_params, lua_case_names, require_heap_metrics_live,
+                     run_lua_app, stage_lua_app)
 
 LIMIT_CASES = lua_case_names("config_limits_test")
 
-CAP_BUG = ("review: Core Medium — config stores have a fixed capacity and drop "
-           "extra keys silently (appconfig 4 entries, sysconfig a 1 KB pool)")
+CAP_BUG = ("review: Core Medium — sysconfig has a fixed capacity and drops extra "
+           "keys silently (a 1 KB pool); picocalc.config says so from set()")
 TRUNC_BUG = ("audit §3.9 — sysconfig truncates values at 127 chars silently")
 
 # sysconfig_eleven_keys passes: short keys no longer run out of slots.
 LIMIT_KNOWN_BUGS = {
-    "appconfig_five_keys": CAP_BUG,
     "sysconfig_fill_pool": CAP_BUG,
     "sysconfig_200_char_value": TRUNC_BUG,
 }
@@ -78,3 +78,39 @@ def test_second_app_saves_to_its_own_file(bleed):
     b_file = data / "com.test.cfg_b" / "config.json"
     assert b_file.exists(), "cfg_b's save did not land in /data/com.test.cfg_b"
     assert json.loads(b_file.read_text()) == {"b": "B"}
+
+
+# ── memory ──────────────────────────────────────────────────────────────────
+
+
+def test_store_is_only_there_while_it_holds_keys(simulator):
+    """It costs an app that uses no config nothing, about 9 KB once it holds a
+    key, and goes back to the heap when the app exits."""
+    sim = simulator
+    require_heap_metrics_live(sim)
+    code = """
+    local pc = picocalc
+    local function free() return pc.sys.getMemInfo().psram_free end
+    collectgarbage(); collectgarbage()
+    local before = free()
+    pc.config.get("nothing_here")
+    collectgarbage(); collectgarbage()
+    local after_get = free()
+    pc.config.set("k", "v")
+    collectgarbage(); collectgarbage()
+    local after_set = free()
+    pc.sys.log("COST " .. (before - after_get) .. " " .. (after_get - after_set))
+    """
+    stage_lua_app(sim.sd_card_path, "cfg_cost", code)
+    def launcher_free():
+        return sim.call("get_heap_info")["lua_heap_free_kb"]
+    baseline = launcher_free()
+    seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
+    sim.launch_app("cfg_cost")
+    sim.wait_for_exit(timeout=10)
+    line = sim.wait_for_log(r"^COST ", timeout=5, since_seq=seq)
+    text = line if isinstance(line, str) else line.get("text", "")
+    get_cost, set_cost = (int(v) for v in text.split()[1:3])
+    assert get_cost < 1024, f"reading an empty store allocated {get_cost} B"
+    assert 9 * 1024 <= set_cost < 12 * 1024, f"the store cost {set_cost} B"
+    assert launcher_free() == baseline, "the store outlived the app"

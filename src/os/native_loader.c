@@ -240,6 +240,7 @@ static bool native_run_app(const app_entry_t *app) {
   printf("[NATIVE] Loading '%s' via Unicorn Engine\n", app->name);
   char elf_path[256];
   snprintf(elf_path, sizeof(elf_path), "%s/main.elf", app->path);
+  kbd_hide_held();  // a key held through the launch is not the app's
   bool ok = unicorn_run_app(elf_path, app->path, app->id, app->name);
   // Same teardown as firmware (below), minus the Core 1 pause.
   atomic_store(&g_native_audio_callback, NULL);
@@ -759,7 +760,7 @@ static bool native_run_app(const app_entry_t *app) {
     }
   }
 
-  kbd_clear_state();
+  kbd_hide_held();  // a key held through the launch is not the app's
 
   // ── 8. Launch app ─────────────────────────────────────────────────────────
   display_clear(C_BG);

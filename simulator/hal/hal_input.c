@@ -380,16 +380,23 @@ uint32_t hal_input_get_buttons_pressed(void) {
     return result;
 }
 
-char hal_input_get_char(void) {
+char hal_input_get_char_ex(bool *injected) {
+    *injected = false;
     pthread_mutex_lock(&s_input_mutex);
     if (g_char_head == g_char_tail) {
         pthread_mutex_unlock(&s_input_mutex);
         return 0;
     }
     char c = g_char_buffer[g_char_tail];
+    *injected = g_char_seq[g_char_tail] != 0;
     g_char_tail = (g_char_tail + 1) % sizeof(g_char_buffer);
     pthread_mutex_unlock(&s_input_mutex);
     return c;
+}
+
+char hal_input_get_char(void) {
+    bool injected;
+    return hal_input_get_char_ex(&injected);
 }
 
 bool hal_input_poll_char(char* out_char) {

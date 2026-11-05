@@ -112,3 +112,5 @@ The same check guards `picocalc.fs` and every loader that takes a path, but a re
 ### App ids
 
 The `id` in `app.json` names your data directory (`/data/<id>`). The rules, and the App Store's stricter ones, are in the [`app.json` reference](App-Json-Reference.md#id).
+
+Use `picocalc.fs.appPath("filename")` to get paths within your app's data directory.

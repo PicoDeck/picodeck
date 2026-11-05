@@ -111,7 +111,7 @@ picocalc.sys.log("Debug info: x=" .. tostring(x))
 ---
 
 #### `picocalc.sys.exit()`
-Exits the current app cleanly and returns to the launcher. Works from any call depth.
+Ends the app and returns to the launcher, from any call depth. It does the same as `return` at the top level of `main.lua`.
 
 - **Parameters:** None
 - **Returns:** Never returns
@@ -120,10 +120,33 @@ Exits the current app cleanly and returns to the launcher. Works from any call d
 picocalc.sys.exit()
 ```
 
+**An exit cannot be caught.** `sys.exit()`, the system menu's Exit App and the dev `exit` command all raise an error that keeps coming back: `pcall`, `xpcall` and `coroutine.resume` catch the raise, and the next Lua instruction after them raises it again.
+
+**What runs at exit.** Nothing of yours is called when the app exits, Exit App included, so an app that means to save on the way out does not get to. Save when the value changes:
+
+```lua
+volume = 80
+picocalc.config.set("volume", volume)
+picocalc.config.save()
+```
+
+- A `__close` handler (a `local x <close>` variable) does not finish: the exit raises again at its first instruction. It runs in full on a normal return and on an ordinary error.
+- A `__gc` handler does run, as the VM closes, however the app ended. So a last write can be done from one, if the object stays referenced until then:
+
+  ```lua
+  level = 1
+  saver = setmetatable({}, { __gc = function()  -- a global, so it lives to the end
+      picocalc.config.set("level", level)
+      picocalc.config.save()
+  end })
+  ```
+- Choosing Exit App first runs the callbacks of `addMenuOption` rows that changed. `addMenuItem` callbacks do not run; add your own "Save and quit" item if you want one.
+- An app that hangs or faults runs none of this. See [Crash Logging and Watchdog](Crash-Logging-and-Watchdog.md).
+
 ---
 
 #### `picocalc.sys.reboot()`
-Triggers a system reboot via the watchdog timer.
+Triggers a system reboot via the watchdog timer. The simulator has no reset to model: there the app ends and the launcher takes over.
 
 - **Parameters:** None
 - **Returns:** Never returns
@@ -167,7 +190,7 @@ Returns a snapshot of heap memory usage.
   - `psram_fragmentation` (number): 0-100
   - `small_pool_slabs`, `small_pool_bytes` (number): Lua small-object pool slabs (4 KB each, carved from the PSRAM heap) and their bytes
   - `small_pool_objects`, `small_pool_object_bytes` (number): live objects of up to 128 B in those pools and their bytes
-  - `sram_free` (number): Free bytes in the system SRAM heap (via `mallinfo`; the SRAM heap is only ~2.6 KB)
+  - `sram_free` (number): Free bytes in the system SRAM heap (via `mallinfo`; the SRAM heap is only a few KB)
   - `sram_used` (number): Used bytes in the system SRAM heap
   - `pio_psram_available` (boolean), `pio_psram_size` (number): mainboard PIO PSRAM
   - `xip_cache_hit_rate` (number): the flash/PSRAM cache's hit rate in percent (0-100) since the previous `getMemInfo()` call, or `-1` when nothing was counted, when the hardware counters filled up meanwhile (a busy app fills them in about 40 s), or in the simulator. Call `getMemInfo()` once to start a measurement and again to read it.
@@ -181,11 +204,10 @@ picocalc.sys.log(string.format("PSRAM: %dKB free / %dKB total",
 ---
 
 #### `picocalc.sys.addMenuItem(label, callback)`
-Adds a custom item to the system menu overlay (the system menu key (Shift+F5, reported as F10)). Maximum **4 items
-per app**, counting the option rows of `addMenuOption` too.
+Adds a custom item to the system menu overlay (the menu key: Shift+F5, reported as F10). Maximum **4 items per app**, counting the option rows of `addMenuOption` too; a fifth raises `too many menu items (max 4)`.
 
 - **Parameters:**
-  - `label` (string): Menu item text
+  - `label` (string): Menu item text, cut to 31 bytes
   - `callback` (function): Function to call when the item is selected
 - **Returns:** None
 
@@ -295,7 +317,7 @@ picocalc.sys.triggerFault()
 Get the PicoDeck firmware version string.
 
 - **Parameters:** None
-- **Returns:** (string) Version string (e.g. "1.2.0")
+- **Returns:** (string) Version string: `"0.6.0"` on a release, and on a development build what `git describe` gives (`"0.6.0-12-g272bb8c"`)
 
 ```lua
 local version = picocalc.sys.getVersion()
@@ -305,17 +327,17 @@ picocalc.sys.log("PicoDeck version: " .. version)
 ---
 
 #### `picocalc.sys.getPowerStatus()`
-Get detailed power status.
+Get detailed power status, as the keyboard controller reports it (the same reading as the charging bolt in the header).
 
 - **Parameters:** None
 - **Returns:** (table) With fields:
-  - `charging` (boolean): Whether the device is currently charging
-  - `percent` (number): Battery percentage (0-100)
+  - `charging` (boolean): Whether the battery is currently charging
+  - `percent` (number): Battery percentage (0-100), or -1 before the first reading, as `getBattery()`
 
 ```lua
 local power = picocalc.sys.getPowerStatus()
 if power.charging then
-    print("Charging: " .. power.percent .. "%")
+    picocalc.sys.log("Charging: " .. power.percent .. "%")
 end
 ```
 
@@ -325,6 +347,8 @@ end
 Flash a firmware image (`picodeck.bin`) from the SD card. **Only present**
 for apps that declare `"system-update"` AND are OS apps (id
 `net.picodeck.updater` / `net.picodeck.store`, or installed under `/system/`).
+`path` goes through the sandbox like any other: to read `/system/update.bin` the
+app also needs `"root-filesystem"`, or the call returns `false, "access denied"`.
 
 Before anything is flashed:
 - `/system/update.sha256` (exactly 64 hex digits + optional newline) must match
@@ -469,9 +493,11 @@ by `qmiPsramFree` (idempotent) or when garbage-collected; `qmiPsramRead/Write`
 raise on an out-of-range offset/length or a freed handle. The handle can be
 passed to `picocalc.graphics.image.loadFromBuffer(handle [, len])`.
 
+The block's contents start uninitialised: write before you read.
+
 - **Parameters:**
-  - `size` (number): Bytes to allocate
-- **Returns:** (userdata) Handle, or `nil` on failure
+  - `size` (integer): Bytes to allocate. Zero or less raises `size must be positive`.
+- **Returns:** (userdata) Handle, or `nil` when the heap has no block that large
 
 ```lua
 local buf = picocalc.sys.qmiPsramAlloc(4096)
@@ -524,61 +550,87 @@ local data = picocalc.sys.qmiPsramRead(buf, 0, 11)
 
 ## picocalc.config
 
-Persistent **per-app** key-value configuration storage, stored at `/data/<APP_ID>/config.json`. Each app gets its own isolated store. The same store is also available under the alias `picocalc.appconfig` — same data, two names.
+Persistent **per-app** key-value configuration storage, stored at `/data/<APP_ID>/config.json`. Each app gets its own isolated store. The same store is also available under the alias `picocalc.appconfig`: same data, two names.
 
-For the **system-wide** store shared by all apps (`/system/config.json`), use `picocalc.sysconfig` — see [API Sysconfig](API-Sysconfig.md).
+`picocalc.sysconfig` is the **system-wide** store shared by all apps (`/system/config.json`); see [API Sysconfig](API-Sysconfig.md). It exists only for apps whose `app.json` declares the `"sysconfig"` requirement (otherwise it is nil).
 
-`picocalc.sysconfig` exists only for apps whose `app.json` declares the `"sysconfig"` requirement (otherwise it is nil).
+### Which store to use
+
+| Store | For | Shape |
+|---|---|---|
+| `picocalc.config` | This app's settings | Up to 32 string values, 255 bytes each |
+| `picocalc.game.save` | This app's progress, scores, anything larger | Any Lua table, one JSON file per named slot ([API Game](API-Game.md)) |
+| `picocalc.fs` + `picocalc.json` | Your own files and formats | Whatever you write ([API Filesystem](API-Filesystem.md), [API JSON](API-JSON.md)) |
+| `picocalc.sysconfig` | The OS's own settings (WiFi, brightness, time zone) | Needs the `"sysconfig"` requirement |
+
+### Limits
+
+- **32 keys.** A new key past that is refused: `set` returns `false, "config full"`. Replacing an existing key still works, and deleting one makes room.
+- **Keys up to 31 bytes, values up to 255.** Longer ones are refused, never cut short: `set` returns `false, "key too long"` or `false, "value too long"` and an existing key keeps its old value.
+- **Values are strings.** A number is accepted and reads back as a string (`set("n", 5)`, then `get("n")` is `"5"`); any other type raises an argument error. A string with a NUL byte in it is refused.
+
+The store loads itself the first time you call any of its functions, so an explicit `load()` is not needed. It takes about 9 KB of the Lua heap once it holds a key, freed when the app exits.
+
+A `config.json` you edit by hand or write yourself can hold more than this. `load` then `save` never deletes what the store could not load: more than 32 keys, over-long keys or values, and values that are not strings (numbers, `true`, nested arrays and objects) are written back as they were. `get` does not see them; `set` or deleting that key replaces it, and `clear` and `reset` drop them with everything else.
 
 ### Functions
 
-#### `picocalc.config.get(key)`
+#### `picocalc.config.get(key [, fallback])`
 Retrieves a configuration value.
 
 - **Parameters:**
   - `key` (string): Configuration key
-- **Returns:** (string or nil) Value, or `nil` if key does not exist
+  - `fallback` (string or number, optional): Returned, as a string, if the key does not exist
+- **Returns:** (string or nil) Value, or `fallback`, or `nil` if the key does not exist and no fallback was given
 
 ```lua
-local highscore = picocalc.config.get("highscore")
+local highscore = picocalc.config.get("highscore", "0")
+local volume = tonumber(picocalc.config.get("volume", 80))
 ```
 
 ---
 
 #### `picocalc.config.set(key [, value])`
-Sets a configuration value. Pass `nil` as value to delete the key.
+Sets a configuration value in memory; call `save()` to keep it. A `value` of `nil` or `""`, or none at all, deletes the key.
 
 - **Parameters:**
   - `key` (string): Configuration key
-  - `value` (string or nil): Value to store, or `nil` to delete
-- **Returns:** None
+  - `value` (string, number or nil): Value to store, or `nil` to delete
+- **Returns:** `true`, or `false` and a reason when nothing was stored (`"config full"`, `"key too long"`, `"value too long"`, `"empty key"`, `"value contains a NUL byte"`, `"out of memory"`)
+
+Deleting a key that does not exist returns `true`.
 
 ```lua
 picocalc.config.set("highscore", "1000")
 picocalc.config.set("old_key", nil)  -- Delete key
+
+local ok, err = picocalc.config.set("notes", very_long_text)
+if not ok then
+    picocalc.sys.log("config: " .. err)  -- "value too long": use game.save
+end
 ```
 
 ---
 
 #### `picocalc.config.save()`
-Saves the current configuration to `/data/<APP_ID>/config.json`.
+Saves the current configuration to `/data/<APP_ID>/config.json`, creating `/data/<APP_ID>` if needed. The file is replaced in one step, so a failed save leaves the previous file.
 
 - **Parameters:** None
-- **Returns:** (boolean) `true` on success, `false` on error
+- **Returns:** (boolean) `true` on success, `false` on error. It also returns `false`, and writes nothing, if the file exists but could not be read when the store loaded (a card error, or no memory for it), since saving would delete the keys in it; a later `load()` that works, or `reset()`, ends that.
 
 ```lua
 if picocalc.config.save() then
-    print("Config saved")
+    picocalc.sys.log("Config saved")
 end
 ```
 
 ---
 
 #### `picocalc.config.load()`
-Loads configuration from `/data/<APP_ID>/config.json`.
+Reloads the configuration from `/data/<APP_ID>/config.json`, dropping unsaved changes. Not needed before the first `get`: the store loads itself.
 
 - **Parameters:** None
-- **Returns:** (boolean) `true` on success, `false` on error
+- **Returns:** (boolean) `true` if the file was read, `false` otherwise. On a first run there is no file yet, so `false` is normal: the store is simply empty.
 
 ```lua
 picocalc.config.load()
@@ -603,7 +655,7 @@ picocalc.config.save()  -- persist the empty config
 Resets the app configuration by deleting the config file from the SD card and clearing the in-memory state.
 
 - **Parameters:** None
-- **Returns:** (boolean) `true` if the file was deleted successfully, `false` on error
+- **Returns:** (boolean) `true`, whether or not there was a file to delete
 
 ```lua
 if picocalc.config.reset() then

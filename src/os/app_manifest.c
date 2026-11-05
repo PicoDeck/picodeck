@@ -40,8 +40,9 @@ static int hex_val(char c) {
     return -1;
 }
 
-// Decode the string body starting just after its opening quote.
-static void read_string(const char *q, const char *end, char *out,
+// Decode the string body starting just after its opening quote. True when it
+// did not fit and out holds only the start of it.
+static bool read_string(const char *q, const char *end, char *out,
                         size_t out_len) {
     size_t i = 0;
     while (q < end && *q != '"' && i + 1 < out_len) {
@@ -72,21 +73,31 @@ static void read_string(const char *q, const char *end, char *out,
         out[i++] = c;
     }
     out[i] = '\0';
+    return q < end && *q != '"';
 }
 
 // String value of "key".  A match whose value is not a string (e.g. the key
 // text appearing inside another value) is skipped and the search continues.
-static bool json_get_string(const char *json, const char *end,
-                            const char *key, char *out, size_t out_len) {
+// *cut (may be NULL) says whether the value was longer than out.
+static bool json_get_string_cut(const char *json, const char *end,
+                                const char *key, char *out, size_t out_len,
+                                bool *cut) {
     const char *p = json;
     while ((p = find_key(p, end, key)) != NULL) {
         const char *q = skip_sep(p, end);
         if (q < end && *q == '"') {
-            read_string(q + 1, end, out, out_len);
+            bool c = read_string(q + 1, end, out, out_len);
+            if (cut)
+                *cut = c;
             return true;
         }
     }
     return false;
+}
+
+static bool json_get_string(const char *json, const char *end,
+                            const char *key, char *out, size_t out_len) {
+    return json_get_string_cut(json, end, key, out, out_len, NULL);
 }
 
 // Integer value of the first "key" (atoi semantics: leading '-' allowed,
@@ -224,9 +235,16 @@ void app_manifest_parse(const char *json, size_t len, const char *dir_name,
                         app_entry_t *app) {
     const char *end = json ? json + bounded_len(json, len) : json;
 
-    if (!json || !json_get_string(json, end, "id", app->id, sizeof(app->id)))
+    bool id_cut = false;
+    if (!json || !json_get_string_cut(json, end, "id", app->id, sizeof(app->id),
+                                      &id_cut))
         default_id(dir_name, app->id, sizeof(app->id));
     fold_lower(app->id);  // FatFS is case-insensitive: one spelling per app
+    // Cut short it would be a valid id, and share /data/<id> with the app that
+    // really has it. A trailing dot never passes app_manifest_id_valid, so the
+    // launcher refuses it.
+    if (id_cut)
+        app->id[sizeof(app->id) - 2] = '.';
     if (!json || !json_get_string(json, end, "name", app->name, sizeof(app->name)))
         copy_str(app->name, sizeof(app->name), dir_name);
     if (!json || !json_get_string(json, end, "description", app->description,

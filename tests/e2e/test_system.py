@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from helpers import (measure_heap_probe, require_heap_metrics_live, log_texts,
+                     stage_lua_app,
                      lua_case_names, run_lua_app)
 
 SYS_CASES = lua_case_names("sys_test")
@@ -262,3 +263,130 @@ class TestConfigPersistence:
         assert "SYS:RUNS prev=1" in texts, (
             "second run did not load the first run's saved value\n"
             + second.describe())
+
+
+class TestPowerStatus:
+    """getPowerStatus reads what the header's charging bolt reads."""
+
+    def test_reports_the_keyboard_controllers_charging_state(self, simulator):
+        code = """
+        local p = picocalc.sys.getPowerStatus()
+        picocalc.sys.log("POWER " .. tostring(p.charging) .. " " .. p.percent)
+        """
+        stage_lua_app(simulator.sd_card_path, "power_status", code)
+        for percent, charging in ((42, True), (77, False)):
+            simulator.call("set_battery", {"percent": percent, "charging": charging})
+            seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+            simulator.launch_app("power_status")
+            simulator.wait_for_exit(timeout=10)
+            simulator.wait_for_log(rf"^POWER {str(charging).lower()} {percent}$",
+                                   timeout=5, since_seq=seq)
+
+
+class TestAppIds:
+    """The doc's rule: 1-79 characters, and the launcher refuses anything else.
+    An 80-character id used to be cut to the 79-character one's /data/<id>."""
+
+    def test_id_lengths(self, simulator):
+        sd = Path(simulator.sd_card_path)
+        code = 'picocalc.sys.log("ID_RAN " .. APP_ID)'
+        stage_lua_app(sd, "id79", code, id="a" * 79)
+        seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+        simulator.launch_app("id79")
+        simulator.wait_for_exit(timeout=10)
+        simulator.wait_for_log(rf"^ID_RAN {'a' * 79}$", timeout=5, since_seq=seq)
+
+        stage_lua_app(sd, "id80", code, id="a" * 80)
+        seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+        simulator.launch_app("id80")
+        simulator.wait_for_exit(timeout=10)
+        texts = log_texts(simulator.get_log_lines(seq))
+        assert not any(t.startswith("ID_RAN") for t in texts), texts
+        log = (sd / "system" / "error.log").read_text()
+        assert "invalid app id" in log, log
+
+
+class TestReboot:
+    """The simulator has no reset to model: a reboot ends the app, as the native
+    sys->reboot does, and the launcher takes over. It used to hang for good."""
+
+    def test_sys_reboot_ends_the_app(self, simulator):
+        code = """
+        picocalc.sys.log("BEFORE")
+        pcall(picocalc.sys.reboot)
+        picocalc.sys.log("AFTER")
+        """
+        stage_lua_app(simulator.sd_card_path, "sys_reboot", code)
+        seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+        simulator.launch_app("sys_reboot")
+        out = simulator.wait_for_exit(timeout=10)
+        assert out.get("result") == "exit_sentinel", out
+        texts = log_texts(simulator.get_log_lines(seq))
+        assert "BEFORE" in texts and "AFTER" not in texts, texts
+        assert not simulator.call("get_running_app")["running"]
+
+    def test_menu_reboot_from_an_app(self, simulator):
+        code = """
+        picocalc.display.clear(picocalc.display.BLUE)
+        picocalc.display.flush()
+        picocalc.sys.log("MENU_READY")
+        while true do
+            picocalc.input.update()
+            picocalc.sys.sleep(20)
+        end
+        """
+        stage_lua_app(simulator.sd_card_path, "menu_reboot", code)
+        seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+        simulator.launch_app("menu_reboot")
+        simulator.wait_for_log(r"^MENU_READY$", timeout=10, since_seq=seq)
+        simulator.keypress("menu")
+        time.sleep(0.3)
+        # Up wraps from the first row to Exit App, and once more to Reboot.
+        for _ in range(2):
+            simulator.keypress("up")
+            time.sleep(0.2)
+        simulator.keypress("enter")
+        out = simulator.wait_for_exit(timeout=10)
+        assert out.get("result") == "exit_sentinel", out
+        assert not simulator.call("get_running_app")["running"]
+
+    def test_menu_reboot_at_the_launcher(self, simulator):
+        simulator.keypress("menu")
+        time.sleep(0.3)
+        simulator.keypress("up")  # wraps from the first row to Reboot
+        time.sleep(0.2)
+        simulator.keypress("enter")
+        time.sleep(0.3)
+        # The launcher's loop is what starts an app: it is running again.
+        simulator.launch_app("hello")
+        deadline = time.monotonic() + 10
+        while not simulator.call("get_running_app")["running"]:
+            assert time.monotonic() < deadline, "the launcher did not come back"
+            time.sleep(0.05)
+
+
+class TestErrorPositions:
+    """main.lua's errors name the file, as a module's do."""
+
+    def test_runtime_error_names_main_lua(self, simulator):
+        stage_lua_app(simulator.sd_card_path, "err_pos",
+                      "local x = nil\n\nreturn x.field\n")
+        simulator.launch_app("err_pos")
+        out = simulator.wait_for_exit(timeout=10)
+        assert out.get("result") == "error", out
+        assert "/apps/.test/err_pos/main.lua:3: attempt to index" in out["error"], out
+
+    def test_load_error_names_main_lua(self, simulator):
+        sd = Path(simulator.sd_card_path)
+        stage_lua_app(sd, "err_syntax", "local x =\n")
+        simulator.launch_app("err_syntax")
+        simulator.wait_for_exit(timeout=10)
+        log = (sd / "system" / "error.log").read_text()
+        assert "/apps/.test/err_syntax/main.lua:" in log, log
+
+    def test_module_error_is_unchanged(self, simulator):
+        stage_lua_app(simulator.sd_card_path, "err_mod", 'require("mod")\n',
+                      files={"mod.lua": "local x = nil\nreturn x.field\n"})
+        simulator.launch_app("err_mod")
+        out = simulator.wait_for_exit(timeout=10)
+        assert "/apps/.test/err_mod/mod.lua:2: " in out["error"], out
