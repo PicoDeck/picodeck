@@ -140,14 +140,16 @@ def test_api_gamepad_axes_through_the_trampoline(simulator):
              for t in log_texts(simulator.get_log_lines())]
     assert "PROBE gamepad axes bf800000 0 0 3f800000 0 3f800000 bad=0" in lines, (
         lines)
-    # The same app with only the D-pad: AXIS_LX reads it.
+    # A D-pad held as the app starts is hidden from it until released, as any
+    # key or button is (test_modal_key_leak.py), so AXIS_LX's fallback reads 0.
+    # test_gamepad_axes.py has the fallback itself, from a running app.
     simulator.pad("right")
     simulator.launch_app("native_api_probe")
     outcome = simulator.wait_for_exit(timeout=15)
     assert outcome.get("result") == "returned", outcome
     lines = [re.sub(r"^\[APP\] ", "", t)
              for t in log_texts(simulator.get_log_lines())]
-    assert "PROBE gamepad axes 3f800000 0 0 0 0 0 bad=0" in lines, lines
+    assert "PROBE gamepad axes 0 0 0 0 0 0 bad=0" in lines, lines
     simulator.pad("off")
 
 

@@ -133,13 +133,15 @@ end
 ---
 
 #### `picocalc.input.clearState()`
-Clear all button and key input state. Resets pressed, released, and held button buffers, queued `pollEvent` events and `isKeyDown` state. Useful when returning from modal dialogs or menus to prevent stale input.
+Clear all button and key input state. Resets pressed, released, and held button buffers, queued `pollEvent` events and `isKeyDown` state, and restarts `getButtonsRepeated()`'s clocks. Useful on a scene change, so input the last scene did not read does not reach the next. The OS's own dialogs and the system menu need no such call.
+
+It forgets that keys are down, so a key still held comes back: at its next repeat as a new press for arrows, letters, Enter, Tab, Backspace and Delete, and as held with no press edge for F-keys, Esc and the modifiers.
 
 - **Parameters:** None
 - **Returns:** None
 
 ```lua
--- After closing a dialog, clear stale input
+-- Entering a new scene: drop what the last one did not read
 picocalc.input.clearState()
 ```
 
