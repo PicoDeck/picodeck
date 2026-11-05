@@ -15,6 +15,8 @@ import time
 import pytest
 
 from helpers import app_rel_dir, stage_lua_app
+from test_menu_key_hold import hold_shim  # noqa: F401 (a fixture)
+from test_menu_key_leak import HostKey, SDLK_RETURN, SDLK_UP
 
 DIM_LEVEL = 10  # IDLE_DIM_LEVEL, src/os/idle_dim.c
 
@@ -191,3 +193,54 @@ def test_launch_of_a_missing_app_leaves_the_screen_dim(sim_factory, test_sd_card
     out = sim.wait_for_exit(timeout=10)
     assert out["found"] is False, out
     assert sim.call("get_backlight") == {"level": DIM_LEVEL, "dimmed": True}
+
+
+# The waking key held on: the host's auto-repeat stands in for the STM32's repeats,
+# which for arrows, letters and Enter are fresh PRESSED items, so a key the wake only
+# forgot read as a press at its first repeat (tests/unit/test_kbd_hide.c replays the
+# device's). On a dimmed launcher, Enter held ~350 ms woke the screen and then started
+# the selected app.
+@pytest.mark.sd(fixtures=[], reserve=1)  # stages a listed app
+def test_enter_held_on_a_dimmed_launcher_starts_nothing(hold_shim, monkeypatch,  # noqa: F811
+                                                        sim_factory, test_sd_card):
+    monkeypatch.setenv("KEYHOLD_SYM", str(SDLK_RETURN))
+    monkeypatch.setenv("KEYHOLD_MS", "1500")
+    stage_lua_app(test_sd_card, "aaa_dim_probe", PROBE, hidden=False)
+    sim, level = _boot(sim_factory, test_sd_card)
+    _wait_dimmed(sim)
+
+    key = HostKey(hold_shim, "enter")
+    key.press()
+    _wait_lit(sim, level)
+    key.wait_released()
+    _launcher_passes(sim)
+    assert not sim.call("get_running_app")["running"], \
+        "the held Enter that woke the screen started an app"
+
+    # Released, the next press is a press.
+    _tap(sim, "enter")
+    sim.wait_for_log("PROBE READY", timeout=10)
+
+
+def test_key_held_that_wakes_a_running_app_stays_hidden(hold_shim, monkeypatch,  # noqa: F811
+                                                        sim_factory, test_sd_card):
+    monkeypatch.setenv("KEYHOLD_SYM", str(SDLK_UP))
+    monkeypatch.setenv("KEYHOLD_MS", "1500")
+    stage_lua_app(test_sd_card, "dim_probe", PROBE)
+    sim, level = _boot(sim_factory, test_sd_card)
+    sim.launch_app("dim_probe")
+    sim.wait_for_log("PROBE READY", timeout=10)
+    _wait_dimmed(sim)
+
+    key = HostKey(hold_shim, "up")
+    key.press()
+    _wait_lit(sim, level)
+    key.wait_released()
+    _tap(sim, "down")
+    sim.wait_for_log("PROBE press down", timeout=10)
+    lines = _probe_lines(sim)
+    assert "PROBE press up" not in lines, f"the held key's repeats read as presses: {lines}"
+
+    # Released, the next press is a press.
+    _tap(sim, "up")
+    sim.wait_for_log("PROBE press up", timeout=10)
