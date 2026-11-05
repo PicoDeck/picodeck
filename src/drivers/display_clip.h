@@ -568,6 +568,10 @@ DISP_HOT static inline void disp_copy_row_rev(uint16_t *d, const uint16_t *src,
   while (n-- > 0) *d++ = disp_px(*src--, swap);
 }
 
+// Is either half of x zero? One test for the common case, both pixels drawn.
+#define DISP_HAS_ZERO_HALF(x) \
+  ((((x) - 0x00010001u) & ~(x) & 0x80008000u) != 0)
+
 // A colour-keyed row, a pair of pixels per loaded word: both keyed (nothing to
 // store), both drawn (one REV16 and one store) or one of each. On the device this
 // halves the loads from the image in PSRAM and the stores to the framebuffer.
@@ -585,13 +589,12 @@ DISP_HOT static inline void disp_key_row(uint16_t *d, const uint16_t *src, int n
       uint32_t v;
       memcpy(&v, src, 4);
       const uint32_t x = v ^ key2;
-      if (!x) continue;
-      if ((x & 0xFFFFu) && (x >> 16)) {
+      if (!DISP_HAS_ZERO_HALF(x)) {
         if (swap) v = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
         memcpy(d, &v, 4);
       } else if (x & 0xFFFFu) {
         d[0] = disp_px((uint16_t)v, swap);
-      } else {
+      } else if (x) {
         d[1] = disp_px((uint16_t)(v >> 16), swap);
       }
     }
@@ -617,13 +620,12 @@ DISP_HOT static inline void disp_key_row_rev(uint16_t *d, const uint16_t *src,
       uint32_t v;
       memcpy(&v, src - 1, 4);  // low half src[-1], high half src[0]
       const uint32_t x = v ^ key2;
-      if (!x) continue;
-      if ((x & 0xFFFFu) && (x >> 16)) {
+      if (!DISP_HAS_ZERO_HALF(x)) {
         v = swap ? __builtin_bswap32(v) : (v >> 16) | (v << 16);
         memcpy(d, &v, 4);
       } else if (x >> 16) {
         d[0] = disp_px((uint16_t)(v >> 16), swap);
-      } else {
+      } else if (x) {
         d[1] = disp_px((uint16_t)v, swap);
       }
     }
