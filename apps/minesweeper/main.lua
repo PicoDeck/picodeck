@@ -540,17 +540,29 @@ math.randomseed(pc.sys.getTimeMs())
 load_sprites()
 init_board()
 
+-- Only a key changes the board and only the header's timer changes by itself,
+-- so draw for those (and once a second for OS overlays) and otherwise just sleep:
+-- a full-screen redraw and flush 30 times a second runs the battery down while
+-- the player thinks.
+local drawn_second = nil
+
 while true do
     local result = handle_input()
     if result == "exit" then
         return
     end
-    
-    disp.clear(BG_COLOR)
-    draw_header()
-    draw_board()
-    draw_footer()
-    disp.flush()
-    
+
+    local second = (pc.sys.getTimeMs() - start_time) // 1000
+    local held_all, pad_pressed = read_buttons()
+    if second ~= drawn_second or held_all ~= 0 or pad_pressed ~= 0 or
+       input.getButtons() ~= 0 or input.getButtonsPressed() ~= 0 then
+        drawn_second = second
+        disp.clear(BG_COLOR)
+        draw_header()
+        draw_board()
+        draw_footer()
+        disp.flush()
+    end
+
     pc.sys.sleep(16)
 end
