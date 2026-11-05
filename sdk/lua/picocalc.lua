@@ -2368,12 +2368,15 @@ function PicoDeckSprite:remove() end
 ---The same as remove().
 function PicoDeckSprite:removeSprite() end
 
----Move the sprite to absolute coordinates.
+---Move the sprite to absolute coordinates. Positions are whole pixels: a float
+---rounds to nearest, so keep a fractional position in your own variable.
 ---@param x integer
 ---@param y integer
 function PicoDeckSprite:moveTo(x, y) end
 
----Move the sprite by a relative offset.
+---Move the sprite by a relative offset, rounded to whole pixels on each call:
+---`moveBy(0.4, 0)` never moves it. For a fractional speed, keep your own float
+---position and `moveTo` it.
 ---@param dx integer
 ---@param dy integer
 function PicoDeckSprite:moveBy(dx, dy) end
