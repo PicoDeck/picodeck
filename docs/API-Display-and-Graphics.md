@@ -930,10 +930,10 @@ Sets the current drawing color for graphics operations.
 ---
 
 #### `picocalc.graphics.setBackgroundColor(color)`
-Sets the background color for graphics operations.
+Sets the background color for graphics operations. `false` makes the background of `graphics.drawText`, `drawTextAligned` and `drawTextInRect` transparent, so text can sit over art; the last color stays in use for `graphics.clear()` and `imageWithText`.
 
 - **Parameters:**
-  - `color` (number): RGB565 color value
+  - `color` (number or false): RGB565 color value, or `false` for a transparent text background
 - **Returns:** None
 
 ---
@@ -1117,6 +1117,16 @@ For scenes (a camera, many objects, clipping and depth order), use [picocalc.gfx
 ---
 
 ### Text Rendering
+
+There are three families of text call. They draw the same pixels; they differ in where the colors and the font come from, and in the order of their arguments.
+
+| Call | Arguments | Colors | Font | Use it for |
+|---|---|---|---|---|
+| `display.drawText` | `x, y, text, fg [, bg]` | arguments | the active font (`display.setFont`, a font id) | most text: **start here** |
+| `font:drawText`, `font:drawTextAligned`, `font:drawTextInRect` | `x, y, ...` | arguments | that font object | a font kept in a variable, aligned or word-wrapped text with explicit colors |
+| `graphics.drawText`, `graphics.drawTextAligned`, `graphics.drawTextInRect` | `text, x, y, ...` | `setColor`, `setBackgroundColor` | the active font, or a font object as the last argument | many lines in one style |
+
+A transparent background is `false` as `bg` for `display.drawText` and the `font:` methods, and `setBackgroundColor(false)` for the `graphics.` calls. Of these, only `drawTextInRect` wraps. Font ids and font objects are not interchangeable: `display.setFont` takes an id (a `FONT_*` constant or what `display.loadFont` returns), and the `font` arguments here take an object from `graphics.font.new`. Both kinds of loaded font share the same 8 slots. For a console-style grid of text, use [picocalc.terminal](API-Terminal.md) or [picocalc.chargrid](API-Chargrid.md).
 
 #### `picocalc.graphics.drawText(text, x, y [, font])`
 Draws text using the current graphics color and background color. Optionally specify a font object.
@@ -2774,7 +2784,7 @@ Custom font loading and text rendering. Font objects can be passed to text rende
 Creates a new font object, either from one of the four built-in fonts or by loading a custom `.pfn` file from the SD card.
 
 - **Parameters:**
-  - `nameOrPath` (string): One of the built-in names `"6x8"`, `"8x12"`, `"scientifica"`, `"scientifica-bold"`, or an absolute path to a `.pfn` file inside the app's sandbox
+  - `nameOrPath` (string): One of the built-in names `"6x8"`, `"8x12"`, `"scientifica"`, `"scientifica-bold"` (`"scientifica_bold"` also works), or an absolute path to a `.pfn` file inside the app's sandbox
 - **Returns:** (userdata) Font object. **Raises a Lua error** (never returns `nil`); the message names the real problem:
   - a bare name that is not a built-in (no `/`, not ending in `.pfn`): `no such built-in font 'x' (built-ins: ...)`
   - a path (contains `/` or ends in `.pfn`) outside the sandbox: `access denied: <path>`
@@ -2800,11 +2810,13 @@ Draws text at the specified position using this font.
   - `y` (number): Y coordinate
   - `text` (string): Text to draw
   - `fg` (number): Foreground RGB565 color
-  - `bg` (number, optional): Background RGB565 color
-- **Returns:** None
+  - `bg` (number or false, optional): Background RGB565 color, default `BLACK`. `false` for a transparent background.
+- **Returns:** (number) Pixel width of the drawn text
 
 ```lua
-font:drawText(10, 10, "Hello!", picocalc.display.WHITE)
+local font = picocalc.graphics.font.new("8x12")
+local width = font:drawText(10, 10, "Hello!", picocalc.display.WHITE)
+font:drawText(10, 30, "Over art", picocalc.display.WHITE, false)
 ```
 
 ---
@@ -2818,7 +2830,7 @@ Draws text with alignment using this font.
   - `text` (string): Text to draw
   - `alignment` (number): 0 = left, 1 = center, 2 = right
   - `fg` (number): Foreground RGB565 color
-  - `bg` (number, optional): Background RGB565 color
+  - `bg` (number or false, optional): Background RGB565 color, default `BLACK`. `false` for a transparent background.
 - **Returns:** None
 
 ```lua
@@ -2837,8 +2849,8 @@ Draws word-wrapped text within a bounding rectangle using this font. Wrapping br
   - `h` (number): Height of bounding rectangle
   - `text` (string): Text to draw
   - `alignment` (number, optional): 0 = left (default), 1 = center, 2 = right
-  - `fg` (number, optional): Foreground RGB565 color
-  - `bg` (number, optional): Background RGB565 color
+  - `fg` (number, optional): Foreground RGB565 color, default the `setColor` color
+  - `bg` (number or false, optional): Background RGB565 color, default the `setBackgroundColor` one. `false` for a transparent background.
 - **Returns:** None
 
 ```lua

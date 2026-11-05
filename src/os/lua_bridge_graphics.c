@@ -9,6 +9,7 @@
 
 static uint16_t s_graphics_color = COLOR_WHITE;
 static uint16_t s_graphics_bg_color = COLOR_BLACK;
+static bool s_graphics_bg_transparent = false;  // setBackgroundColor(false)
 
 // ── Destroyed objects ────────────────────────────────────────────────────────
 // __gc is not reachable from Lua (lb_register_type), but a finaliser that
@@ -75,8 +76,15 @@ static int l_graphics_setColor(lua_State *L) {
   return 0;
 }
 
+// A colour, or false for a transparent text background (the last colour stays
+// what graphics.clear() and imageWithText use).
 static int l_graphics_setBackgroundColor(lua_State *L) {
+  if (lua_isboolean(L, 1) && !lua_toboolean(L, 1)) {
+    s_graphics_bg_transparent = true;
+    return 0;
+  }
   s_graphics_bg_color = l_checkcolor(L, 1);
+  s_graphics_bg_transparent = false;
   return 0;
 }
 
@@ -1151,10 +1159,34 @@ static int wrap_lines(const pc_font_t *f, const char *text,
   return lines;
 }
 
-typedef struct { uint16_t fg, bg; } emit_fb_t;
+typedef struct { uint16_t fg, bg; bool transparent; } emit_fb_t;
 static void emit_to_display(int x, int y, const char *line, void *user) {
   emit_fb_t *e = (emit_fb_t *)user;
-  display_draw_text(x, y, line, e->fg, e->bg);
+  if (e->transparent)
+    display_draw_text_transparent(x, y, line, e->fg);
+  else
+    display_draw_text(x, y, line, e->fg, e->bg);
+}
+
+// The bg argument of the font methods: false is a transparent background (as in
+// display.drawText), nil or absent the given default.
+static void read_text_bg(lua_State *L, int idx, emit_fb_t *e, uint16_t def,
+                         bool def_transparent) {
+  e->bg = def;
+  e->transparent = def_transparent;
+  if (lua_isnoneornil(L, idx)) return;
+  if (lua_isboolean(L, idx) && !lua_toboolean(L, idx)) {
+    e->transparent = true;
+    return;
+  }
+  e->bg = l_checkcolor(L, idx);
+  e->transparent = false;
+}
+
+// One line, opaque or transparent; returns its pixel width.
+static int draw_text_line(int x, int y, const char *text, const emit_fb_t *e) {
+  return e->transparent ? display_draw_text_transparent(x, y, text, e->fg)
+                        : display_draw_text(x, y, text, e->fg, e->bg);
 }
 
 typedef struct { uint16_t *buf; int w, h; uint16_t fg, bg; } emit_buf_t;
@@ -4198,7 +4230,8 @@ static int l_font_new(lua_State *L) {
   if      (strcmp(name, "6x8") == 0)              font_id = 0;
   else if (strcmp(name, "8x12") == 0)             font_id = 1;
   else if (strcmp(name, "scientifica") == 0)      font_id = 2;
-  else if (strcmp(name, "scientifica-bold") == 0) font_id = 3;
+  else if (strcmp(name, "scientifica-bold") == 0 ||
+           strcmp(name, "scientifica_bold") == 0) font_id = 3;
   else {
     // A path has a '/' or ends in ".pfn"; anything else is a bare font name
     // that matched no built-in, and must not be blamed on the sandbox.
@@ -4247,10 +4280,10 @@ static int l_font_drawText(lua_State *L) {
   int x = lb_checkint(L, 2);
   int y = lb_checkint(L, 3);
   const char *text = luaL_checkstring(L, 4);
-  uint16_t fg = l_checkcolor(L, 5);
-  uint16_t bg = (lua_gettop(L) >= 6) ? l_checkcolor(L, 6) : COLOR_BLACK;
+  emit_fb_t e = { .fg = l_checkcolor(L, 5) };
+  read_text_bg(L, 6, &e, COLOR_BLACK, false);
   int width = 0;
-  WITH_FONT_ARG(L, 1, width = display_draw_text(x, y, text, fg, bg));
+  WITH_FONT_ARG(L, 1, width = draw_text_line(x, y, text, &e));
   lua_pushinteger(L, width);
   return 1;
 }
@@ -4283,12 +4316,12 @@ static int l_font_drawTextAligned(lua_State *L) {
   int y = lb_checkint(L, 3);
   const char *text = luaL_checkstring(L, 4);
   int alignment = luaL_checkinteger(L, 5);
-  uint16_t fg = l_checkcolor(L, 6);
-  uint16_t bg = (lua_gettop(L) >= 7) ? l_checkcolor(L, 7) : COLOR_BLACK;
+  emit_fb_t e = { .fg = l_checkcolor(L, 6) };
+  read_text_bg(L, 7, &e, COLOR_BLACK, false);
   int tw = font_text_width(font_for_arg(L, 1), text);
   if (alignment == 1) x -= tw / 2;
   else if (alignment == 2) x -= tw;
-  WITH_FONT_ARG(L, 1, display_draw_text(x, y, text, fg, bg));
+  WITH_FONT_ARG(L, 1, draw_text_line(x, y, text, &e));
   return 0;
 }
 
@@ -4302,8 +4335,8 @@ static int l_font_drawTextInRect(lua_State *L) {
   const char *text = luaL_checkstring(L, 6);
   int alignment = (int)luaL_optinteger(L, 7, 0);
   emit_fb_t e = {
-    (lua_gettop(L) >= 8) ? l_checkcolor(L, 8) : s_graphics_color,
-    (lua_gettop(L) >= 9) ? l_checkcolor(L, 9) : s_graphics_bg_color };
+    .fg = lua_isnoneornil(L, 8) ? s_graphics_color : l_checkcolor(L, 8) };
+  read_text_bg(L, 9, &e, s_graphics_bg_color, s_graphics_bg_transparent);
   const pc_font_t *f = font_for_arg(L, 1);
   WITH_FONT_ARG(L, 1, wrap_lines(f, text, rx, ry, rw, rh, alignment, emit_to_display, &e));
   return 0;
@@ -4316,8 +4349,9 @@ static int l_graphics_drawText(lua_State *L) {
   const char *text = luaL_checkstring(L, 1);
   int x = lb_checkint(L, 2);
   int y = lb_checkint(L, 3);
+  emit_fb_t e = { s_graphics_color, s_graphics_bg_color, s_graphics_bg_transparent };
   int width = 0;
-  WITH_FONT_ARG(L, 4, width = display_draw_text(x, y, text, s_graphics_color, s_graphics_bg_color));
+  WITH_FONT_ARG(L, 4, width = draw_text_line(x, y, text, &e));
   lua_pushinteger(L, width);
   return 1;
 }
@@ -4331,7 +4365,8 @@ static int l_graphics_drawTextAligned(lua_State *L) {
   int tw = font_text_width(font_for_arg(L, 5), text);
   if (alignment == 1) x -= tw / 2;
   else if (alignment == 2) x -= tw;
-  WITH_FONT_ARG(L, 5, display_draw_text(x, y, text, s_graphics_color, s_graphics_bg_color));
+  emit_fb_t e = { s_graphics_color, s_graphics_bg_color, s_graphics_bg_transparent };
+  WITH_FONT_ARG(L, 5, draw_text_line(x, y, text, &e));
   return 0;
 }
 
@@ -4343,7 +4378,7 @@ static int l_graphics_drawTextInRect(lua_State *L) {
   int rw = lb_checkint(L, 4);
   int rh = lb_checkint(L, 5);
   int alignment = (int)luaL_optinteger(L, 6, 0);
-  emit_fb_t e = { s_graphics_color, s_graphics_bg_color };
+  emit_fb_t e = { s_graphics_color, s_graphics_bg_color, s_graphics_bg_transparent };
   const pc_font_t *f = font_for_arg(L, 7);
   WITH_FONT_ARG(L, 7, wrap_lines(f, text, rx, ry, rw, rh, alignment, emit_to_display, &e));
   return 0;

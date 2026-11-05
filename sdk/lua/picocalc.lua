@@ -1616,8 +1616,9 @@ picocalc.graphics = {}
 ---@param color integer RGB565
 function picocalc.graphics.setColor(color) end
 
----Set the background (erase) colour.
----@param color integer RGB565
+---Set the background (erase) colour. `false` makes the background of
+---graphics.drawText, drawTextAligned and drawTextInRect transparent.
+---@param color integer|false RGB565, or false
 function picocalc.graphics.setBackgroundColor(color) end
 
 ---Set a global transparent colour for image blitting (`nil` to disable).
@@ -2488,7 +2489,7 @@ function picocalc.graphics.font.new(name_or_path) end
 ---@param y integer
 ---@param text string
 ---@param fg integer RGB565 foreground colour
----@param bg? integer RGB565 background colour
+---@param bg? integer|false RGB565 background colour; false is transparent
 ---@return integer width Pixel width of the drawn text
 function PicoDeckFont:drawText(x, y, text, fg, bg) end
 
@@ -2498,7 +2499,7 @@ function PicoDeckFont:drawText(x, y, text, fg, bg) end
 ---@param text string
 ---@param alignment integer 0=left, 1=centre, 2=right
 ---@param fg integer RGB565
----@param bg? integer RGB565
+---@param bg? integer|false RGB565; false is transparent
 function PicoDeckFont:drawTextAligned(x, y, text, alignment, fg, bg) end
 
 ---Word-wrap text within a bounding rect. Wrapping breaks at spaces and uses
@@ -2511,7 +2512,7 @@ function PicoDeckFont:drawTextAligned(x, y, text, alignment, fg, bg) end
 ---@param text string
 ---@param alignment? integer 0=left (default), 1=centre, 2=right
 ---@param fg? integer RGB565
----@param bg? integer RGB565
+---@param bg? integer|false RGB565; false is transparent
 function PicoDeckFont:drawTextInRect(x, y, w, h, text, alignment, fg, bg) end
 
 ---Return the glyph height of this font.
