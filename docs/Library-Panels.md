@@ -95,7 +95,7 @@ Comic object methods:
 
 | Method | Description |
 |--------|-------------|
-| `comic:update()` | Run one frame: input, scrolling, caching, drawing. Does **not** flush. Sets `comic.drewThisFrame`: when it is `false` (an idle frame was skipped, or hardware scroll sent its own strips) you must skip your `flush()`. |
+| `comic:update()` | Run one frame: input, scrolling, caching, drawing. Does **not** flush. Sets `comic.drewThisFrame`: when it is `false` (an idle frame was skipped, or hardware scroll sent its own strips) you must skip your `flush()`. `comic.idleThisFrame` is `true` on an idle frame: sleep then in your own loop, as `Panels.start` does. |
 | `comic:finished()` | `true` once the comic has ended. |
 | `comic:currentSequence()` | Current sequence index. |
 | `comic:goToSequence(idx)` | Jump to sequence `idx` using the current sequence's transition. |
@@ -260,6 +260,7 @@ Global tuning table — assign before (or after) `Panels.new`; most values are r
 | `choiceColor` | `rgb(255, 210, 80)` | Choice-menu highlight colour. |
 | `transitionMs` | `450` | Fade transition duration. |
 | `idleSkip` | `true` | Skip draw+flush on provably static frames (no motion, no pending triggers). |
+| `idleSleepMs` | `16` | How long `Panels.start` sleeps on such a frame, so a comic waiting for a key does not keep the CPU at full speed. `0` = no sleep. |
 | `useHwScroll` | `true` | LCD hardware scrolling for rigid vertical scroll sequences (see below). Set `false` to force the software path. |
 | `volume` | `nil` | Reserved; currently unused (`nil` = leave the system volume alone). |
 
