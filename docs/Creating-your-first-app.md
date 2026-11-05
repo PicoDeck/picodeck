@@ -4,7 +4,7 @@ title: "Creating your first app"
 
 ## Your First App
 
-Creating an app is incredibly straightforward. You only need two files in a folder of your own, at `/apps/<name>/` on the SD card. Call this one `myapp`.
+Creating an app is incredibly straightforward. You only need two files in a folder of your own, at `/apps/<dir>/` on the SD card. Call this one `myapp`.
 
 1. `app.json`: A simple file describing your app. The [`app.json` reference](App-Json-Reference.md) has every field.
 
@@ -64,7 +64,7 @@ Either way, it draws "Hello, World!" and Esc returns to the launcher.
 
 ### Pacing
 
-The loop needs no `sleep`: `flush()` waits for the previous frame's transfer to the panel (about 16 ms for a full frame), which already limits a simple app to roughly 40-60 frames per second. To hold a lower rate, such as 30 FPS to save battery, bracket each frame with `picocalc.perf.beginFrame()` and `picocalc.perf.endFrame()` and call `picocalc.perf.setTargetFPS(30)` once; see [API Performance](API-Performance.md). `picocalc.sys.sleep(ms)` is for waiting, not for pacing.
+The loop needs no `sleep`: `flush()` waits for the previous frame's transfer to the panel (about 16.4 ms for a full frame), which already limits a simple app to roughly 40-60 frames per second. To hold a lower rate, such as 30 FPS to save battery, bracket each frame with `picocalc.perf.beginFrame()` and `picocalc.perf.endFrame()` and call `picocalc.perf.setTargetFPS(30)` once; see [API Performance](API-Performance.md). `picocalc.sys.sleep(ms)` is for waiting, not for pacing.
 
 ### Reading game controls
 

@@ -47,7 +47,7 @@ SD:/
     └── lib/            download.lua, panels.lua, widgets.lua, fonts/
 ```
 
-You can copy less: `store/` alone gets you the App Store. The launcher lists at most 64 apps. `apps/gbc` has no program until you build it, so it does not appear.
+You can copy less: `store/` alone gets you the App Store. The launcher lists at most 64 apps. [`apps/gbc`](https://github.com/PicoDeck/picodeck/tree/master/apps/gbc) has no program until you build it, so it does not appear.
 
 ## 3. First boot
 
@@ -68,7 +68,7 @@ The App Store and any networked app need WiFi. In the system menu open **Setting
 
 ## 5. Copy your own apps
 
-An app is a folder at `/apps/<name>/`; [Creating your first app](Creating-your-first-app.md) writes one. There are three ways to get it onto the card.
+An app is a folder at `/apps/<dir>/`; [Creating your first app](Creating-your-first-app.md) writes one. There are three ways to get it onto the card.
 
 **USB Disk Mode** is the usual way, with no need to take the card out.
 
@@ -86,7 +86,7 @@ For repeated copies while developing, the [dev commands](Simulator-and-Testing.m
 
 ## 6. Keep it up to date
 
-**System Update** (`apps/updater`) and the App Store install new firmware over WiFi, signed releases only. Updating the firmware does not touch the card: to get newer first-party apps or libraries, copy `apps/` and `system/` from the new release's source zip, or update what the App Store lists.
+**System Update** ([`apps/updater`](https://github.com/PicoDeck/picodeck/tree/master/apps/updater)) and the App Store install new firmware over WiFi, signed releases only. Updating the firmware does not touch the card: to get newer first-party apps or libraries, copy `apps/` and `system/` from the new release's source zip, or update what the App Store lists.
 
 To flash by hand again without reaching for BOOTSEL, turn on **Settings > Developer Mode**; the system menu then has **Reboot to Flash**, which brings up the `RP2350` drive.
 
@@ -96,7 +96,7 @@ To flash by hand again without reaching for BOOTSEL, turn on **Settings > Develo
 |---|---|
 | A black screen, though the computer sees the board | The PicoCalc is switched off and USB is powering only the Pico. Switch it on and reboot. |
 | `SD card not found!` | No card, or it is not FAT32. Press Enter to retry once it is in. |
-| `No apps in this category.` | Nothing usable in that tab. On every tab: the card is blank, or the apps are not at `/apps/<name>/`. A folder needs a `main.lua` or `main.elf` to be listed. |
+| `No apps in this category.` | Nothing usable in that tab. On every tab: the card is blank, or the apps are not at `/apps/<dir>/`. A folder needs a `main.lua` or `main.elf` to be listed. |
 | A new app is not listed | The launcher reads `/apps` at boot, when an app exits, and after USB Disk Mode. Reboot from the system menu. |
 | `panels library not found` (Panels Demo), or `loadlib` returns `nil, "cannot open /system/lib/..."` | `system/lib` is not on the card. Copy it. |
 | `Cannot launch app: invalid app id in app.json` | See the [id rules](App-Json-Reference.md#id). |

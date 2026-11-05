@@ -6,7 +6,6 @@ Most of this file is the history of the Lua API's build-out (the sections below 
 
 - **`graphics.animator`** — the line-segment, arc, polygon and multi-part constructors, and the examples for animation loops and animators (see "Sprites" below).
 - **`sound.fileplayer:setBufferSize`** — deferred on purpose (reallocating the shared buffer during streaming is risky).
-- **Lua docs** — `docs_coverage.md` lists the functions and constants still undocumented (about 40 in `graphics`).
 
 Shipped since v0.5.0 and tracked in the docs rather than here: `picocalc.chargrid` and `picocalc.noise`, the Core 1 boot animation and faster boot, Bluetooth gamepads, hidden dev apps, and native apps in the simulator. Subsystem notes live in the nested `CLAUDE.md` files; larger features have a design note and plan in `specs/`.
 

@@ -8,7 +8,7 @@ A cell is 6x12 px, so a terminal has its own font and metrics: it does not use t
 
 ## Creating a terminal
 
-```lua
+```
 local term = picocalc.terminal.new([cols [, rows [, scrollback]]])
 ```
 
@@ -64,10 +64,10 @@ Enable or disable cursor blinking.
 ## Colours
 
 #### `term:setColors(fg, bg)`
-Set the default foreground and background colours (RGB565).
+Set the foreground and background colours (RGB565) for what is written next. An escape sequence's reset (`ESC[0m`, `ESC[39m`, `ESC[49m`) goes back to white on black, not to these.
 
 #### `term:getColors()` → `fg, bg`
-Return the current default foreground and background colours.
+Return the current foreground and background colours, which escape sequences change too.
 
 #### ANSI colour codes
 `term:write()` reads these codes. A colour number N means the same colour as palette index N of a new `picocalc.chargrid` grid ([API Chargrid](API-Chargrid.md)).
@@ -362,7 +362,7 @@ Block until a character is typed. Returns the character as a string (Enter and B
 
 ## Differences from the native terminal API
 
-`picocalc.terminal` covers almost all of the native `picocalc_terminal_t` (`sdk/native/terminal.h`, 42 entries). Every native call has a Lua method of the same name except these:
+`picocalc.terminal` covers almost all of the native `picocalc_terminal_t` ([`sdk/native/terminal.h`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/terminal.h), 42 entries). Every native call has a Lua method of the same name except these:
 
 | Native call | In Lua |
 |-------------|--------|

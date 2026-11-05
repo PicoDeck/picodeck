@@ -358,7 +358,7 @@ typedef struct {
     void (*pushSamples)(const int16_t *samples, int count);
 } picocalc_audio_t;
 
-// --- WiFi (Pico 2W only) -----------------------------------------------------
+// --- WiFi -------------------------------------------------------------------
 // CYW43 uses hardware SPI1; LCD uses PIO0 — independent buses, no arbitration
 // needed. All WiFi calls are cross-core IPC (Core 0 → Core 1).
 
@@ -379,7 +379,7 @@ typedef struct {
     const char *  (*getIP)(void);
     // Returns SSID of current connection, or NULL
     const char *  (*getSSID)(void);
-    // True if WiFi hardware is present (Pico 2W vs standard Pico 2)
+    // True if WiFi hardware is present (the Pico Plus 2 W has it)
     bool          (*isAvailable)(void);
 } picocalc_wifi_t;
 

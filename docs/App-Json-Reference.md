@@ -50,7 +50,7 @@ The [store's guide](https://store.picodeck.net/publish) has the same store field
 
 ## `id`
 
-The id names your data folder, `/data/<id>/`, so changing it later leaves your users' saves behind. Set it before your first release. Two sets of rules apply, and the store's is stricter.
+The id names your data folder, `/data/<APP_ID>/`, so changing it later leaves your users' saves behind. Set it before your first release. Two sets of rules apply, and the store's is stricter.
 
 | | Launcher | Store index |
 |---|---|---|

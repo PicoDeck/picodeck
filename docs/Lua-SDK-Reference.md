@@ -71,7 +71,7 @@ end
 - Call `picocalc.input.update()` and `picocalc.display.flush()` **once per frame**.
 - The system menu key (Shift+F5, reported as F10) is automatically intercepted by the OS to show the system menu overlay; pressing it while the menu is open closes the menu again. Keys down when the menu opens or closes stay hidden from your app until they are released ([`input.update()`](API-Input.md)).
 - All file paths must be absolute (e.g., `APP_DIR .. "/data.txt"` to read a file your app ships).
-- Use `picocalc.fs.appPath("filename")` for per-app data storage — it auto-creates the directory.
+- Use `picocalc.fs.appPath("filename")` for per-app data storage: `/data/<APP_ID>/` exists when your app starts.
 - Without the `root-filesystem` requirement, file access is sandboxed: read your app's directory and `/system/lib/`, read and write `/data/<APP_ID>/` ([details](Global-Variables-and-Permissions.md#default-sandbox)).
 - Per-app config (`picocalc.config`, also available as `picocalc.appconfig`) is isolated per app at `/data/<APP_ID>/config.json`. Only `picocalc.sysconfig` (`/system/config.json`) is shared across all apps.
 

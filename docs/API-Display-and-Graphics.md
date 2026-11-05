@@ -519,7 +519,7 @@ local charHeight = picocalc.display.getFontHeight()
 ---
 
 #### `picocalc.display.loadFont(path)`
-Loads a `.pfn` bitmap font from an absolute SD path and returns a font id for use with `setFont`. The path is sandbox-checked exactly like image loading. Loaded fonts occupy ids 4..11 (at most 8 loaded at a time, on top of the 4 built-ins) and each may be up to roughly 128 KB in PSRAM. **`display.loadFont` and `graphics.font.new(path)` share the same 8 slots**: loading four fonts with each uses them all. Every font loaded by an app is automatically freed when the app exits, or earlier via `unloadFont`. See [Custom fonts](#custom-fonts) below for the `.pfn` format and the `tools/mkfont.py` build tool.
+Loads a `.pfn` bitmap font from an absolute SD path and returns a font id for use with `setFont`. The path is sandbox-checked exactly like image loading. Loaded fonts occupy ids 4..11 (at most 8 loaded at a time, on top of the 4 built-ins) and each may be up to roughly 128 KB in PSRAM. **`display.loadFont` and `graphics.font.new(path)` share the same 8 slots**: loading four fonts with each uses them all. Every font loaded by an app is automatically freed when the app exits, or earlier via `unloadFont`. See [Custom fonts](#custom-fonts) below for the `.pfn` format and the [`tools/mkfont.py`](https://github.com/PicoDeck/picodeck/blob/master/tools/mkfont.py) build tool.
 
 - **Parameters:**
   - `path` (string): Absolute path to a `.pfn` file
@@ -2980,7 +2980,7 @@ Returns the string the font was created with: one of the built-in names, or the 
 
 ### Custom fonts
 
-`picocalc.graphics.font.new(path)` and `picocalc.display.loadFont(path)` both load fonts from a `.pfn` file — a small, little-endian, proportional-capable bitmap font container built by `tools/mkfont.py`.
+`picocalc.graphics.font.new(path)` and `picocalc.display.loadFont(path)` both load fonts from a `.pfn` file — a small, little-endian, proportional-capable bitmap font container built by [`tools/mkfont.py`](https://github.com/PicoDeck/picodeck/blob/master/tools/mkfont.py).
 
 #### `.pfn` file format
 

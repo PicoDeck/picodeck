@@ -52,7 +52,7 @@ static outcome_t run(void (*pass)(alarm_pool_t *), int n, uint32_t cancel) {
   alarm_pool_entry_t e[POOL_LEN];
   memset(e, 0, sizeof(e));
   alarm_pool_t p = {.entries = e};
-  int16_t idx[MAX_LIST];
+  int16_t idx[MAX_LIST] = {-1};  // n == 0: an empty list
   for (int i = 0; i < n; i++)
     idx[i] = (int16_t)((i * 5 + 3) % POOL_LEN);  // never index == position
   p.ordered_head = idx[0];

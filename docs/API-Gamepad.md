@@ -283,7 +283,7 @@ An unknown button name is ignored. An unknown key name leaves that slot unbound,
 
 ## Native API (C)
 
-`api->gamepad` (`picocalc_gamepad_t` in `sdk/native/os.h`), API version 9. The pointer sits after `version` in `PicoCalcAPI`, so on older firmware the field does not exist: check the version first.
+`api->gamepad` (`picocalc_gamepad_t` in [`sdk/native/os.h`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/os.h)), API version 9. The pointer sits after `version` in `PicoCalcAPI`, so on older firmware the field does not exist: check the version first.
 
 ```c
 if (api->version >= 9) {

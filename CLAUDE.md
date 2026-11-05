@@ -48,7 +48,7 @@ Other board values: `pico2` (no PSRAM/WiFi), `pico_w`, `pico`. Note: the board n
 Output: `build/picodeck.uf2` — drag-and-drop to Pico in BOOTSEL mode.
 
 ### Debug
-USB serial at 115200 baud. Lua `sys.log` lines appear as `[APP] message`; a native `sys->log` line has no prefix on the device. Lua errors display on-screen, as `/apps/<dir>/main.lua:3: message` with no stack trace (dismiss with **Esc**), and go to `/system/error.log`; the simulator's `app.exited` outcome carries a traceback.
+USB serial at 115200 baud. Lua `sys.log` lines appear as `[APP] message`; a native `sys->log` line has no prefix on the device. Lua errors display on-screen, as `/apps/<dir>/main.lua:3: message` with no stack trace (dismiss with **Esc**), and go to `/system/error.log`; the simulator also logs a traceback on the `err` source.
 
 **Serial transfers.** `screenshot` (binary), `screenshot64`, `getb64`, `putb64`, `get` and `put` share the port with the log, so each reports its FNV-1a (`screenshot`'s trailer: `src/os/serial_frame.h`). The host's readers (`tools/scrn_frame.py`, `tools/picodeck_mcp.py`; no host tool uses `get` or `put`) check it, read a damaged transfer to its end, retry, and raise rather than return one that failed (`_retry_transfer`). While one runs, the console gate (`src/console_gate.h`) drops, and counts, every other log write at the stdio drivers, from Core 1 and from Core 0's interrupts; the count prints as `[DEV] Console: N bytes of log output dropped during a transfer` when it ends, and HardFault and `panic()` open the gate first. So a line missing from the serial log may be a line the gate dropped. `lognoise <ms>` makes the noise that stresses this (`tests/e2e/test_screenshot_integrity.py`).
 
@@ -194,8 +194,8 @@ Native apps receive `PicoCalcAPI *api` as their entry point argument. Call `api-
 `requirements` in `app.json`:
 - `"filesystem"` (default): read `/apps/<dir>` and `/system/lib/`, read + write `/data/<app_id>`; relative paths and `..` are refused. The sandbox (`src/os/fs_path.c`) guards `picocalc.fs` and every loader that takes a path.
 - `"root-filesystem"`: full SD card read/write.
-- `"http"`: network access; WiFi stays connected after the boot time sync.
-- `"audio"`: audio output.
+- `"http"`: the launcher joins the saved WiFi at launch and keeps it up, through the boot time sync's auto-disconnect and a `system_clock_khz` change. Nothing enforces it: without it WiFi may just be off. Raw TCP needs it too.
+- `"audio"`: declared only (`APP_REQUIREMENTS.audio`, shown in the store); sound works without it.
 - `"clipboard"`: reserved.
 - `"sysconfig"`: registers `picocalc.sysconfig` (`wifi_pass` is write-only).
 - `"system-update"`: `sys.applyUpdate`, for the OS updater/store only. Updates are flashed only when signed: dev builds embed the TEST key in `tests/keys/` (`make flash-ota` signs with it); release builds need the `UPDATE_SIGNING_KEY` secret. The full OTA policy is in `src/os/CLAUDE.md`.
@@ -215,9 +215,9 @@ Native apps receive `PicoCalcAPI *api` as their entry point argument. Call `api-
 ## Simulator
 
 `make simulator` builds `build_sim/picodeck_simulator` (SDL2 + Unicorn Engine for native ELF apps). What it does not model, in brief (full list in `simulator/CLAUDE.md`):
-- `picocalc.crypto` is absent; `picocalc.video` is stubbed; TLS verification, the SNTP clock gate and the TRNG are firmware-only.
+- `picocalc.crypto` is absent; `picocalc.video` is stubbed; the SNTP clock gate and the TRNG are firmware-only, and TLS verification is libcurl's.
 - The display is a separate simulator implementation (`stubs/driver_stubs.c`): keep it in step with the firmware, and confirm colour and timing on hardware. Audio runs the firmware mixer; `sim_audio.c` is only its output.
-- Networking is libcurl unless you build `make simulator-net` (the firmware stack on Mongoose, no TLS).
+- Networking is libcurl and always online, so a missing `"http"` requirement does not show, unless you build `make simulator-net` (the firmware stack on Mongoose, no TLS).
 - `umm_*` is a counting allocator: largest-block and fragmentation figures need `--real-umm`.
 
 ## Not Yet Implemented

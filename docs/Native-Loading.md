@@ -30,7 +30,7 @@ Most modules have the same names on both sides, but the native table is not a co
 | `sys.getMemInfo` | Nothing: `psram->qmiAlloc` returning `NULL` is what you learn |
 | `fileplayer:load`, `mp3player:load` return an error | `filePlayerLoad` and `mp3PlayerLoad` return nothing: test `filePlayerIsPlaying` or `mp3PlayerIsPlaying` after playing |
 
-The same name can also differ in detail: `graphics->drawScaled` takes a destination size where Lua's `img:drawScaled` takes a multiplier. `sdk/native/os.h` is the reference for the native side.
+The same name can also differ in detail: `graphics->drawScaled` takes a destination size where Lua's `img:drawScaled` takes a multiplier. [`sdk/native/os.h`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/os.h) is the reference for the native side.
 
 
 ## Application Structure
@@ -39,7 +39,7 @@ A native application typically consists of:
 - `main.elf`: The compiled binary.
 - `app.json`: Metadata for the launcher (name, description, requirements).
 
-Place these files in `/apps/<your_app_name>/` on the SD card.
+Place these files in `/apps/<dir>/` on the SD card.
 
 ### app.json
 
@@ -64,11 +64,11 @@ A native app runs at the same privilege as the OS. The sandbox and the requireme
 
 ### Prerequisites
 - **GNU Arm Embedded Toolchain**: `arm-none-eabi-gcc`
-- **PicoDeck SDK Headers**: `app_abi.h`, `os.h` and `terminal.h` (found in `sdk/native/`)
-- **Linker Script**: `linker.ld` (found in `sdk/native/`)
-- **`stubs.c`** (found in `sdk/native/`), if your app uses the [C library](#c-library)
+- **PicoDeck SDK Headers**: `app_abi.h`, `os.h` and `terminal.h` (found in [`sdk/native/`](https://github.com/PicoDeck/picodeck/tree/master/sdk/native))
+- **Linker Script**: `linker.ld` (found in the same folder)
+- **`stubs.c`** (also there), if your app uses the [C library](#c-library)
 
-`sdk/native/` also holds a sample program to start from: `main.c`, its `Makefile` and an `app.json`.
+The folder also holds a sample program to start from: `main.c`, its `Makefile` and an `app.json`. [`sdk/README.md`](https://github.com/PicoDeck/picodeck/blob/master/sdk/README.md) walks through building it.
 
 ## Creating a Native App
 
@@ -118,7 +118,7 @@ Lua has no `shouldExit()`: the bridge handles the system menu's "Exit App" itsel
 
 ### The API Surface
 
-The `PicoCalcAPI` struct contains pointers to all OS subsystems. The full type definitions are in `sdk/native/os.h`.
+The `PicoCalcAPI` struct contains pointers to all OS subsystems. The full type definitions are in [`sdk/native/os.h`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/os.h).
 
 #### Always available
 
@@ -131,7 +131,7 @@ Every firmware that has `api->version` (v0.0.8 on) has these tables, so they nee
 | `api->fs` | `picocalc_fs_t` | SD card file I/O (open, read, write, list) |
 | `api->sys` | `picocalc_sys_t` | Time, battery, reboot, menu items, logging, `poll()`, `shouldExit()` |
 | `api->audio` | `picocalc_audio_t` | Tone generation, PCM streaming |
-| `api->wifi` | `picocalc_wifi_t` | WiFi connect/disconnect/status (Pico 2W only) |
+| `api->wifi` | `picocalc_wifi_t` | WiFi connect/disconnect/status |
 | `api->tcp` | `picocalc_tcp_t` | Raw TCP/TLS sockets (non-blocking) |
 | `api->ui` | `picocalc_ui_t` | Modal dialogs: text input, confirmation |
 | `api->psram` | `picocalc_psram_t` | PIO PSRAM and QMI PSRAM allocation |
@@ -210,7 +210,7 @@ void picodeck_main(const PicoCalcAPI *api, const char *app_dir,
 }
 ```
 
-`sdk/native/os.h` is the source of truth for the complete type definitions, the exact struct layout, and the latest `version` values.
+[`sdk/native/os.h`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/os.h) is the source of truth for the complete type definitions, the exact struct layout, and the latest `version` values.
 
 ## Compilation
 
@@ -229,7 +229,7 @@ Native apps MUST be compiled as **Position-Independent Executables (PIE)**. This
 - `-nostartfiles -nodefaultlibs`: Native apps do not use standard C runtime startup (CRT0), and no library is linked unless you add it: see [C library](#c-library).
 
 ### Example Makefile
-A complete working example can be found in `sdk/native/Makefile`.
+A complete working example can be found in [`sdk/native/Makefile`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/Makefile).
 
 ```makefile
 CC      = arm-none-eabi-gcc
@@ -263,7 +263,7 @@ The flags above link nothing, so neither the C library nor the compiler's helper
 | Soft float, 64-bit division | `-lgcc` |
 | `sqrt`, `sin`, `malloc`, `snprintf`, anything else that needs an OS underneath | `stubs.c`, and all of `-lc -lm -lgcc` |
 
-`sdk/native/stubs.c` supplies what newlib asks of an OS. With all of it:
+[`sdk/native/stubs.c`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/stubs.c) supplies what newlib asks of an OS. With all of it:
 
 ```makefile
 LDFLAGS = -T linker.ld -Wl,--entry=picodeck_main -Wl,-pie -Wl,--gc-sections \
@@ -323,7 +323,7 @@ The application is expected to return control to the OS by returning from `picod
 ## Memory
 
 - **Stack**: 64 KB in PSRAM (PSPLIM-guarded, runs on PSP).
-- **SRAM heap**: effectively none, and no API call reaches it. Use `api->psram->qmiAlloc()`.
+- **SRAM heap**: a few KB, so treat it as none. No API call reaches it. Use `api->psram->qmiAlloc()`.
 - **PSRAM heap**: about 6 MB in all (6,160,384 bytes), one heap shared by your app's image (code, data and BSS), its stack, its `api->psram->qmiAlloc()`/`api->psram->qmiFree()` blocks, the images, samples and other objects the API allocates for it, and what the OS itself holds. An image of nearly 6 MB leaves almost nothing for the rest. The image and each block need one contiguous free block, and every block costs at least 200 bytes. Set `"min_psram_kb"` in `app.json` to have the launcher refuse to start the app, with a reason on screen, unless the largest free block is at least that large.
 - **PIO PSRAM**: 8MB secondary PSRAM available via `api->psram->pioRead()`/`api->psram->pioWrite()` for bulk data. Only addresses `0x48000` and up are yours; `pioRead/pioWrite/pioBulkRead/pioBulkWrite` refuse anything overlapping the OS region (the call does nothing and logs `[NATIVE] psram->… refused`).
 
@@ -333,7 +333,9 @@ The application is expected to return control to the OS by returning from `picod
 
 Anything the app got through the API and did not free — files, images, samples and players, video/MOD players, terminals, AES/ECDH contexts, `qmiAlloc` blocks, HTTP/TCP connections, fonts, menu items, zip handles — is released when `picodeck_main` returns. Do not rely on double frees being harmless: a stale pointer whose address was reused by a newer handle frees that newer object.
 
-### Per-app config, randomness
+### Per-app data, config, randomness
+
+`/data/<APP_ID>` is not created for a native app, as it is for a Lua app, and `fs->open` in a missing folder returns `NULL`. Call `fs->mkdir` on it first. `appconfig->save` creates it for itself.
 
 `appconfig`: nothing loads it for you. Call `api->appconfig->load(your_app_id)` first; another app's id is refused. On an app's first run, with no file yet, `load` returns false but the store is bound all the same, so `set` and `save` work: do not treat that false as fatal. `crypto->randomBytes` returns `bool` (false = buffer zeroed, no healthy generator). There is no system-config table in the native API.
 

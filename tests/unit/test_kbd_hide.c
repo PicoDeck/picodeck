@@ -123,7 +123,7 @@ static void test_held_esc_repeats_as_hold(void) {
   CHECK_EQ_INT(in.q.count, 1);
   CHECK_EQ_INT(raw, KEY_ESC);
   // Its own HOLD is now a repeat of a press the app saw, as ever.
-  kbd_event_t e;
+  kbd_event_t e = {0};  // read below even if the pop above it failed
   CHECK(kbd_evq_pop(&in.q, &e));
   CHECK_EQ_INT(e.type, KBD_EV_DOWN);
   poll_one(300, KBD_FIFO_HOLD, KEY_ESC);
@@ -422,7 +422,7 @@ static void test_injected_oneshot(void) {
   inj.pending = BTN_ESC;             // the same key again: a press
   poll_none(16);
   CHECK_EQ_U32(pressed(), BTN_ESC);
-  kbd_event_t e;
+  kbd_event_t e = {0};  // read below even if the pop above it failed
   CHECK(kbd_evq_pop(&in.q, &e));
   CHECK_EQ_INT(e.type, KBD_EV_DOWN);
 }

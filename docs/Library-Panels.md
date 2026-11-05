@@ -200,11 +200,14 @@ Every layer needs at least one of `image`, `images`, or `text`.
 A panel with a `choices` table becomes a branching point: when it settles as the centre panel, a menu opens (Up/Down to select, Enter to confirm).
 
 ```lua
-choices = {
-    prompt = "What now?",                     -- optional heading
-    { text = "Stay and fight", target = 5, setVars = { stayed = true } },
-    { text = "Walk away",      target = 5, setVars = { stayed = false } },
-},
+local sequence = {
+    -- ...the sequence's panels...
+    choices = {
+        prompt = "What now?",                     -- optional heading
+        { text = "Stay and fight", target = 5, setVars = { stayed = true } },
+        { text = "Walk away",      target = 5, setVars = { stayed = false } },
+    },
+}
 ```
 
 | Field | Type | Required | Description |
@@ -222,10 +225,12 @@ choices = {
 
 ```lua
 -- Later sequence reacts to an earlier choice:
-{ text = "You stayed. The city remembers.", x = 30, y = 140,
-  renderCondition = { var = "stayed", equals = true } },
-{ text = "You walked. The road remembers.", x = 30, y = 140,
-  renderCondition = { var = "stayed", equals = false } },
+local layers = {
+    { text = "You stayed. The city remembers.", x = 30, y = 140,
+      renderCondition = { var = "stayed", equals = true } },
+    { text = "You walked. The road remembers.", x = 30, y = 140,
+      renderCondition = { var = "stayed", equals = false } },
+}
 ```
 
 ---
@@ -297,7 +302,7 @@ With `{ resume = true }`, the comic saves and restores automatically:
 
 - **What is saved:** the current sequence index and `Panels.vars` — not the scroll position within a sequence.
 - **When:** on entering a new sequence, and on **Esc** quit.
-- **Where:** via `picocalc.game.save`, under the key `panels_<APP_ID>_<name>` (non-alphanumeric characters replaced with `_`) in the app's own save slots (`/data/<app id>/saves/`). The long key is kept so progress saved by older firmware in the shared `/saves` directory is picked up.
+- **Where:** via `picocalc.game.save`, under the key `panels_<APP_ID>_<name>` (non-alphanumeric characters replaced with `_`) in the app's own save slots (`/data/<APP_ID>/saves/`). The long key is kept so progress saved by older firmware in the shared `/saves` directory is picked up.
 - **Cleared:** automatically when the comic finishes, so a completed comic restarts from the beginning.
 
 On firmware without `picocalc.game.save`, saving degrades to a no-op.
@@ -326,8 +331,8 @@ A custom source is any table with the same shape:
 ```lua
 Panels.start(comic, {
     source = {
-        imagePath = function(name) return "/data/mycomic/art/" .. name end,
-        audioPath = function(name) return "/data/mycomic/snd/" .. name end,
+        imagePath = function(name) return picocalc.fs.appPath("art/" .. name) end,
+        audioPath = function(name) return picocalc.fs.appPath("snd/" .. name) end,
     },
 })
 ```

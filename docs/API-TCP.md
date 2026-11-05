@@ -1,5 +1,5 @@
 ---
-title: "API — TCP Sockets"
+title: "API TCP"
 ---
 
 Raw non-blocking TCP/TLS client sockets. Connections are handled cross-core by the Core 1 network stack. A static pool supports up to 4 simultaneous connections.
