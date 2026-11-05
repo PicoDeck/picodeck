@@ -131,7 +131,121 @@ def test_text_field_scroll_clamps_to_the_text(simulator, test_sd_card):
 
 # ── Optional arguments take an explicit nil ───────────────────────────────────
 
+@pytest.mark.sd(fixtures=[])
+def test_optional_args_accept_nil(simulator, test_sd_card):
+    code = (
+        "ui.toast('a', nil)\n"
+        "ui.drawToast(10, 'b', nil)\n"
+        "ui.drawProgress(1, 1, 10, 10, 0.5, nil)\n"
+        "ui.drawDivider(1, 1, 10, nil)\n"
+        "ui.drawPanel(1, 1, 10, 10, nil)\n"
+        "ui.drawFooter(nil, nil)\n"
+        "ui.drawSpinner(10, 10, nil, nil)\n"
+        "ui.splash(nil, nil)\n"
+        "ui.drawTabs(1, {'a'}, 1, nil, nil)\n")
+    run_ok(simulator, test_sd_card, "ui_nil", code)
+
+
+@pytest.mark.sd(fixtures=[])
+def test_toast_styles_are_named(simulator, test_sd_card):
+    code = (
+        "for _, n in ipairs({'TOAST_INFO', 'TOAST_SUCCESS', 'TOAST_WARNING', 'TOAST_ERROR'}) do\n"
+        "  picocalc.sys.log(n .. '=' .. tostring(ui[n]))\n"
+        "  ui.toast(n, ui[n])\n"
+        "end\n"
+        "ui.toast('default')\n")
+    run_ok(simulator, test_sd_card, "ui_styles", code)
+    text = "\n".join(log_lines(simulator))
+    for line in ("TOAST_INFO=0", "TOAST_SUCCESS=1", "TOAST_WARNING=2", "TOAST_ERROR=3"):
+        assert line in text, text
+
+
 # ── Sizes ─────────────────────────────────────────────────────────────────────
+
+MEASURE = r"""
+local function rows_lit(x)    -- the lit rows of column x, as first and count
+    local first, n = nil, 0
+    for y = 0, 319 do
+        if d.getPixel(x, y) ~= 0 then first = first or y; n = n + 1 end
+    end
+    return first, n
+end
+local function cols_lit(y)
+    local first, n = nil, 0
+    for x = 0, 319 do
+        if d.getPixel(x, y) ~= 0 then first = first or x; n = n + 1 end
+    end
+    return first, n
+end
+local function check(name, got, want_first, measured)
+    picocalc.sys.log(string.format("SZ %s ret=%s first=%s h=%s", name, tostring(got),
+                                   tostring(want_first), tostring(measured)))
+end
+
+d.clear(0); local h = ui.drawFooter("l", "r"); local f, n = rows_lit(2)
+check("footer", h, f, n)
+
+d.clear(0); h = ui.drawButton(20, 40, 100, "B", false, false); f, n = rows_lit(21)
+check("button", h, f, n)
+
+d.clear(0); h = ui.drawTextField(20, 40, 100, "T", 0, 0, false, false); f, n = rows_lit(21)
+check("textfield", h, f, n)
+
+d.clear(0); h = ui.drawListItem(20, 40, 100, "", true, false); f, n = rows_lit(21)
+check("listitem", h, f, n)
+
+d.clear(0); h = ui.drawCheckbox(20, 40, false, false); f, n = rows_lit(20)
+check("checkbox", h, f, n)
+
+d.clear(0); h = ui.drawRadio(20, 40, false, false)
+local top, bottom
+for y = 0, 319 do for x = 0, 319 do
+    if d.getPixel(x, y) ~= 0 then top = top or y; bottom = y end
+end end
+check("radio", h, top, bottom - top + 1)
+
+d.clear(0); h = ui.drawDivider(20, 40, 100); f, n = rows_lit(21)
+check("divider", h, f, n)
+
+d.clear(0); h = ui.drawToast(40, "T"); f, n = rows_lit(160)
+check("toast", h, f, n)
+
+-- A panel's content area starts below its title bar.
+d.clear(0); local cy = ui.drawPanel(20, 40, 100, 100, "Title")
+picocalc.sys.log("SZ panel_title cy=" .. tostring(cy))
+d.clear(0); cy = ui.drawPanel(20, 40, 100, 100)
+picocalc.sys.log("SZ panel_plain cy=" .. tostring(cy))
+
+-- A text area reports the rows it shows.
+local text = {}
+for i = 1, 30 do text[#text + 1] = "line" .. i end
+text = table.concat(text, "\n")
+local segs = ui.wrapText(text, 20)
+local rows = ui.drawTextArea(20, 40, 100, 100, text, segs, 0, 0, 0, false, false)
+picocalc.sys.log("SZ textarea rows=" .. tostring(rows))
+"""
+
+SIZES = {"footer": 18, "button": 15, "textfield": 13, "listitem": 13,
+         "checkbox": 10, "radio": 11, "divider": 1, "toast": 14}
+
+
+@pytest.mark.sd(fixtures=[])
+def test_widgets_return_the_rows_they_cover(simulator, test_sd_card):
+    run_ok(simulator, test_sd_card, "ui_sizes", MEASURE)
+    lines = [t.split("SZ ", 1)[1] for t in log_lines(simulator) if "SZ " in t]
+    got = {}
+    for line in lines:
+        parts = line.split()
+        got[parts[0]] = dict(p.split("=") for p in parts[1:])
+    for name, want in SIZES.items():
+        assert got[name]["ret"] == str(want), (name, got[name])
+        assert got[name]["h"] == str(want), (name, got[name])
+    assert got["footer"]["first"] == "302"
+    # title bar: 1 border + 16 bar + 1 divider below y=40
+    assert got["panel_title"]["cy"] == str(40 + 18)
+    assert got["panel_plain"]["cy"] == str(40 + 1)
+    assert got["textarea"]["rows"] == str((100 - 6) // 8)
+
 
 # ── wrapText ─────────────────────────────────────────────────────────────────
 
@@ -301,3 +415,44 @@ def test_confirm_message_stops_at_twenty_lines(simulator, test_sd_card):
 
 
 # ── Toasts ────────────────────────────────────────────────────────────────────
+
+TOAST_QUEUE = r"""
+local d, ui, sys = picocalc.display, picocalc.ui, picocalc.sys
+for _, n in ipairs({3, 6, 9, 12, 15, 18}) do ui.toast(string.rep("x", n)) end
+ui.toast("")                     -- ignored
+ui.toast(string.rep("y", 100), ui.TOAST_ERROR)
+local seen, last = {}, nil
+local t0 = sys.getTimeMs()
+while sys.getTimeMs() - t0 < 16000 do
+    -- The back buffer holds the frame before last, toast and all.
+    local left, right
+    for x = 0, 319 do
+        if d.getPixel(x, 285) ~= 0 then left = left or x; right = x end
+    end
+    local w = left and (right - left + 1) or 0
+    if w ~= last then
+        seen[#seen + 1] = w
+        last = w
+    end
+    d.clear(0)
+    d.flush()
+    sys.sleep(100)
+end
+sys.log("WIDTHS " .. table.concat(seen, " "))
+"""
+
+
+@pytest.mark.sd(fixtures=[])
+def test_toast_queue_keeps_the_newest_three(sim_factory, test_sd_card):
+    """Pushed before the first present: only the last three are still waiting,
+    in order, one at a time, then nothing."""
+    stage_lua_app(test_sd_card, "ui_toasts", TOAST_QUEUE)
+    sim = sim_factory(test_sd_card, virtual_time=True)
+    sim.launch_app("ui_toasts")
+    out = sim.wait_for_exit(timeout=30)
+    assert out.get("result") == "returned", out
+    line = next(e["text"] for e in sim.get_log_lines(0) if "WIDTHS " in e["text"])
+    widths = [int(v) for v in line.split("WIDTHS ")[1].split()]
+    # 15 and 18 x's (16 px of padding), then 63 y's, wider than the panel.
+    assert [w for w in widths if w] == [15 * 6 + 16, 18 * 6 + 16, 320], widths
+    assert widths[-1] == 0, widths

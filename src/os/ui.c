@@ -250,8 +250,8 @@ int ui_draw_header(const char *title) {
 }
 
 void ui_draw_footer(const char *left_text, const char *right_text) {
-  display_fill_rect(0, FB_HEIGHT - 18, FB_WIDTH, 18, C_HEADER_BG);
-  display_fill_rect(0, FB_HEIGHT - 18, FB_WIDTH, 1, C_BORDER);
+  display_fill_rect(0, FB_HEIGHT - UI_FOOTER_H, FB_WIDTH, UI_FOOTER_H, C_HEADER_BG);
+  display_fill_rect(0, FB_HEIGHT - UI_FOOTER_H, FB_WIDTH, 1, C_BORDER);
 
   if (left_text && left_text[0]) {
     display_draw_text(8, FB_HEIGHT - 13, left_text, C_TEXT_DIM, C_HEADER_BG);

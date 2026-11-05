@@ -1544,6 +1544,7 @@ function picocalc.ui.drawHeader(title) end
 ---Draw a status bar at the bottom of the screen.
 ---@param left? string Left-aligned text
 ---@param right? string Right-aligned text
+---@return integer height rows the footer covers (18), from y = 302
 function picocalc.ui.drawFooter(left, right) end
 
 ---Draw a tab bar. Returns the new active tab index and the tab-bar height.
@@ -1563,7 +1564,7 @@ function picocalc.ui.drawTabs(y, tabs, active_index, prev_key, next_key) end
 function picocalc.ui.textInput(prompt, default) end
 
 ---Show a blocking yes/no confirmation dialog. Returns `true` if the user confirms.
----@param message string
+---@param message string Wraps at 43 characters; the box grows, up to 20 lines
 ---@return boolean
 function picocalc.ui.confirm(message) end
 
@@ -1571,8 +1572,127 @@ function picocalc.ui.confirm(message) end
 ---@param cx integer Centre x
 ---@param cy integer Centre y
 ---@param r? integer Radius
----@param frame? integer Animation frame index (auto-advances if omitted)
+---@param frame? integer Animation frame index (default 0: pass a counter to animate)
 function picocalc.ui.drawSpinner(cx, cy, r, frame) end
+
+---Draw a splash screen with the PicoDeck logo, and present it.
+---@param status? string
+---@param subtext? string
+function picocalc.ui.splash(status, subtext) end
+
+---Draw a panel/card with an optional title bar.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param h integer
+---@param title? string
+---@return integer content_y where the panel's content starts
+function picocalc.ui.drawPanel(x, y, w, h, title) end
+
+---Draw a single-line text field (rendering only: it handles no input).
+---@param x integer
+---@param y integer
+---@param w integer Shows `(w - 8) / 6` characters
+---@param text string
+---@param cursor_pos integer 0-based
+---@param scroll_offset integer Characters to skip from the start of `text`
+---@param focused? boolean
+---@param show_cursor? boolean
+---@return integer height 13
+function picocalc.ui.drawTextField(x, y, w, text, cursor_pos, scroll_offset, focused, show_cursor) end
+
+---Draw a multi-line text area (rendering only: it handles no input).
+---@param x integer
+---@param y integer
+---@param w integer Rows show `(w - 8) / 6` characters
+---@param h integer
+---@param text string
+---@param segments integer[] 0-based row-start offsets, as `wrapText` returns them
+---@param scroll_y integer Rows to skip
+---@param cursor_row integer 0-based, from the first segment
+---@param cursor_col integer 0-based
+---@param focused? boolean
+---@param show_cursor? boolean
+---@return integer rows how many rows the box shows
+function picocalc.ui.drawTextArea(x, y, w, h, text, segments, scroll_y, cursor_row, cursor_col, focused, show_cursor) end
+
+---Draw a selectable list row.
+---@param x integer
+---@param y integer
+---@param w integer Shows `(w - 8) / 6` characters
+---@param text string
+---@param selected? boolean
+---@param focused? boolean
+---@return integer height 13
+function picocalc.ui.drawListItem(x, y, w, text, selected, focused) end
+
+---Draw a progress bar.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param h integer
+---@param progress number 0.0 to 1.0
+---@param fill_color? integer RGB565 (default green)
+function picocalc.ui.drawProgress(x, y, w, h, progress, fill_color) end
+
+---Draw a checkbox.
+---@param x integer
+---@param y integer
+---@param checked? boolean
+---@param focused? boolean
+---@return integer height 10
+function picocalc.ui.drawCheckbox(x, y, checked, focused) end
+
+---Draw a radio button.
+---@param x integer
+---@param y integer
+---@param selected? boolean
+---@param focused? boolean
+---@return integer height 11
+function picocalc.ui.drawRadio(x, y, selected, focused) end
+
+---Draw a horizontal divider line.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param color? integer RGB565
+---@return integer height 1
+function picocalc.ui.drawDivider(x, y, w, color) end
+
+---Draw a toast bar at a y of your choice, now. For a toast the OS shows and times, use `toast`.
+---@param y integer
+---@param text string
+---@param bg_color? integer RGB565 (default dark grey, also for 0)
+---@return integer height 14
+function picocalc.ui.drawToast(y, text, bg_color) end
+
+---Push a system toast: the OS draws it over your frames for about 3 s. Up to 63
+---bytes of text. Three can wait behind the one showing; a fourth drops the oldest.
+---@param text string
+---@param style? integer `TOAST_INFO` (default), `TOAST_SUCCESS`, `TOAST_WARNING` or `TOAST_ERROR`
+function picocalc.ui.toast(text, style) end
+
+picocalc.ui.TOAST_INFO = 0
+picocalc.ui.TOAST_SUCCESS = 1
+picocalc.ui.TOAST_WARNING = 2
+picocalc.ui.TOAST_ERROR = 3
+
+---Draw a button.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param label string
+---@param focused? boolean
+---@param pressed? boolean
+---@return integer height 15
+function picocalc.ui.drawButton(x, y, w, label, focused, pressed) end
+
+---Word-wrap text for `drawTextArea`. `\n` always starts a new row.
+---@param text string
+---@param max_cols integer Columns per row; zero or less makes the whole text one row
+---@return integer[] segments 0-based byte offsets where the rows start
+---@return integer rows
+function picocalc.ui.wrapText(text, max_cols) end
 
 -- =============================================================================
 -- picocalc.perf  (performance profiling)

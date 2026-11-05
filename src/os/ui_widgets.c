@@ -5,7 +5,7 @@
 // Font metrics (6x8 default font)
 #define FW 6
 #define FH 8
-#define ROW_H 13   // FH + 5px padding
+#define ROW_H UW_ROW_H
 
 // ── Panel ────────────────────────────────────────────────────────────────────
 
@@ -14,7 +14,7 @@ void ui_widget_panel(int x, int y, int w, int h, const char *title) {
     display_draw_rect(x, y, w, h, UW_BORDER);
 
     if (title && title[0]) {
-        // Title bar
+        // Title bar (with the border above and the divider below: UW_PANEL_TITLE_H)
         int title_h = 16;
         display_fill_rect(x + 1, y + 1, w - 2, title_h, UW_TITLE_BG);
         int tw = display_text_width(title);
@@ -209,7 +209,7 @@ void ui_widget_progress(int x, int y, int w, int h,
 // ── Checkbox ─────────────────────────────────────────────────────────────────
 
 void ui_widget_checkbox(int x, int y, bool checked, bool focused) {
-    int sz = 10;
+    int sz = UW_CHECKBOX_H;
     uint16_t border = focused ? UW_FOCUS : UW_BORDER;
 
     // Box
@@ -257,7 +257,7 @@ void ui_widget_divider(int x, int y, int w, uint16_t color) {
 
 void ui_widget_toast_rect(const char *text, int *x, int *w, int *h) {
     *w = display_text_width(text) + TOAST_PAD * 2;
-    *h = FH + 6;
+    *h = UW_TOAST_H;
     *x = (FB_WIDTH - *w) / 2;
 }
 
@@ -275,7 +275,7 @@ void ui_widget_toast(int y, const char *text, uint16_t bg_color) {
 
 void ui_widget_button(int x, int y, int w,
                       const char *label, bool focused, bool pressed) {
-    int h = ROW_H + 2;  // 15px
+    int h = UW_BUTTON_H;
     uint16_t bg = pressed ? UW_ACCENT : (focused ? UW_BTN_FOCUS : UW_BTN_BG);
     uint16_t border = focused ? UW_FOCUS : UW_BORDER;
 
