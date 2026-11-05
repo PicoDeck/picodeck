@@ -464,6 +464,7 @@ local function run_terminal_session(channel, transport)
         -- Feed data to terminal
         local data = channel:read()
         if data then
+            decckm = ssh_input.track_cursor_keys(data, decckm)
             term:write(data)
         end
 

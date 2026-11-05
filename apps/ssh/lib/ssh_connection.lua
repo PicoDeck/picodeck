@@ -311,7 +311,7 @@ end
 
 -- Send disconnect and close
 function connection:close()
-    if not self.closed then
+    if not self.closed and self.remote_channel then
         local payload = string.char(MSG.CHANNEL_CLOSE)
                      .. wire.uint32(self.remote_channel)
         self.transport:send_packet(payload)

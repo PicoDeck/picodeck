@@ -2,10 +2,15 @@
 -- and check(cond, what), and either HANDSHAKES + SIGNATURES (recorded from
 -- OpenSSH: ssh_handshake_vectors.h) or LIVE (a real sshd).
 
+picocalc.input = {BTN_UP = 1, BTN_DOWN = 2, BTN_LEFT = 4, BTN_RIGHT = 8, BTN_ENTER = 16, BTN_ESC = 32,
+                  BTN_TAB = 64, BTN_BACKSPACE = 128, BTN_F1 = 256, BTN_F2 = 512, BTN_F3 = 1024,
+                  BTN_F4 = 2048, BTN_F5 = 4096}
+
 local wire = require("lib.ssh_wire")
 local transport = require("lib.ssh_transport")
 local auth = require("lib.ssh_auth")
 local connection = require("lib.ssh_connection")
+local keys = require("lib.ssh_input")
 local crypto = picocalc.crypto
 
 -- A socket that replays bytes, and keeps what the client wrote. With peer_closed it
@@ -719,6 +724,14 @@ local function test_typing_after_shell()
     server:close()
 end
 
+local function test_close_unopened_channel()
+    local ch, _, server = new_channel()
+    local ok, err = pcall(ch.close, ch)
+    check(ok, "closing a channel that never opened: no Lua error: " .. tostring(err))
+    check(#server:received() == 0, "and nothing to send")
+    server:close()
+end
+
 -- A window may be up to 2^32 - 1, and 2^31 and up are negative on the device.
 local function test_large_windows()
     for _, window in ipairs({0xFFFFFFFF, 0x80000000, 0x7FFFFFFF}) do
@@ -779,6 +792,45 @@ local function test_disconnect_reason()
     local t = transport.new(fake_conn("", true))
     check(t:recv_packet_skip(1000) == nil, "a closed socket with nothing left ends the receive")
     check(t.error and t.error:find("connection closed", 1, true), "reported as closed: " .. tostring(t.error))
+end
+
+-- ── Keys ─────────────────────────────────────────────────────────────────────
+
+-- What the keyboard gives getChar() (kbd_keycode_to_char) and what a terminal sends.
+local function test_keys()
+    check(keys.translate_char("\n") == "\r", "the Enter key sends CR")
+    check(keys.translate_char("\8") == "\127", "the Backspace key sends DEL, the tty's erase")
+    check(keys.translate_char("\1") == "\1", "Ctrl+A")
+    check(keys.translate_char("\3") == "\3", "Ctrl+C")
+    check(keys.translate_char("\26") == "\26", "Ctrl+Z")
+    check(keys.translate_char("a") == "a", "a letter")
+    check(keys.translate_char("~") == "~", "the last printable")
+    check(keys.translate_char(nil) == nil, "no key")
+
+    local inp = picocalc.input
+    check(keys.translate_buttons(inp.BTN_UP, false) == "\27[A", "up, normal cursor keys")
+    check(keys.translate_buttons(inp.BTN_UP, true) == "\27OA", "up, application cursor keys")
+    check(keys.translate_buttons(inp.BTN_ESC, false) == "\27", "Esc")
+end
+
+-- Full-screen programs ask for application cursor keys, and with TERM=xterm-256color ncurses
+-- then only knows ESC O A. tput smkx and rmkx print the first two of these.
+local function test_cursor_key_mode()
+    local cases = {
+        {"\27[?1h\27=", false, true, "smkx"},
+        {"\27[?1l\27>", true, false, "rmkx"},
+        {"plain text", true, true, "text changes nothing"},
+        {"\27[?1049h", false, false, "the alternate screen is not it"},
+        {"\27[?25l", false, false, "nor is the cursor"},
+        {"\27[?12h", false, false, "nor a mode that starts with 1"},
+        {"\27[?25;1h", false, true, "in a list"},
+        {"\27[?1;25l", true, false, "first in a list"},
+        {"\27[?1hhello\27[?1l", false, false, "the last one wins"},
+        {"\27[1h", false, false, "not a private mode"},
+    }
+    for _, c in ipairs(cases) do
+        check(keys.track_cursor_keys(c[1], c[2]) == c[3], "cursor key mode: " .. c[4])
+    end
 end
 
 -- ── The manifest ─────────────────────────────────────────────────────────────
@@ -900,4 +952,7 @@ else
     test_mpint()
     test_disconnect_reason()
     test_manifest()
+    test_keys()
+    test_cursor_key_mode()
+    test_close_unopened_channel()
 end
