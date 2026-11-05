@@ -1948,7 +1948,8 @@ static void tramp_http_get(uc_engine *uc) {
     http_conn_t *c = handle_unwrap(handle);
     char *path = uc_read_string(uc, path_addr);
     char *hdrs = hdrs_addr ? uc_read_string(uc, hdrs_addr) : NULL;
-    if (c && path) http_get(c, path, hdrs);
+    // As http_get_w (src/main.c): a request that cannot start finishes, failed.
+    if (c && path && !http_get(c, path, hdrs)) http_fail_unstarted(c);
 }
 
 static void tramp_http_post(uc_engine *uc) {
@@ -1968,7 +1969,7 @@ static void tramp_http_post(uc_engine *uc) {
             body[body_len] = '\0';
         }
     }
-    if (c && path) http_post(c, path, hdrs, body, body_len);
+    if (c && path && !http_post(c, path, hdrs, body, body_len)) http_fail_unstarted(c);
     free(body);
 }
 

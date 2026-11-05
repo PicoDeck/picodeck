@@ -1020,13 +1020,17 @@ static pchttp_t http_newConn_w(const char *server, uint16_t port, bool use_ssl) 
     return (pchttp_t)c;
 }
 
+// get() and post() return nothing and apps poll isComplete(), so a request that
+// could not start has to finish, or the app's loop never would.
 static void http_get_w(pchttp_t c, const char *path, const char *extra_hdrs) {
-    http_get((http_conn_t *)c, path, extra_hdrs);
+    if (!http_get((http_conn_t *)c, path, extra_hdrs))
+        http_fail_unstarted((http_conn_t *)c);
 }
 
 static void http_post_w(pchttp_t c, const char *path, const char *extra_hdrs,
                         const char *body, uint32_t body_len) {
-    http_post((http_conn_t *)c, path, extra_hdrs, body, (size_t)body_len);
+    if (!http_post((http_conn_t *)c, path, extra_hdrs, body, (size_t)body_len))
+        http_fail_unstarted((http_conn_t *)c);
 }
 
 static int http_read_w(pchttp_t c, uint8_t *buf, uint32_t len) {

@@ -341,6 +341,15 @@ bool http_post(http_conn_t *c, const char *path, const char *extra_hdr,
     return start_request(c, "POST", path, extra_hdr, body, body_len);
 }
 
+void http_fail_unstarted(http_conn_t *c) {
+    if (!c || (c->state != HTTP_STATE_IDLE && c->state != HTTP_STATE_DONE))
+        return;
+    if (!c->err[0])
+        snprintf(c->err, sizeof(c->err), "WiFi not available");
+    c->status_code = 0;
+    c->state = HTTP_STATE_FAILED;
+}
+
 // ── Data reading (Core 0) ───────────────────────────────────────────────────
 
 uint32_t http_read(http_conn_t *c, uint8_t *out, uint32_t len) {

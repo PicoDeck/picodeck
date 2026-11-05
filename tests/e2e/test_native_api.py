@@ -32,3 +32,15 @@ def test_player_set_loop(simulator, mode):
     _, log = _run(simulator, mode)
     assert "LOOP looping 1" in log, log
     assert "LOOP stopped 1" in log, log
+
+
+@pytest.mark.parametrize("mode", ["http_get", "http_post"])
+def test_refused_http_request_completes_with_an_error(simulator, mode):
+    # The documented loop polls isComplete(), and a void get() cannot say no.
+    simulator.call("set_wifi_state", {"status": "not_available"})
+    try:
+        _, log = _run(simulator, mode)
+    finally:
+        simulator.call("set_wifi_state", {"status": "online"})
+    assert "HTTP complete 1" in log, log
+    assert "err (none)" not in log, log
