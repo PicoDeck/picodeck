@@ -233,7 +233,11 @@ void *lb_testudata(lua_State *L, int idx, const char *tname) {
 // that is already on the stack at index -1.
 void register_subtable(lua_State *L, const char *name,
                               const luaL_Reg *funcs) {
-  lua_newtable(L);
+  // Sized once: growing from empty rehashes at every power of two, a realloc
+  // and a re-insert of everything so far in PSRAM, for ~40 tables at each launch.
+  int n = 0;
+  while (funcs[n].name) n++;
+  lua_createtable(L, 0, n);
   luaL_setfuncs(L, funcs, 0);
   lua_setfield(L, -2, name);
 }
