@@ -90,8 +90,10 @@ function transport.new(conn)
     -- Key exchange state
     self.kex_algo = nil
     self.hostkey_algo = nil
-    self.cipher_algo = nil
-    self.mac_algo = nil
+    self.cipher_c2s = nil
+    self.cipher_s2c = nil
+    self.mac_c2s = nil
+    self.mac_s2c = nil
     self.client_kexinit_payload = nil
     self.server_kexinit_payload = nil
 
@@ -396,15 +398,24 @@ function transport:negotiate_algorithms(server)
         return false
     end
 
-    self.cipher_algo = wire.negotiate(CLIENT_CIPHER, server.cipher_c2s)
-    if not self.cipher_algo then
+    -- Each direction on its own (RFC 4253 section 7.1): nothing makes a server's lists match.
+    self.cipher_c2s = wire.negotiate(CLIENT_CIPHER, server.cipher_c2s)
+    self.cipher_s2c = wire.negotiate(CLIENT_CIPHER, server.cipher_s2c)
+    if not self.cipher_c2s or not self.cipher_s2c then
         self.error = "no common cipher algorithm"
         return false
     end
 
-    self.mac_algo = wire.negotiate(CLIENT_MAC, server.mac_c2s)
-    if not self.mac_algo then
+    self.mac_c2s = wire.negotiate(CLIENT_MAC, server.mac_c2s)
+    self.mac_s2c = wire.negotiate(CLIENT_MAC, server.mac_s2c)
+    if not self.mac_c2s or not self.mac_s2c then
         self.error = "no common MAC algorithm"
+        return false
+    end
+
+    if not wire.negotiate(CLIENT_COMPRESS, server.compress_c2s)
+            or not wire.negotiate(CLIENT_COMPRESS, server.compress_s2c) then
+        self.error = "no common compression algorithm"
         return false
     end
 
@@ -542,17 +553,17 @@ function transport:derive_keys()
     local H = self._H
     local sid = self.session_id
 
-    local cipher_key_len = (self.cipher_algo == "aes256-ctr") and 32 or 16
+    local function cipher_key_len(algo) return algo == "aes256-ctr" and 32 or 16 end
+    local function mac_key_len(algo) return algo == "hmac-sha2-256" and 32 or 20 end
     local iv_len = 16
-    local mac_key_len = (self.mac_algo == "hmac-sha2-256") and 32 or 20
 
     -- RFC 4253 §7.2: key derivation
     local iv_c2s    = crypto.deriveKey(K, H, sid, "A", iv_len)
     local iv_s2c    = crypto.deriveKey(K, H, sid, "B", iv_len)
-    local key_c2s   = crypto.deriveKey(K, H, sid, "C", cipher_key_len)
-    local key_s2c   = crypto.deriveKey(K, H, sid, "D", cipher_key_len)
-    local mackey_c2s = crypto.deriveKey(K, H, sid, "E", mac_key_len)
-    local mackey_s2c = crypto.deriveKey(K, H, sid, "F", mac_key_len)
+    local key_c2s   = crypto.deriveKey(K, H, sid, "C", cipher_key_len(self.cipher_c2s))
+    local key_s2c   = crypto.deriveKey(K, H, sid, "D", cipher_key_len(self.cipher_s2c))
+    local mackey_c2s = crypto.deriveKey(K, H, sid, "E", mac_key_len(self.mac_c2s))
+    local mackey_s2c = crypto.deriveKey(K, H, sid, "F", mac_key_len(self.mac_s2c))
 
     return {
         iv_c2s = iv_c2s, iv_s2c = iv_s2c,
@@ -575,12 +586,12 @@ function transport:activate_keys(keys)
     -- Activate send cipher
     self.send_cipher = crypto.aes_ctr_new(keys.key_c2s, keys.iv_c2s)
     self.send_mac_key = keys.mackey_c2s
-    self.send_mac_algo = self.mac_algo
+    self.send_mac_algo = self.mac_c2s
 
     -- Activate recv cipher
     self.recv_cipher = crypto.aes_ctr_new(keys.key_s2c, keys.iv_s2c)
     self.recv_mac_key = keys.mackey_s2c
-    self.recv_mac_algo = self.mac_algo
+    self.recv_mac_algo = self.mac_s2c
 
     return true
 end

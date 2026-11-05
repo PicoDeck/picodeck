@@ -175,6 +175,69 @@ local function test_negotiation(v)
     check(t.hostkey_algo == v.hostkey_algo, v.name .. ": host key algorithm")
 end
 
+-- RFC 4253 section 7.1: each direction is negotiated on its own.
+local function test_directions_negotiated_separately()
+    local function server_lists(overrides)
+        local lists = {
+            kex = {"curve25519-sha256"}, hostkey = {"ecdsa-sha2-nistp256"},
+            cipher_c2s = {"aes128-ctr"}, cipher_s2c = {"aes128-ctr"},
+            mac_c2s = {"hmac-sha2-256"}, mac_s2c = {"hmac-sha2-256"},
+            compress_c2s = {"none"}, compress_s2c = {"none"},
+        }
+        for k, v in pairs(overrides) do lists[k] = v end
+        return lists
+    end
+
+    local conn = fake_conn(wire.build_packet(string.char(transport.MSG.NEWKEYS)))
+    local t = transport.new(conn)
+    check(t:negotiate_algorithms(server_lists({
+        cipher_c2s = {"aes128-ctr"}, cipher_s2c = {"aes256-ctr"},
+        mac_c2s = {"hmac-sha1"}, mac_s2c = {"hmac-sha2-256"},
+    })), "different algorithms each way: " .. tostring(t.error))
+    check(t.cipher_c2s == "aes128-ctr" and t.cipher_s2c == "aes256-ctr", "a cipher for each direction")
+    check(t.mac_c2s == "hmac-sha1" and t.mac_s2c == "hmac-sha2-256", "a MAC for each direction")
+
+    -- Key sizes follow each direction's algorithm.
+    t.session_id, t._H, t._K_mpint = string.rep("h", 32), string.rep("h", 32), wire.mpint("\1\2\3")
+    local keys = t:derive_keys()
+    check(#keys.key_c2s == 16 and #keys.key_s2c == 32, "cipher key sizes")
+    check(#keys.mackey_c2s == 20 and #keys.mackey_s2c == 32, "MAC key sizes")
+
+    check(t:activate_keys(keys), "activates: " .. tostring(t.error))
+    check(t.send_mac_algo == "hmac-sha1" and t.recv_mac_algo == "hmac-sha2-256", "MACs in the right directions")
+
+    -- The client's messages and the server's use different algorithms from here on.
+    local send = crypto.aes_ctr_new(keys.key_s2c, keys.iv_s2c)
+    local packet = wire.build_packet("\99", 16)
+    local mac = crypto.hmacSHA256(keys.mackey_s2c, string.pack(">I4", t.recv_seq) .. packet)
+    conn.rx = send:update(packet) .. mac
+    send:free()
+    check(t:recv_packet_skip(300) == "\99", "a message from the server: " .. tostring(t.error))
+
+    conn.tx = ""
+    check(t:send_packet("\98"), "a message to the server")
+    local dec = crypto.aes_ctr_new(keys.key_c2s, keys.iv_c2s)
+    local sent = dec:update(conn.tx:sub(1, 16))
+    dec:free()
+    check(sent:sub(6, 6) == "\98", "encrypted with the client-to-server key")
+    check(#conn.tx == 16 + 20, "with a hmac-sha1 tag")
+    t:close()
+
+    -- No match in either direction is a refusal, whichever it is.
+    for _, case in ipairs({
+        {{cipher_c2s = {"3des-cbc"}}, "no common cipher algorithm"},
+        {{cipher_s2c = {"3des-cbc"}}, "no common cipher algorithm"},
+        {{mac_c2s = {"hmac-md5"}}, "no common MAC algorithm"},
+        {{mac_s2c = {"hmac-md5"}}, "no common MAC algorithm"},
+        {{compress_c2s = {"zlib"}}, "no common compression algorithm"},
+        {{compress_s2c = {"zlib"}}, "no common compression algorithm"},
+    }) do
+        local refused = transport.new(fake_conn())
+        check(not refused:negotiate_algorithms(server_lists(case[1])), case[2] .. ": refused")
+        check(refused.error == case[2], case[2] .. ": " .. tostring(refused.error))
+    end
+end
+
 local function test_what_is_offered()
     local t = transport.new(fake_conn())
     local offer = t:parse_kexinit(t:build_kexinit())
@@ -193,7 +256,8 @@ end
 
 local function test_key_derivation(v)
     local t = transport.new(fake_conn())
-    t.cipher_algo, t.mac_algo = "aes128-ctr", "hmac-sha2-256"
+    t.cipher_c2s, t.cipher_s2c = "aes128-ctr", "aes128-ctr"
+    t.mac_c2s, t.mac_s2c = "hmac-sha2-256", "hmac-sha2-256"
     t.session_id, t._H, t._K_mpint = v.H, v.H, v.K
     local keys = t:derive_keys()
     for _, field in ipairs({"iv_c2s", "iv_s2c", "key_c2s", "key_s2c"}) do
@@ -796,6 +860,7 @@ else
     end
     test_signature_algorithm_binding()
     test_what_is_offered()
+    test_directions_negotiated_separately()
     test_hostile_lengths()
     test_hostile_padding()
     test_stream_stays_dead()
