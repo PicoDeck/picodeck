@@ -155,7 +155,7 @@ Check whether the connection is established.
 #### `conn:setConnectTimeout(seconds)`
 Set the connection timeout.
 
-Applies to the next connect; default 15 s (covers the TLS handshake).
+Applies to the next connect; default 15 s (covers the TLS handshake). On a device, an address that never answers fails after 15 s even with a longer timeout, because the network stack stops trying then. A slow TLS handshake to a server that did answer gets the whole timeout.
 
 - **Parameters:**
   - `seconds` (number): Timeout in seconds. Fractions are allowed. `0` turns it off.

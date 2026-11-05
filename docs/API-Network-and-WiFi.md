@@ -287,7 +287,7 @@ conn:get("/files/big.bin")
 ---
 
 #### `conn:setConnectTimeout(seconds)`
-Sets the connection timeout for the next request. Default is 10 seconds.
+Sets the connection timeout for the next request. Default is 10 seconds. On a device, an address that never answers fails after 15 s even with a longer timeout, because the network stack stops trying then.
 
 - **Parameters:**
   - `seconds` (number): Timeout in seconds. Fractions are allowed (`0.5`). `0` turns it off.

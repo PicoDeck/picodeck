@@ -56,7 +56,8 @@ def _past_the_relay(target):
 
 # A connect that is never answered, for longer than the watchdog's 10 s. Any
 # address the network drops silently will do: one that gets an ICMP unreachable
-# ends the wait early and fails the test (set PICODECK_HW_BLACKHOLE_IP).
+# ends the wait early and fails the test (set PICODECK_HW_BLACKHOLE_IP). The
+# device's stack gives up on it after 15 s, whatever setConnectTimeout asks.
 WAIT_APP = """
 local T = picocalc.sys.loadlib("picotest")
 T.case("wait_connected_outlasts_the_watchdog", function()
@@ -65,7 +66,7 @@ T.case("wait_connected_outlasts_the_watchdog", function()
     T.ok(c:connect(), "connect")
     local t0 = picocalc.sys.getTimeMs()
     T.eq(c:waitConnected(20), false, "connected to a black hole")
-    T.ok(picocalc.sys.getTimeMs() - t0 >= 19000, "the wait ended early")
+    T.ok(picocalc.sys.getTimeMs() - t0 >= 14000, "the wait ended early")
     c:close()
 end)
 T.done()
