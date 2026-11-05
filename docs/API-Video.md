@@ -8,7 +8,7 @@ PicoDeck supports MJPEG video playback from AVI files stored on the SD card. Vid
 
 ## Requirements
 
-Add `"video"` (no explicit requirement needed) or `"audio"` to your `app.json` if your video has an audio track:
+Video needs no requirement, and there is no `"video"` one. If your video has an audio track, declare `"audio"` in your `app.json`, which the store lists but [nothing enforces](Global-Variables-and-Permissions.md#only-declared-nothing-checks-them):
 
 ```json
 {
