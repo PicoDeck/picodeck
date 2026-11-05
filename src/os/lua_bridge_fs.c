@@ -497,7 +497,7 @@ static int l_fs_rename(lua_State *L) {
 // ── picocalc.fs.copy(src, dst [, progress_fn]) → ok [, err] ─────────────────
 typedef struct { lua_State *L; int fn_ref; } copy_progress_ctx_t;
 
-static void copy_progress_trampoline(uint32_t done, uint32_t total, void *user) {
+static bool copy_progress_trampoline(uint32_t done, uint32_t total, void *user) {
   copy_progress_ctx_t *ctx = (copy_progress_ctx_t *)user;
   lua_rawgeti(ctx->L, LUA_REGISTRYINDEX, ctx->fn_ref);
   lua_pushinteger(ctx->L, (lua_Integer)done);
@@ -505,6 +505,9 @@ static void copy_progress_trampoline(uint32_t done, uint32_t total, void *user) 
   if (lua_pcall(ctx->L, 2, 0, 0) != LUA_OK)
     lua_pop(ctx->L, 1);  // errors in the callback are ignored (one per chunk
                          // would otherwise pile up on the stack)
+  // An exit request (sys.exit() in the callback, Exit App from the menu its
+  // service pass may open) stops the copy; the app exits at the next instruction.
+  return !lua_bridge_exit_requested();
 }
 
 static int l_fs_copy(lua_State *L) {

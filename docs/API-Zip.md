@@ -332,6 +332,7 @@ Entry names are strictly validated before an entry name may become a filesystem 
 - The reader is seek-based: the archive is streamed from the SD card, so opening costs one pass over the central directory, not the archive size, and the archive is never copied to the heap.
 - Extraction (`extract`, `ar:extract`, `ar:extractAll`) streams with constant memory, whatever the entry size.
 - The SD bus is shared with Core 1 audio (MP3 and file player). Pace big `ar:read` calls: decompressing a multi-megabyte entry holds the SD bus long enough to starve audio decode, so do large reads at load screens, not mid-gameplay.
+- A large entry can take a long time. These calls keep feeding the device's watchdog, but your app does not run during one, so the system menu and Exit App wait until it returns (`extract` and `ar:extractAll` check for an exit between files).
 
 ---
 

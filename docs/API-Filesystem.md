@@ -272,8 +272,9 @@ end
 Copy a file. Subject to filesystem sandbox.
 
 - **Parameters:**
-  - `src` (string): Source path
-  - `dst` (string): Destination path
+  - `src` (string): Source path (needs read access)
+  - `dst` (string): Destination path (needs write access)
+  - `progress_fn` (function, optional): `function(done, total)`, called after each 4 KB copied. Errors raised inside it are ignored. An exit requested from it (or from the system menu it lets the user open) stops the copy.
 - **Returns:** (boolean) `true` on success; `(false, string)` on failure
 
 ```lua

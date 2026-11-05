@@ -874,7 +874,7 @@ bool sdcard_rename(const char* oldpath, const char* newpath) {
     return rename(full_old, full_new) == 0;
 }
 bool sdcard_copy(const char* src, const char* dst,
-                 void (*progress_cb)(uint32_t done, uint32_t total, void* user),
+                 bool (*progress_cb)(uint32_t done, uint32_t total, void* user),
                  void* user) {
     // Mirrors src/drivers/sdcard.c: chunked copy, progress callback per
     // chunk, dst removed on failure.
@@ -895,7 +895,7 @@ bool sdcard_copy(const char* src, const char* dst,
     while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
         if (fwrite(buf, 1, n, out) != n) { ok = false; break; }
         done += (uint32_t)n;
-        if (progress_cb) progress_cb(done, total, user);
+        if (progress_cb && !progress_cb(done, total, user)) { ok = false; break; }
     }
     if (ferror(in)) ok = false;
     fclose(in);

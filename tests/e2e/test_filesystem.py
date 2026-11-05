@@ -7,10 +7,11 @@ Regression targets:
 """
 
 import base64
+from pathlib import Path
 
 import pytest
 
-from helpers import lua_case_names, run_lua_app
+from helpers import lua_case_names, run_lua_app, stage_lua_app
 
 
 FS_CASES = lua_case_names("fs_test")
@@ -36,6 +37,38 @@ class TestFilesystemLua:
         FAIL exists/mkdir because its files persisted)."""
         for i in range(2):
             run_lua_app(simulator, "fs_test", timeout=15).assert_all_passed(FS_CASES)
+
+
+COPY_EXIT_APP = """
+local fs = picocalc.fs
+local src, dst = fs.appPath("src.bin"), fs.appPath("dst.bin")
+local f = fs.open(src, "w")
+f:write(string.rep("x", 100000))
+f:close()
+local calls = 0
+fs.copy(src, dst, function()
+    calls = calls + 1
+    picocalc.sys.log("COPY " .. calls)
+    picocalc.sys.exit()
+end)
+picocalc.sys.log("NOT_REACHED")
+"""
+
+
+def test_exit_from_a_copy_progress_function_stops_the_copy(simulator):
+    stage_lua_app(simulator.sd_card_path, "copy_exit", COPY_EXIT_APP,
+                  id="com.test.copy_exit")
+    seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+    simulator.launch_app("copy_exit")
+    out = simulator.wait_for_exit(timeout=10)
+    assert out.get("result") in ("returned", "exit_sentinel"), out
+    texts = [e["text"] for e in simulator.get_log_lines(seq)]
+    assert "COPY 1" in texts, texts
+    assert "COPY 2" not in texts, texts
+    assert "NOT_REACHED" not in texts, texts
+    data = Path(simulator.sd_card_path) / "data" / "com.test.copy_exit"
+    assert (data / "src.bin").exists()
+    assert not (data / "dst.bin").exists(), "the partial copy stayed"
 
 
 class TestFilesystemRPC:

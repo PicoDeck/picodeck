@@ -232,6 +232,16 @@ picodeck_unit_test(test_mv_op SOURCES ${SRC}/os/mv_op.c ${SRC}/os/mv_path.c
 set_source_files_properties(${FATFS_DIR}/ff.c ${FATFS_DIR}/ffunicode.c
                 PROPERTIES COMPILE_OPTIONS "-w")
 
+# The firmware's SD driver over the vendored FatFS on a RAM disk: the watchdog
+# feeds of long transfers (counted by fakes/feedcount), short writes, copy stop.
+set(FEEDCOUNT ${CMAKE_CURRENT_SOURCE_DIR}/fakes/feedcount)
+picodeck_unit_test(test_sdcard_driver SOURCES ${SRC}/drivers/sdcard.c
+                ${SRC}/drivers/fat_within.c ${FATFS_DIR}/ff.c
+                ${FATFS_DIR}/ffunicode.c
+                ${CMAKE_CURRENT_SOURCE_DIR}/fakes/umm_fake.c
+                INCLUDES ${FEEDCOUNT} ${PICODECK_ROOT}/simulator/stubs ${FATFS_DIR}
+                ${SRC} ${SRC}/drivers)
+
 # The simulator's SD-root containment (host filesystem; sim_log_err faked).
 picodeck_unit_test(test_sim_sdcard SOURCES ${PICODECK_ROOT}/simulator/hal/hal_sdcard.c
                 INCLUDES ${PICODECK_ROOT}/simulator/hal ${SRC}
@@ -267,7 +277,7 @@ picodeck_unit_test(test_zip_archive SOURCES ${SRC}/os/zip_archive.c
                 ${PICODECK_ROOT}/third_party/miniz/miniz_tdef.c
                 ${PICODECK_ROOT}/third_party/miniz/miniz_zip.c
                 ${SD_FAKE}
-                INCLUDES ${SD_INCLUDES} ${PICODECK_ROOT}/third_party/miniz
+                INCLUDES ${FEEDCOUNT} ${SD_INCLUDES} ${PICODECK_ROOT}/third_party/miniz
                 ${CMAKE_BINARY_DIR}/generated/miniz
                 DEFINES PICODECK_SIMULATOR MINIZ_NO_STDIO MINIZ_NO_ARCHIVE_WRITING_APIS
                 MINIZ_NO_ZLIB_COMPATIBLE_NAMES)

@@ -311,4 +311,17 @@ T.case("glob_returns_entries", function()
     T.eq(found["test_glob_b.txt"].is_dir, false, "is_dir")
 end)
 
+T.case("copy_progress", function()
+    local src = fs.appPath("test_copy_src.bin")
+    write(src, string.rep("c", 10000))
+    local calls, last_done, last_total = 0, 0, 0
+    T.ok(fs.copy(src, fs.appPath("test_copy_dst.bin"), function(done, total)
+        calls = calls + 1
+        last_done, last_total = done, total
+    end), "copy")
+    T.ok(calls >= 2, "called per chunk")
+    T.eq(last_done, 10000, "done")
+    T.eq(last_total, 10000, "total")
+end)
+
 T.done()

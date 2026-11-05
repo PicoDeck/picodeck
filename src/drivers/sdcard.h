@@ -99,10 +99,10 @@ sdcard_within_t sdcard_path_within(const char *root, const char *path);
 // Rename or move a file/directory. Both paths must be on the same volume.
 bool sdcard_rename(const char *src, const char *dst);
 
-// Copy src to dst. Optional progress callback: cb(bytes_done, total, user).
-// Returns false and removes dst on error.
+// Copy src to dst. Optional progress callback: cb(bytes_done, total, user),
+// whose false stops the copy. Returns false and removes dst on error or stop.
 bool sdcard_copy(const char *src, const char *dst,
-                 void (*progress_cb)(uint32_t done, uint32_t total, void *user),
+                 bool (*progress_cb)(uint32_t done, uint32_t total, void *user),
                  void *user);
 
 // ── Metadata ─────────────────────────────────────────────────────────────────
