@@ -7,10 +7,11 @@
 --   "workspace.library": ["libs/picocalc.lua"]
 -- sdk/README.md has the whole setup.
 --
--- Generated from src/os/lua_bridge_*.c — keep in sync with the bridge sources.
--- tools/check_lua_stub.py (run by `pytest tests/unit`) compares every signature
--- here with the C function behind it: parameter count, optional parameters and
--- return count.
+-- Hand-written from src/os/lua_bridge_*.c and docs/; nothing generates it.
+-- tools/check_lua_stub.py (run by `pytest tests/unit`) checks it against that C,
+-- both ways: every name the bridge registers has an entry here and every entry
+-- here has a name behind it, with the same parameter count, optional parameters
+-- and return count. It cannot check types or wording.
 -- Note: the stdlib is base, table, string, math, coroutine and utf8. io, os,
 -- package and debug are nil on the device, and dofile and loadfile too; require
 -- is PicoDeck's own (docs: Standard Lua Libraries).
@@ -645,7 +646,8 @@ function picocalc.sys.resumeBackground() end
 ---`require`, which caches). `nil, error` if the file cannot be opened or is empty;
 ---a syntax or runtime error in it raises.
 ---@param name string Library name, no extension and no `/`
----@return any
+---@return any result `nil` if the file cannot be opened or is empty
+---@return string? error
 function picocalc.sys.loadlib(name) end
 
 ---Read bytes from PIO PSRAM (second 8MB chip, if present) into a string.
@@ -779,7 +781,7 @@ function picocalc.fs.read(file, len) end
 function picocalc.fs.write(file, data) end
 
 ---Close an open file handle. Idempotent; `nil` is ignored.
----@param file PicoDeckFile?
+---@param file? PicoDeckFile
 function picocalc.fs.close(file) end
 
 ---Seek within an open file, relative to `whence`: `"set"` (default, from the
@@ -916,6 +918,7 @@ function picocalc.fs.diskInfo() end
 ---@param path string Directory to search
 ---@param pattern string Glob pattern, e.g. `"*.lua"`
 ---@return PicoDeckDirEntry[]
+---@return string? error `"permission denied"` when the sandbox refused it (the list is then empty)
 function picocalc.fs.glob(path, pattern) end
 
 ---Check that the SD card answers, remounting it if it does not. Worth calling
@@ -1114,15 +1117,17 @@ function picocalc.sound.sampleplayer(sample_or_path) end
 ---@return string? error
 function picocalc.sound.fileplayer(buffer_size) end
 
----Create an MP3Player for streaming MP3 files from the SD card.
----@return PicoDeckMp3Player
+---Create an MP3Player for streaming MP3 files from the SD card. There is a single
+---MP3 decoder, so this returns the one live handle while it exists.
+---@return PicoDeckMp3Player? player
+---@return string? error
 function picocalc.sound.mp3player() end
 
 -- ── PicoDeckSample methods ──────────────────────────────────────────────────────
 
 ---Load a WAV file into this sample.
 ---@param path string
----@return boolean ok
+---@return boolean? ok `true`, or `nil` with the error
 ---@return string? error
 function PicoDeckSample:load(path) end
 
@@ -1551,20 +1556,20 @@ function PicoDeckHttpConn:getResponseStatus() end
 ---@return { [string]: string }?
 function PicoDeckHttpConn:getResponseHeaders() end
 
----Register a callback fired each time new response data arrives.
----@param fn fun()
+---Register a callback fired each time new response data arrives; `nil` clears it.
+---@param fn? fun()
 function PicoDeckHttpConn:setRequestCallback(fn) end
 
----Register a callback fired once response headers have been parsed.
----@param fn fun()
+---Register a callback fired once response headers have been parsed; `nil` clears it.
+---@param fn? fun()
 function PicoDeckHttpConn:setHeadersReadCallback(fn) end
 
----Register a callback fired when the full response body has been received.
----@param fn fun()
+---Register a callback fired when the full response body has been received; `nil` clears it.
+---@param fn? fun()
 function PicoDeckHttpConn:setRequestCompleteCallback(fn) end
 
----Register a callback fired when the request fails (not after a successful response). Called with no arguments; read getError() inside it, since the connection is released afterwards.
----@param fn fun()
+---Register a callback fired when the request fails (not after a successful response). Called with no arguments; read getError() inside it, since the connection is released afterwards. `nil` clears it.
+---@param fn? fun()
 function PicoDeckHttpConn:setConnectionClosedCallback(fn) end
 
 -- =============================================================================
@@ -1653,18 +1658,18 @@ function PicoDeckTcpConn:setConnectTimeout(seconds) end
 ---@param seconds number
 function PicoDeckTcpConn:setReadTimeout(seconds) end
 
----Register a callback fired when the connection is established. A failed
----connect fires the close callback instead.
----@param fn fun(conn: PicoDeckTcpConn)
+---Register a callback fired when the connection is established; `nil` clears it.
+---A failed connect fires the close callback instead.
+---@param fn? fun(conn: PicoDeckTcpConn)
 function PicoDeckTcpConn:setConnectCallback(fn) end
 
----Register a callback fired when data arrives.
----@param fn fun(conn: PicoDeckTcpConn)
+---Register a callback fired when data arrives; `nil` clears it.
+---@param fn? fun(conn: PicoDeckTcpConn)
 function PicoDeckTcpConn:setReadCallback(fn) end
 
 ---Register a callback fired when the peer closes the connection or it fails,
----not after your own `close()`.
----@param fn fun(conn: PicoDeckTcpConn)
+---not after your own `close()`; `nil` clears it.
+---@param fn? fun(conn: PicoDeckTcpConn)
 function PicoDeckTcpConn:setCloseCallback(fn) end
 
 ---Return and clear the pending events that have no callback registered, as a
@@ -1951,7 +1956,7 @@ function picocalc.graphics.drawPlayfield(playfield, ox, oy, block_size, cols, ro
 function picocalc.graphics.updateDrawParticles(particles, dt) end
 
 ---Accepted but not applied: stores a global stencil pattern no drawing call reads.
----@param pattern integer[] 8 bytes
+---@param pattern integer[]|nil 8 bytes, one per row of the 8x8 pattern; `nil` clears it
 function picocalc.graphics.setStencilPattern(pattern) end
 
 ---Rotate, project and draw a 3D wireframe model in one C call. Model coordinates are
@@ -2259,54 +2264,62 @@ function picocalc.graphics.sprite.removeSprites(sprites) end
 ---@param fn fun(sprite: PicoDeckSprite)
 function picocalc.graphics.sprite.performOnAllSprites(fn) end
 
----Return sprites whose bounds overlap a point.
+---Return the sprites whose collision box contains a point.
 ---@param x integer
 ---@param y integer
 ---@return PicoDeckSprite[]
+---@overload fun(point: PicoDeckPoint): PicoDeckSprite[]
 function picocalc.graphics.sprite.querySpritesAtPoint(x, y) end
 
----Return sprites whose bounds overlap a rectangle.
+---Return the sprites whose collision box overlaps a rectangle.
 ---@param x integer
 ---@param y integer
 ---@param w integer
 ---@param h integer
 ---@return PicoDeckSprite[]
+---@overload fun(rect: PicoDeckRect): PicoDeckSprite[]
 function picocalc.graphics.sprite.querySpritesInRect(x, y, w, h) end
 
----Return sprites whose bounds intersect a line segment.
+---Return the sprites whose collision box a line segment touches.
 ---@param x1 integer
 ---@param y1 integer
 ---@param x2 integer
 ---@param y2 integer
 ---@return PicoDeckSprite[]
+---@overload fun(line: PicoDeckLine): PicoDeckSprite[]
 function picocalc.graphics.sprite.querySpritesAlongLine(x1, y1, x2, y2) end
 
----Return collision info for sprites along a line segment.
+---Return where a line segment first crosses each sprite's collision box.
 ---@param x1 integer
 ---@param y1 integer
 ---@param x2 integer
 ---@param y2 integer
----@return table[]
+---@return {sprite: PicoDeckSprite, x: integer, y: integer}[]
+---@overload fun(line: PicoDeckLine): {sprite: PicoDeckSprite, x: integer, y: integer}[]
 function picocalc.graphics.sprite.querySpriteInfoAlongLine(x1, y1, x2, y2) end
 
----Set clip rects for sprites in a z-index range (stored, not applied).
----@param clip_rect { x: integer, y: integer, w: integer, h: integer }
+---Accepted but not applied: stores one clip rectangle on every sprite whose
+---z-index is in the range.
+---@param clip_rect PicoDeckRect All four fields required
 ---@param z_start integer
 ---@param z_end integer
 ---@overload fun(x: integer, y: integer, w: integer, h: integer, z_start: integer, z_end: integer)
 function picocalc.graphics.sprite.setClipRectsInRange(clip_rect, z_start, z_end) end
 
----Clear clip rects for sprites in a z-index range.
+---Accepted but not applied: clears the stored rectangle of every sprite whose
+---z-index is in the range.
 ---@param z_start integer
 ---@param z_end integer
 function picocalc.graphics.sprite.clearClipRectsInRange(z_start, z_end) end
 
----Add an invisible collision sprite at a rect (useful for tilemaps).
+---Add an invisible sprite with no image, collisions on and a `w` by `h` collision
+---rectangle at `x, y`: for walls and trigger zones. Raises when the manager is full.
 ---@param x integer
 ---@param y integer
 ---@param w integer
 ---@param h integer
 ---@return PicoDeckSprite
+---@overload fun(rect: PicoDeckRect): PicoDeckSprite
 function picocalc.graphics.sprite.addEmptyCollisionSprite(x, y, w, h) end
 
 ---One invisible collision sprite per tile whose index is in wallIDs. Walls past
@@ -2331,6 +2344,7 @@ function picocalc.graphics.sprite.spriteWithText(text, maxWidth, maxHeight, bgCo
 
 -- PicoDeckSprite methods
 
+---Set the sprite's image.
 ---@param image? PicoDeckImage `nil` or nothing clears the image
 ---@param flip? boolean Horizontal flip
 ---@param scale? number Only applied when given
@@ -2340,7 +2354,7 @@ function PicoDeckSprite:setImage(image, flip, scale, scale_y) end
 ---@return PicoDeckImage?
 function PicoDeckSprite:getImage() end
 
----Add this sprite to the global sprite list.
+---Add this sprite to the global sprite list. Raises when the manager is full.
 function PicoDeckSprite:add() end
 
 ---The same as add().
@@ -2460,12 +2474,12 @@ function PicoDeckSprite:getImageFlip() end
 ---@param ignore boolean
 function PicoDeckSprite:setIgnoresDrawOffset(ignore) end
 
----Accepted but not applied: stores a rectangle getBounds returns. Also takes one
----table, `{x, y, w, h}` or `{x=, y=, w=, h=}`.
+---Accepted but not applied: stores a rectangle getBounds returns.
 ---@param x integer
 ---@param y integer
 ---@param w integer
 ---@param h integer
+---@overload fun(self: PicoDeckSprite, rect: PicoDeckRect)
 function PicoDeckSprite:setBounds(x, y, w, h) end
 
 ---@return integer x
@@ -2484,7 +2498,8 @@ function PicoDeckSprite:setOpaque(opaque) end
 ---@return boolean
 function PicoDeckSprite:isOpaque() end
 
----@param fn fun(sprite: PicoDeckSprite, x: integer, y: integer, w: integer, h: integer)
+---Accepted but not applied: the callback is ignored and never called.
+---@param fn function
 function PicoDeckSprite:setBackgroundDrawingCallback(fn) end
 
 ---Draw this sprite immediately (outside the normal update cycle).
@@ -2501,11 +2516,13 @@ function PicoDeckSprite:setCollisionsEnabled(enabled) end
 ---@return boolean
 function PicoDeckSprite:collisionsEnabled() end
 
----Set the collision rectangle (relative to the sprite's bounds).
+---Set the collision rectangle, relative to the sprite's position. In a table, a
+---missing `w` or `h` takes the sprite's size.
 ---@param x integer
 ---@param y integer
 ---@param w integer
 ---@param h integer
+---@overload fun(self: PicoDeckSprite, rect: PicoDeckRect)
 function PicoDeckSprite:setCollideRect(x, y, w, h) end
 
 ---@return integer x
@@ -2514,28 +2531,31 @@ function PicoDeckSprite:setCollideRect(x, y, w, h) end
 ---@return integer h
 function PicoDeckSprite:getCollideRect() end
 
----Return the collision rectangle in world coordinates.
+---Return the absolute collision box: the collide rect, or the drawn box if there
+---is none, at the sprite's position.
 ---@return integer x
 ---@return integer y
 ---@return integer w
 ---@return integer h
 function PicoDeckSprite:getCollideBounds() end
 
----Clear the collision rectangle (no collision).
+---Reset the collision rectangle to the full sprite size.
 function PicoDeckSprite:clearCollideRect() end
 
----Return sprites that currently overlap this sprite's collision rect.
+---Return the sprites in the manager whose collision box overlaps this one's.
+---Collisions must be enabled on both sprites; group masks do not filter it.
 ---@return PicoDeckSprite[]
 function PicoDeckSprite:overlappingSprites() end
 
----Return all sprites that overlap this sprite's collision rect (including off-screen).
----@return PicoDeckSprite[]
+---Return all pairs of sprites in the manager that overlap, under the same
+---conditions as `overlappingSprites`. The sprite it is called on plays no part.
+---@return PicoDeckSprite[][] pairs Array of `{sprite1, sprite2}`
 function PicoDeckSprite:allOverlappingSprites() end
 
----Clear the stencil mask.
+---Accepted but not applied: drops the sprite's stencil image and stencil pattern.
 function PicoDeckSprite:clearStencil() end
 
----Set an ordered-dither stencil pattern of the given density (stored only: drawing does not apply it).
+---Accepted but not applied: stores an ordered-dither stencil pattern of the given density.
 ---@param level number 0 (nothing drawn) to 1 (everything drawn); other values clamp
 function PicoDeckSprite:setStencilPattern(level) end
 
@@ -2553,13 +2573,14 @@ function PicoDeckSprite:alphaCollision(other) end
 ---@return integer actualX
 ---@return integer actualY
 ---@return table[] collisions
+---@overload fun(self: PicoDeckSprite, goal: PicoDeckPoint): integer, integer, table[]
 function PicoDeckSprite:moveWithCollisions(goalX, goalY) end
 
 ---Always `"slide"`: moveWithCollisions does not call it and it cannot be overridden.
 ---@return string
 function PicoDeckSprite:collisionResponse() end
 
----Set a mask image used as this sprite's stencil (arg 3 reserved).
+---Accepted but not applied: keeps a stencil image for the sprite.
 ---@param image PicoDeckImage
 function PicoDeckSprite:setStencilImage(image) end
 
@@ -3186,19 +3207,23 @@ local PicoDeckCamera = {}
 ---@return PicoDeckCamera
 function picocalc.game.camera.new() end
 
----@param x integer
----@param y integer
+---Set the camera position: the world point to show at the centre of the screen.
+---@param x number
+---@param y number
 function PicoDeckCamera:setPosition(x, y) end
 
----@param dx integer
----@param dy integer
+---Move the camera by a relative offset.
+---@param dx number
+---@param dy number
 function PicoDeckCamera:move(dx, dy) end
 
 ---@return number x
 ---@return number y
 function PicoDeckCamera:getPosition() end
 
----@param zoom number
+---Set the camera zoom factor. It scales what `getOffset` and the conversions
+---return: the drawing, and any scaling of it, is yours.
+---@param zoom number Clamped to 0.1-10
 function PicoDeckCamera:setZoom(zoom) end
 
 ---@return number
@@ -3252,8 +3277,8 @@ function PicoDeckCamera:shakeY(amplitude, duration) end
 function PicoDeckCamera:stopShake() end
 
 ---Convert world-space coordinates to screen-space.
----@param wx integer
----@param wy integer
+---@param wx number
+---@param wy number
 ---@return integer sx
 ---@return integer sy
 function PicoDeckCamera:worldToScreen(wx, wy) end
@@ -3992,20 +4017,22 @@ function picocalc.repl.echo(flag) end
 -- draw3DWireframeEx  (global software-3D helper, not under picocalc.*)
 -- =============================================================================
 
----Draw a rotating 3D wireframe (optionally filled) model.
----@param verts number[] Flat vertex array {x,y,z, x,y,z, ...}
----@param edges integer[] Flat edge index pairs {a,b, a,b, ...} (1-based)
----@param angleX number Rotation around X (radians)
----@param angleY number Rotation around Y (radians)
----@param angleZ number Rotation around Z (radians)
----@param scx integer Screen centre x
----@param scy integer Screen centre y
----@param fov number Field of view / perspective divisor
----@param edgeColor integer RGB565 line colour
----@param fillColor? integer RGB565 face fill colour (default 0)
----@param fillMode? integer 0=wireframe, 1=fill, 2=both (default 0)
----@param vertSize? integer Vertex dot size (default 3)
----@param faces? integer[] Flat vertex-index triples for filled triangles
+---Enhanced `picocalc.graphics.draw3DWireframe` with optional filled, lit triangles,
+---using the same coordinates and `fov`. It also clips edges where they reach the
+---camera. A global function, not under `picocalc.*`.
+---@param verts number[] Flat `{x1, y1, z1, x2, y2, z2, ...}`; only the first 64 vertices are used
+---@param edges integer[] Flat `{a1, b1, a2, b2, ...}`: 1-based vertex index pairs
+---@param angleX number Rotation around X in radians
+---@param angleY number Rotation around Y in radians
+---@param angleZ number Rotation around Z in radians
+---@param scx integer Screen-space centre x
+---@param scy integer Screen-space centre y
+---@param fov number Distance from the camera to the plane `z = 0` (larger means less perspective)
+---@param edgeColor integer RGB565 colour of edges and vertex dots
+---@param fillColor? integer RGB565 base colour of the faces, shaded per face; default 0 means no fill, not black
+---@param fillMode? integer 0 = wireframe only (default), 1 = fill only, 2 = both
+---@param vertSize? integer Vertex dot size in pixels; 0 for none (default 3)
+---@param faces? integer[] Flat 1-based vertex-index triples; a face is drawn only when its vertices run counter-clockwise on screen
 function draw3DWireframeEx(verts, edges, angleX, angleY, angleZ, scx, scy, fov, edgeColor, fillColor, fillMode, vertSize, faces) end
 
 -- =============================================================================
