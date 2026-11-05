@@ -408,6 +408,14 @@ static int l_fs_browse(lua_State *L) {
   if (start_path != root_path && !fs_sandbox_check(L, start_path, false))
     start_path = root_path;
 
+  // Esc walks up to the boundary and cancels there. A start outside the data
+  // root is its own boundary (the data root would be neither above it nor
+  // where the user came from, and the browser would jump there).
+  size_t n = strlen(root_path);
+  if (strncasecmp(start_path, root_path, n) != 0 ||
+      (start_path[n] != '\0' && start_path[n] != '/'))
+    root_path = start_path;
+
   char selected[192];
   if (file_browser_show(start_path, root_path, selected, sizeof(selected))) {
     lua_pushstring(L, selected);

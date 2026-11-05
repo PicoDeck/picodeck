@@ -251,11 +251,13 @@ picocalc.fs.close(f)
 ---
 
 #### `picocalc.fs.browse([startDir])`
-Opens a file-browser overlay panel. The user can navigate directories and select a file; Esc goes up a directory (and cancels at the top), and the system menu key cancels from any directory. It is system UI: it draws in the built-in 6x8 font and your font is restored.
+Opens a file-browser overlay panel. The user can navigate directories and select a file; Esc goes up a directory and cancels at the top, and the system menu key cancels from any directory. It is system UI: it draws in the built-in 6x8 font and your font is restored.
 
 - **Parameters:**
   - `startDir` (string, optional): Starting directory. Defaults to the app's `/data/<appname>/` directory.
 - **Returns:** (string or nil) Selected file path, or `nil` if cancelled
+
+The top is `/data/<APP_ID>` for a start inside it; any other start directory is its own top, so the user cannot walk above where you put them. An app with `"root-filesystem"` can pass `"/"` to offer the whole card.
 
 ```lua
 local selected = picocalc.fs.browse("/apps")
