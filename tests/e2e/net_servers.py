@@ -26,6 +26,9 @@ threads, and records what it saw so a test can assert on the server side too
 - BlackholeServer: a listener whose accept queue is kept full, so a new
   connect() is never answered (SYNs are dropped): a connect timeout target
   that needs no outside network.
+- SntpServer: answers SNTP queries while .answering is true (silent otherwise,
+  as a network that blocks NTP), for PICODECK_SIM_NET_SNTP_URL. .queries and
+  .answers count what it saw.
 """
 
 from __future__ import annotations
@@ -370,6 +373,51 @@ class BlackholeServer:
         for s in self._fillers:
             s.close()
         self._lsock.close()
+
+
+class SntpServer:
+    """SNTP over UDP on 127.0.0.1: what wifi.c's time sync talks to in the
+    firmware-network simulator (PICODECK_SIM_NET_SNTP_URL = .url)."""
+
+    NTP_EPOCH_OFFSET = 2208988800  # seconds from 1900 to 1970
+
+    def __init__(self, answering: bool = True):
+        self.answering = answering
+        self.queries = 0
+        self.answers = 0
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.settimeout(0.05)
+        self.url = f"udp://127.0.0.1:{self._sock.getsockname()[1]}"
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                query, peer = self._sock.recvfrom(512)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            self.queries += 1
+            if not self.answering or len(query) < 48:
+                continue
+            now = struct.pack(">II", int(time.time()) + self.NTP_EPOCH_OFFSET, 0)
+            # Version 4, mode 4 (server), stratum 1; the query's transmit
+            # time comes back as the origin time.
+            reply = (bytes([0x24, 1]) + bytes(22) + query[40:48] + now + now)
+            self._sock.sendto(reply, peer)
+            self.answers += 1
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+        self._thread.join(timeout=2)
+        self._sock.close()
 
 
 def _adler(data: bytes) -> int:

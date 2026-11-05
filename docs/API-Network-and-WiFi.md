@@ -90,6 +90,12 @@ end
 
 ---
 
+### WiFi and an app's own clock
+
+An app whose `app.json` sets `system_clock_khz` and does not declare the `"http"` requirement starts with WiFi disconnected: the OS takes the connection down before it changes the clock. When the app exits, however it exits, the OS starts reconnecting to the same network in the background. If WiFi was off before the launch it stays off, and if the app called `connect` or `disconnect` itself (or the user changed WiFi in the system menu) while it ran, that stands. An app that needs the network while it runs declares `"http"`, and keeps the connection across the clock change.
+
+---
+
 ### WiFi Status Constants
 
 | Constant | Description |

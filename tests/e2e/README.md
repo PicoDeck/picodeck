@@ -59,13 +59,14 @@ PICODECK_SIM_BINARY=build_sim_net/picodeck_simulator SDL_VIDEODRIVER=dummy \
 `make simulator-net` runs the firmware's own `src/drivers/wifi.c`, `http.c` and
 `tcp.c` on Mongoose/POSIX (TLS off) instead of the sim's libcurl layer, with
 Core 0 and Core 1 as two host threads (`simulator/net/`). The `firmware_net`
-tests (`test_network_firmware.py`) run only against it (`--build-info` says
-`firmware_net=1`) and skip, allow-listed, elsewhere;
+tests (`test_network_firmware.py`, and the boot cases of `test_wifi_clock.py`)
+run only against it (`--build-info` says `firmware_net=1`) and skip,
+allow-listed, elsewhere;
 `PICODECK_SIM_EXPECT_FIRMWARE_NET=1` makes the run refuse to start without it.
 Each case runs in its own simulator against local servers
 (`net_servers.py`: HTTP on 127.0.0.1 with `/ok`, `/big`, `/chunked`, `/close`,
 `/drip`, `/hang`, `/reset`, `/echo`; a TCP echo/flood server; a black-hole
-port). The app `net_fw/main.lua` is staged per test and runs the one case
+port; an SNTP server, through `PICODECK_SIM_NET_SNTP_URL`). The app `net_fw/main.lua` is staged per test and runs the one case
 named in `/data/com.test.net_fw/servers.json`, so a case that crashes the
 simulator fails alone. They include regression tests for the fixed Core 0/
 Core 1 close races from the code review (`KNOWN_BUGS` is empty). The whole

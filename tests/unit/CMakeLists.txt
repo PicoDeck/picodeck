@@ -90,6 +90,9 @@ picodeck_unit_test(test_hid_pad SOURCES ${SRC}/drivers/hid_pad.c INCLUDES ${SRC}
 # The Bluetooth pads' bonding store (link keys + paired pads, on the SD card).
 picodeck_unit_test(test_bt_pad_store SOURCES ${SRC}/drivers/bt_pad_store.c INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_bus SOURCES ${SRC}/drivers/kbd_bus.c INCLUDES ${SRC}/drivers)
+# What the launcher owes back after WiFi's disconnect around an app's own clock
+# (header-only).
+picodeck_unit_test(test_wifi_rejoin INCLUDES ${SRC}/drivers)
 # The default alarm pool fix (cmake/picodeck_pico_time.cmake, #58): the
 # cancellation pass cut out of the patched pico_time the firmware build
 # generates, from the SDK's time.c when PICO_SDK_PATH has one the patch
