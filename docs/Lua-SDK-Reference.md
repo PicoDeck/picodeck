@@ -32,6 +32,7 @@ This page lists every Lua API available to PicoDeck apps, with a link to its ref
 - [Standard Lua Libraries](Standard-Lua-Libraries.md) — What Lua's standard library has here, and `require`
 - [Library Download](Library-Download.md) — Stream an HTTP(S) download to a file (`download.lua`)
 - [Library Panels](Library-Panels.md) — Interactive comics (`panels.lua`)
+- [Library Widgets](Library-Widgets.md) — Form widgets and focus handling (`widgets.lua`)
 
 ---
 
