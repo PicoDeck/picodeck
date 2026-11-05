@@ -18,7 +18,7 @@ This page lists every Lua API available to PicoDeck apps, with a link to its ref
 - [API Gamepad](API-Gamepad.md) — Rebindable Gamepad Buttons, Analog Sticks and Triggers (`picocalc.gamepad`)
 - [API Input](API-Input.md) — Keyboard & Button Input
 - [API JSON](API-JSON.md) — Encode and decode JSON (`picocalc.json`)
-- [API Modplayer](API-Modplayer.md) — Tracker Module Music (MOD, XM, S3M)
+- [API Modplayer](API-Modplayer.md) — Tracker Module Music (MOD)
 - [API Network and WiFi](API-Network-and-WiFi.md) — WiFi & HTTP Client
 - [API Performance](API-Performance.md) — Performance Monitoring
 - [API REPL](API-Repl.md) — A scrolling text console with line input (it does not evaluate Lua)

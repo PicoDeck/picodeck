@@ -2,19 +2,61 @@
 title: "API Audio and Sound"
 ---
 
-Audio output, including simple tones and full sample/file playback.
+Audio output: tones, samples, streamed files, MP3, tracker modules and a raw PCM stream. One mixer sums everything into a single 44.1 kHz stereo output, so different kinds of sound play at once, apart from the conflict described under [The shared PCM stream](#the-shared-pcm-stream).
+
+## Which player to use
+
+| You want | Use | Takes | How many | Bit depth in the mix |
+|---|---|---|---|---|
+| Sound effects | [`Sample`](#sample) with `sample:play()`, or a [SamplePlayer](#sampleplayer) | WAV, 8- or 16-bit, up to 64 KB (0.37 s of 44.1 kHz stereo, 1.5 s of 22.05 kHz mono) | 8 voices play at once | 16 |
+| Music from the SD card | [FilePlayer](#fileplayer) | QOA, or WAV 16-bit | 2 can exist, 1 plays | 8 |
+| Music from the SD card, 16-bit | [MP3Player](#mp3player) | MP3 | 1 | 16 |
+| Small music files | [MOD player](API-Modplayer.md) | MOD, up to 512 KB | 1 | 8 (rendered at 22.05 kHz) |
+| A beep | [`audio.playTone`](#functions) | A frequency: square wave | 1 tone | |
+| Sound you generate | [`audio.startStream`](#pcm-streaming) and `pushSamples` | 16-bit values | 1 stream | 8 |
+
+For music in a real-time game, the figures under **Performance** in [MP3Player](#mp3player) decide between MP3 and QOA.
+
+The FilePlayer, the MOD player and `pushSamples` go through the PCM stream, which keeps 8 bits per channel whatever goes in. SamplePlayers and the MP3Player mix at 16 bits.
+
+The four players differ in shape:
+
+| | SamplePlayer | FilePlayer | MP3Player | MOD player |
+|---|---|---|---|---|
+| Create | `sound.sampleplayer()` | `sound.fileplayer()` | `sound.mp3player()` | `modplayer.create()` |
+| Failed load | `nil, errstr` | `nil, errstr` | `nil, errstr` | `false` |
+| Loop | `play(0)` | `play(0)`, `setLoopRange` | `play(0)`, `setLoop` | `play(true)`, `setLoop` |
+| Pause | `setPaused(bool)` | `pause`, `resume` | `pause`, `resume` | `pause`, `resume` |
+| Position | `getOffset`, `setOffset`: seconds, fractions allowed | `getOffset`, `setOffset`: whole seconds | `getPosition`: frames; no seek | none |
+| Play part of it | `setPlayRange`: frames | `setLoopRange`: whole seconds | no | no |
+| Told when it ends | `setFinishCallback`, `setLoopCallback` | `setFinishCallback`, `setLoopCallback` | no: poll `isPlaying` | no: poll `isPlaying` |
+| Volume | `setVolume(v)` | `setVolume(left [, right])`, `right` ignored | `setVolume(v)` | `setVolume(v)` |
+
+---
 
 ## picocalc.audio
 
-Tones, the master volume and a raw PCM stream. One mixer sums everything that makes sound into a single 44.1 kHz output. The FilePlayer, the MOD player and `startStream` share one PCM stream, so only one of them may play at a time. Stop the one that is playing before starting another: the only automatic stop is that starting a FilePlayer stops another FilePlayer. Tones, SamplePlayers and the MP3Player mix with the stream and with each other, so they all play at once.
+Tones, the master volume and a raw PCM stream.
+
+### The shared PCM stream
+
+The FilePlayer, the MOD player and `startStream` share one PCM stream, with one buffer and one sample rate. Only one of them may play at a time, so stop the one that is playing before starting another. The only automatic stop is that starting a FilePlayer stops another FilePlayer. Tones, SamplePlayers and the MP3Player mix with the stream and with each other, so they all play at once.
+
+Breaking the rule raises no error and reports nothing:
+
+| You do | What happens |
+|---|---|
+| Start a second user: `mod:play()` under a FilePlayer, `fp:play()` under a MOD, `startStream` under either | The buffer is emptied and the stream takes the new rate. Both keep pushing into it, so both are garbled, and each runs at the wrong speed: a 22.05 kHz FilePlayer runs at twice its speed under `startStream(44100)`. Both still report `isPlaying()` |
+| Stop one of the two: `mod:stop()`, `fp:stop()` | The stream stops for both. The other falls silent, but `isPlaying()` stays `true`, its position stops moving, `didUnderrun()` is `false` and `ringFree()` is `0`. It stays that way until something starts the stream again |
+| `stopStream()` under a FilePlayer or a MOD | The same: silent, still "playing", waiting. A later `startStream` lets it go on, at that stream's rate |
 
 ### Functions
 
 #### `picocalc.audio.playTone(freq [, duration])`
-Plays a tone at the specified frequency.
+Plays a square wave at the specified frequency. There is one tone: a new call replaces the one playing.
 
 - **Parameters:**
-  - `freq` (number): Frequency in Hz (e.g., `440` for concert A)
+  - `freq` (number): Frequency in Hz (e.g., `440` for concert A), held to 20-20000
   - `duration` (number, optional): Duration in milliseconds. If `0` or omitted, the tone plays indefinitely until `stopTone()` is called.
 - **Returns:** None
 
@@ -40,12 +82,22 @@ picocalc.audio.stopTone()
 #### `picocalc.audio.setVolume(volume)`
 Sets the master volume. It scales everything the mixer plays: tones, SamplePlayers, the stream (and so the FilePlayer and the MOD player) and the MP3Player. The master volume resets to 100 when the app exits.
 
+Everything but the tone scales in proportion. The tone falls much faster, because its level follows a curve of the master volume and the mix is then scaled by the master volume again (at 100 a tone is half of full scale):
+
+| `setVolume` | Samples, stream, MP3 | Tone |
+|---|---|---|
+| 100 | 100% | 100% |
+| 75 | 75% | 39% |
+| 50 | 50% | 12% |
+| 25 | 25% | 2% |
+| 10 | 10% | 0.3% |
+
 - **Parameters:**
   - `volume` (number): Volume level (0–100, where 0 is muted and 100 is maximum; larger values clamp to 100)
 - **Returns:** None
 
 ```lua
-picocalc.audio.setVolume(50)  -- half volume
+picocalc.audio.setVolume(50)  -- half volume for everything but a tone
 ```
 
 ---
@@ -78,10 +130,10 @@ picocalc.audio.stopStream()
 ---
 
 #### `picocalc.audio.pushSamples(samples)`
-Push audio samples to the streaming buffer. Samples are interleaved stereo pairs (left, right, left, right...). Only while a stream is started (`startStream`): pushes before it, or after `stopStream`, are dropped.
+Push audio samples to the streaming buffer. Samples are interleaved stereo pairs (left, right, left, right...). Only while a stream is started (`startStream`): pushes before it, or after `stopStream`, are dropped. Frames that do not fit the buffer are dropped too, so check `ringFree()` first. The values are 16-bit, but the stream keeps the top 8 bits of each.
 
 - **Parameters:**
-  - `samples` (table): Array of int16 sample values (max 512 values = 256 stereo pairs)
+  - `samples` (table): Array of int16 sample values. At most 512 values (256 stereo frames) are taken from one call, and an odd last value is ignored.
 - **Returns:** None
 
 ```lua
@@ -95,14 +147,16 @@ picocalc.audio.pushSamples(samples)
 ---
 
 #### `picocalc.audio.ringFree()`
-Get the number of free slots available in the audio ring buffer. Use this to avoid pushing more samples than the buffer can hold. While no stream is started it reports 0 (pushes are dropped then).
+Get the room left in the stream's buffer, in stereo frames: 4096 when empty. One frame is two values in `pushSamples`. While no stream is started it reports 0 (pushes are dropped then).
 
 - **Parameters:** None
-- **Returns:** (number) Free buffer slots
+- **Returns:** (number) Free stereo frames
 
 ```lua
-local free = picocalc.audio.ringFree()
-if free >= 512 then
+local samples = {}
+for i = 1, 512 do samples[i] = 0 end   -- 512 values: 256 frames
+
+if picocalc.audio.ringFree() >= #samples // 2 then
     picocalc.audio.pushSamples(samples)
 end
 ```
@@ -131,23 +185,23 @@ Omitting the argument is `1` everywhere. The C calls `playerPlay`, `filePlayerPl
 ### Top-Level Functions
 
 #### `picocalc.sound.getCurrentTime()`
-Returns the current audio clock time in milliseconds since the last `resetTime()` call.
+Returns the audio clock: milliseconds of audio output since the last `resetTime()`, or since the app started. It counts what the output has played, so it advances only while the output runs: it reads `0` until the app's first sound of any kind, and from then on it keeps running, through silence too, until the app exits. It wraps to `0` after about 27 hours.
 
-- **Returns:** (number) Milliseconds
+- **Returns:** (number) Milliseconds, a whole number
 
 ---
 
 #### `picocalc.sound.resetTime()`
-Resets the audio clock to zero.
+Resets the audio clock (`getCurrentTime()`) to zero.
 
 - **Returns:** None
 
 ---
 
 #### `picocalc.sound.playingSources()`
-Returns the number of audio sources currently playing across all player types.
+Returns how many SamplePlayers are playing. A FilePlayer, MP3Player, MOD player, tone or stream does not count.
 
-- **Returns:** (number) Count of active audio sources
+- **Returns:** (number) Sample voices in use
 
 ```lua
 local n = picocalc.sound.playingSources()
@@ -168,11 +222,25 @@ WAVs must be 8- or 16-bit PCM with 1-2 channels (float, 24/32-bit, ADPCM and mor
 Samples have no fixed limit: each lives in PSRAM until it is collected.
 
 - **Parameters:**
-  - `path` (string, optional): Absolute path to a WAV file
+  - `path` (string, optional): Absolute path to a WAV file. Without it the Sample is empty until `sample:load()`: it has no length and does not play.
 - **Returns:** (userdata) Sample object, or `nil, errstr` on failure
 
 ```lua
 local s = picocalc.sound.sample("/apps/myapp/beep.wav")
+```
+
+---
+
+#### `picocalc.sound.sample(seconds [, format])`
+Creates a silent Sample of that length: a placeholder. No API writes into a Sample, so it can only be played as silence, saved, or replaced with `sample:load()`. The data is capped at 64 KB, which `getLength()` then reports.
+
+- **Parameters:**
+  - `seconds` (number): Length in seconds
+  - `format` (table, optional): `sampleRate` (default `44100`), `bits` (`8` or `16`, default `16`), `channels` (`1` or `2`, default `1`)
+- **Returns:** (userdata) Sample object, or `nil, errstr` on failure
+
+```lua
+local gap = picocalc.sound.sample(0.25, { sampleRate = 22050 })
 ```
 
 ---
@@ -229,22 +297,27 @@ Creates a new Sample containing a slice of the original sample's PCM data.
 
 - **Parameters:**
   - `start` (number): Start offset in PCM frames
-  - `end` (number): End offset in PCM frames
-- **Returns:** (userdata) New Sample object, or `nil, errstr` on failure
+  - `end` (number): End offset in PCM frames, not included. Past the end of the sample it means the end.
+- **Returns:** (userdata) New Sample object, or `nil, errstr` if the slice is empty or memory runs out
 
 ```lua
-local clip = sample:getSubsample(0, 22050)  -- first second at 44100 Hz
+local clip = sample:getSubsample(0, 22050)  -- the first half second at 44100 Hz
 ```
 
 ---
 
 #### `sample:play([repeatCount [, rate]])`
-Creates a temporary SamplePlayer, starts playback, and returns the player. Convenience method.
+Plays the sample on a temporary SamplePlayer and returns the player, which you are free to drop. This is the simple way to play a sound effect (see [Playing sound effects](#playing-sound-effects)).
+
+- While it plays, a temporary player is safe from the garbage collector with or without your reference, and it keeps the Sample alive, so you may drop that too.
+- When it finishes or you stop it, its voice is free again within a few milliseconds, even if you kept the player. A player you kept goes on working: `isPlaying()` is `false`, the getters and setters still answer, and `play()` takes a voice again.
+- A looping one (`repeatCount` `0`) plays until you stop it, so keep the player: nothing else can stop it before the app exits.
+- With all 8 voices taken it returns `nil, errstr` and plays nothing.
 
 - **Parameters:**
-  - `repeatCount` (number, optional): Number of times to play (default `1`)
+  - `repeatCount` (number, optional): Number of times to play, `0` to loop until stopped (default `1`)
   - `rate` (number, optional): Playback rate multiplier (default `1.0`)
-- **Returns:** (userdata) SamplePlayer object
+- **Returns:** (userdata) SamplePlayer object, or `nil, errstr` with no voice free or no data in the sample
 
 ```lua
 local s = picocalc.sound.sample("/apps/myapp/beep.wav")
@@ -255,19 +328,19 @@ s:play(3, 1.5)     -- play 3 times at 150% speed
 ---
 
 #### `sample:playAt(when [, vol [, rightvol [, rate]]])`
-Creates a temporary SamplePlayer and starts playback. The `when` parameter is accepted for API compatibility but ignored on this hardware (playback starts immediately).
+Plays the sample once on a temporary SamplePlayer, as `sample:play()` does, with a volume. The `when` parameter is accepted for API compatibility but ignored on this hardware (playback starts immediately).
 
 - **Parameters:**
   - `when` (number): Ignored (accepted for API compatibility)
   - `vol` (number, optional): Volume 0–100 (default `100`; larger values clamp)
-  - `rightvol` (number, optional): Ignored (mono PWM output)
+  - `rightvol` (number, optional): Ignored. The output is stereo, but a player has one volume: `vol` sets both channels, and there is no panning.
   - `rate` (number, optional): Playback rate multiplier (default `1.0`)
-- **Returns:** (userdata) SamplePlayer object
+- **Returns:** (userdata) SamplePlayer object, or `nil, errstr` with no voice free or no data in the sample
 
 ```lua
 local s = picocalc.sound.sample("/apps/myapp/beep.wav")
-local player = s:playAt(0, 200)       -- play at volume 200
-local player = s:playAt(0, 128, 0, 2.0)  -- play at double speed
+s:playAt(0, 60)          -- play at volume 60
+s:playAt(0, 100, 0, 2.0) -- play at full volume and double speed
 ```
 
 ---
@@ -281,7 +354,42 @@ Writes the sample data to a WAV file on the SD card.
 
 ```lua
 local clip = sample:getSubsample(0, 22050)
-clip:save("/data/com.myapp/clip.wav")
+clip:save(picocalc.fs.appPath("clip.wav"))
+```
+
+---
+
+### Playing sound effects
+
+Load each effect once into a Sample, keep the Sample, and call `play`. Drop what it returns: the sound plays to the end whatever the garbage collector does, and gives its voice back when it ends.
+
+```lua
+local shot = picocalc.sound.sample(APP_DIR .. "/shot.wav")
+local boom = picocalc.sound.sample(APP_DIR .. "/boom.wav")
+
+shot:play()          -- in the game loop, as often as it fires
+boom:playAt(0, 60)   -- at volume 60
+```
+
+The mixer has 8 voices. With all of them taken `play` returns `nil, errstr` and that sound is skipped, which is usually what a game wants. To keep voices for the sounds that matter, or to allocate nothing per shot, hold a pool of SamplePlayers: each keeps its voice for as long as it exists, and `setSample` makes it play anything.
+
+```lua
+local shot = picocalc.sound.sample(APP_DIR .. "/shot.wav")
+local boom = picocalc.sound.sample(APP_DIR .. "/boom.wav")
+
+local pool, nextVoice = {}, 1
+for i = 1, 4 do pool[i] = picocalc.sound.sampleplayer() end
+
+local function sfx(sample, volume)
+    local p = pool[nextVoice]
+    nextVoice = nextVoice % #pool + 1
+    p:setSample(sample)        -- cuts off whatever this voice was playing
+    p:setVolume(volume or 100)
+    p:play()
+end
+
+sfx(shot)
+sfx(boom, 60)
 ```
 
 ---
@@ -293,9 +401,9 @@ Plays a `Sample` from memory. Supports looping and volume control.
 #### `picocalc.sound.sampleplayer([sample_or_path])`
 Creates a SamplePlayer, optionally pre-loading a sample.
 
-A SamplePlayer keeps its Sample alive (you may drop your own reference). `sampleplayer(path)` and `sample:play()` create a Sample of their own. Dropping the player returned by `sample:play()` stops that sound when it is collected.
+A SamplePlayer keeps its Sample alive (you may drop your own reference). `sampleplayer(path)` creates a Sample of its own. Unlike the temporary players of `sample:play()`, a SamplePlayer needs your reference: dropped, it stops when it is collected, playing or not.
 
-At most 8 SamplePlayers exist at once (the mixer's voices): a 9th returns `nil, errstr` until one is collected. Reuse players and call `setSample`, or keep a pool.
+A SamplePlayer holds one of the mixer's 8 voices for as long as it exists, whether it plays or not. With every voice taken, a 9th returns `nil, errstr`, after a collection in case some of them are garbage. Reuse players and call `setSample`, or keep a pool (see [Playing sound effects](#playing-sound-effects)).
 
 - **Parameters:**
   - `sample_or_path` (userdata or string, optional): A `Sample` object or a WAV file path
@@ -309,20 +417,20 @@ player:play()
 ---
 
 #### `player:setSample(sample)`
-Sets the sample to play.
+Sets the sample to play, stopping nothing: a playing player goes on from the start of the new sample.
 
 - **Parameters:**
-  - `sample` (userdata): A `Sample` object
-- **Returns:** `true` on success, or `nil, errstr`
+  - `sample` (userdata): A `Sample` object. Anything else raises.
+- **Returns:** `true`
 
 ---
 
 #### `player:play([repeat])`
-Starts playback.
+Starts playback from the beginning of the play range.
 
 - **Parameters:**
-  - `repeat` (number, optional): Number of times to repeat. `0` loops indefinitely.
-- **Returns:** `true` if started
+  - `repeat` (number, optional): Number of times to play. `0` loops until stopped. Default `1`.
+- **Returns:** `true` if started, or `nil, errstr` if there is nothing to play (no sample, or an empty one), or for a finished player from `sample:play()`, which has given its voice back, if no voice is free
 
 ---
 
@@ -349,7 +457,7 @@ Returns the Sample object currently assigned to this player.
 ---
 
 #### `player:setPaused(paused)`
-Pauses or unpauses playback without resetting the playback position.
+Pauses or unpauses playback without resetting the playback position. A player from `sample:play()` gives its voice back while paused (dropped then, it is collected and the sound is gone), so resuming it can find none free: `setPaused(false)` then returns `nil, errstr` and it stays paused.
 
 - **Parameters:**
   - `paused` (boolean): `true` to pause, `false` to resume
@@ -362,14 +470,14 @@ player:setPaused(false)  -- resume
 ---
 
 #### `player:setPlayRange(start, end)`
-Sets the playback range in PCM frames. Playback will only play samples within this range.
+Sets the playback range in PCM frames. Playback will only play samples within this range, and a loop goes back to `start`.
 
 - **Parameters:**
-  - `start` (number): Start frame offset
-  - `end` (number): End frame offset
+  - `start` (number): Start frame offset. At or past `end` it is ignored.
+  - `end` (number): End frame offset, not included. `0` means the end of the sample.
 
 ```lua
-player:setPlayRange(0, 44100)  -- play only the first second
+player:setPlayRange(0, 44100)  -- only the first second of a 44100 Hz sample
 ```
 
 ---
@@ -382,14 +490,15 @@ Returns the length of the loaded sample in PCM frames.
 ---
 
 #### `player:setOffset(seconds)`
-Seeks to a position in seconds.
+Seeks to a position in seconds. `play()` starts from the beginning, so a seek before it is lost: call `setOffset` after `play()`.
 
 - **Parameters:**
   - `seconds` (number): Playback position in seconds (fractions allowed)
 - **Returns:** None
 
 ```lua
-player:setOffset(1.5)  -- seek to 1.5 seconds
+player:play()
+player:setOffset(1.5)  -- on from 1.5 seconds
 ```
 
 ---
@@ -415,10 +524,10 @@ player:setRate(1.5)  -- play at 150% speed
 ---
 
 #### `player:setFinishCallback(fn)`
-Sets a callback fired when playback finishes (all repeats completed). Each SamplePlayer can have one. The callback fires on Core 0 via the Lua instruction hook (slight delay of up to ~256 opcodes).
+Sets a callback fired when playback finishes (all repeats completed). Each SamplePlayer can have one. It runs on your app's own thread, a little after the sound ends: within a few milliseconds while your Lua code runs, or inside `sys.sleep`, `input.update` or a flush. A long blocking call holds it back.
 
 - **Parameters:**
-  - `fn` (function): Callback function (called with no arguments)
+  - `fn` (function or nil): Callback function (called with no arguments), or `nil` to clear it
 
 ```lua
 player:setFinishCallback(function()
@@ -429,10 +538,10 @@ end)
 ---
 
 #### `player:setLoopCallback(fn)`
-Sets a callback fired each time the player loops back to the start. Each SamplePlayer can have one. Same cross-core delivery mechanism as `setFinishCallback`.
+Sets a callback fired each time the player loops back to the start. Each SamplePlayer can have one. It is delivered as `setFinishCallback` is.
 
 - **Parameters:**
-  - `fn` (function): Callback function (called with no arguments)
+  - `fn` (function or nil): Callback function (called with no arguments), or `nil` to clear it
 
 ```lua
 player:setLoopCallback(function()
@@ -447,10 +556,10 @@ end)
 Streams a WAV or QOA file from the SD card without loading it fully into memory.
 
 #### `picocalc.sound.fileplayer([bufferSize])`
-Creates a FilePlayer.
+Creates a FilePlayer. At most 2 exist at once: a 3rd returns `nil, errstr` until one is collected. You rarely need a second, since `load` swaps the file and only one plays at a time.
 
 - **Parameters:**
-  - `bufferSize` (number, optional): Internal streaming buffer size in bytes
+  - `bufferSize` (number, optional): Accepted and ignored. The stream's buffer has a fixed size.
 - **Returns:** (userdata) FilePlayer object, or `nil, errstr` on failure
 
 ---
@@ -473,14 +582,14 @@ file cut short (an interrupted copy) plays the whole frames it holds.
 ---
 
 #### `player:play([repeat])` / `player:stop()` / `player:pause()` / `player:resume()` / `player:isPlaying()`
-Standard playback controls. `repeat` works the same as SamplePlayer: `n` plays the file `n` times and `0` loops until stopped (see Repeat counts). A player with a loop range (`setLoopRange`) loops until stopped whatever `repeat` says. `pause()` halts playback at once, keeping the position and the audio already buffered; `resume()` continues from the same sample, or from the new position after a `setOffset()` while paused (the seek drops the buffered audio).
+Standard playback controls. `play()` returns `true`, or `nil, errstr` with no file loaded. `repeat` works the same as SamplePlayer: `n` plays the file `n` times and `0` loops until stopped (see Repeat counts). A player with a loop range (`setLoopRange`) loops until stopped whatever `repeat` says. `pause()` halts playback at once, keeping the position and the audio already buffered; `resume()` continues from the same sample, or from the new position after a `setOffset()` while paused (the seek drops the buffered audio).
 
 `play()` fills the stream's buffer before the sound starts: about 10-60 ms after the call, depending on the format and the SD card (QOA is quickest, 44.1 kHz stereo WAV slowest) (the buffer holds 93 ms of 44.1 kHz audio, 186 ms of 22.05 kHz). Starting full means the SD card can be busy right after `play()` (your app loading a sample or a level, say) without a gap in the music; it just starts once the buffer is full.
 
 ---
 
 #### `player:getLength()` / `player:getSampleRate()` / `player:getOffset()` / `player:setOffset(seconds)`
-`getLength()` returns the file's length in sample frames (per channel), not seconds: divide by `getSampleRate()` for seconds. `getSampleRate()` returns the file's sample rate in Hz (`0` before a successful `load`). `getOffset()` returns the playback position and `setOffset()` seeks to one, both in whole seconds. While the player plays, a seek is heard after the audio already buffered (up to 93 ms at 44.1 kHz, 186 ms at 22.05 kHz); paused, or right after `play()` before the sound starts, the buffered audio is dropped and the new position plays first.
+`getLength()` returns the file's length in sample frames (per channel), not seconds: divide by `getSampleRate()` for seconds. `getSampleRate()` returns the file's sample rate in Hz (`0` before a successful `load`). `getOffset()` returns the playback position and `setOffset()` seeks to one, both in whole seconds. `play()` starts from the beginning, so a seek before it is lost: call `setOffset()` after `play()`. While the player plays, a seek is heard after the audio already buffered (up to 93 ms at 44.1 kHz, 186 ms at 22.05 kHz); paused, or right after `play()` before the sound starts, the buffered audio is dropped and the new position plays first.
 
 ---
 
@@ -512,10 +621,10 @@ end
 ---
 
 #### `player:setFinishCallback(fn)`
-Sets a callback function to be called when playback finishes. Maximum 2 finish callbacks across all FilePlayer instances.
+Sets a callback function to be called when playback finishes. Each FilePlayer can have one, delivered as a SamplePlayer's is.
 
 - **Parameters:**
-  - `fn` (function): Callback function (called with no arguments)
+  - `fn` (function or nil): Callback function (called with no arguments), or `nil` to clear it
 
 ```lua
 player:setFinishCallback(function()
@@ -526,10 +635,10 @@ end)
 ---
 
 #### `player:setLoopCallback(fn)`
-Sets a callback fired each time the file loops back to the start. Maximum 2 loop callbacks across all FilePlayer instances.
+Sets a callback fired each time the file loops back to the start. Each FilePlayer can have one.
 
 - **Parameters:**
-  - `fn` (function): Callback function (called with no arguments)
+  - `fn` (function or nil): Callback function (called with no arguments), or `nil` to clear it
 
 ```lua
 player:setLoopCallback(function()
@@ -598,7 +707,7 @@ Opens an MP3 file for streaming. ID3v2 tags at the start of the file (title, art
 ---
 
 #### `player:play([repeat])` / `player:stop()` / `player:pause()` / `player:resume()` / `player:isPlaying()`
-Standard playback controls. `play(repeat)` here only chooses between looping and not: `0` loops until stopped, any other value plays once (the count is not honoured; `setLoop()` sets the same flag). `play()` starts from the beginning of the file (also after it finished). `stop()`, `pause()` and a `play()` while playing fade out over ~1.5 ms (no click); `resume()` fades back in. `isPlaying()` stays `true` until the last decoded audio has played.
+Standard playback controls. `play()` returns `true`, or `nil, errstr` with no file loaded. `play(repeat)` here only chooses between looping and not: `0` loops until stopped, any other value plays once (the count is not honoured; `setLoop()` sets the same flag). `play()` starts from the beginning of the file (also after it finished). `stop()`, `pause()` and a `play()` while playing fade out over ~1.5 ms (no click); `resume()` fades back in. `isPlaying()` stays `true` until the last decoded audio has played.
 
 ---
 

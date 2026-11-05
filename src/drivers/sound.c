@@ -20,7 +20,7 @@
 static struct {
     sound_sample_t *samples;
     sound_player_t players[SOUND_MAX_PLAYERS];
-    uint32_t time_offset_us;
+    uint32_t time_frames;   // output frames rendered (the public audio clock)
 } s_context;
 
 /* The mixer runs in audio.c's DMA refill ISR on Core 1 and reads
@@ -176,8 +176,9 @@ void __time_critical_func(sound_mixer_process)(int32_t *out_l, int32_t *out_r, i
             }
         }
     }
-    // Keep the public time base advancing (~us of audio mixed)
-    s_context.time_offset_us += (uint32_t)(((uint64_t)frames * 1000000) / AUDIO_OUT_RATE);
+    // The public time base. In frames: converting here, at 32 frames a chunk,
+    // lost 0.6 of every 725 us, and a 64-bit division called out to flash.
+    s_context.time_frames += (uint32_t)frames;
     mix_unlock();
 }
 
@@ -384,6 +385,56 @@ void sound_player_destroy(sound_player_t *player) {
     mix_unlock();
 }
 
+bool sound_player_park(sound_player_t *voice, sound_player_t *parked) {
+    if (!voice || !parked)
+        return false;
+    mix_lock();
+    if ((voice->playing && !voice->paused) ||
+        (voice->finish_pending && voice->finish_callback) ||
+        (voice->loop_pending && voice->loop_callback)) {
+        mix_unlock();
+        return false;
+    }
+    memcpy(parked, (const void *)voice, sizeof(*parked));
+    parked->in_use = false;
+    player_stop_locked(voice);
+    voice->sample = NULL;
+    voice->finish_callback = NULL;
+    voice->finish_callback_arg = NULL;
+    voice->loop_callback = NULL;
+    voice->loop_callback_arg = NULL;
+    voice->finish_pending = false;
+    voice->loop_pending = false;
+    voice->in_use = false;
+    mix_unlock();
+    return true;
+}
+
+void sound_player_unpark(sound_player_t *voice, const sound_player_t *parked) {
+    if (!voice || !parked)
+        return;
+    mix_lock();
+    memcpy((void *)voice, parked, sizeof(*voice));
+    voice->in_use = true;
+    voice->finish_pending = false;
+    voice->loop_pending = false;
+    mix_unlock();
+}
+
+int sound_player_voice(const sound_player_t *voice) {
+    return (int)(voice - s_context.players);
+}
+
+uint32_t sound_voices_parkable(void) {
+    uint32_t mask = 0;
+    for (int i = 0; i < SOUND_MAX_PLAYERS; i++) {
+        const sound_player_t *p = &s_context.players[i];
+        if (p->in_use && (!p->playing || p->paused))
+            mask |= 1u << i;
+    }
+    return mask;
+}
+
 bool sound_player_set_sample(sound_player_t *player, sound_sample_t *sample) {
     if (!player || !sample)
         return false;
@@ -490,7 +541,9 @@ sound_sample_t *sound_sample_new_blank(float seconds, uint32_t sample_rate, uint
         return NULL;
     }
 
-    memset(sample->data, 0, data_size);
+    // Silence: the middle of the range. 8-bit PCM is unsigned, so zeros would
+    // play as full scale negative.
+    memset(sample->data, bits_per_sample == 16 ? 0 : 0x80, data_size);
     sample->length = data_size;
     sample->sample_rate = sample_rate;
     sample->bits_per_sample = bits_per_sample;
@@ -543,9 +596,11 @@ int sound_get_playing_source_count(void) {
 }
 
 uint32_t sound_get_current_time(void) {
-    return s_context.time_offset_us / 1000000;
+    return (uint32_t)((uint64_t)s_context.time_frames * 1000 / AUDIO_OUT_RATE);
 }
 
 void sound_reset_time(void) {
-    s_context.time_offset_us = 0;
+    mix_lock();
+    s_context.time_frames = 0;
+    mix_unlock();
 }

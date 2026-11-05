@@ -955,9 +955,10 @@ function picocalc.sysconfig.load() end
 ---@class picocalc.audio
 picocalc.audio = {}
 
----Play a tone at the given frequency. If `duration_ms` is 0 or omitted the
----tone plays indefinitely until `stopTone()` is called.
----@param freq integer Frequency in Hz (e.g. 440 for A4)
+---Play a square wave at the given frequency, replacing any tone playing. If
+---`duration_ms` is 0 or omitted the tone plays indefinitely until `stopTone()`
+---is called.
+---@param freq integer Frequency in Hz (e.g. 440 for A4), held to 20-20000
 ---@param duration_ms? integer Duration in milliseconds; 0 = indefinite
 function picocalc.audio.playTone(freq, duration_ms) end
 
@@ -965,8 +966,9 @@ function picocalc.audio.playTone(freq, duration_ms) end
 function picocalc.audio.stopTone() end
 
 ---Set the master volume. It scales everything the mixer plays: tones,
----samples, the PCM stream (FilePlayer, MOD player) and MP3. It resets to
----100 when the app exits.
+---samples, the PCM stream (FilePlayer, MOD player) and MP3. A tone falls
+---faster than the rest (12% at volume 50, 0.3% at 10). It resets to 100 when
+---the app exits.
 ---@param volume integer 0 (mute) – 100 (maximum)
 function picocalc.audio.setVolume(volume) end
 
@@ -992,22 +994,25 @@ local PicoDeckMp3Player = {}
 
 -- ── picocalc.sound top-level constructors ────────────────────────────────────
 
----Return the audio clock time in milliseconds since the last `resetTime()`.
+---Return the audio clock in milliseconds since the last `resetTime()` (or the
+---app's start). It advances only while the audio output runs: from the app's
+---first sound on, through silence too. Wraps after about 27 hours.
 ---@return integer ms
 function picocalc.sound.getCurrentTime() end
 
 ---Reset the audio clock to zero.
 function picocalc.sound.resetTime() end
 
----Return the number of currently active audio sources.
+---Return how many SamplePlayers are playing. A FilePlayer, MP3Player, MOD
+---player, tone or stream does not count.
 ---@return integer
 function picocalc.sound.playingSources() end
 
 ---Create a Sample, optionally loading a WAV file immediately. WAVs must be
 ---8- or 16-bit PCM, 1-2 channels (float, 24/32-bit, ADPCM are refused); only
 ---the first 64 KB of sample data is kept.
----@param path_or_duration? string|number WAV file path, or duration in seconds for an empty sample
----@param opts? {sampleRate?: integer, bits?: integer, channels?: integer} Format of an empty sample (with a duration only)
+---@param path_or_duration? string|number WAV file path, or a length in seconds for a silent sample (a placeholder: no API writes into a Sample)
+---@param opts? {sampleRate?: integer, bits?: integer, channels?: integer} Format of a silent sample (with a length only)
 ---@return PicoDeckSample? sample
 ---@return string? error
 function picocalc.sound.sample(path_or_duration, opts) end
@@ -1016,15 +1021,19 @@ function picocalc.sound.sample(path_or_duration, opts) end
 ---The player keeps its sample alive: dropping your own reference to the sample
 ---is safe while the player plays it. A path loads a Sample that belongs to the
 ---player (`getSample()` returns it); it is freed with the player, or once a
----`setSample` replaces it. Samples have no fixed limit; at most 8 sampleplayers
----exist at once, freed by the garbage collector.
+---`setSample` replaces it. Samples have no fixed limit; a sampleplayer holds one
+---of the 8 voices until the garbage collector frees it, and stops when it does.
+---For a sound effect you can drop, use `sample:play()`.
 ---@param sample_or_path? PicoDeckSample|string
----@return PicoDeckSamplePlayer
+---@return PicoDeckSamplePlayer? player `nil` with every voice taken
+---@return string? error
 function picocalc.sound.sampleplayer(sample_or_path) end
 
----Create a FilePlayer for streaming WAV files from the SD card.
----@param buffer_size? integer Internal streaming buffer size in bytes
----@return PicoDeckFilePlayer
+---Create a FilePlayer for streaming WAV and QOA files from the SD card. At most
+---2 exist at once; one plays at a time.
+---@param buffer_size? integer Accepted and ignored
+---@return PicoDeckFilePlayer? player
+---@return string? error
 function picocalc.sound.fileplayer(buffer_size) end
 
 ---Create an MP3Player for streaming MP3 files from the SD card.
@@ -1055,19 +1064,32 @@ function PicoDeckSample:getFormat() end
 ---@return PicoDeckSample
 function PicoDeckSample:decompress() end
 
----Return a new Sample containing the sub-range `[start, end]` (sample frames).
+---Return a new Sample containing frames `start_frame` up to, not including,
+---`end_frame`.
 ---@param start_frame integer
 ---@param end_frame integer
----@return PicoDeckSample
+---@return PicoDeckSample? sample `nil` if the slice is empty or memory runs out
+---@return string? error
 function PicoDeckSample:getSubsample(start_frame, end_frame) end
 
----Play this sample immediately. `when` is accepted but ignored (no scheduler
+---Play this sample on a temporary player, which you may drop: it plays to the
+---end whatever the collector does, keeps the sample alive, and gives its voice
+---back when it ends. Kept, it still works and `play()` takes a voice again. To
+---stop a looping one (`repeat_count` 0), keep it.
+---@param repeat_count? integer Plays, 0 = loop until stopped (default 1)
+---@param rate? number Playback rate multiplier (default 1.0)
+---@return PicoDeckSamplePlayer? player `nil` with no voice free (8 at once) or no data
+---@return string? error
+function PicoDeckSample:play(repeat_count, rate) end
+
+---As `play`, once, with a volume. `when` is accepted but ignored (no scheduler
 ---on this hardware — playback starts now).
 ---@param when number Reserved; ignored (but required)
 ---@param vol? integer Volume 0–100 (default 100; larger values clamp to 100)
----@param rightvol? integer Right volume (ignored — mono PWM)
+---@param rightvol? integer Ignored: a player has one volume, for both channels
 ---@param rate? number Playback rate multiplier (default 1.0)
----@return PicoDeckSamplePlayer player The player that is playing the sample (raises if none is free)
+---@return PicoDeckSamplePlayer? player `nil` with no voice free (8 at once) or no data
+---@return string? error
 function PicoDeckSample:playAt(when, vol, rightvol, rate) end
 
 -- ── PicoDeckSamplePlayer methods ────────────────────────────────────────────────
@@ -1084,7 +1106,8 @@ function PicoDeckSamplePlayer:getSample() end
 
 ---Start playback. `repeat_count` = number of plays (0 = loop until stopped).
 ---@param repeat_count? integer
----@return boolean ok
+---@return boolean? ok `true` if started; `nil` with nothing to play, or for a finished player from `sample:play()` with no voice free
+---@return string? error
 function PicoDeckSamplePlayer:play(repeat_count) end
 
 ---Stop playback.
@@ -1094,8 +1117,11 @@ function PicoDeckSamplePlayer:stop() end
 ---@return boolean
 function PicoDeckSamplePlayer:isPlaying() end
 
----Pause or resume playback.
+---Pause or resume playback. A player from `sample:play()` gives its voice back
+---while paused; resuming with none free returns `nil, errstr` and it stays paused.
 ---@param paused boolean
+---@return nil
+---@return string? error
 function PicoDeckSamplePlayer:setPaused(paused) end
 
 ---Return the sample length in frames.
@@ -1118,9 +1144,9 @@ function PicoDeckSamplePlayer:setVolume(vol) end
 ---@return integer
 function PicoDeckSamplePlayer:getVolume() end
 
----Restrict playback to a sub-range (in sample frames).
----@param start_frame integer
----@param end_frame integer
+---Restrict playback to frames `start_frame` up to, not including, `end_frame`.
+---@param start_frame integer Ignored at or past `end_frame`
+---@param end_frame integer 0 = the end of the sample
 function PicoDeckSamplePlayer:setPlayRange(start_frame, end_frame) end
 
 ---Set playback rate multiplier (1.0 = normal speed).
@@ -1130,6 +1156,14 @@ function PicoDeckSamplePlayer:setRate(rate) end
 ---Return the current playback rate.
 ---@return number
 function PicoDeckSamplePlayer:getRate() end
+
+---Register a callback called when playback finishes; `nil` clears it.
+---@param fn fun()|nil
+function PicoDeckSamplePlayer:setFinishCallback(fn) end
+
+---Register a callback called each time the player loops; `nil` clears it.
+---@param fn fun()|nil
+function PicoDeckSamplePlayer:setLoopCallback(fn) end
 
 -- ── PicoDeckFilePlayer methods ──────────────────────────────────────────────────
 
@@ -1144,7 +1178,8 @@ function PicoDeckFilePlayer:load(path) end
 
 ---Start streaming playback.
 ---@param repeat_count? integer 0 = infinite
----@return boolean ok
+---@return boolean? ok `true` if started, `nil` with no file loaded
+---@return string? error
 function PicoDeckFilePlayer:play(repeat_count) end
 
 ---Stop playback.
@@ -1176,8 +1211,8 @@ function PicoDeckFilePlayer:getOffset() end
 ---@param seconds number
 function PicoDeckFilePlayer:setOffset(seconds) end
 
----Set the volume. `right` is accepted for Playdate compatibility, but both
----channels play at `left`.
+---Set the volume. `right` is accepted but ignored: both channels play at
+---`left`.
 ---@param left integer 0–100 (larger values clamp to 100)
 ---@param right? integer 0–100
 function PicoDeckFilePlayer:setVolume(left, right) end
@@ -1196,9 +1231,13 @@ function PicoDeckFilePlayer:setLoopRange(start_sec, end_sec) end
 ---@return boolean
 function PicoDeckFilePlayer:didUnderrun() end
 
----Register a callback called when playback finishes.
----@param fn fun()
+---Register a callback called when playback finishes; `nil` clears it.
+---@param fn fun()|nil
 function PicoDeckFilePlayer:setFinishCallback(fn) end
+
+---Register a callback called each time the file loops; `nil` clears it.
+---@param fn fun()|nil
+function PicoDeckFilePlayer:setLoopCallback(fn) end
 
 ---If `true`, stop automatically on buffer underrun rather than filling with silence.
 ---@param flag boolean
@@ -1215,7 +1254,8 @@ function PicoDeckMp3Player:load(path) end
 ---Start playback from the beginning of the file (also after it finished).
 ---A `play()` while playing fades out first (~1.5 ms, no click).
 ---@param repeat_count? integer 0 = loop until stopped; any other count plays once
----@return boolean ok
+---@return boolean? ok `true` if started, `nil` with no file loaded
+---@return string? error
 function PicoDeckMp3Player:play(repeat_count) end
 
 ---Stop playback (fades out over ~1.5 ms).
@@ -2634,15 +2674,19 @@ picocalc.video = {}
 local PicoDeckVideoPlayer = {}
 
 ---Create a new video player. Freed by the garbage collector when unreferenced.
----@return PicoDeckVideoPlayer
+---Not in the simulator, which has no decoder: it returns `nil, errstr` there.
+---@return PicoDeckVideoPlayer? player
+---@return string? error
 function picocalc.video.player() end
 
----Load an MJPEG AVI file. Returns `true` on success.
+---Load an MJPEG AVI file.
 ---@param path string
----@return boolean ok
+---@return boolean ok `false` if the file cannot be used
+---@return string? error `"access denied"` outside the sandbox; otherwise none
 function PicoDeckVideoPlayer:load(path) end
 
----Start playback. Raises clock to 300 MHz and disconnects WiFi for decode performance.
+---Start playback. Raises the clock to 300 MHz and disconnects WiFi until `stop()`
+---or the player is collected.
 function PicoDeckVideoPlayer:play() end
 
 ---Pause playback.
@@ -2651,12 +2695,12 @@ function PicoDeckVideoPlayer:pause() end
 ---Resume after pause.
 function PicoDeckVideoPlayer:resume() end
 
----Stop playback and restore system clock / reconnect WiFi.
+---Stop playback, put the clock back as it was and reconnect WiFi if it was up.
 function PicoDeckVideoPlayer:stop() end
 
----Advance one frame and decode it to the display. Call once per loop iteration.
----Returns `true` while still playing.
----@return boolean playing
+---Decode the next frame if one is due. Call it on every pass of your loop. With
+---auto-flush on, do not also call `display.flush()`: that flickers.
+---@return boolean decoded `true` only on a pass that decoded a frame; `false` between frames too, so use `isPlaying()` to see whether it still plays
 function PicoDeckVideoPlayer:update() end
 
 ---Seek to a specific frame index. Clamps to the file and never wraps: seeking
@@ -2745,7 +2789,9 @@ function PicoDeckVideoPlayer:isMuted() end
 ---@param loop boolean
 function PicoDeckVideoPlayer:setLoop(loop) end
 
----If `true` (default), `update()` calls `display.flush()` automatically after each frame.
+---If `true` (default), the player presents each frame itself, at the next
+---`update()`. If `false`, call `display.flush()` once per decoded frame: only
+---when `update()` returned `true`.
 ---@param af boolean
 function PicoDeckVideoPlayer:setAutoFlush(af) end
 
@@ -3275,9 +3321,10 @@ local PicoDeckModPlayer = {}
 ---@return string? error
 function picocalc.modplayer.create() end
 
----Load a .mod file.
+---Load a .mod file (at most 512 KB). XM, S3M and IT are not supported.
 ---@param path string
 ---@return boolean ok
+---@return string? error `"access denied"` outside the sandbox; otherwise none
 function PicoDeckModPlayer:load(path) end
 
 ---Start playback.

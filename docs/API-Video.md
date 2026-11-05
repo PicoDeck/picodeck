@@ -4,17 +4,9 @@ title: "API — Video Playback"
 
 PicoDeck supports MJPEG video playback from AVI files stored on the SD card. Video is decoded on Core 0 using JPEGDEC and displayed via the standard display framebuffer. Audio tracks (MP3) are decoded on Core 1 via a shared ring buffer.
 
----
+**Not in the simulator.** `picocalc.video` has no decoder there: `player()` returns `nil, "failed to create video player"`. Test video on a device.
 
-## Requirements
-
-Video needs no requirement, and there is no `"video"` one. If your video has an audio track, declare `"audio"` in your `app.json`, which the store lists but [nothing enforces](Global-Variables-and-Permissions.md#only-declared-nothing-checks-them):
-
-```json
-{
-  "requirements": ["audio"]
-}
-```
+Video needs no entry in your app's `requirements`, with or without an audio track.
 
 ---
 
@@ -34,11 +26,13 @@ Creates a new video player instance.
 ### Loading and playing
 
 ```lua
-player:load("/apps/myvideo/clip.avi")  -- path on SD card
+local ok, err = player:load("/apps/myvideo/clip.avi")  -- path on SD card
 player:play()
 player:stop()
 -- no destroy(): the player is freed automatically by Lua garbage collection
 ```
+
+`load` returns `true`, or `false` if the file cannot be used. Only a path outside the sandbox gives a reason: `false, "access denied"`.
 
 ### Playback control
 
@@ -119,7 +113,7 @@ Returns the number of frames dropped during playback due to decode not keeping u
 Resets playback statistics (dropped frame counter).
 
 #### `player:setAutoFlush(enabled)`
-Controls whether the player automatically calls `display.flush()` after each decoded frame. When disabled, the app must call `display.flush()` manually, allowing HUD overlays to be drawn between decode and flush.
+Controls whether the player presents each decoded frame itself. When disabled, the app must call `display.flush()` once for each decoded frame, allowing HUD overlays to be drawn between decode and flush: see [Game loop integration](#game-loop-integration).
 
 - **Parameters:**
   - `enabled` (boolean): `true` for automatic flush (default), `false` for manual flush
@@ -161,7 +155,11 @@ local info = player:getInfo()
 
 ### Game loop integration
 
-Call `player:update()` each frame to advance playback:
+Call `player:update()` on every pass of your loop, as often as you can: it decodes a frame when one is due and does nothing otherwise.
+
+`update()` returns `true` only on a pass that decoded a frame. It returns `false` between frames, as well as when paused, ended or not playing, so a loop that runs `while player:update()` stops at the first early pass. Use `isPlaying()` or `hasEnded()` to see whether the video is still going.
+
+With auto-flush on (the default) the player presents each frame itself, at the start of the next `update()`. Do not call `display.flush()` in this loop: a flush swaps the two framebuffers, so the panel would alternate between the frame and the older one in the other buffer, and the picture flickers.
 
 ```lua
 local player = picocalc.video.player()
@@ -170,8 +168,28 @@ player:play()
 
 while true do
     player:update()
-    -- draw HUD or overlays here
-    picocalc.display.flush()
+
+    picocalc.input.update()
+    local pressed = picocalc.input.getButtonsPressed()
+    if pressed & picocalc.input.BTN_ESC ~= 0 then break end
+end
+
+player:stop()
+```
+
+To draw over the video, turn auto-flush off and present each frame yourself, only on a pass that decoded one. Draw the overlay every time: each frame repaints the rows it covers.
+
+```lua
+local player = picocalc.video.player()
+player:load("/apps/demo/video.avi")
+player:setAutoFlush(false)
+player:play()
+
+while true do
+    if player:update() then
+        picocalc.display.drawText(4, 4, "HUD", picocalc.display.WHITE, false)
+        picocalc.display.flush()
+    end
 
     picocalc.input.update()
     local pressed = picocalc.input.getButtonsPressed()
@@ -221,7 +239,7 @@ pip install yt-dlp
 tools/video_converter.sh [options] <file_or_url>
 ```
 
-Output is written to `~/Videos/PicoDeck/` (the directory must exist).
+Output is written to `~/Videos/PicoDeck/` (the directory must exist), named after the input file, or after the video's title for a URL. Options come before the file or URL.
 
 ### Options
 
@@ -277,19 +295,19 @@ ffmpeg -i <input>
 
 ---
 
-## Audio implementation notes
+## How the audio plays
 
-Audio is decoded using the **MP3 fed mode** in `mp3_player.c`. Rather than reading from an SD file directly, Core 0 (video player) pre-indexes audio chunks from the AVI file and feeds compressed MP3 data into a 64 KB ring buffer in QMI PSRAM. Core 1 reads from this ring and the MP3 player decodes it; the one audio mixer mixes it with samples and tones, as it does any MP3. This avoids PIO PSRAM bus contention (PIO1 SPI is not safe across cores) and lets video and audio share the existing MP3 playback pipeline.
+A video's audio plays through the one MP3 decoder: the player reads the AVI's MP3 chunks from the card and feeds them to it as the video runs. The mixer mixes it with samples and tones, as it does any MP3. So a video with an audio track takes the place of an [MP3Player](API-Audio-and-Sound.md#mp3player): it closes a file the MP3Player has loaded, and you `load` that again after the video.
 
-Audio playback is automatically stopped and the ring freed when `player:stop()` is called or the player is garbage-collected.
+Audio playback is automatically stopped when `player:stop()` is called or the player is garbage-collected.
 
 ---
 
 ## Clock speed during playback
 
-When `player:play()` is called, the system clock is raised from 200 MHz to **300 MHz** to fit MJPEG decode within the 40 ms frame budget. The clock is restored when `player:stop()` is called.
+When `player:play()` is called, the system clock is raised to **300 MHz** to fit MJPEG decode within the 40 ms frame budget. It stays there while paused and after the end of the video, until `player:stop()` or until the player is garbage collected. Then it goes back to what it was: 200 MHz, or the clock your app asked for with `system_clock_khz` in `app.json`. With two players, the clock goes back when the last of them stops.
 
-Because the CYW43 WiFi PIO divider cannot be updated at runtime, **WiFi is disconnected** before the overclock and reconnected (using saved credentials) after restore. Apps that require persistent WiFi connections should avoid video playback, or mute the audio and skip the overclock by using a custom playback loop.
+**WiFi is disconnected** for the same stretch, muted or not, because the radio's traffic and power are not wanted during playback, and connections open at that moment fail. No API plays a video with WiFi left up. If WiFi was connected before `play()`, it reconnects after the clock goes back, to the network saved in the system settings, even if your app had joined another. The reconnect runs in the background, so check [`picocalc.network.getStatus()`](API-Network-and-WiFi.md) before your next request.
 
 ---
 
