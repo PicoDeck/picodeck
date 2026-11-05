@@ -545,6 +545,136 @@ local function test_session_replies()
     server:close()
 end
 
+-- ── Opening a session ────────────────────────────────────────────────────────
+
+local function channel_confirm(window)
+    return string.char(91) .. wire.uint32(0) .. wire.uint32(7) .. string.pack(">I4", window) .. wire.uint32(32768)
+end
+
+local function window_adjust(n)
+    return string.char(93) .. wire.uint32(0) .. string.pack(">I4", n)
+end
+
+local function new_channel()
+    local t, server, conn = encrypted_session()
+    return connection.new(t), t, server, conn
+end
+
+local function test_open_session()
+    -- What OpenSSH does: a global request first, then the confirmation, with a window of 0.
+    local ch, _, server = new_channel()
+    server:send(global_request("hostkeys-00@openssh.com", false))
+    server:send(channel_confirm(0))
+    check(ch:open_session(), "opens past a global request: " .. tostring(ch.error))
+    check(ch.remote_channel == 7, "the server's channel number")
+    check(ch.remote_window == 0, "the server's window")
+    server:close()
+
+    -- The reason code, not where the reader stopped.
+    ch, _, server = new_channel()
+    server:send(string.char(92) .. wire.uint32(0) .. wire.uint32(2) .. wire.string("no sessions left") .. wire.string(""))
+    check(not ch:open_session(), "a refused channel")
+    check(ch.error == "channel open failed: no sessions left (code=2)", "says why: " .. tostring(ch.error))
+    server:close()
+
+    -- Nothing later can use a channel whose numbers were never read.
+    for _, bad in ipairs({string.char(91), string.char(91) .. wire.uint32(0), string.char(91) .. wire.uint32(0) .. wire.uint32(7) .. wire.uint32(0)}) do
+        ch, _, server = new_channel()
+        server:send(bad)
+        local ok, res = pcall(ch.open_session, ch)
+        check(ok, "a short CHANNEL_OPEN_CONFIRM: no Lua error: " .. tostring(res))
+        check(ok and res == false, "a short CHANNEL_OPEN_CONFIRM is refused")
+        check(ch.error and ch.error:find("malformed", 1, true), "says why: " .. tostring(ch.error))
+        server:close()
+    end
+
+    ch, _, server = new_channel()
+    server:send(string.char(91) .. wire.uint32(9) .. wire.uint32(7) .. wire.uint32(0) .. wire.uint32(32768))
+    check(not ch:open_session(), "a confirmation for another channel is refused")
+    server:close()
+end
+
+-- Whatever comes before the reply is acted on, not mistaken for it.
+local function test_requests_before_reply()
+    for _, request in ipairs({"request_pty", "request_shell"}) do
+        -- OpenSSH grants the window just before its reply to shell.
+        local ch, _, server = new_channel()
+        ch.remote_channel, ch.remote_window = 7, 0
+        server:send(window_adjust(2097152))
+        server:send(CHANNEL_SUCCESS .. wire.uint32(0))
+        check(ch[request](ch), request .. ": past a window adjust: " .. tostring(ch.error))
+        check(ch.remote_window == 2097152, request .. ": the whole window, was " .. ch.remote_window)
+        server:close()
+
+        -- Several things, and output first (nothing in the RFC orders them).
+        ch, _, server = new_channel()
+        ch.remote_channel, ch.remote_window = 7, 0
+        server:send(window_adjust(100))
+        server:send(channel_data("motd"))
+        server:send(window_adjust(100))
+        server:send(string.char(4) .. wire.boolean(false) .. wire.string("note") .. wire.string(""))
+        server:send(CHANNEL_SUCCESS .. wire.uint32(0))
+        check(ch[request](ch), request .. ": past output: " .. tostring(ch.error))
+        check(ch.remote_window == 200, request .. ": both adjusts")
+        check(ch:read() == "motd", request .. ": output kept")
+        server:close()
+
+        ch, _, server = new_channel()
+        ch.remote_channel, ch.remote_window = 7, 0
+        server:send(string.char(100) .. wire.uint32(0))
+        check(not ch[request](ch), request .. ": CHANNEL_FAILURE is a refusal")
+        server:close()
+
+        ch, _, server = new_channel()
+        ch.remote_channel, ch.remote_window = 7, 0
+        server:send(string.char(97) .. wire.uint32(0))
+        check(not ch[request](ch), request .. ": a closed channel is a refusal")
+        check(ch.error and ch.error:find("closed", 1, true), request .. ": says why: " .. tostring(ch.error))
+        server:close()
+    end
+end
+
+-- The bug that let a shell open and then ignore all but the first 10 typed characters.
+local function test_typing_after_shell()
+    local ch, _, server = new_channel()
+    ch.remote_channel, ch.remote_window = 7, 0
+    server:send(window_adjust(2097152))
+    server:send(CHANNEL_SUCCESS .. wire.uint32(0))
+    check(ch:request_shell(), "the shell opens")
+    server:received()
+    local line = "echo typed more than ten characters\n"
+    for i = 1, #line do
+        check(ch:write(line:sub(i, i)), "typed character " .. i .. " is sent")
+    end
+    local typed = {}
+    for _, payload in ipairs(server:received()) do
+        check(payload:byte(1) == 94, "as CHANNEL_DATA")
+        typed[#typed + 1] = wire.read_string(payload, 6)
+    end
+    check(table.concat(typed) == line, "the server receives the whole line")
+    server:close()
+end
+
+-- A window may be up to 2^32 - 1, and 2^31 and up are negative on the device.
+local function test_large_windows()
+    for _, window in ipairs({0xFFFFFFFF, 0x80000000, 0x7FFFFFFF}) do
+        local ch, _, server = new_channel()
+        server:send(channel_confirm(window))
+        check(ch:open_session(), "opens with a huge window")
+        check(ch.remote_window > 0, "a huge window is not negative: " .. ch.remote_window)
+        check(ch:write("x"), "and can be written to")
+        server:close()
+    end
+
+    local ch, _, server = open_channel()
+    ch.remote_window = 0x7FFFFFFF
+    server:send(window_adjust(1))
+    server:send(window_adjust(0xFFFFFFFF))
+    ch:poll(0)
+    check(ch.remote_window > 0, "adding to a huge window does not wrap: " .. ch.remote_window)
+    server:close()
+end
+
 -- ── Framing and encodings (RFC 4253 section 6) ──────────────────────────────
 
 local function test_packet_framing()
@@ -679,6 +809,10 @@ else
     test_rekey_refused()
     test_messages_before_keys()
     test_session_replies()
+    test_open_session()
+    test_requests_before_reply()
+    test_typing_after_shell()
+    test_large_windows()
     test_packet_framing()
     test_mpint()
     test_disconnect_reason()

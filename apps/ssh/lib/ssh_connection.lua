@@ -24,6 +24,14 @@ local MSG = {
 local INITIAL_WINDOW = 64 * 1024    -- 64KB
 local MAX_PACKET     = 32 * 1024    -- 32KB
 local WINDOW_THRESHOLD = 32 * 1024  -- replenish at 32KB consumed
+-- A window is a uint32, but a read past 2^31 is negative on the device's 32-bit
+-- integers, and no keyboard needs that much: stop there.
+local MAX_REMOTE_WINDOW = 0x7FFFFFFF
+
+local function grow_window(window, n)
+    if n < 0 or n > MAX_REMOTE_WINDOW - window then return MAX_REMOTE_WINDOW end
+    return window + n
+end
 
 function connection.new(transport)
     local self = setmetatable({}, connection)
@@ -57,7 +65,7 @@ function connection:open_session()
 
     local msg_type = string.byte(reply, 1)
     if msg_type == MSG.CHANNEL_OPEN_FAILURE then
-        local _, reason_code = wire.read_uint32(reply, 6)
+        local reason_code = wire.read_uint32(reply, 6)
         local desc = wire.read_string(reply, 10) or "unknown"
         self.error = "channel open failed: " .. desc .. " (code=" .. (reason_code or 0) .. ")"
         return false
@@ -69,14 +77,45 @@ function connection:open_session()
     end
 
     local pos = 2
-    local recipient_channel
+    local recipient_channel, remote_channel, remote_window, remote_max_packet
     recipient_channel, pos = wire.read_uint32(reply, pos)  -- our channel
-    self.remote_channel, pos = wire.read_uint32(reply, pos)
-    self.remote_window, pos = wire.read_uint32(reply, pos)
-    local remote_max_packet
+    remote_channel, pos = wire.read_uint32(reply, pos)
+    remote_window, pos = wire.read_uint32(reply, pos)
     remote_max_packet, pos = wire.read_uint32(reply, pos)
+    if not remote_max_packet or recipient_channel ~= self.local_channel then
+        self.error = "malformed CHANNEL_OPEN_CONFIRM"
+        return false
+    end
+    self.remote_channel = remote_channel
+    self.remote_window = grow_window(0, remote_window)
 
     return true
+end
+
+-- Wait for the reply to a channel request. A window adjust or output can come first
+-- (OpenSSH grants its window just before replying to "shell"): act on those as usual.
+function connection:wait_for_reply(what)
+    while true do
+        local reply = self.transport:recv_packet_skip(10000)
+        if not reply then
+            self.error = self.transport.error
+            return false
+        end
+
+        local msg_type = string.byte(reply, 1)
+        if msg_type == MSG.CHANNEL_SUCCESS then
+            return true
+        elseif msg_type == MSG.CHANNEL_FAILURE then
+            self.error = what .. " failed"
+            return false
+        end
+
+        self:process_packet(reply)
+        if self.closed then
+            self.error = "channel closed before the reply to " .. what
+            return false
+        end
+    end
 end
 
 -- Request a pseudo-terminal
@@ -99,22 +138,7 @@ function connection:request_pty(term_type, cols, rows)
                  .. modes
     self.transport:send_packet(payload)
 
-    local reply = self.transport:recv_packet_skip(10000)
-    if not reply then
-        self.error = self.transport.error
-        return false
-    end
-
-    local msg_type = string.byte(reply, 1)
-    if msg_type == MSG.CHANNEL_SUCCESS then
-        return true
-    elseif msg_type == MSG.CHANNEL_FAILURE then
-        self.error = "pty-req failed"
-        return false
-    else
-        self.error = "unexpected reply to pty-req: " .. msg_type
-        return false
-    end
+    return self:wait_for_reply("pty-req")
 end
 
 -- Request shell
@@ -125,38 +149,7 @@ function connection:request_shell()
                  .. wire.boolean(true)  -- want reply
     self.transport:send_packet(payload)
 
-    local reply = self.transport:recv_packet_skip(10000)
-    if not reply then
-        self.error = self.transport.error
-        return false
-    end
-
-    local msg_type = string.byte(reply, 1)
-    if msg_type == MSG.CHANNEL_SUCCESS then
-        return true
-    elseif msg_type == MSG.CHANNEL_FAILURE then
-        self.error = "shell request failed"
-        return false
-    else
-        -- Some servers send window adjust before shell reply
-        -- Buffer it and continue waiting
-        if msg_type == MSG.CHANNEL_WINDOW_ADJUST then
-            local _, adjust_amount = wire.read_uint32(reply, 6)
-            if adjust_amount then
-                self.remote_window = self.remote_window + adjust_amount
-            end
-            -- Read the actual reply
-            reply = self.transport:recv_packet_skip(10000)
-            if not reply then
-                self.error = self.transport.error
-                return false
-            end
-            msg_type = string.byte(reply, 1)
-            if msg_type == MSG.CHANNEL_SUCCESS then return true end
-        end
-        self.error = "unexpected reply to shell: " .. msg_type
-        return false
-    end
+    return self:wait_for_reply("shell request")
 end
 
 -- Send data to the channel
@@ -218,7 +211,7 @@ function connection:process_packet(payload)
         local _, pos = wire.read_uint32(payload, 2)
         local bytes_to_add = wire.read_uint32(payload, pos)
         if bytes_to_add then
-            self.remote_window = self.remote_window + bytes_to_add
+            self.remote_window = grow_window(self.remote_window, bytes_to_add)
         end
 
     elseif msg_type == MSG.CHANNEL_EOF then
