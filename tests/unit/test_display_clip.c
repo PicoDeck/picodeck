@@ -473,6 +473,80 @@ static void test_copy_row_alignments(void) {
       }
 }
 
+// The paired row loops against per-pixel ones, at every source and destination
+// alignment and length, over pixels that are often the key.
+static void test_row_loops_alignments(void) {
+  enum { N = 48 };
+  uint16_t src[N], dst[N], want[N];
+  const uint16_t key = 0xF81F;
+  for (int round = 0; round < 400; round++) {
+    for (int i = 0; i < N; i++)
+      src[i] = rnd(0, 2) ? key : (uint16_t)(0x1234 + rnd(0, 0x7FFF));
+    const bool swap = round & 1;
+    for (int so = 0; so < 4; so++)
+      for (int d0 = 0; d0 < 2; d0++)
+        for (int n = 0; n <= 30; n++) {
+          // Forwards from src + so.
+          memset(dst, 0, sizeof dst);
+          memset(want, 0, sizeof want);
+          disp_key_row(dst + d0, src + so, n, key, swap);
+          for (int i = 0; i < n; i++)
+            if (src[so + i] != key) want[d0 + i] = disp_px(src[so + i], swap);
+          CHECK(memcmp(dst, want, sizeof dst) == 0);
+          // Backwards from the n-th pixel, which stays inside src.
+          const uint16_t *back = src + so + (n ? n - 1 : 0);
+          memset(dst, 0, sizeof dst);
+          memset(want, 0, sizeof want);
+          disp_key_row_rev(dst + d0, back, n, key, swap);
+          for (int i = 0; i < n; i++)
+            if (back[-i] != key) want[d0 + i] = disp_px(back[-i], swap);
+          CHECK(memcmp(dst, want, sizeof dst) == 0);
+          memset(dst, 0, sizeof dst);
+          memset(want, 0, sizeof want);
+          disp_copy_row_rev(dst + d0, back, n, swap);
+          for (int i = 0; i < n; i++) want[d0 + i] = disp_px(back[-i], swap);
+          CHECK(memcmp(dst, want, sizeof dst) == 0);
+        }
+  }
+}
+
+// The firmware's midpoint filled circle as it was: four spans per step.
+static void ref_fill_circle_mid(uint16_t *fb, const disp_clip_t *c, int cx, int cy,
+                                int r, uint16_t v) {
+  int x = r, y = 0, d = 1 - r;
+  while (x >= y) {
+    ref_line(fb, c, cx - x, cy + y, cx + x, cy + y, v);
+    ref_line(fb, c, cx - x, cy - y, cx + x, cy - y, v);
+    ref_line(fb, c, cx - y, cy + x, cx + y, cy + x, v);
+    ref_line(fb, c, cx - y, cy - x, cx + y, cy - x, v);
+    y++;
+    if (d <= 0) {
+      d += 2 * y + 1;
+    } else {
+      x--;
+      d += 2 * (y - x) + 1;
+    }
+  }
+}
+
+static void test_fill_circle_mid(void) {
+  for (int r = 0; r <= 90; r++) {
+    disp_clip_t c = {0, 0, SW - 1, SH - 1};
+    reset(0);
+    disp_fill_circle_mid(screen(s_got), CW, &c, SW / 2, SH / 2, r, 5);
+    ref_fill_circle_mid(screen(s_want), &c, SW / 2, SH / 2, r, 5);
+    CHECK(same("midpoint disc"));
+  }
+  for (int i = 0; i < 4000; i++) {
+    disp_clip_t c = random_clip();
+    int r = rnd(0, 40), cx = rnd(-30, SW + 30), cy = rnd(-30, SH + 30);
+    reset(0);
+    disp_fill_circle_mid(screen(s_got), CW, &c, cx, cy, r, 5);
+    ref_fill_circle_mid(screen(s_want), &c, cx, cy, r, 5);
+    CHECK(same("midpoint disc, clipped"));
+  }
+}
+
 // The simulator's scaled NN: dest (dx, dy) samples (dx*sw/dw, dy*sh/dh).
 static void ref_scaled(uint16_t *fb, const disp_clip_t *cl, int x, int y,
                        const uint16_t *data, int sw, int sh, int dw, int dh,
@@ -851,6 +925,8 @@ int main(void) {
   test_blit_nn();
   test_blit_partial();
   test_copy_row_alignments();
+  test_row_loops_alignments();
+  test_fill_circle_mid();
   test_blit_scaled();
   test_blit_scaled_rect_matches_reference();
   test_vline_gradient_matches_reference();

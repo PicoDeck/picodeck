@@ -176,7 +176,7 @@ static inline void disp_line(uint16_t *fb, int stride, const disp_clip_t *c,
   if (k_lo > k_hi) return;
   // State at step k_lo. P = k*minor fits uint64 (k <= major < 2^33).
   int64_t x, y, err;
-  if (major == 0) {
+  if (major == 0 || k_lo == 0) {  // starts at (x0, y0): no 64-bit division
     x = x0; y = y0; err = a - b;
   } else {
     const uint64_t minor = (uint64_t)(xmajor ? b : a);
@@ -192,6 +192,24 @@ static inline void disp_line(uint16_t *fb, int stride, const disp_clip_t *c,
       x = (int64_t)x0 + sx * n;
       y = (int64_t)y0 + sy * k_lo;
       err = a - b + (int64_t)r - (int64_t)d * b;
+    }
+  }
+  // Any line a Lua app can draw (|v| <= 2^24), and any sane native one: the walk
+  // in int32 (|err| <= 2a + b, so e2 fits), with the clip test as two unsigned
+  // compares. In int64 a pixel costs ~118 cycles on the device (a full-width
+  // Bresenham line took 189 us).
+  if (a < (1 << 28) && b < (1 << 28)) {
+    int xi = (int)x, yi = (int)y, ei = (int)err, left = (int)(k_hi - k_lo);
+    const int ai = (int)a, bi = (int)b;
+    const int cx0 = c->x0, cy0 = c->y0;
+    const unsigned cw = (unsigned)(c->x1 - cx0), ch = (unsigned)(c->y1 - cy0);
+    for (;;) {
+      if ((unsigned)(xi - cx0) <= cw && (unsigned)(yi - cy0) <= ch)
+        fb[(size_t)yi * (size_t)stride + (size_t)xi] = v;
+      if (left-- == 0) return;
+      const int e2 = 2 * ei;
+      if (e2 >= -bi) { ei -= bi; xi += sx; }
+      if (e2 <= ai) { ei += ai; yi += sy; }
     }
   }
   for (int64_t k = k_lo;; k++) {
@@ -271,6 +289,34 @@ static inline void disp_fill_circle_rows(uint16_t *fb, int stride,
   }
 }
 
+// Filled disc by the midpoint walk (the firmware's pixels up to
+// DISP_CIRCLE_MIDPOINT_MAX). All spans are one colour, so a row needs only its
+// widest span: the rows cy +- y get theirs once each, and the rows cy +- x, which
+// repeat with a growing width while x stays put, are drawn only as x is about to
+// change or the walk ends. The union of the spans is unchanged.
+static inline void disp_fill_circle_mid(uint16_t *fb, int stride,
+                                        const disp_clip_t *c, int cx, int cy,
+                                        int r, uint16_t v) {
+  int x = r, y = 0, d = 1 - r;
+  while (x >= y) {
+    disp_fill(fb, stride, c, cx - x, cy + y, 2 * x + 1, 1, v);
+    if (y) disp_fill(fb, stride, c, cx - x, cy - y, 2 * x + 1, 1, v);
+    const int cap_w = 2 * y + 1, cap_x = cx - y, cap_row = x;
+    y++;
+    const bool step = d > 0;
+    if (step) {
+      x--;
+      d += 2 * (y - x) + 1;
+    } else {
+      d += 2 * y + 1;
+    }
+    if (step || x < y) {
+      disp_fill(fb, stride, c, cap_x, cy + cap_row, cap_w, 1, v);
+      if (cap_row) disp_fill(fb, stride, c, cap_x, cy - cap_row, cap_w, 1, v);
+    }
+  }
+}
+
 // ── Triangles ───────────────────────────────────────────────────────────────
 // The drivers' scanline triangle (same float edge formulas and the same row
 // split, including the shared middle row painted from both halves), with the
@@ -282,7 +328,10 @@ static inline int64_t disp_tri_x(int64_t base, float delta, float t,
                                  const disp_clip_t *c) {
   // |delta * t| <= |delta| < 2^33, so the int64 conversion is defined; within
   // int range it truncates exactly like the original (int) cast.
-  int64_t x = base + (int64_t)(delta * t);
+  // In int32 range the cast is one VCVT; the int64 one is a libgcc call per edge
+  // per row. Both truncate.
+  const float m = delta * t;
+  int64_t x = base + ((m > -1e9f && m < 1e9f) ? (int32_t)m : (int64_t)m);
   if (x < (int64_t)c->x0 - 1) x = (int64_t)c->x0 - 1;
   if (x > (int64_t)c->x1 + 1) x = (int64_t)c->x1 + 1;
   return x;
@@ -461,6 +510,31 @@ static inline void disp_fill_tri_f(uint16_t *fb, int stride,
 
 // ── Blitters ────────────────────────────────────────────────────────────────
 
+// Copy n pixels converting byte order. With swap, two pixels at a time (one
+// REV16 per pair): the source is first brought to a word, so each load is one
+// access inside one XIP cache line, and the store may be two bytes off a word,
+// which the M33 and every host take as it is (a sprite at an odd x is that).
+DISP_HOT static inline void disp_copy_row(uint16_t *d, const uint16_t *src, int n,
+                                 bool swap) {
+  if (!swap) {
+    memcpy(d, src, (size_t)n * sizeof(uint16_t));
+    return;
+  }
+  if (n >= 4) {
+    if ((uintptr_t)src & 2) {
+      *d++ = disp_px(*src++, true);
+      n--;
+    }
+    for (; n >= 2; n -= 2, d += 2, src += 2) {
+      uint32_t v;
+      memcpy(&v, src, 4);
+      v = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
+      memcpy(d, &v, 4);
+    }
+  }
+  while (n-- > 0) *d++ = disp_px(*src++, true);
+}
+
 // Integer nearest-neighbour upscale: each source pixel becomes a scale x scale
 // block. No colour key (the native drawImageNN contract). The destination rect
 // is clipped once; a negative offset that is not a multiple of scale starts
@@ -477,18 +551,33 @@ DISP_HOT static inline void disp_blit_nn(uint16_t *fb, int stride, const disp_cl
     return;
   const int64_t col0 = s.skip_x / scale;
   const int lead = scale - (int)(s.skip_x % scale);
+  // The source row being drawn, and how many rows it still covers: no 64-bit
+  // division per row.
+  const uint16_t *line = data + (size_t)(s.skip_y / scale) * src_w + col0;
+  int rows_left = scale - (int)(s.skip_y % scale);
   uint16_t *row = fb + (size_t)s.y * stride + s.x;
-  int64_t src_row = -1;
   for (int r = 0; r < s.h; r++, row += stride) {
-    const int64_t sr = (s.skip_y + r) / scale;
-    if (sr == src_row) {  // same source row as the line above: copy it
+    if (r > 0 && --rows_left > 0) {  // same source row as the line above: copy it
       memcpy(row, row - stride, (size_t)s.w * sizeof(uint16_t));
       continue;
     }
-    src_row = sr;
-    const uint16_t *sp = data + (size_t)sr * src_w + col0;
+    if (r > 0) {
+      line += src_w;
+      rows_left = scale;
+    }
+    const uint16_t *sp = line;
     if (scale == 1) {
-      for (int i = 0; i < s.w; i++) row[i] = disp_px(sp[i], swap);
+      disp_copy_row(row, sp, s.w, swap);
+      continue;
+    }
+    if (scale == 2 && lead == 2) {  // one word per source pixel
+      int i = 0;
+      for (; i + 1 < s.w; i += 2) {
+        const uint32_t v = disp_px(*sp++, swap);
+        const uint32_t v2 = (v << 16) | v;
+        memcpy(row + i, &v2, 4);
+      }
+      if (i < s.w) row[i] = disp_px(*sp, swap);
       continue;
     }
     int rep = lead;
@@ -503,36 +592,99 @@ DISP_HOT static inline void disp_blit_nn(uint16_t *fb, int stride, const disp_cl
   }
 }
 
-// Copy n pixels converting byte order. With swap, two pixels at a time where
-// source and destination share word alignment (one REV16-style op per pair).
-DISP_HOT static inline void disp_copy_row(uint16_t *d, const uint16_t *src, int n,
-                                 bool swap) {
-  if (!swap) {
-    memcpy(d, src, (size_t)n * sizeof(uint16_t));
-    return;
-  }
-  if (n >= 4 && (((uintptr_t)d ^ (uintptr_t)src) & 2) == 0) {
-    if ((uintptr_t)d & 2) {
-      *d++ = disp_px(*src++, true);
+// The same walking the source backwards from src: d[i] = src[-i]. One word holds
+// src[-1] and src[0], so reversing its bytes both swaps and exchanges the pair.
+DISP_HOT static inline void disp_copy_row_rev(uint16_t *d, const uint16_t *src,
+                                              int n, bool swap) {
+  if (n >= 4) {
+    if (!((uintptr_t)src & 2)) {  // src[-1] is in the word before
+      *d++ = disp_px(*src--, swap);
       n--;
     }
-    for (; n >= 2; n -= 2, d += 2, src += 2) {
+    for (; n >= 2; n -= 2, d += 2, src -= 2) {
       uint32_t v;
-      memcpy(&v, src, 4);
-      v = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
+      memcpy(&v, src - 1, 4);
+      v = swap ? __builtin_bswap32(v) : (v >> 16) | (v << 16);
       memcpy(d, &v, 4);
     }
   }
-  while (n-- > 0) *d++ = disp_px(*src++, true);
+  while (n-- > 0) *d++ = disp_px(*src--, swap);
+}
+
+// Is either half of x zero? One test for the common case, both pixels drawn.
+#define DISP_HAS_ZERO_HALF(x) \
+  ((((x) - 0x00010001u) & ~(x) & 0x80008000u) != 0)
+
+// A colour-keyed row, a pair of pixels per loaded word: both keyed (nothing to
+// store), both drawn (one REV16 and one store) or one of each. On the device this
+// halves the loads from the image in PSRAM and the stores to the framebuffer.
+DISP_HOT static inline void disp_key_row(uint16_t *d, const uint16_t *src, int n,
+                                         uint16_t key, bool swap) {
+  if (n >= 4) {
+    if ((uintptr_t)src & 2) {
+      const uint16_t p = *src++;
+      if (p != key) *d = disp_px(p, swap);
+      d++;
+      n--;
+    }
+    const uint32_t key2 = ((uint32_t)key << 16) | key;
+    for (; n >= 2; n -= 2, d += 2, src += 2) {
+      uint32_t v;
+      memcpy(&v, src, 4);
+      const uint32_t x = v ^ key2;
+      if (!DISP_HAS_ZERO_HALF(x)) {
+        if (swap) v = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
+        memcpy(d, &v, 4);
+      } else if (x & 0xFFFFu) {
+        d[0] = disp_px((uint16_t)v, swap);
+      } else if (x) {
+        d[1] = disp_px((uint16_t)(v >> 16), swap);
+      }
+    }
+  }
+  for (; n > 0; n--, d++, src++) {
+    const uint16_t p = *src;
+    if (p != key) *d = disp_px(p, swap);
+  }
+}
+
+// disp_key_row walking the source backwards: d[i] = src[-i].
+DISP_HOT static inline void disp_key_row_rev(uint16_t *d, const uint16_t *src,
+                                             int n, uint16_t key, bool swap) {
+  if (n >= 4) {
+    if (!((uintptr_t)src & 2)) {
+      const uint16_t p = *src--;
+      if (p != key) *d = disp_px(p, swap);
+      d++;
+      n--;
+    }
+    const uint32_t key2 = ((uint32_t)key << 16) | key;
+    for (; n >= 2; n -= 2, d += 2, src -= 2) {
+      uint32_t v;
+      memcpy(&v, src - 1, 4);  // low half src[-1], high half src[0]
+      const uint32_t x = v ^ key2;
+      if (!DISP_HAS_ZERO_HALF(x)) {
+        v = swap ? __builtin_bswap32(v) : (v >> 16) | (v << 16);
+        memcpy(d, &v, 4);
+      } else if (x >> 16) {
+        d[0] = disp_px((uint16_t)(v >> 16), swap);
+      } else if (x) {
+        d[1] = disp_px((uint16_t)v, swap);
+      }
+    }
+  }
+  for (; n > 0; n--, d++, src--) {
+    const uint16_t p = *src;
+    if (p != key) *d = disp_px(p, swap);
+  }
 }
 
 // Partial image blit: source rect (sx, sy, sw, sh) of an img_w x img_h image
 // drawn with its top-left at (x, y), optionally flipped, skipping pixels equal
 // to `key` (0 = opaque). The source rect is first clamped to the image (the
 // destination origin stays at x, y, as it always has); then the destination
-// rect is clipped once and one of four inner loops runs — opaque/keyed x
-// flipped/not — with no per-pixel bounds tests. Opaque unflipped rows are a
-// memcpy (swap = false) or a paired byte swap (swap = true).
+// rect is clipped once and one of four row loops runs — opaque/keyed x
+// flipped/not — with no per-pixel bounds tests.
 DISP_HOT static inline void disp_blit(uint16_t *fb, int stride, const disp_clip_t *c,
                              int x, int y, const uint16_t *data, int img_w,
                              int img_h, int sx, int sy, int sw, int sh,
@@ -549,28 +701,20 @@ DISP_HOT static inline void disp_blit(uint16_t *fb, int stride, const disp_clip_
   if (!disp_clip_rect(c, x, y, sw_, sh_, &s)) return;
 
   uint16_t *row = fb + (size_t)s.y * stride + s.x;
-  // First visible source column, and the step through the source row.
+  // First visible source pixel, and the step from one row's to the next's.
   const int64_t col0 = flip_x ? sx_ + sw_ - 1 - s.skip_x : sx_ + s.skip_x;
+  const int64_t row0 = flip_y ? sy_ + sh_ - 1 - s.skip_y : sy_ + s.skip_y;
+  const ptrdiff_t step = flip_y ? -(ptrdiff_t)img_w : (ptrdiff_t)img_w;
+  const ptrdiff_t first = (ptrdiff_t)row0 * img_w + (ptrdiff_t)col0;
   for (int r = 0; r < s.h; r++, row += stride) {
-    const int64_t R = s.skip_y + r;
-    const int64_t src_row = flip_y ? sy_ + sh_ - 1 - R : sy_ + R;
-    const uint16_t *sp = data + (size_t)src_row * img_w + (size_t)col0;
+    const uint16_t *sp = data + first + (ptrdiff_t)r * step;
     if (!key) {
-      if (!flip_x) {
-        disp_copy_row(row, sp, s.w, swap);
-      } else {
-        for (int i = 0; i < s.w; i++) row[i] = disp_px(sp[-i], swap);
-      }
+      if (!flip_x) disp_copy_row(row, sp, s.w, swap);
+      else disp_copy_row_rev(row, sp, s.w, swap);
     } else if (!flip_x) {
-      for (int i = 0; i < s.w; i++) {
-        uint16_t v = sp[i];
-        if (v != key) row[i] = disp_px(v, swap);
-      }
+      disp_key_row(row, sp, s.w, key, swap);
     } else {
-      for (int i = 0; i < s.w; i++) {
-        uint16_t v = sp[-i];
-        if (v != key) row[i] = disp_px(v, swap);
-      }
+      disp_key_row_rev(row, sp, s.w, key, swap);
     }
   }
 }
@@ -589,27 +733,47 @@ DISP_HOT static inline void disp_blit_scaled_rect(
     return;
   disp_span_t s;
   if (!disp_clip_rect(c, x, y, dst_w, dst_h, &s)) return;
-  const int64_t q = sw / dst_w, rm = sw % dst_w;
-  const int64_t col_start = s.skip_x * sw / dst_w;
-  const int64_t acc_start = s.skip_x * sw % dst_w;
+  // The first visible source column and row, then a remainder DDA in 32 bits for
+  // both: acc < dst_w and rm < dst_w, so acc + rm fits uint32. (In int64 each
+  // pixel cost two add-with-carry pairs and a 64-bit compare, each row a 64-bit
+  // division.)
+  const int q = sw / dst_w, rq = sh / dst_h;
+  const uint32_t rm = (uint32_t)(sw % dst_w), dw = (uint32_t)dst_w;
+  const uint32_t rrm = (uint32_t)(sh % dst_h), dh = (uint32_t)dst_h;
+  const int col_start = s.skip_x ? (int)(s.skip_x * sw / dst_w) : 0;
+  const uint32_t acc_start = s.skip_x ? (uint32_t)(s.skip_x * sw % dst_w) : 0;
+  int src_row = s.skip_y ? (int)(s.skip_y * sh / dst_h) : 0;
+  uint32_t racc = s.skip_y ? (uint32_t)(s.skip_y * sh % dst_h) : 0;
   uint16_t *row = fb + (size_t)s.y * stride + s.x;
-  int64_t prev = -1;
+  int prev = -1;
   for (int r = 0; r < s.h; r++, row += stride) {
-    const int64_t src_row = (s.skip_y + r) * sh / dst_h;
     if (!key && src_row == prev) {  // opaque: an upscaled row repeats
       memcpy(row, row - stride, (size_t)s.w * sizeof(uint16_t));
-      continue;
+    } else {
+      prev = src_row;
+      const uint16_t *sp = data + (size_t)(sy + src_row) * img_w + sx;
+      int col = col_start;
+      uint32_t acc = acc_start;
+      if (key) {
+        for (int i = 0; i < s.w; i++) {
+          const uint16_t v = sp[col];
+          if (v != key) row[i] = disp_px(v, swap);
+          col += q;
+          acc += rm;
+          if (acc >= dw) { acc -= dw; col++; }
+        }
+      } else {
+        for (int i = 0; i < s.w; i++) {
+          row[i] = disp_px(sp[col], swap);
+          col += q;
+          acc += rm;
+          if (acc >= dw) { acc -= dw; col++; }
+        }
+      }
     }
-    prev = src_row;
-    const uint16_t *sp = data + (size_t)(sy + src_row) * img_w + sx;
-    int64_t col = col_start, acc = acc_start;
-    for (int i = 0; i < s.w; i++) {
-      uint16_t v = sp[col];
-      if (!key || v != key) row[i] = disp_px(v, swap);
-      col += q;
-      acc += rm;
-      if (acc >= dst_w) { acc -= dst_w; col++; }
-    }
+    src_row += rq;
+    racc += rrm;
+    if (racc >= dh) { racc -= dh; src_row++; }
   }
 }
 

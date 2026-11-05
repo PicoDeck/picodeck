@@ -426,7 +426,7 @@ void display_draw_rect(int x, int y, int w, int h, uint16_t color) {
 
 // Bresenham, started at the first step inside the clip and stopped after the
 // last (display_clip.h): drawLine(0,0,1e9,1e9) costs 320 steps, not 1e9.
-void display_draw_line(int x0, int y0, int x1, int y1, uint16_t color) {
+DISP_HOT void display_draw_line(int x0, int y0, int x1, int y1, uint16_t color) {
   disp_clip_t c = cur_clip();
   disp_line(s_framebuffer, FB_WIDTH, &c, x0, y0, x1, y1, fb_color(color));
 }
@@ -471,20 +471,7 @@ void display_fill_circle(int cx, int cy, int r, uint16_t color) {
                           fb_color(color));
     return;
   }
-  int x = r, y = 0, d = 1 - r;
-  while (x >= y) {
-    display_fill_rect(cx - x, cy + y, 2 * x + 1, 1, color);
-    display_fill_rect(cx - x, cy - y, 2 * x + 1, 1, color);
-    display_fill_rect(cx - y, cy + x, 2 * y + 1, 1, color);
-    display_fill_rect(cx - y, cy - x, 2 * y + 1, 1, color);
-    y++;
-    if (d <= 0) {
-      d += 2 * y + 1;
-    } else {
-      x--;
-      d += 2 * (y - x) + 1;
-    }
-  }
+  disp_fill_circle_mid(s_framebuffer, FB_WIDTH, &c, cx, cy, r, fb_color(color));
 }
 
 // Fast vertical line fill — stride-based pointer walk, no Bresenham overhead.
@@ -509,7 +496,7 @@ void display_fill_vline(int x, int y0, int y1, uint16_t color) {
 }
 
 // Draw a textured vertical column using 16.16 fixed-point texture sampling.
-void display_draw_textured_column(int x, int y0, int y1,
+DISP_HOT void display_draw_textured_column(int x, int y0, int y1,
                                   const uint16_t *tex, int tex_w, int tex_h,
                                   int tex_x, int tex_y0, int tex_y1) {
   if (x < s_clip_x0 || x > s_clip_x1 || y0 > y1 || !tex)
@@ -619,7 +606,7 @@ int display_text_width(const char *text) {
 }
 
 // Opaque blit of a whole w x h image (clipped once, paired byte swap).
-void display_draw_image(int x, int y, int w, int h, const uint16_t *data) {
+DISP_HOT void display_draw_image(int x, int y, int w, int h, const uint16_t *data) {
   disp_clip_t c = cur_clip();
   disp_blit(s_framebuffer, FB_WIDTH, &c, x, y, data, w, h, 0, 0, w, h, false,
             false, 0, true);
@@ -638,6 +625,13 @@ DISP_HOT void display_draw_image_partial(int x, int y, int img_w, int img_h,
   disp_clip_t c = cur_clip();
   disp_blit(s_framebuffer, FB_WIDTH, &c, x, y, data, img_w, img_h, sx, sy, sw,
             sh, flip_x, flip_y, transparent_color, true);
+}
+
+// Byte-swap a rectangle in place, eight pixels at a time, for TGX (below).
+DISP_HOT static void fb_swap_rect(uint16_t *fb, int x, int y, int w, int h) {
+  uint16_t *row = fb + (size_t)y * FB_WIDTH + x;
+  for (int r = 0; r < h; r++, row += FB_WIDTH)
+    disp_copy_px_bytes((uint8_t *)row, (const uint8_t *)row, (size_t)w, true);
 }
 
 void display_draw_image_scaled(int x, int y, int img_w, int img_h,
@@ -678,26 +672,23 @@ void display_draw_image_scaled(int x, int y, int img_w, int img_h,
     if (ty > max_y) max_y = ty;
   }
 
-  // Clamp to framebuffer bounds. TGX rasterises with its own rounding and can
-  // touch one row/column past the exact float box, so pad it by 1 px a side:
-  // a pixel it writes outside the swapped region keeps the wrong byte order.
+  // Clamp to the clip rect, which TGX's sub-view cannot write outside (an empty
+  // clip draws nothing). TGX rasterises with its own rounding and can touch one
+  // row/column past the exact float box, so pad it by 1 px a side: a pixel it
+  // writes outside the swapped region keeps the wrong byte order.
   int bx = (int)floorf(min_x) - 1;
   int by = (int)floorf(min_y) - 1;
   int bw = (int)ceilf(max_x - min_x) + 3;
   int bh = (int)ceilf(max_y - min_y) + 3;
-  if (bx < 0) bx = 0;
-  if (by < 0) by = 0;
-  if (bx + bw > FB_WIDTH) bw = FB_WIDTH - bx;
-  if (by + bh > FB_HEIGHT) bh = FB_HEIGHT - by;
+  if (bx < s_clip_x0) { bw -= s_clip_x0 - bx; bx = s_clip_x0; }
+  if (by < s_clip_y0) { bh -= s_clip_y0 - by; by = s_clip_y0; }
+  if (bx + bw > s_clip_x1 + 1) bw = s_clip_x1 + 1 - bx;
+  if (by + bh > s_clip_y1 + 1) bh = s_clip_y1 + 1 - by;
   if (bw <= 0 || bh <= 0) return;
 
   // Byte-swap only the affected region
   uint16_t *fb = s_framebuffer;
-  for (int row = by; row < by + bh; row++) {
-    for (int col = bx; col < bx + bw; col++) {
-      fb[row * FB_WIDTH + col] = (fb[row * FB_WIDTH + col] >> 8) | (fb[row * FB_WIDTH + col] << 8);
-    }
-  }
+  fb_swap_rect(fb, bx, by, bw, bh);
 
   // TGX takes the rotation in degrees; the bounding box above and the Lua API
   // use radians.
@@ -722,11 +713,7 @@ void display_draw_image_scaled(int x, int y, int img_w, int img_h,
   }
 
   // Byte-swap back only the affected region
-  for (int row = by; row < by + bh; row++) {
-    for (int col = bx; col < bx + bw; col++) {
-      fb[row * FB_WIDTH + col] = (fb[row * FB_WIDTH + col] >> 8) | (fb[row * FB_WIDTH + col] << 8);
-    }
-  }
+  fb_swap_rect(fb, bx, by, bw, bh);
 }
 
 // Native drawImageNN: integer nearest-neighbour upscale, clipped once
@@ -843,7 +830,7 @@ void display_clear_clip_rect(void) {
 // texture space, rotating clockwise). Rows below `horizon_y` are filled;
 // `scale` tunes the field of view (larger = further view / smaller texels).
 // Power-of-two texture dimensions wrap seamlessly; other sizes clamp at edges.
-void display_draw_plane(const uint16_t *tex, int tex_w, int tex_h,
+DISP_HOT void display_draw_plane(const uint16_t *tex, int tex_w, int tex_h,
                         float cam_x, float cam_y, float cam_z,
                         float angle, int horizon_y, float scale) {
   if (!tex || tex_w <= 0 || tex_h <= 0 || cam_z <= 0.0f) return;

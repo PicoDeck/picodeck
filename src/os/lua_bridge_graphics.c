@@ -1103,9 +1103,17 @@ static void tilemap_draw(lua_tilemap_t *tm, int scroll_x, int scroll_y) {
   if (end_col > tm->map_w) end_col = tm->map_w;
   if (end_row > tm->map_h) end_row = tm->map_h;
 
+  // Read once: the map and its tileset are in PSRAM, and the draw call below
+  // would have them reloaded for every tile.
+  const uint16_t *tiles = tm->tiles;
+  const int map_w = tm->map_w;
+  const int ts_w = tm->tileset->w, ts_h = tm->tileset->h;
+  const uint16_t *ts_data = tm->tileset->data;
+  const uint16_t ts_key = tm->tileset->transparent_color;
+
   for (int row = start_row; row < end_row; row++) {
     for (int col = start_col; col < end_col; col++) {
-      uint16_t tile_idx = tm->tiles[row * tm->map_w + col];
+      uint16_t tile_idx = tiles[row * map_w + col];
       if (tile_idx == 0) continue; // 0 = empty/transparent
 
       int idx = tile_idx - 1;
@@ -1117,10 +1125,8 @@ static void tilemap_draw(lua_tilemap_t *tm, int scroll_x, int scroll_y) {
       int dst_x = col * tw - scroll_x;
       int dst_y = row * th - scroll_y;
 
-      display_draw_image_partial(dst_x, dst_y, tm->tileset->w, tm->tileset->h,
-                                  tm->tileset->data, src_x, src_y,
-                                  tw, th,
-                                  false, false, tm->tileset->transparent_color);
+      display_draw_image_partial(dst_x, dst_y, ts_w, ts_h, ts_data, src_x, src_y,
+                                 tw, th, false, false, ts_key);
     }
   }
 }
@@ -1242,40 +1248,46 @@ static void emit_to_buffer(int x, int y, const char *line, void *user) {
 #define SPRITE_UV_TILEMAP 3
 #define SPRITE_NUV        3
 
+// In the order of use: QMI PSRAM is read through the XIP cache's 8-byte lines
+// and a userdata's payload is 8-aligned, so each pair below is one line. A
+// sprite's draw reads x, y and the four lines from `visible` to scale_y (8 lines
+// before this order); a collision test x, y, the collide rect and the flags.
 typedef struct {
   int x, y;
-  int width, height;
-  int center_x, center_y;
-  float scale, scale_y;
-  float rotation;
-  int z_index;
+  int collide_x, collide_y;
+  int collide_w, collide_h;
+  int group_mask;
+  int collides_with_mask;
   bool visible;
   bool updates_enabled;
+  bool collisions_enabled;
+  bool flip_x, flip_y;
+  bool use_nn_scaling;  // use NN instead of bilinear
+  uint16_t transparent_color;  // 0 = use global setting
+  lua_image_t *image;
+  uint16_t *frame_data;  // extracted frame pixels (NULL = use full image)
+  void *tilemap;         // lua_tilemap_t* if set (renders tilemap instead of image)
+  float rotation;
+  float scale, scale_y;
+  // The rest is read by the methods that set or return it.
+  bool destroyed;        // set by __gc
+  int scale_nn;          // integer scale for NN scaling
+  int frame_w, frame_h;  // dimensions of extracted frame
+  int width, height;
+  int center_x, center_y;
+  int z_index;
   bool always_redraw;
   bool redraws_on_image_change;
   bool dirty;
-  int tag;
   bool ignores_draw_offset;
   bool opaque;
-  bool flip_x, flip_y;
-  int bounds_x, bounds_y, bounds_w, bounds_h;
-  bool collisions_enabled;
-  int collide_x, collide_y, collide_w, collide_h;
-  int clip_x, clip_y, clip_w, clip_h;
   bool has_clip;
-  int group_mask;
-  int collides_with_mask;
-  lua_image_t *image;
-  uint16_t *frame_data;  // extracted frame pixels (NULL = use full image)
-  int frame_w, frame_h;  // dimensions of extracted frame
-  int scale_nn;         // integer scale for NN scaling
-  bool use_nn_scaling;  // use NN instead of bilinear
-  uint16_t transparent_color;  // 0 = use global setting
+  bool has_stencil_pattern;    // true if stencil_pattern is active
+  int tag;
+  int bounds_x, bounds_y, bounds_w, bounds_h;
+  int clip_x, clip_y, clip_w, clip_h;
   lua_image_t *stencil;        // stencil image (deferred masking)
   uint8_t stencil_pattern[8];  // 8x8 dither stencil pattern
-  bool has_stencil_pattern;    // true if stencil_pattern is active
-  void *tilemap;               // lua_tilemap_t* if set (renders tilemap instead of image)
-  bool destroyed;              // set by __gc
 } lua_sprite_t;
 
 static lua_sprite_t *s_sprites[MAX_SPRITES];
@@ -2314,33 +2326,26 @@ static int l_sprite_clearCollideRect(lua_State *L) {
   return 0;
 }
 
-static bool spritesOverlap(lua_sprite_t *a, lua_sprite_t *b) {
-  if (!a->collisions_enabled || !b->collisions_enabled) return false;
-
-  // Use explicit collide rect if set; otherwise derive from visual size
-  int aw, ah, bw, bh;
-  if (a->collide_w > 0) { aw = a->collide_w; ah = a->collide_h; }
-  else                  { sprite_visual_size(a, &aw, &ah); }
-  if (b->collide_w > 0) { bw = b->collide_w; bh = b->collide_h; }
-  else                  { sprite_visual_size(b, &bw, &bh); }
-
-  int ax = a->x + a->collide_x;
-  int ay = a->y + a->collide_y;
-  int bx = b->x + b->collide_x;
-  int by = b->y + b->collide_y;
-
-  return (ax < bx + bw && ax + aw > bx &&
-          ay < by + bh && ay + ah > by);
+// The overlap test of two collision boxes.
+static inline bool boxes_overlap(int ax, int ay, int aw, int ah,
+                                 int bx, int by, int bw, int bh) {
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
 }
 
 static int l_sprite_overlappingSprites(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
   lua_createtable(L, 0, 0);
+  if (!s->collisions_enabled) return 1;
   int count = 0;
-  
+  int ax, ay, aw, ah;
+  sprite_collide_bounds_at(s, s->x, s->y, &ax, &ay, &aw, &ah);
+
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *other = s_sprites[i];
-    if (other != s && spritesOverlap(s, other)) {
+    if (other == s || !other->collisions_enabled) continue;
+    int bx, by, bw, bh;
+    sprite_collide_bounds_at(other, other->x, other->y, &bx, &by, &bw, &bh);
+    if (boxes_overlap(ax, ay, aw, ah, bx, by, bw, bh)) {
       push_sprite(L, other);
       lua_rawseti(L, -2, ++count);
     }
@@ -2351,16 +2356,21 @@ static int l_sprite_overlappingSprites(lua_State *L) {
 static int l_sprite_allOverlappingSprites(lua_State *L) {
   lua_createtable(L, 0, 0);
   int count = 0;
-  
+
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *a = s_sprites[i];
     if (!a->collisions_enabled) continue;
-    
+    // Once per sprite, not once per pair: n^2/2 pairs at 256 sprites is 32,640.
+    int ax, ay, aw, ah;
+    sprite_collide_bounds_at(a, a->x, a->y, &ax, &ay, &aw, &ah);
+
     for (int j = i + 1; j < s_sprite_count; j++) {
       lua_sprite_t *b = s_sprites[j];
       if (!b->collisions_enabled) continue;
-      
-      if (spritesOverlap(a, b)) {
+      int bx, by, bw, bh;
+      sprite_collide_bounds_at(b, b->x, b->y, &bx, &by, &bw, &bh);
+
+      if (boxes_overlap(ax, ay, aw, ah, bx, by, bw, bh)) {
         lua_createtable(L, 2, 0);
 
         push_sprite(L, a);
