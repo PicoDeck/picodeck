@@ -69,6 +69,7 @@ const char *wifi_get_ssid(void);
 // Drive the CYW43 lwip-poll state machine and update connection status.
 // Must be called regularly from Core 1. No-op when WiFi is not available.
 void wifi_poll(void);
+bool wifi_core1_idle(void);  // false while wifi_poll has requests or a link to poll (runs from RAM)
 
 // Set whether an app with HTTP requirement is running. When true, WiFi will
 // not automatically disconnect after SNTP time sync.

@@ -282,6 +282,11 @@ static void video_prefetch_cancel(video_priv_t *priv) {
     }
 }
 
+// Core 1's tick gate: no request waiting. Runs from RAM.
+extern "C" bool __time_critical_func(video_prefetch_core1_idle)(void) {
+    return s_vpf_state.load() != VPF_REQUESTED;
+}
+
 // Core 1 (called from the core1 tick loop): service a pending request.
 extern "C" void video_prefetch_update(void) {
     int expected = VPF_REQUESTED;

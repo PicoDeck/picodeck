@@ -190,6 +190,23 @@ static int run(fileplayer_t *p, uint32_t per_tick, int max_ticks) {
 
 // Critical 1: the producer never offers the ring more than it can hold, so
 // nothing is dropped and every frame of the file is played.
+// Core 1's tick gate (main.c) skips fileplayer_update while this reads idle, so
+// it must never read idle while a player has work.
+static void test_core1_gate_sees_the_active_player(void) {
+  setup();
+  put_wav("/a.wav", 22050, 2, 22050, 1000);
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/a.wav"));
+  CHECK(fileplayer_core1_idle());
+  CHECK(fileplayer_play(p, 1));
+  CHECK(!fileplayer_core1_idle());
+  fileplayer_pause(p);
+  CHECK(!fileplayer_core1_idle());
+  fileplayer_stop(p);
+  CHECK(fileplayer_core1_idle());
+  fileplayer_destroy(p);
+}
+
 static void test_flow_control_plays_every_frame(void) {
   setup();
   put_wav("/a.wav", 22050, 2, 22050, 1000);   // 1 s stereo
@@ -1010,6 +1027,7 @@ static void test_seek_while_held_drops_the_old_audio(void) {
 }
 
 int main(void) {
+  test_core1_gate_sees_the_active_player();
   test_flow_control_plays_every_frame();
   test_mono_and_rate_flow_control();
   test_full_ring_reads_nothing();

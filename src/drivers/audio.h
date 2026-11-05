@@ -15,8 +15,9 @@
 void audio_init(void);
 // Must be called from Core 1 before any audio playback: creates an alarm
 // pool whose timer ISRs fire on Core 1 (Core 1's tick timer uses it).
-void audio_core1_init(void);
-alarm_pool_t *audio_get_core1_alarm_pool(void);
+// Core 1's tick gate (core1_tick_idle in main.c): true when the output is off
+// and no start is pending. Runs from RAM, as do the other *_core1_idle.
+bool audio_core1_idle(void);
 // Core 1's tick: registers the output's refill ISR on Core 1 and starts a
 // pending output (so the ISR never lands on Core 0).
 void audio_stream_poll(void);

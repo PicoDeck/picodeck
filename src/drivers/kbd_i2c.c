@@ -376,7 +376,7 @@ void kbd_i2c_start(void) {
   s_stats_at_us = time_us_64();
   irq_set_exclusive_handler(KBD_I2C_IRQ, ki_irq);
   // Core 0 (kbd_init), before Core 1 starts: the lowest free alarm, 0 (the
-  // default pool has 3; Core 1's audio pool claims 2 by number).
+  // default pool has 3; Core 1's tick claims 2 by number).
   s_alarm_num = hardware_alarm_claim_unused(true);
   hardware_alarm_set_callback((uint)s_alarm_num, ki_alarm_irq);
   s_started = true;

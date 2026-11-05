@@ -62,6 +62,8 @@ static void test_load_and_play(void) {
   CHECK(mod_player_load(p, "/a.mod"));
   mod_player_play(p, true);
   CHECK(mod_player_is_playing(p));
+  // Core 1's tick gate (main.c) skips mod_player_update while this reads idle.
+  CHECK(!mod_player_core1_idle());
   atomic_store(&s_pushed, 0);
   for (int i = 0; i < 50; i++) { mod_player_update(); drain(4096); }
   CHECK(atomic_load(&s_pushed) > 0);

@@ -26,6 +26,7 @@ bool dev_commands_transfer_active(void);
 
 // Core 1's part of the `lognoise` dev command; its tick calls this.
 void dev_commands_core1_poll(void);
+bool dev_commands_core1_idle(void);  // false while the poll has noise to print (runs from RAM)
 
 bool dev_commands_wants_usb(void);
 

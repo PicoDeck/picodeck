@@ -72,6 +72,7 @@ void video_player_reset_stats(video_player_t *player);
 // Called on Core 1 every tick: services pending next-frame SD prefetch
 // requests so the read overlaps with Core 0's JPEG decode.
 void video_prefetch_update(void);
+bool video_prefetch_core1_idle(void);  // false while a request waits (runs from RAM)
 
 bool video_player_has_audio(video_player_t *player);
 void video_player_set_audio_volume(video_player_t *player, uint8_t volume);

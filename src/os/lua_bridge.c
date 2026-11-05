@@ -408,7 +408,7 @@ void lua_bridge_raise_exit(lua_State *L) {
   // again whenever its hook is not armed; check the mask too, not just the
   // count: a hook disarmed mid-way (count already 1, but mask 0 — e.g. the
   // async timer's window between menu_lua_hook disarming it and the next
-  // 1 ms re-arm) must be re-armed immediately rather than waiting for the
+  // next re-arm) must be re-armed immediately rather than waiting for the
   // timer. Once installed, a thread's mask and traps stay set until the
   // runner's lua_bridge_exit_reset.
   lua_bridge_install_hook(L, 1);

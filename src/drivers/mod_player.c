@@ -14,6 +14,7 @@
 #include "audio.h"
 #include "sdcard.h"
 #include "pico/mutex.h"
+#include "pico/platform.h"
 
 #include "umm_malloc.h"
 
@@ -266,6 +267,12 @@ uint8_t mod_player_get_volume(const mod_player_t *player) {
 void mod_player_set_loop(mod_player_t *player, bool loop) {
     if (!player) return;
     player->loop = loop;
+}
+
+// Core 1's tick gate. The player is in PSRAM, so this does not look inside it:
+// an app that made one and is not playing it costs the walk it always did.
+bool __time_critical_func(mod_player_core1_idle)(void) {
+    return s_player == NULL;
 }
 
 // Called from Core 1 every ~1ms

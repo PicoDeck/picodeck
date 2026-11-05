@@ -444,6 +444,10 @@ static bool noise_timer_cb(repeating_timer_t *t) {
     return true;
 }
 
+bool __time_critical_func(dev_commands_core1_idle)(void) {
+    return s_noise_ms == 0;
+}
+
 void dev_commands_core1_poll(void) {
     static uint32_t s_last_ms = 0;
     uint32_t ms = s_noise_ms;

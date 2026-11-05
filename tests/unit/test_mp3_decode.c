@@ -145,7 +145,10 @@ static void test_mono_plays_every_sample_in_order(void) {
   mp3_player_t *p = mp3_player_create();
   CHECK(mp3_player_load(p, "/mono.mp3"));
   CHECK_EQ_U32(mp3_player_get_sample_rate(p), 22050);
+  // Core 1's tick gate (main.c) skips mp3_player_update while this reads idle.
+  CHECK(mp3_player_core1_idle());
   CHECK(mp3_player_play(p, 1));
+  CHECK(!mp3_player_core1_idle());
   static int32_t l[128], r[128];
   uint32_t out = 0, bad = 0, first_bad = 0;
   for (int i = 0; i < 2000 && mp3_player_is_playing(p); i++) {
