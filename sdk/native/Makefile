@@ -3,8 +3,10 @@
 # Produces main.elf — a Position-Independent ELF32 ARM Thumb-2 binary.
 # Copy main.elf + app.json to /apps/<name>/ on the SD card.
 #
-# Requirements:
-#   arm-none-eabi-gcc (any modern version; Fedora: arm-none-eabi-gcc-cs, Debian/Ubuntu: gcc-arm-none-eabi)
+# Requirements (arm-none-eabi-gcc, any modern version, with newlib, whose stdint.h
+# the headers need; the same packages as the firmware build in ../../README.md):
+#   Fedora:        sudo dnf install cmake curl unzip arm-none-eabi-gcc-cs arm-none-eabi-gcc-cs-c++ arm-none-eabi-newlib
+#   Debian/Ubuntu: sudo apt install cmake curl unzip gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
 
 CC      = arm-none-eabi-gcc
 CFLAGS  = -mcpu=cortex-m33 -mthumb \

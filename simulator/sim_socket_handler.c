@@ -975,6 +975,18 @@ static char *h_set_wifi_state(const char *params) {
     json_get_str(params, "error_str", error_str, sizeof(error_str));
     json_get_int(params, "error_code", &error_code);
 
+    // A misnamed parameter or an unknown status changed nothing and replied ok.
+    static const char *const known[] = {"connecting", "failed", "connected", "online",
+                                        "disconnected", "not_available", "error"};
+    bool is_known = false;
+    for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++)
+        is_known = is_known || strcmp(status, known[i]) == 0;
+    if (!is_known) {
+        return strdup("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":"
+                      "\"status must be connecting, failed, connected, online, disconnected, "
+                      "not_available or error\"}}");
+    }
+
     int forced = -1;
     if (strcmp(status, "connecting") == 0) forced = WIFI_STATUS_CONNECTING;
     else if (strcmp(status, "failed") == 0) forced = WIFI_STATUS_FAILED;

@@ -197,15 +197,20 @@ Every layer needs at least one of `image`, `images`, or `text`.
 
 ### Choices
 
-A panel with a `choices` table becomes a branching point: when it settles as the centre panel, a menu opens (Up/Down to select, Enter to confirm).
+A panel with a `choices` table becomes a branching point: when it settles as the centre panel, a menu opens (Up/Down to select, Enter to confirm). `choices` goes on the panel: `Panels.validate` rejects it on a sequence.
 
 ```lua
 local sequence = {
-    -- ...the sequence's panels...
-    choices = {
-        prompt = "What now?",                     -- optional heading
-        { text = "Stay and fight", target = 5, setVars = { stayed = true } },
-        { text = "Walk away",      target = 5, setVars = { stayed = false } },
+    panels = {
+        {
+            frame = { height = 320 },
+            layers = { { text = "Stay or go?", x = 100, y = 40 } },
+            choices = {
+                prompt = "What now?",                 -- optional heading
+                { text = "Stay and fight", target = 5, setVars = { stayed = true } },
+                { text = "Walk away",      target = 5, setVars = { stayed = false } },
+            },
+        },
     },
 }
 ```

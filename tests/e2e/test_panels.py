@@ -319,3 +319,52 @@ comic:teardown()
     assert out.get("result") == "returned", out
     lines = [t for t in _texts(simulator) if "image load failed" in t]
     assert len(lines) == 1, lines
+
+
+def _doc_choices_snippet():
+    text = (REPO_ROOT / "docs" / "Library-Panels.md").read_text()
+    return text.split("### Choices", 1)[1].split("```lua\n", 1)[1].split("```", 1)[0]
+
+
+def test_panels_validate_rejects_sequence_choices(simulator, test_sd_card):
+    """`choices` belongs to a panel. On a sequence nothing ever read it, so the
+    menu silently never opened: validate has to say so."""
+    from helpers import stage_lua_app
+    _stage_panels_lib(test_sd_card)
+    stage_lua_app(test_sd_card, "seq_choices", r"""
+local Panels = picocalc.sys.loadlib("panels")
+local ok, err = pcall(Panels.validate, { sequences = {
+    { panels = { { frame = { height = 320 } } },
+      choices = { { text = "a", target = 1 } } },
+} })
+picocalc.sys.log("PT ok=" .. tostring(ok) .. " err=" .. tostring(err))
+""")
+    simulator.launch_app("seq_choices")
+    assert simulator.wait_for_exit(timeout=10.0)["result"] == "returned"
+    joined = "\n".join(_texts(simulator))
+    assert ("PT ok=false err=panels: sequences[1]: "
+            "choices belongs on a panel, not on a sequence") in joined, joined
+
+
+def test_panels_doc_choices_snippet_opens_the_menu(sim_factory, test_sd_card):
+    """The Choices section's snippet, as the page has it: it must pass validate
+    and reach a menu, as the text above it says."""
+    from helpers import stage_lua_app
+    _stage_panels_lib(test_sd_card)
+    # The snippet's targets are sequence 5, so give it a comic that has one.
+    stage_lua_app(test_sd_card, "doc_choices", _doc_choices_snippet() + r"""
+local Panels = picocalc.sys.loadlib("panels")
+local plain = { panels = { { frame = { height = 320 } } } }
+Panels.start({ sequences = { sequence, plain, plain, plain, plain } })
+""")
+    simulator = _paused_sim(sim_factory, test_sd_card)
+    simulator.launch_app("doc_choices")
+    _wait_for(simulator, "PANELS:SEQ 1")
+    simulator.set_time_multiplier(0)
+    _advance(simulator, TRANSITION_MS)   # any opening fade has finished
+    _frame_barrier(simulator)            # the choice arms on a frame after it
+    _tap(simulator, "enter")             # the first option: "Stay and fight"
+    simulator.step_time(TRANSITION_MS)
+    joined = _wait_for(simulator, "PANELS:SEQ 5")
+    assert "PANELS:CHOICE 1 -> seq 5" in joined
+    assert "PANELS:ERR" not in joined

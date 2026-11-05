@@ -23,8 +23,10 @@ store reads.
 4. Create a Release with one `.zip` (or several, naming the one to use in [`asset`](App-Json-Reference.md#fields)) whose root holds `app.json` and `main.lua` or `main.elf`, with no folder around them:
 
    ```sh
-   cd myapp && zip -r ../myapp.zip .
+   cd myapp && zip -r ../myapp.zip . -x '.git/*' '.github/*' 'libs/*' '.luarc.json'
    ```
+
+   The `-x` leaves out what is only there for you: without it the zip carries your whole `.git` history, the store gives no warning, and every device installs it. `libs/` and `.luarc.json` are the [editor setup](Creating-your-first-app.md#editor-setup)'s, so drop those two if your app keeps code in a `libs/` folder. `git archive` is no shortcut: it leaves out a `main.elf` you do not commit.
 
 5. The index computes the SHA-256 itself. Do not publish a checksum file.
 

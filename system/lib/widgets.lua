@@ -11,6 +11,8 @@ local sys   = pc.sys
 
 local W = {}
 
+local KEY_HOME = 0xD2  -- Shift+Tab: see FocusGroup:_shiftTabPressed
+
 local function display_draw_rect(x, y, w, h, c) disp.drawRect(x, y, w, h, c) end
 local function display_fill_rect(x, y, w, h, c) disp.fillRect(x, y, w, h, c) end
 
@@ -1023,6 +1025,7 @@ function W.FocusGroup(widgets)
     local self = setmetatable({
         widgets     = widgets or {},
         focus_index = 0,
+        _home_down = input.isKeyDown(KEY_HOME),
     }, FocusGroup)
     -- Find first focusable widget
     for i, w in ipairs(self.widgets) do
@@ -1069,10 +1072,23 @@ function FocusGroup:_findNext(from, dir)
     return from
 end
 
+-- The device's Shift+Tab. The keyboard names a key by what it makes at that moment,
+-- so Tab under Shift reports as Home, which has no BTN_* bit and never reaches btns.
+-- It takes both readings. getRawKey alone misses a press when Shift's own repeat (every
+-- 100 ms) lands after it in the same poll; the key-down edge alone misses the press after
+-- Shift was let go before Tab, which leaves Home in the set. Held, it repeats.
+function FocusGroup:_shiftTabPressed()
+    local down = input.isKeyDown(KEY_HOME)
+    local pressed = input.getRawKey() == KEY_HOME or (down and not self._home_down)
+    self._home_down = down
+    return pressed
+end
+
 function FocusGroup:handleInput(btns, ch)
     -- Tab / Shift+Tab
-    if btns & input.BTN_TAB ~= 0 then
-        local dir = (btns & input.BTN_SHIFT ~= 0) and -1 or 1
+    local back = self:_shiftTabPressed()
+    if back or btns & input.BTN_TAB ~= 0 then
+        local dir = (back or btns & input.BTN_SHIFT ~= 0) and -1 or 1
         local next_idx = self:_findNext(self.focus_index, dir)
         if next_idx ~= self.focus_index then
             self:setFocus(next_idx)

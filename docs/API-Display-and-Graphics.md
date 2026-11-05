@@ -459,7 +459,11 @@ Render a Mode 7-style perspective ground plane (SNES F-Zero / Mario Kart floor).
 
 ```lua
 local floor = picocalc.graphics.image.load(APP_DIR .. "/track.png")  -- 256x256
+local x, y, angle = 128, 128, 0
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
+    angle = angle + 0.01
     picocalc.display.clear(picocalc.display.rgb(64, 64, 128))  -- sky
     picocalc.display.drawPlane(floor, x, y, 20.0, angle, 120, 40.0)
     picocalc.display.flush()
@@ -828,6 +832,8 @@ Effects can be chained. Each modifies the framebuffer in sequence.
 
 ```lua
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     picocalc.display.clear(picocalc.display.BLACK)
 
     -- Draw your scene...
@@ -1087,6 +1093,8 @@ local edges = {
 }
 local angle = 0
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     angle = angle + 0.02
     picocalc.display.clear(picocalc.display.BLACK)
     picocalc.graphics.draw3DWireframe(verts, edges, angle, angle*0.7, 0,
@@ -1706,6 +1714,8 @@ Draws all sprites in the manager that are visible and have updates enabled, in z
 local sprite1 = picocalc.graphics.sprite.new(picocalc.graphics.image.new(16, 16))
 sprite1:add()
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     picocalc.display.clear(picocalc.display.BLUE)
     sprite1:moveBy(1, 0)                 -- update sprite positions
     picocalc.graphics.sprite.update()    -- draw them
@@ -1911,10 +1921,10 @@ Gets the sprite's image (the image object itself).
 ---
 
 #### `sprite:moveTo(x, y)`
-Moves the sprite to absolute coordinates.
+Moves the sprite to absolute coordinates. Positions are whole pixels: a fraction rounds to nearest, so `moveTo(1.5, 2.5)` reads back `2, 3`.
 
 - **Parameters:**
-  - `x`, `y` (number): New position
+  - `x`, `y` (integer): New position. A float is rounded.
 - **Returns:** None
 
 ```lua
@@ -1924,22 +1934,31 @@ sprite:moveTo(100, 50)
 ---
 
 #### `sprite:moveBy(dx, dy)`
-Moves the sprite by a relative offset.
+Moves the sprite by a relative offset, which rounds to a whole number of pixels first, on each call. The fraction is lost: `moveBy(0.4, 0)` never moves the sprite however often you call it, and ten calls of `moveBy(0.6, 0)` move it 10 pixels. For a speed that does not come out in whole pixels per frame, keep your own float position and `moveTo` it (below).
 
 - **Parameters:**
-  - `dx`, `dy` (number): Offset to add to current position
+  - `dx`, `dy` (integer): Offset to add to current position. A float is rounded.
 - **Returns:** None
 
 ```lua
 sprite:moveBy(5, -3)
 ```
 
+```lua
+local x = 0.0     -- yours: the sprite cannot hold a fraction
+local dt = 1 / 30 -- seconds since the last frame
+x = x + 70 * dt   -- 70 pixels per second
+sprite:moveTo(x, 100)
+```
+
+Do the sums on your own `x`, not on what the sprite reads back: `sprite:moveTo(sprite.x + 0.4, 100)` also stays where it is.
+
 ---
 
 #### `sprite:getPosition()`
-Gets the sprite's position.
+Gets the sprite's position, in whole pixels.
 
-- **Returns:** (number, number) `x, y`
+- **Returns:** (integer, integer) `x, y`
 
 ```lua
 local x, y = sprite:getPosition()
@@ -2417,8 +2436,8 @@ A sprite that starts inside another can move out of it, but stays put if the goa
 Every hit stops the sprite: there is no way to choose another response. For a trigger zone the player walks through, leave the zone out of the player's collides-with mask and test it with `overlappingSprites`.
 
 - **Parameters:**
-  - `goalX`, `goalY` (number): Desired position (or one table `{x, y}`)
-- **Returns:** (number, number, table) `actualX, actualY, collisions` — the position reached, plus an array with one record per axis that was stopped:
+  - `goalX`, `goalY` (integer): Desired position (or one table `{x, y}`). A float is rounded, as in `moveTo`.
+- **Returns:** (integer, integer, table) `actualX, actualY, collisions` — the position reached, plus an array with one record per axis that was stopped:
   - `sprite`: this sprite
   - `other`: the sprite it hit
   - `type`: the integer `1`, meaning a slide
@@ -2594,6 +2613,8 @@ sprite.tag = 123        -- Set tag
 local img = sprite.image   -- Read-only: the image (userdata or nil)
 ```
 
+`x`, `y`, `width`, `height` and `z` hold whole numbers: a float rounds as it is written, so `sprite.x = 7.7` reads back `8` and `sprite.x = sprite.x + 0.4` never moves the sprite. Keep a fractional position in your own variable, as under [`moveBy`](#spritemovebydx-dy).
+
 These are all the fields a sprite has. **Writing any other field is silently ignored**: `sprite.health = 3` raises no error and `sprite.health` then reads `nil`, a mistyped name fails the same way, and `sprite.image = img` does nothing (use `setImage`). Keep game state in your own table, keyed by the sprite if you need to get back to it: enumeration and collision calls return the same sprite objects.
 
 ```lua
@@ -2717,6 +2738,8 @@ local frame = 0
 local timer = 0
 
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     picocalc.display.clear(picocalc.display.BLACK)
     
     timer = timer + 1
@@ -2762,6 +2785,8 @@ local img1 = picocalc.graphics.image.new(16, 16)
 local img2 = picocalc.graphics.image.new(16, 16)
 local loop = picocalc.graphics.animation.loop.new(80, {img1, img2})
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     picocalc.display.clear(picocalc.display.BLUE)
     loop:update()
     loop:draw(100, 100)
@@ -2808,6 +2833,8 @@ Stops every blinker.
 local b = picocalc.graphics.animation.blinker.new(400, 200)
 b:startLoop()
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     picocalc.display.clear(picocalc.display.BLACK)
     if b:update() then
         picocalc.display.fillRect(100, 100, 8, 12, picocalc.display.WHITE)  -- the cursor
@@ -3182,6 +3209,9 @@ local wallCount, skipped = picocalc.graphics.sprite.addWallSprites(tilemap, {2})
 -- Scroll camera
 local scrollX, scrollY = 0, 0
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
+    if picocalc.input.getButtons() & picocalc.input.BTN_RIGHT ~= 0 then scrollX = scrollX + 2 end
     picocalc.display.clear(picocalc.display.BLACK)
     tilemap:draw(scrollX, scrollY)
     picocalc.graphics.sprite.update()

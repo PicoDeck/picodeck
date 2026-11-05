@@ -153,6 +153,8 @@ end
 
 `getAxis` and the `AXIS_*` constants are `nil` on firmware older than API version 10: check `gp.getAxis` before use.
 
+**`PAD_*` and `BTN_*` share their numbers.** `PAD_A` is `BTN_ENTER`, `PAD_B` is `BTN_ESC`, `PAD_START` is `BTN_F4`, and so on: only the directions mean the same thing. So `picocalc.input.getButtonsPressed() & gp.PAD_A` raises no error, and reads Enter. Test `PAD_*` only against `picocalc.gamepad`'s calls, and `BTN_*` only against `picocalc.input`'s.
+
 ### Functions
 
 #### `picocalc.gamepad.getButtons()`

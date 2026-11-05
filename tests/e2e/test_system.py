@@ -151,6 +151,15 @@ class TestWifiState:
         assert result.get("ok")
         assert simulator.call("get_wifi_state")["status"] != "disconnected"
 
+    @pytest.mark.parametrize("params", [{"state": "disconnected"}, {"status": "offline"}])
+    def test_set_wifi_state_refuses_what_it_cannot_do(self, simulator, params):
+        """A misnamed parameter or an unknown status replied ok and changed nothing,
+        so a script believed it had taken the WiFi down."""
+        before = simulator.call("get_wifi_state")["status"]
+        with pytest.raises(RuntimeError, match="status must be"):
+            simulator.call("set_wifi_state", params)
+        assert simulator.call("get_wifi_state")["status"] == before
+
 
 class TestButtonInjection:
     """Test button/key injection for input testing."""

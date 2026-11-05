@@ -55,12 +55,16 @@ mycard/
 ```
 
 ```sh
-./picodeck_simulator --sd-card mycard --launch myapp
+./picodeck-simulator-linux --sd-card mycard --launch myapp
 ```
+
+That is the name of the [downloaded simulator](Simulator-and-Testing.md); one you built is `build_sim/picodeck_simulator`.
 
 **On a device:** copy the `myapp` folder into `apps/` on the card. With the device at the launcher, the system menu's **USB Disk Mode** makes the card a USB drive, so it can stay in the slot; [Getting started on a device](Getting-started-on-a-device.md#5-copy-your-own-apps) has the steps. Then pick the app in the launcher: with no `category` it is under Demos.
 
 Either way, it draws "Hello, World!" and Esc returns to the launcher.
+
+Keep the `input.update()` call even in a loop that ignores the keys. It, or `picocalc.sys.sleep()`, is what reads the keyboard, so it is also what opens the system menu: on a device, a loop that calls neither can only be left by switching it off.
 
 ### Pacing
 
@@ -110,6 +114,10 @@ end
 A is F4 until the player rebinds it, and Enter is not bound by default. The built-in games also take Enter on their menus and end screens, alongside A, whenever Enter pressed no gamepad button that frame (`pad.getButtonsPressed() == 0`), so a player who binds Enter to a button gets only that button.
 
 See [API Gamepad](API-Gamepad.md) for the buttons, the default keys and `getLabel()`.
+
+### Editor setup
+
+An editor with [lua-language-server](https://luals.github.io/) (the "Lua" extension in VS Code) can complete and check the whole `picocalc` API. Copy [`sdk/lua/picocalc.lua`](https://github.com/PicoDeck/picodeck/blob/master/sdk/lua/picocalc.lua) into your project as `libs/picocalc.lua`, and put the `.luarc.json` from the [SDK README](https://github.com/PicoDeck/picodeck/blob/master/sdk/README.md#editor-setup-for-lua) next to `app.json`. Neither runs on the device, so [leave them out of the zip](Publishing-Apps.md#quick-version) when you publish.
 
 ### Add an icon (optional)
 
