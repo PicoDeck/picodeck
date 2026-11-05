@@ -98,9 +98,11 @@ static int l_terminal_new(lua_State* L) {
 
 static int l_terminal_write(lua_State* L) {
     lua_terminal_t* t = check_terminal(L, 1);
-    const char* str = luaL_checkstring(L, 2);
-    
-    terminal_parser_write(&t->parser, str);
+    size_t len;
+    const char* str = luaL_checklstring(L, 2, &len);
+
+    // By length: a server's output (apps/ssh) can hold NUL bytes.
+    terminal_parser_parse(&t->parser, str, (int)len);
     return 0;
 }
 

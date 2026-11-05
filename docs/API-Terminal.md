@@ -33,7 +33,7 @@ local term = picocalc.terminal.new(40, 20, 500)
 ## Writing and clearing
 
 #### `term:write(str)`
-Write a string to the terminal at the current cursor position. Supports ANSI escape sequences (cursor movement, colour codes, erase sequences, etc.). The cursor advances automatically; lines wrap and the display scrolls when the bottom row is reached.
+Write a string to the terminal at the current cursor position. Supports ANSI escape sequences (cursor movement, colour codes, erase sequences, etc.). The cursor advances automatically; lines wrap and the display scrolls when the bottom row is reached. The whole string is written; a NUL byte in it does nothing, as on a real terminal.
 
 ```lua
 term:write("Hello, world!\n")

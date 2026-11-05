@@ -388,3 +388,25 @@ def test_editor_shows_the_row_it_is_typing_on(simulator):
     """It asked for 24 rows inside bounds that hold 23, so its last row never
     drew: the line being typed at the bottom of the window was invisible."""
     assert typed_line_shows(simulator, "editor", 21, 22) > 20
+
+
+@pytest.mark.sd(fixtures=[])
+def test_write_takes_the_whole_string_past_a_nul(simulator, test_sd_card):
+    """A server's output can hold NUL bytes (a terminal ignores them), and the
+    SSH app hands it over as it comes: nothing after one was written."""
+    code = """
+local t = picocalc.terminal.new(53, 26)
+t:setCursorVisible(false)
+t:write("AB\\0CD\\n")
+t:write("\\0leading\\n")
+t:write("\\27\\0[31mesc\\n")
+picocalc.sys.log("TERM_READY")
+while true do picocalc.sys.sleep(50) end
+"""
+    stage_lua_app(test_sd_card, "term_nul", code)
+    simulator.launch_app("term_nul")
+    simulator.wait_for_log("TERM_READY", timeout=10)
+    buf = simulator.get_terminal_buffer()
+    assert buf["lines"][:3] == ["ABCD", "leading", "esc"]
+    simulator.exit_app()
+    simulator.wait_for_exit(timeout=10)

@@ -398,6 +398,10 @@ void terminal_parser_parse(terminal_parser_t* parser, const char* data, int len)
     for (int i = 0; i < len; i++) {
         uint8_t c = (uint8_t)data[i];
 
+        // A NUL does nothing, in any state: a terminal ignores it, even inside an
+        // escape sequence.
+        if (c == 0) continue;
+
         switch (parser->state) {
             case TERM_STATE_NORMAL:
                 // UTF-8 continuation byte handling
