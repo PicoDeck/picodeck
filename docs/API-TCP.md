@@ -216,10 +216,10 @@ Get pending connection events.
 ---
 
 #### `conn:waitConnected([timeout_seconds])`
-Block until the connection is established.
+Block until the connection is established. Your callbacks fire during the wait, the system menu can open, and an exit request ends it, as in `picocalc.sys.sleep`, so a long timeout is safe.
 
 - **Parameters:**
-  - `timeout_seconds` (number, optional): Maximum time to wait
+  - `timeout_seconds` (number, optional): Maximum time to wait. Default 10. Fractions are allowed.
 - **Returns:** (boolean) `true` if connected, `false` on timeout or failure
 
 ```lua
@@ -231,11 +231,11 @@ end
 ---
 
 #### `conn:waitData([timeout_seconds])`
-Block until data is available to read.
+Block until data is available to read. Callbacks, the system menu and exit work during the wait, as for `waitConnected`.
 
 - **Parameters:**
-  - `timeout_seconds` (number, optional): Maximum time to wait
-- **Returns:** (boolean) `true` if data arrived, `false` on timeout
+  - `timeout_seconds` (number, optional): Maximum time to wait. Default 10. Fractions are allowed.
+- **Returns:** (boolean) `true` if data arrived, `false` on timeout or when the connection ended with nothing left to read
 
 ```lua
 if conn:waitData(2) then

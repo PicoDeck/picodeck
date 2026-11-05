@@ -828,6 +828,45 @@ case_fw("tcp_read_timeout_fraction", function()
     s:close()
 end)
 
+-- The waits run the service pass, so callbacks fire inside them.
+case_fw("tcp_waits_run_callbacks", function()
+    local s = T.ok(pc.tcp.new(HOST, cfg.echo, false), "tcp.new")
+    local connected, reads = false, 0
+    s:setConnectCallback(function() connected = true end)
+    s:setReadCallback(function() reads = reads + 1 end)
+    -- An HTTP request in flight must make progress during the waits too.
+    local r = request("/ok")
+    T.ok(s:connect(), "connect")
+    T.ok(s:waitConnected(3), "waitConnected")
+    -- The connect event comes from the same pass that fires it.
+    pc.sys.sleep(0)
+    T.ok(connected, "connect callback")
+    -- Nothing to read for a while: the whole wait is service passes.
+    T.eq(s:waitData(0.4), false, "waitData with nothing sent")
+    T.ok(r.complete or r.closed, "the HTTP callbacks did not fire during the wait")
+    T.eq(s:write("x"), 1, "write")
+    T.ok(s:waitData(3), "waitData")
+    pc.sys.sleep(20)
+    T.ok(reads > 0, "read callback")
+    s:close()
+    r.conn:close()
+end)
+
+-- A read callback set does not make waitData miss the data it waits for.
+case_fw("tcp_wait_data_with_read_callback", function()
+    local s = tcp_open()
+    local got = {}
+    s:setReadCallback(function(c)
+        local d = c:read()
+        if d then got[#got + 1] = d end
+    end)
+    T.eq(s:write("hello"), 5, "write")
+    T.ok(s:waitData(3), "waitData returned false although data came")
+    pc.sys.sleep(20)
+    T.ok(wait(function() return #table.concat(got) == 5 end, 1000), "callback data")
+    s:close()
+end)
+
 -- The documented retry: a burst of small writes all arrive, in order.
 case_fw("tcp_write_retry_pattern", function()
     local s = tcp_open()
@@ -856,6 +895,20 @@ case_fw("tcp_connect_timeout_zero_is_off", function()
     wait(function() return s:error() ~= nil end, 700)
     T.eq(s:error(), nil, "failed although the timeout is off")
     s:close()
+end)
+
+-- A socket closed from a callback during the wait ends the wait.
+case_fw("tcp_wait_survives_close_in_callback", function()
+    local s = T.ok(pc.tcp.new(HOST, cfg.echo, false), "tcp.new")
+    s:setConnectCallback(function(c) c:close() end)
+    T.ok(s:connect(), "connect")
+    T.eq(s:waitConnected(3), false, "closed in the callback")
+    local w = tcp_open()
+    local conn = net.http.new(HOST, cfg.http, false, "closer")
+    conn:setRequestCompleteCallback(function() w:close() end)
+    T.ok(conn:get("/ok"), "get")
+    T.eq(w:waitData(3), false, "closed in a callback during waitData")
+    conn:close()
 end)
 
 -- ── Run the one selected case ───────────────────────────────────────────────

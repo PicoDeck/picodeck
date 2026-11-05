@@ -272,9 +272,20 @@ static int l_tcp_getEvents(lua_State *L) {
     return 1;
 }
 
+// What a blocking wait does every 10 ms, as sys.sleep does: a background
+// keyboard poll, then the full service pass. So the wait feeds the watchdog
+// (its 10 s would otherwise outlast a long wait), fires callbacks, opens the
+// system menu and ends at an exit request. A callback may close this socket:
+// the callers re-read ud->conn after every pass.
+static void tcp_wait_service(lua_State *L) {
+    kbd_poll_background();
+    lua_bridge_service(L);
+}
+
+// conn:waitConnected([seconds]) -> bool.  Default 10 s.
 static int l_tcp_waitConnected(lua_State *L) {
     tcp_ud_t *ud = check_tcp(L, 1);
-    uint32_t timeout_ms = (uint32_t)(luaL_optnumber(L, 2, 10.0) * 1000.0);
+    uint32_t timeout_ms = lb_secs_to_ms(luaL_optnumber(L, 2, 10.0));
     uint32_t start = to_ms_since_boot(get_absolute_time());
 
     while (ud->conn && tcp_get_state(ud->conn) != TCP_STATE_CONNECTED) {
@@ -282,10 +293,11 @@ static int l_tcp_waitConnected(lua_State *L) {
         if (st == TCP_STATE_FAILED || st == TCP_STATE_CLOSED) {
             break;
         }
-        if (to_ms_since_boot(get_absolute_time()) - start > timeout_ms) {
+        if (to_ms_since_boot(get_absolute_time()) - start >= timeout_ms) {
             break;
         }
         sleep_ms(10);
+        tcp_wait_service(L);
     }
 
     lua_pushboolean(L, ud->conn &&
@@ -293,22 +305,29 @@ static int l_tcp_waitConnected(lua_State *L) {
     return 1;
 }
 
+// conn:waitData([seconds]) -> bool.  Default 10 s.
 static int l_tcp_waitData(lua_State *L) {
     tcp_ud_t *ud = check_tcp_open(L, 1);
-    uint32_t timeout_ms = (uint32_t)(luaL_optnumber(L, 2, 10.0) * 1000.0);
+    uint32_t timeout_ms = lb_secs_to_ms(luaL_optnumber(L, 2, 10.0));
     uint32_t start = to_ms_since_boot(get_absolute_time());
 
     while (ud->conn && tcp_get_state(ud->conn) == TCP_STATE_CONNECTED) {
         if (tcp_bytes_available(ud->conn) > 0) {
             break;
         }
-        if (to_ms_since_boot(get_absolute_time()) - start > timeout_ms) {
+        if (to_ms_since_boot(get_absolute_time()) - start >= timeout_ms) {
             break;
         }
         sleep_ms(10);
+        // Before the pass: a read callback in it may take what just arrived,
+        // and this call would then wait on for data it has already seen.
+        if (tcp_bytes_available(ud->conn) > 0) {
+            break;
+        }
+        tcp_wait_service(L);
     }
 
-    lua_pushboolean(L, tcp_bytes_available(ud->conn) > 0);
+    lua_pushboolean(L, ud->conn && tcp_bytes_available(ud->conn) > 0);
     return 1;
 }
 
