@@ -456,6 +456,13 @@ uint32_t hal_input_injected_down(void) {
     return down;
 }
 
+uint32_t hal_input_read_down(void) {
+    pthread_mutex_lock(&s_input_mutex);
+    uint32_t down = g_buttons & ~(g_injected_click & ~g_injected_click_read);
+    pthread_mutex_unlock(&s_input_mutex);
+    return down & ~BTN_MENU;
+}
+
 // The menu flag lives here, under the input mutex, so raising it and noting
 // its seq (and taking it and clearing that seq) are each one critical section.
 static bool g_menu_flag = false;

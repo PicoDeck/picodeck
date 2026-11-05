@@ -38,6 +38,8 @@
 //   - after kbd_clear_state a button the app saw and is still held stays
 //     held with no new press edge; one pressed since then gets its edge;
 //     kbd_discard_pending makes every held button quiet (no press edge);
+//   - after kbd_hide_held a button down then reads as not held, with no edges,
+//     until it comes up (or any source presses it anew);
 //   - a disconnect clears the source's state, so nothing stays held;
 //   - Home (PAD_SOURCE_HOME) is not a PAD_* button: its press raises the
 //     system menu through kbd_consume_menu_press, like the Sym key.
@@ -152,6 +154,12 @@ void pad_sources_clear(void);
 // kbd_discard_pending: taps not yet polled are dropped and every held button
 // is held quietly: only a fresh press after this call gives a press edge.
 void pad_sources_discard(void);
+
+// kbd_hide_held: taps not yet polled are dropped and every held button is hidden:
+// out of the masks, with no edges, until it is released. A press after that
+// (in any source, the same one released and pressed again between two polls
+// included) ends it and reads normally. Other buttons are not touched.
+void pad_sources_hide_held(void);
 
 // The gamepad the apps read: the keyboard's masks (kbd_pad_t curr / prev)
 // ORed with the sources'.

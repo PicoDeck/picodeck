@@ -214,6 +214,11 @@ it flushes again come back, and any row it never flushes again stays stale.
 The menu also resets a hardware scroll offset (see
 `setScrollOffset` in [API Display and Graphics](API-Display-and-Graphics.md)).
 
+**Your keys after the menu.** Your app reads nothing of what is down when the
+menu opens or closes, the key or controller button that closed it included,
+until each is released and pressed again; a callback that runs after the menu
+closes reads the same. See [`input.update()`](API-Input.md).
+
 ---
 
 #### `picocalc.sys.addMenuOption(label, options, current, callback)`

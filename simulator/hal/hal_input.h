@@ -98,6 +98,10 @@ bool hal_input_take_host_key(void);
 // edge, by the next poll (the device's pending one).
 uint32_t hal_input_injected_down(void);
 
+// Every button down right now but the menu key and a click no poll has read
+// yet (published with its edge by the next poll): what kbd_hide_held hides.
+uint32_t hal_input_read_down(void);
+
 // ── Injection sequence numbers (test sync) ─────────────────────────────────
 // Every injection (click/press/release/char, and the menu click, which the
 // keyboard stub handles outside the button state) gets the next seq. An

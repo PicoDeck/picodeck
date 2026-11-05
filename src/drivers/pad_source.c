@@ -41,6 +41,7 @@ static pad_slot_t s_slot[PAD_SOURCE_COUNT];
 // ── Core 0 (consumer) state ─────────────────────────────────────────────────
 static uint16_t s_curr, s_prev; // the sources' combined PAD_* mask
 static uint16_t s_quiet;        // held without a press edge (wake swallow)
+static uint16_t s_hidden;       // held, and out of the masks (kbd_hide_held)
 static uint16_t s_fresh;        // the last poll's new presses
 static uint16_t s_acc;          // presses gathered by background polls
 static bool s_fresh_bg;         // s_fresh came from a background poll
@@ -224,6 +225,9 @@ bool pad_sources_poll(bool bg, uint32_t now_ms) {
   uint32_t held, taps;
   sample(&held, &taps);
   bool home = (taps & PAD_SOURCE_HOME) != 0;
+  // A hidden button's hiding ends once it is up, or when the latch shows a new
+  // press (pad_sources_hide_held dropped what the latch held before it).
+  s_hidden &= (uint16_t)(held & ~taps);
   if (bg) {
     // Gathered for the app's next foreground poll; Home acts at once.
     s_fresh = (uint16_t)(taps & PAD_SOURCE_BUTTONS & ~s_acc);
@@ -234,7 +238,7 @@ bool pad_sources_poll(bool bg, uint32_t now_ms) {
   taps |= s_acc;
   s_acc = 0;
   s_prev = s_curr;
-  s_curr = (uint16_t)((held | taps) & PAD_SOURCE_BUTTONS);
+  s_curr = (uint16_t)((held | taps) & PAD_SOURCE_BUTTONS & ~s_hidden);
   // A swallowed press still held reads held, with no edge; it stops being
   // quiet once released.
   s_quiet &= (uint16_t)held;
@@ -277,8 +281,19 @@ void pad_sources_discard(void) {
   uint32_t held, taps;
   sample(&held, &taps); // taps dropped, Home included
   s_acc = 0;
-  s_curr = s_prev = (uint16_t)(held & PAD_SOURCE_BUTTONS);
+  s_hidden &= (uint16_t)held;
+  s_curr = s_prev = (uint16_t)(held & PAD_SOURCE_BUTTONS & ~s_hidden);
   s_quiet = s_curr;
+  s_fresh = 0;
+}
+
+void pad_sources_hide_held(void) {
+  uint32_t held, taps;
+  sample(&held, &taps); // taps dropped, Home included
+  s_acc = 0;
+  s_hidden = (uint16_t)(held & PAD_SOURCE_BUTTONS);
+  s_curr = s_prev = 0;
+  s_quiet = 0;
   s_fresh = 0;
 }
 
@@ -346,7 +361,7 @@ void pad_sources_reset(void) {
     axes_zero(&s_slot[i]);
     s_slot[i].last = 0;
   }
-  s_curr = s_prev = s_quiet = s_fresh = s_acc = 0;
+  s_curr = s_prev = s_quiet = s_hidden = s_fresh = s_acc = 0;
   s_fresh_bg = false;
   s_sticks = 0;
   s_triggers = 0;

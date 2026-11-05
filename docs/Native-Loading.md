@@ -81,6 +81,8 @@ void picodeck_main(const PicoCalcAPI *api,
 
 **Important**: You must call `s->poll()` each frame and check `s->shouldExit()` to properly handle the system menu exit. Returning from `picodeck_main` returns control to the launcher.
 
+A key or gamepad button down when the system menu opens or closes reads as not held, with no edges and no chars, until it is released, so a game that compares `getButtons()` from one frame to the next does not take the key that closed the menu for a press ([API Input](API-Input.md)).
+
 Lua has no `shouldExit()`: the bridge handles the system menu's "Exit App" itself and unwinds the script, so a Lua app just loops (or returns from `main.lua` to exit). Do not carry the call over when porting a native app to Lua; `picocalc.sys.shouldExit` is nil.
 
 ### The API Surface

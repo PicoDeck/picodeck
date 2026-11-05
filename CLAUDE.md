@@ -133,6 +133,7 @@ Everything from `splash_start()` to `splash_finish()` runs while Core 1 plays th
 ### System Menu (`src/os/system_menu.c`)
 - Triggered by the Sym key; detected via `kbd_consume_menu_press()` in the Lua count hook.
 - Overlays the current framebuffer (darkened with `display_darken()`) and gives the app both framebuffers back when it closes; app item callbacks run after that (`src/os/CLAUDE.md`).
+- Whatever key or pad button is down when it opens or closes stays hidden from `input` and `gamepad` until released (`kbd_hide_held`, `src/drivers/CLAUDE.md`).
 - Apps and OS register items with `system_menu_add_item()` / `picocalc.sys.addMenuItem()`.
 - Option rows (`system_menu_add_option()` / `picocalc.sys.addMenuOption()`) share the 4 slots; Left/Right/Enter step the value and the callback of each changed row runs after the menu closes (`src/os/CLAUDE.md`).
 

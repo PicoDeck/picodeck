@@ -15,6 +15,8 @@ If neither `update()` nor `picocalc.sys.sleep()` has run for a second, the contr
 
 `update()` also services HTTP/TCP/sound callbacks, the system menu and dev commands.
 
+**After the system menu.** A key that is down when the system menu opens or closes, the key that closed it first of all, reads as not held from then on: no `getButtons()` bit, no edges, no `pollEvent` events, no chars, no `isKeyDown`, and no [gamepad](API-Gamepad.md) button, until it is released. Pressed again it reads normally; holding it on does not count, however long the keyboard repeats it. So a game that compares `getButtons()` from one frame to the next never reads the menu's Esc as a press, and a direction held on through the menu needs a new press.
+
 - **Parameters:** None
 - **Returns:** None
 

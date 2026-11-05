@@ -75,6 +75,9 @@
 #define PC_FONT_SCIENTIFICA       2
 #define PC_FONT_SCIENTIFICA_BOLD  3
 
+// A key down when the system menu opens or closes (the one that closed it
+// first of all) reads as not held, with no edges and no chars, until it is
+// released, here and in the gamepad below; pressed again it reads normally.
 typedef struct {
     // Returns current bitmask of held buttons (BTN_* flags)
     uint32_t (*getButtons)(void);
