@@ -1132,8 +1132,11 @@ static bool menu_loop(lua_State *L, int context) {
   // or the app's own last poll) must not select or activate an item. This
   // also ends any background-poll run, so the first kbd_poll below starts a
   // normal poll. The app loses those edges; closing the menu clears the
-  // state again anyway (as it always has).
-  kbd_clear_state();
+  // state again anyway (as it always has). What is down now stays hidden until
+  // it is released: a key held on must not drive the menu by its repeats, and
+  // it may have no report left before the menu closes, whose own
+  // kbd_hide_held() then could not know it was down.
+  kbd_hide_held();
 
   int sel = 0;
   uint8_t entry_brightness = s_brightness;
@@ -1402,11 +1405,14 @@ static bool menu_loop(lua_State *L, int context) {
     umm_free(app_screen);
   }
   bg_free();
-  kbd_clear_state();
-  // kbd_clear_state() keeps a latched menu press. The loop takes one at the
-  // top of every pass (the OS modals it opens take theirs too); this catches
-  // only one injected during the teardown or after a dev exit, which the
-  // app's service pass would turn into a second menu.
+  // Whatever is still down, the key or pad button that closed the menu first
+  // of all, stays hidden from the app until it is released: a game comparing
+  // held levels would read it as a fresh press (issue #60).
+  kbd_hide_held();
+  // That keeps a latched menu press, as kbd_clear_state() does. The loop takes
+  // one at the top of every pass (the OS modals it opens take theirs too); this
+  // catches only one injected during the teardown or after a dev exit, which
+  // the app's service pass would turn into a second menu.
   kbd_consume_menu_press();
   save_brightness_if_changed(entry_brightness);
   display_set_clip_rect(saved_clip_x, saved_clip_y, saved_clip_w, saved_clip_h);

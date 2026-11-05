@@ -118,6 +118,14 @@ bool kbd_consume_screenshot_press(void);
 // held afterwards is picked up by its next HOLD report without a press edge.
 void kbd_clear_state(void);
 
+// Clear the state like kbd_clear_state, and hide whatever is down now, each key
+// and gamepad button from every source, from all of the input and gamepad reads
+// (held levels, edges, isKeyDown, events, chars) until it is released; pressed
+// again, it reads normally. Its repeats do not end that. The system menu calls
+// this as it opens and as it closes: a game that compares held levels from
+// frame to frame would read the key that closed it as a fresh press.
+void kbd_hide_held(void);
+
 // Drop all queued input (the STM32 key FIFO, pending injected keys and
 // chars) and clear the state. Non-blocking; items the STM32 queued before the
 // call never reach the app. For consent dialogs: a key typed before the

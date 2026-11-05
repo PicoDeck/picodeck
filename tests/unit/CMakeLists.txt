@@ -82,6 +82,8 @@ picodeck_unit_test(test_avi_index INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_event_queue INCLUDES ${SRC}/drivers)
 # The gamepad layer of the same decode (keys -> PAD_* through the pad map).
 picodeck_unit_test(test_kbd_pad INCLUDES ${SRC}/drivers)
+# The keys hidden from the app after the system menu, until they are released.
+picodeck_unit_test(test_kbd_hide INCLUDES ${SRC}/drivers)
 # Pad sources (the `pad` dev command, the simulator's controller, later a BT
 # or USB pad) ORed into the same gamepad.
 picodeck_unit_test(test_pad_source SOURCES ${SRC}/drivers/pad_source.c INCLUDES ${SRC}/drivers)

@@ -80,6 +80,10 @@ static bool s_screenshot_pressed =
 // kbd_event_queue.h (kbd_inject_*), host-tested in test_kbd_event_queue.c.
 static kbd_inject_t s_inj;
 
+// Keys down when the system menu opened or closed, hidden until released
+// (kbd_event_queue.h, "Hidden keys"). 20 bytes.
+static kbd_hide_t s_hide;
+
 // The gamepad's key bindings (24 bytes; the masks live in s_btn.pad).
 // src/os/gamepad.c installs the effective map at every app launch.
 static kbd_padmap_t s_padmap = KBD_PAD_DEFAULT_MAP;
@@ -241,6 +245,8 @@ static void kbd_poll_impl(bool bg) {
     else
       printf("[KBD] %s 0x%02X\n", state_str, keycode);
 #endif
+    if (kbd_hide_item(&s_hide, &s_btn.pad, &s_padmap, state, keycode))
+      continue;
     uint8_t raw = kbd_fifo_apply_pad(&s_in, &s_btn, &s_padmap, state, keycode);
     if (raw) {
       s_last_raw_key = raw;
@@ -251,6 +257,7 @@ static void kbd_poll_impl(bool bg) {
     if (state == KBD_FIFO_PRESSED && keycode == KEY_BRK)
       s_screenshot_pressed = true;
   }
+  kbd_hide_tick(&s_hide, now_ms);
 
   // The other gamepad sources (pad_source.h: the `pad` dev command, later a
   // Bluetooth or USB pad), ORed with the keyboard's aliases in the getters.
@@ -419,6 +426,13 @@ void kbd_clear_state(void) {
   // button the app saw stays held without an edge (pad_sources_clear).
   kbd_inject_after_clear(&s_inj, &s_btn, &s_padmap);
   pad_sources_clear();
+}
+
+void kbd_hide_held(void) {
+  kbd_hide_add_down(&s_hide, &s_in.down, s_inj.active | s_inj.held);
+  kbd_inject_hide(&s_inj);
+  kbd_clear_state();
+  pad_sources_hide_held();
 }
 
 void kbd_inject_buttons(uint32_t buttons) {

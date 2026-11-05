@@ -23,6 +23,8 @@
 //   - the gamepad masks     (PAD_*: keys resolved through the pad map, same
 //                            rules as the button masks; see "Gamepad" below)
 // A HOLD item is a repeat of a press already seen, never a fresh press edge.
+// The items of a key down when the system menu opened or closed are dropped
+// before any of that, until it is released ("Hidden keys" below).
 // =============================================================================
 
 #include "keyboard.h"
@@ -467,6 +469,133 @@ static inline void kbd_pad_swallow(kbd_pad_t *p, bool bg_run, kbd_pad_t before) 
   p->tapped &= before.curr;
 }
 
+// ── Hidden keys ──────────────────────────────────────────────────────────────
+// What is down when the system menu opens or closes is hidden from the app,
+// each key until it is released (kbd_hide_held; issue #60). Clearing the state
+// is not enough: a game compares held levels from frame to frame (Doom's
+// DG_GetKey, TIC-80's input rebuild), so the key that closed the menu, still
+// down, read as a new press. kbd_poll drops a hidden key's items before they
+// are decoded (kbd_hide_item), so nothing of it reaches the button masks, the
+// key-down set, the event queue, the chars, the raw key or the gamepad, and
+// none of the getters pays for it.
+//   PRESSED, HOLD  its repeats: the controller repeats a held key every 100 ms
+//                  after the first 300 ms, arrows, letters, Enter, Tab,
+//                  Backspace and Delete as PRESSED, the rest as HOLD. They
+//                  neither end the hiding nor read as anything;
+//   RELEASED       ends it. The key's next PRESSED is a press like any other.
+// Keys are kept by their physical key (kbd_hide_phys), since the controller
+// recomputes a key's code at every transition: Shift+F5, the menu key, is F10
+// while Shift is down and may come up as F5.
+//
+// A release can go missing: the controller reports nothing for Left, Right,
+// Backspace and Space under Shift, or for B, Space, ',' and '.' under Alt, a
+// shifted symbol comes up under its other code, kbd_discard_pending and a full
+// STM32 FIFO drop items. A key that stayed hidden would lose its next press, so
+// the hiding ends by itself once no hidden key has reported for
+// KBD_HIDE_QUIET_MS (kbd_hide_tick), longer than the 300 ms to a held key's
+// first repeat. That is measured in poll time (a gap between two polls counts
+// KBD_HIDE_POLL_GAP_MS at most): an app stalled for a second read no items
+// meanwhile, so its held keys' silence means nothing. A key still held then, in
+// those corners, reads as it did before the hiding existed.
+//
+// The simulator feeds decoded events through the same filter (kbd_hide_event)
+// and keeps no timer: its HAL knows a button key's level (keyboard_stub.c).
+
+#define KBD_HIDE_MAX 10           // the controller tracks 10 keys at once
+#define KBD_HIDE_QUIET_MS 600u
+#define KBD_HIDE_POLL_GAP_MS 50u
+
+typedef struct {
+  uint8_t key[KBD_HIDE_MAX]; // physical keys (kbd_hide_phys)
+  uint8_t count;
+  uint16_t quiet_ms;         // poll time since a hidden key last reported
+  uint32_t last_ms;          // the clock at the previous kbd_hide_tick
+} kbd_hide_t;
+
+// The key behind any code it reports under (see kbd_key_unshift; a shifted
+// symbol is not folded: its other code is a key of its own here).
+static inline uint8_t kbd_hide_phys(uint8_t key) {
+  uint8_t base = kbd_key_unshift(key);
+  return base ? base : kbd_key_fold(key);
+}
+
+static inline int kbd_hide_find(const kbd_hide_t *h, uint8_t phys) {
+  for (int i = 0; i < h->count; i++)
+    if (h->key[i] == phys)
+      return i;
+  return -1;
+}
+
+static inline bool kbd_hide_has(const kbd_hide_t *h, uint8_t key) {
+  return kbd_hide_find(h, kbd_hide_phys(key)) >= 0;
+}
+
+static inline void kbd_hide_add(kbd_hide_t *h, uint8_t key) {
+  uint8_t phys = kbd_hide_phys(key);
+  if (phys && h->count < KBD_HIDE_MAX && kbd_hide_find(h, phys) < 0)
+    h->key[h->count++] = phys;
+  h->quiet_ms = 0;
+}
+
+static inline void kbd_hide_remove_at(kbd_hide_t *h, int i) {
+  h->key[i] = h->key[--h->count];
+}
+
+// Hide every key of the key-down set but those of the BTN_* in `except` (the
+// injected ones: no FIFO item will ever release them, kbd_inject_hide has them).
+static inline void kbd_hide_add_down(kbd_hide_t *h, const kbd_keyset_t *down,
+                                     uint32_t except) {
+  kbd_keyset_t d = *down;
+  for (uint32_t b = 1; b && b <= except; b <<= 1)
+    if (except & b)
+      kbd_keyset_clear(&d, kbd_button_to_keycode(b));
+  for (int w = 0; w < 8; w++)
+    for (int bit = 0; d.bits[w] && bit < 32; bit++)
+      if ((d.bits[w] >> bit) & 1u)
+        kbd_hide_add(h, (uint8_t)(w * 32 + bit));
+}
+
+// One key transition (KBD_FIFO_*): true when it was a hidden key's, so it must
+// not be decoded. Shift and Alt are still tracked for the gamepad, which folds
+// the codes other keys take under them.
+static inline bool kbd_hide_item(kbd_hide_t *h, kbd_pad_t *p,
+                                 const kbd_padmap_t *m, uint8_t state,
+                                 uint8_t key) {
+  if (!h->count)
+    return false;
+  int i = kbd_hide_find(h, kbd_hide_phys(key));
+  if (i < 0)
+    return false;
+  h->quiet_ms = 0;
+  if (state == KBD_FIFO_RELEASED)
+    kbd_hide_remove_at(h, i);
+  if (key == KEY_MOD_SHL || key == KEY_MOD_SHR || key == KEY_MOD_ALT)
+    kbd_pad_key(p, m, state, key);
+  return true;
+}
+
+// The same for a decoded event (the simulator's path), char events included.
+static inline bool kbd_hide_event(kbd_hide_t *h, kbd_pad_t *p,
+                                  const kbd_padmap_t *m, kbd_event_t e) {
+  uint8_t state = e.type == KBD_EV_UP ? KBD_FIFO_RELEASED
+                  : (e.flags & KBD_EVF_REPEAT) ? KBD_FIFO_HOLD
+                                               : KBD_FIFO_PRESSED;
+  return kbd_hide_item(h, p, m, state, e.key);
+}
+
+// Every kbd_poll and kbd_poll_background, after the decode.
+static inline void kbd_hide_tick(kbd_hide_t *h, uint32_t now_ms) {
+  if (!h->count)
+    return;
+  uint32_t gap = now_ms - h->last_ms;
+  h->last_ms = now_ms;
+  h->quiet_ms = (uint16_t)(h->quiet_ms + (gap < KBD_HIDE_POLL_GAP_MS
+                                              ? gap
+                                              : KBD_HIDE_POLL_GAP_MS));
+  if (h->quiet_ms >= KBD_HIDE_QUIET_MS)
+    h->count = 0;
+}
+
 // ── Event queue ──────────────────────────────────────────────────────────────
 
 static inline void kbd_evq_clear(kbd_event_queue_t *q) {
@@ -744,6 +873,9 @@ static inline uint8_t kbd_fifo_apply_pad(kbd_input_t *in, kbd_buttons_t *b,
 //   held     keys latched by keydown until kbd_release_buttons (keyup)
 //   ch       a char injected with kbd_inject_char, until getChar reads it
 //   pad_tap  gamepad buttons of injected chars, tapped by the next poll
+//   hidden   injected keys that were down when the system menu opened or
+//            closed: out of curr and the gamepad until retired or keyup, as a
+//            hidden physical key is until its RELEASED ("Hidden keys" above)
 // The gamepad follows injected buttons through their keys' slots
 // (kbd_pad_slots_from_buttons): down while active or latched, up on retire
 // or keyup.
@@ -752,6 +884,7 @@ typedef struct {
   uint32_t active;
   uint32_t active_since_ms;
   uint32_t held;
+  uint32_t hidden;
   char ch;
   uint16_t pad_tap;
 } kbd_inject_t;
@@ -770,6 +903,7 @@ static inline void kbd_inject_poll(kbd_inject_t *j, kbd_buttons_t *b,
     uint32_t retired = j->active & ~j->held;
     b->curr &= ~j->active;
     j->active = 0;
+    j->hidden &= ~retired;
     retired_now = true;
     kbd_input_button_events(in, retired, KBD_EV_UP, b->curr);
     kbd_pad_up(&b->pad, kbd_pad_slots_from_buttons(m, retired));
@@ -778,6 +912,7 @@ static inline void kbd_inject_poll(kbd_inject_t *j, kbd_buttons_t *b,
     j->active = j->pending;
     j->pending = 0;
     j->active_since_ms = now_ms;
+    j->hidden &= ~j->active;
     kbd_input_button_events(in, j->active & ~b->curr, KBD_EV_DOWN,
                             b->curr | j->active);
   }
@@ -786,8 +921,9 @@ static inline void kbd_inject_poll(kbd_inject_t *j, kbd_buttons_t *b,
     kbd_pad_settle(&b->pad, j->pad_tap);
     j->pad_tap = 0;
   }
-  b->curr |= j->active | j->held;
-  uint32_t slots = kbd_pad_slots_from_buttons(m, j->active | j->held);
+  uint32_t shown = (j->active | j->held) & ~j->hidden;
+  b->curr |= shown;
+  uint32_t slots = kbd_pad_slots_from_buttons(m, shown);
   b->pad.down |= slots;
   b->pad.curr |= kbd_pad_buttons_of(slots);
 }
@@ -811,11 +947,19 @@ static inline void kbd_inject_pad_char(kbd_inject_t *j, const kbd_padmap_t *m,
 // gamepad tap goes with the char.
 static inline void kbd_inject_after_clear(kbd_inject_t *j, kbd_buttons_t *b,
                                           const kbd_padmap_t *m) {
-  b->curr = b->prev = j->active | j->held;
-  b->pad.down = kbd_pad_slots_from_buttons(m, j->active | j->held);
+  uint32_t shown = (j->active | j->held) & ~j->hidden;
+  b->curr = b->prev = shown;
+  b->pad.down = kbd_pad_slots_from_buttons(m, shown);
   b->pad.curr = b->pad.prev = kbd_pad_buttons_of(b->pad.down);
   j->ch = 0;
   j->pad_tap = 0;
+}
+
+// kbd_hide_held, before the clear: every injected key that is down stays
+// hidden until it goes up. A pending one-shot is not down yet: it is published
+// with its edge, as across any clear.
+static inline void kbd_inject_hide(kbd_inject_t *j) {
+  j->hidden |= j->active | j->held;
 }
 
 // Drop the one-shots (pending and active) for good: the key that woke the
@@ -824,6 +968,7 @@ static inline void kbd_inject_drop_oneshots(kbd_inject_t *j, kbd_buttons_t *b,
                                             const kbd_padmap_t *m) {
   b->curr &= ~j->active;
   kbd_pad_up(&b->pad, kbd_pad_slots_from_buttons(m, j->active & ~j->held));
+  j->hidden &= j->held;
   j->active = 0;
   j->active_since_ms = 0;
   j->pending = 0;
@@ -832,6 +977,7 @@ static inline void kbd_inject_drop_oneshots(kbd_inject_t *j, kbd_buttons_t *b,
 // keydown: latch buttons held (a down event for those not already down).
 static inline void kbd_inject_hold(kbd_inject_t *j, kbd_buttons_t *b,
                                    kbd_input_t *in, uint32_t buttons) {
+  j->hidden &= ~(buttons & ~j->held);  // down again: a press, not the old hold
   kbd_input_button_events(in, buttons & ~(b->curr | j->held), KBD_EV_DOWN,
                           b->curr | j->held | buttons);
   j->held |= buttons;
@@ -846,6 +992,7 @@ static inline void kbd_inject_release(kbd_inject_t *j, kbd_buttons_t *b,
   j->held &= ~buttons;
   j->active &= ~buttons;
   j->pending &= ~buttons;
+  j->hidden &= ~buttons;
   kbd_input_button_events(in, buttons, KBD_EV_UP, b->curr & ~buttons);
   b->curr &= ~buttons;
   kbd_pad_up(&b->pad, kbd_pad_slots_from_buttons(m, buttons));

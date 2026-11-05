@@ -131,11 +131,12 @@ Everything from `splash_start()` to `splash_finish()` runs while Core 1 plays th
 ### System Menu (`src/os/system_menu.c`)
 - Triggered by the Sym key; detected via `kbd_consume_menu_press()` in the Lua count hook.
 - Overlays the current framebuffer (darkened with `display_darken()`) and gives the app both framebuffers back when it closes; app item callbacks run after that (`src/os/CLAUDE.md`).
+- Whatever key or pad button is down when it opens or closes stays hidden from `input` and `gamepad` until released (`kbd_hide_held`, `src/drivers/CLAUDE.md`).
 - Apps and OS register items with `system_menu_add_item()` / `picocalc.sys.addMenuItem()`.
 - Option rows (`system_menu_add_option()` / `picocalc.sys.addMenuOption()`) share the 4 slots; Left/Right/Enter step the value and the callback of each changed row runs after the menu closes (`src/os/CLAUDE.md`).
 
 ### Memory Map
-- **SRAM heap**: ~4.3 KB (4264 B: `__end__`=0x2007ef58 to `__HeapLimit`=0x20080000, of which the SDK reserves 2 KB; the 400 KB double framebuffer is BSS), so effectively none: scratch buffers go through `umm_malloc`.
+- **SRAM heap**: ~4.3 KB (4236 B: `__end__`=0x2007ef74 to `__HeapLimit`=0x20080000, of which the SDK reserves 2 KB; the 400 KB double framebuffer is BSS), so effectively none: scratch buffers go through `umm_malloc`.
 - **QMI PSRAM (8 MB)**: Lua heap via `umm_malloc` at 0x11200000 (cached alias), 6 MB minus the 128 KB Core 1 pool; ELF app data/BSS. Below it, BTstack's static state is linked at 0x11100000 (`src/drivers/btstack/bt_psram.ld`, NOLOAD, zeroed at Bluetooth's first start); the rest of the low 2 MB is unused (the boot self-test touches 0x3E0-0x4E0). Every umm allocation costs at least one 200-byte block (small Lua objects share slabs; see `src/os/CLAUDE.md`).
 - **PIO PSRAM (8 MB)**: the OS owns everything below `0x48000` (MP3 PCM ring); apps get `0x48000`+, range-checked for Lua and native. Accessed via `pio_psram_read`/`pio_psram_write` and `g_api.psram`.
 - **Main stack (MSP)**: 4 KB in SCRATCH (`__StackBottom`=0x20081000, `__StackTop`=0x20082000), `MSPLIM`-guarded. Boot, the launcher (menus, USB MSC) and every IRQ run here; dev commands and screenshot save move to a short-lived 32 KB PSRAM stack. Measured peak ~2.2-2.5 KB; the `stack` dev command prints it and the running app's stack peak. Drawing the splash still frame (USB mode, the update screen) takes ~1.2 KB of it (~1.35 KB on the deepest path, `launcher_run` included).

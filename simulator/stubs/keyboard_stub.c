@@ -42,6 +42,10 @@ static kbd_input_t s_in;
 // events (kbd_pad_event), so it resolves keys exactly as the device does.
 static kbd_pad_t s_pad;
 static kbd_padmap_t s_padmap = KBD_PAD_DEFAULT_MAP;
+// Keys down when the system menu opened or closed, hidden until released
+// (kbd_event_queue.h, "Hidden keys"). The HAL's staged events go through the
+// same filter as the device's FIFO items; button masks are masked by it below.
+static kbd_hide_t s_hide;
 
 // Key mapping from SDL to keyboard keycodes
 static struct {
@@ -67,6 +71,21 @@ static struct {
 bool kbd_init(void) {
     printf("[KBD] Keyboard initialized (simulator)\n");
     return true;
+}
+
+// The buttons of the hidden keys, to take out of the HAL's masks. The HAL knows
+// their level, so one that is up ends here too: a discard drops staged "up"
+// events, so this is what the device's quiet timer is for its FIFO.
+static uint32_t hide_buttons(uint32_t level) {
+    uint32_t hidden = 0;
+    for (int i = s_hide.count - 1; i >= 0; i--) {
+        uint32_t btn = kbd_keycode_to_button(s_hide.key[i]);
+        if (btn & level)
+            hidden |= btn;
+        else if (btn)
+            kbd_hide_remove_at(&s_hide, i);
+    }
+    return hidden;
 }
 
 void kbd_poll(void) {
@@ -99,7 +118,21 @@ void kbd_poll(void) {
     // read, so RPC-injected presses can't be dropped mid-poll)
     uint32_t new_buttons = 0, new_pressed = 0;
     hal_input_read_buttons(&new_buttons, &new_pressed);
-    
+
+    // Staged key events, in order, into the app-facing queue and the gamepad.
+    // First, since an "up" ends a hidden key: one released and pressed again
+    // since the last poll reads as the press it is.
+    kbd_event_t ev;
+    while (hal_input_pop_event(&ev)) {
+        if (kbd_hide_event(&s_hide, &s_pad, &s_padmap, ev))
+            continue;
+        kbd_input_accept(&s_in, ev);
+        kbd_pad_event(&s_pad, &s_padmap, ev);
+    }
+    uint32_t hidden = hide_buttons(new_buttons);
+    new_buttons &= ~hidden;
+    new_pressed &= ~hidden;
+
     // Calculate released buttons
     s_buttons_released = s_buttons & ~new_buttons;
     
@@ -120,20 +153,15 @@ void kbd_poll(void) {
         s_screenshot_pressed = true;
     }
     
-    // Staged key events, in order, into the app-facing queue and the gamepad.
-    kbd_event_t ev;
-    while (hal_input_pop_event(&ev)) {
-        kbd_input_accept(&s_in, ev);
-        kbd_pad_event(&s_pad, &s_padmap, ev);
-    }
-
     // The other gamepad sources (the `pad` dev command, the host's game
     // controllers), as keyboard.c does; a source's Home raises the menu.
     if (pad_sources_poll(false, hal_get_time_ms()))
         hal_input_raise_menu(false);
 
-    // Get character input
-    s_last_char = hal_input_get_char();
+    // Get character input (a hidden key's chars stay hidden with it)
+    do {
+        s_last_char = hal_input_get_char();
+    } while (s_last_char && kbd_hide_has(&s_hide, (uint8_t)s_last_char));
     if (s_last_char) {
         s_raw_key = (uint8_t)s_last_char;
     } else if (s_buttons_pressed) {
@@ -290,15 +318,31 @@ void kbd_clear_state(void) {
     // An injected key still down keeps its gamepad button held, without a
     // press edge; its retire/keyup event releases it (as on the device).
     memset(&s_pad, 0, sizeof(s_pad));
-    s_pad.down = kbd_pad_slots_from_buttons(&s_padmap, hal_input_injected_down());
+    uint32_t down = hal_input_injected_down() & ~hide_buttons(UINT32_MAX);
+    s_pad.down = kbd_pad_slots_from_buttons(&s_padmap, down);
     s_pad.curr = s_pad.prev = kbd_pad_buttons_of(s_pad.down);
     pad_sources_clear();
 }
 
 void kbd_discard_pending(void) {
     hal_input_discard_pending();
+    // Its staged "up" may have gone with the rest, and a key with no button
+    // has no level to tell (hide_buttons has the others).
+    for (int i = s_hide.count - 1; i >= 0; i--)
+        if (!kbd_keycode_to_button(s_hide.key[i]))
+            kbd_hide_remove_at(&s_hide, i);
     kbd_clear_state();
     pad_sources_discard();
+}
+
+void kbd_hide_held(void) {
+    kbd_hide_add_down(&s_hide, &s_in.down, 0);
+    uint32_t down = hal_input_read_down();
+    for (uint32_t b = 1; b && b <= down; b <<= 1)
+        if (down & b)
+            kbd_hide_add(&s_hide, kbd_button_to_keycode(b));
+    kbd_clear_state();
+    pad_sources_hide_held();
 }
 
 void kbd_recover_i2c_bus(void) {

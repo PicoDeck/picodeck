@@ -367,6 +367,216 @@ static void test_test_source(void) {
   CHECK(!fg());
 }
 
+// kbd_hide_held (the system menu, opening and closing): a button down then is
+// out of every mask, with no edges, until it comes up. Held on, however often
+// it is reported again, it stays out; pressed again it is a press.
+static void test_hide_held_until_released(void) {
+  reset();
+  pad_source_publish(PAD_SOURCE_BT, PAD_B);
+  fg();
+  CHECK_EQ_U32(pressed(), PAD_B);  // the menu reads it, and closes
+  pad_sources_hide_held();
+  CHECK_EQ_U32(held(), 0);
+  CHECK_EQ_U32(released(), 0);
+  CHECK_EQ_U32(pad_sources_pressed(), 0);
+  for (int i = 0; i < 5; i++) {
+    pad_source_publish(PAD_SOURCE_BT, PAD_B);  // a report per frame, unchanged
+    fg();
+    CHECK_EQ_U32(held(), 0);
+    CHECK_EQ_U32(pressed(), 0);
+    CHECK_EQ_U32(released(), 0);
+    CHECK_EQ_U32(pad_sources_pressed(), 0);
+    CHECK_EQ_U32(pad_sources_fresh(), 0);
+  }
+  pad_source_publish(PAD_SOURCE_BT, 0);
+  fg();
+  CHECK_EQ_U32(held(), 0);
+  CHECK_EQ_U32(pressed(), 0);
+  CHECK_EQ_U32(released(), 0);  // the app never saw it down
+  pad_source_publish(PAD_SOURCE_BT, PAD_B);
+  fg();
+  CHECK_EQ_U32(pressed(), PAD_B);
+  CHECK_EQ_U32(held(), PAD_B);
+  CHECK_EQ_U32(pad_sources_pressed(), PAD_B);
+  pad_source_publish(PAD_SOURCE_BT, 0);
+  fg();
+  CHECK_EQ_U32(released(), PAD_B);
+}
+
+// Only the button that was down. A second one, on the same source or another,
+// and the same one pressed on another source, are new presses.
+static void test_hide_held_other_buttons(void) {
+  reset();
+  pad_source_publish(PAD_SOURCE_HOST, PAD_B);
+  fg();
+  pad_sources_hide_held();
+  pad_source_publish(PAD_SOURCE_HOST, PAD_B | PAD_A);
+  fg();
+  CHECK_EQ_U32(pressed(), PAD_A);
+  CHECK_EQ_U32(held(), PAD_A);
+  pad_source_publish(PAD_SOURCE_HOST, PAD_B);
+  fg();
+  CHECK_EQ_U32(released(), PAD_A);
+  CHECK_EQ_U32(held(), 0);
+  // A held button on a second source too: it is hidden while any holds it.
+  reset();
+  pad_source_publish(PAD_SOURCE_HOST, PAD_B);
+  pad_source_publish(PAD_SOURCE_BT, PAD_B);
+  fg();
+  pad_sources_hide_held();
+  pad_source_publish(PAD_SOURCE_HOST, 0);
+  fg();
+  CHECK_EQ_U32(held(), 0);
+  pad_source_publish(PAD_SOURCE_BT, 0);
+  fg();
+  CHECK_EQ_U32(held(), 0);
+  pad_source_publish(PAD_SOURCE_HOST, PAD_B);
+  fg();
+  CHECK_EQ_U32(pressed(), PAD_B);
+  // Another source pressing the hidden button is a press of its own.
+  reset();
+  pad_source_publish(PAD_SOURCE_HOST, PAD_B);
+  fg();
+  pad_sources_hide_held();
+  fg();
+  CHECK_EQ_U32(held(), 0);
+  pad_source_publish(PAD_SOURCE_BT, PAD_B);
+  fg();
+  CHECK_EQ_U32(pressed(), PAD_B);
+}
+
+// Released and pressed again between two polls: the state alone would still
+// say held; the latch shows the new press.
+static void test_hide_held_new_press_between_polls(void) {
+  reset();
+  pad_source_publish(PAD_SOURCE_TEST, PAD_B);
+  fg();
+  pad_sources_hide_held();
+  fg();
+  pad_source_publish(PAD_SOURCE_TEST, 0);
+  pad_source_publish(PAD_SOURCE_TEST, PAD_B);
+  fg();
+  CHECK_EQ_U32(pressed(), PAD_B);
+  CHECK_EQ_U32(held(), PAD_B);
+  // A tap after it was released, whole between two polls, reads as one.
+  reset();
+  pad_source_publish(PAD_SOURCE_TEST, PAD_B);
+  fg();
+  pad_sources_hide_held();
+  pad_source_publish(PAD_SOURCE_TEST, 0);
+  fg();
+  pad_source_publish(PAD_SOURCE_TEST, PAD_B);
+  pad_source_publish(PAD_SOURCE_TEST, 0);
+  fg();
+  CHECK_EQ_U32(pressed(), PAD_B);
+  fg();
+  CHECK_EQ_U32(released(), PAD_B);
+}
+
+// A press not polled before the menu closed goes with the rest (it was typed
+// at the menu); so does a press gathered in a background run, and Home.
+static void test_hide_held_drops_what_was_not_polled(void) {
+  reset();
+  pad_source_publish(PAD_SOURCE_BT, PAD_A);
+  pad_source_publish(PAD_SOURCE_BT, 0);
+  pad_source_publish(PAD_SOURCE_BT, PAD_START | PAD_SOURCE_HOME);
+  pad_sources_hide_held();
+  CHECK(!fg());
+  CHECK_EQ_U32(held(), 0);
+  CHECK_EQ_U32(pressed(), 0);
+  reset();
+  pad_source_publish(PAD_SOURCE_BT, PAD_A);
+  pad_source_publish(PAD_SOURCE_BT, 0);
+  bg();
+  pad_sources_hide_held();
+  fg();
+  CHECK_EQ_U32(held(), 0);
+  CHECK_EQ_U32(pressed(), 0);
+}
+
+// Background polls (sys.sleep) see the release too: a press after it, gathered
+// by them, reaches the next foreground poll.
+static void test_hide_held_background_polls(void) {
+  reset();
+  pad_source_publish(PAD_SOURCE_BT, PAD_B);
+  fg();
+  pad_sources_hide_held();
+  bg();
+  fg();
+  CHECK_EQ_U32(held(), 0);
+  pad_source_publish(PAD_SOURCE_BT, 0);
+  bg();
+  pad_source_publish(PAD_SOURCE_BT, PAD_B);
+  bg();
+  CHECK_EQ_U32(pad_sources_fresh(), PAD_B);
+  fg();
+  CHECK_EQ_U32(pressed(), PAD_B);
+  // Still held and never let go, a run leaves it hidden.
+  reset();
+  pad_source_publish(PAD_SOURCE_BT, PAD_B);
+  fg();
+  pad_sources_hide_held();
+  bg();
+  bg();
+  CHECK_EQ_U32(pad_sources_fresh(), 0);
+  fg();
+  CHECK_EQ_U32(held(), 0);
+}
+
+// A disconnect ends it: the reconnected pad's press is new.
+static void test_hide_held_disconnect(void) {
+  reset();
+  pad_source_publish(PAD_SOURCE_BT, PAD_B);
+  fg();
+  pad_sources_hide_held();
+  pad_source_disconnect(PAD_SOURCE_BT);
+  fg();
+  CHECK_EQ_U32(held(), 0);
+  pad_source_publish(PAD_SOURCE_BT, PAD_B);
+  fg();
+  CHECK_EQ_U32(pressed(), PAD_B);
+}
+
+// The test source's timed hold runs on while hidden and its release ends it.
+static void test_hide_held_timed_hold(void) {
+  reset();
+  pad_source_test_set(PAD_B, 100);
+  fg();
+  CHECK_EQ_U32(pressed(), PAD_B);
+  pad_sources_hide_held();
+  s_now += 50;
+  fg();
+  CHECK_EQ_U32(held(), 0);
+  s_now += 60;
+  fg();
+  CHECK_EQ_U32(held(), 0);
+  CHECK_EQ_U32(released(), 0);
+  pad_source_test_set(PAD_B, 100);
+  fg();
+  CHECK_EQ_U32(pressed(), PAD_B);
+}
+
+// A later clear or discard (input.clearState(), a modal) does not bring it
+// back; a discard lets one that is up go.
+static void test_hide_held_survives_clear_and_discard(void) {
+  reset();
+  pad_source_publish(PAD_SOURCE_BT, PAD_B);
+  fg();
+  pad_sources_hide_held();
+  pad_sources_clear();
+  fg();
+  CHECK_EQ_U32(held(), 0);
+  pad_sources_discard();
+  CHECK_EQ_U32(held(), 0);
+  fg();
+  CHECK_EQ_U32(held(), 0);
+  pad_source_publish(PAD_SOURCE_BT, 0);
+  pad_sources_discard();
+  pad_source_publish(PAD_SOURCE_BT, PAD_B);
+  fg();
+  CHECK_EQ_U32(pressed(), PAD_B);
+}
+
 static void test_nav_buttons(void) {
   CHECK_EQ_U32(pad_nav_buttons(0), 0);
   CHECK_EQ_U32(pad_nav_buttons(PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT),
@@ -389,6 +599,14 @@ int main(void) {
   test_discard();
   test_swallow();
   test_test_source();
+  test_hide_held_until_released();
+  test_hide_held_other_buttons();
+  test_hide_held_new_press_between_polls();
+  test_hide_held_drops_what_was_not_polled();
+  test_hide_held_background_polls();
+  test_hide_held_disconnect();
+  test_hide_held_timed_hold();
+  test_hide_held_survives_clear_and_discard();
   test_nav_buttons();
   return check_report("test_pad_source");
 }

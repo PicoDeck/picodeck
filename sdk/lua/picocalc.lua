@@ -367,6 +367,8 @@ picocalc.input = {}
 
 ---Poll the keyboard and trigger the system menu if Menu is pressed.
 ---Call once per frame before reading button state.
+---A key or gamepad button down when the system menu opens or closes reads as
+---not held, with no edges, events or chars, until it is released.
 function picocalc.input.update() end
 
 ---Return a bitmask of all currently held buttons (BTN_* constants).
