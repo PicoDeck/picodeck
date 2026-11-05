@@ -16,11 +16,23 @@ import pytest
 
 import test_doom_gamepad as D
 
+
+def _doom_has_the_fix():
+    """Whether the checkout has #64's fix. These tests fail against a Doom from
+    before it (v1.0.4 and older), which says nothing about this tree."""
+    source = D.DOOM / "dg_picodeck.c"
+    return source.exists() and "poll_input" in source.read_text(errors="replace")
+
+
 pytestmark = [
     pytest.mark.skipif(
         not all((D.DOOM / f).exists() for f in D.FILES),
         reason=f"{D.DOOM} lacks main.elf/doom1.wad: build PicoDeck/doom or set "
                "PICODECK_DOOM_DIR"),
+    pytest.mark.skipif(
+        not _doom_has_the_fix(),
+        reason=f"{D.DOOM} predates PicoDeck/doom's #64 fix (no poll_input in "
+               "dg_picodeck.c): update and rebuild it, or set PICODECK_DOOM_DIR"),
     pytest.mark.sd(fixtures=[], reserve=1),
     pytest.mark.timeout(180),
 ]
