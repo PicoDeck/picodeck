@@ -491,7 +491,9 @@ sound_sample_t *sound_sample_new_blank(float seconds, uint32_t sample_rate, uint
         return NULL;
     }
 
-    memset(sample->data, 0, data_size);
+    // Silence: the middle of the range. 8-bit PCM is unsigned, so zeros would
+    // play as full scale negative.
+    memset(sample->data, bits_per_sample == 16 ? 0 : 0x80, data_size);
     sample->length = data_size;
     sample->sample_rate = sample_rate;
     sample->bits_per_sample = bits_per_sample;

@@ -168,11 +168,25 @@ WAVs must be 8- or 16-bit PCM with 1-2 channels (float, 24/32-bit, ADPCM and mor
 Samples have no fixed limit: each lives in PSRAM until it is collected.
 
 - **Parameters:**
-  - `path` (string, optional): Absolute path to a WAV file
+  - `path` (string, optional): Absolute path to a WAV file. Without it the Sample is empty until `sample:load()`: it has no length and does not play.
 - **Returns:** (userdata) Sample object, or `nil, errstr` on failure
 
 ```lua
 local s = picocalc.sound.sample("/apps/myapp/beep.wav")
+```
+
+---
+
+#### `picocalc.sound.sample(seconds [, format])`
+Creates a silent Sample of that length: a placeholder. No API writes into a Sample, so it can only be played as silence, saved, or replaced with `sample:load()`. The data is capped at 64 KB, which `getLength()` then reports.
+
+- **Parameters:**
+  - `seconds` (number): Length in seconds
+  - `format` (table, optional): `sampleRate` (default `44100`), `bits` (`8` or `16`, default `16`), `channels` (`1` or `2`, default `1`)
+- **Returns:** (userdata) Sample object, or `nil, errstr` on failure
+
+```lua
+local gap = picocalc.sound.sample(0.25, { sampleRate = 22050 })
 ```
 
 ---

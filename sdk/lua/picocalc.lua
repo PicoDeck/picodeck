@@ -1006,8 +1006,8 @@ function picocalc.sound.playingSources() end
 ---Create a Sample, optionally loading a WAV file immediately. WAVs must be
 ---8- or 16-bit PCM, 1-2 channels (float, 24/32-bit, ADPCM are refused); only
 ---the first 64 KB of sample data is kept.
----@param path_or_duration? string|number WAV file path, or duration in seconds for an empty sample
----@param opts? {sampleRate?: integer, bits?: integer, channels?: integer} Format of an empty sample (with a duration only)
+---@param path_or_duration? string|number WAV file path, or a length in seconds for a silent sample (a placeholder: no API writes into a Sample)
+---@param opts? {sampleRate?: integer, bits?: integer, channels?: integer} Format of a silent sample (with a length only)
 ---@return PicoDeckSample? sample
 ---@return string? error
 function picocalc.sound.sample(path_or_duration, opts) end

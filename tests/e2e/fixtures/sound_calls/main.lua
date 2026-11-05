@@ -52,4 +52,28 @@ T.case("getCurrentTime_counts_milliseconds", function()
     T.ok(sound.getCurrentTime() < 100, "reset: " .. sound.getCurrentTime())
 end)
 
+T.case("blank_samples_are_silent", function()
+    -- The 8-bit silence is 128: zeros would be full-scale negative.
+    local cases = {
+        { bits = 8,  channels = 1, sampleRate = 8000, silence = 128 },
+        { bits = 8,  channels = 2, sampleRate = 8000, silence = 128 },
+        { bits = 16, channels = 1, sampleRate = 8000, silence = 0 },
+    }
+    for _, c in ipairs(cases) do
+        local s = T.ok(sound.sample(0.1, c), "blank")
+        local fmt = s:getFormat()
+        T.eq(fmt.bits, c.bits, "bits")
+        T.eq(fmt.channels, c.channels, "channels")
+        T.eq(fmt.sampleRate, c.sampleRate, "sampleRate")
+        T.eq(s:getLength(), 800, "frames")
+        local path = fs.appPath("blank.wav")
+        T.ok(s:save(path), "save")
+        local data = T.ok(fs.readFile(path), "read back")
+        T.eq(#data, 44 + 800 * c.bits // 8 * c.channels, "file size")
+        for i = 45, #data do
+            T.ok(data:byte(i) == c.silence, "byte " .. i .. " is " .. data:byte(i))
+        end
+    end
+end)
+
 T.done()
