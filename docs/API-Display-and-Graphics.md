@@ -459,7 +459,11 @@ Render a Mode 7-style perspective ground plane (SNES F-Zero / Mario Kart floor).
 
 ```lua
 local floor = picocalc.graphics.image.load(APP_DIR .. "/track.png")  -- 256x256
+local x, y, angle = 128, 128, 0
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
+    angle = angle + 0.01
     picocalc.display.clear(picocalc.display.rgb(64, 64, 128))  -- sky
     picocalc.display.drawPlane(floor, x, y, 20.0, angle, 120, 40.0)
     picocalc.display.flush()
@@ -828,6 +832,8 @@ Effects can be chained. Each modifies the framebuffer in sequence.
 
 ```lua
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     picocalc.display.clear(picocalc.display.BLACK)
 
     -- Draw your scene...
@@ -1087,6 +1093,8 @@ local edges = {
 }
 local angle = 0
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     angle = angle + 0.02
     picocalc.display.clear(picocalc.display.BLACK)
     picocalc.graphics.draw3DWireframe(verts, edges, angle, angle*0.7, 0,
@@ -1706,6 +1714,8 @@ Draws all sprites in the manager that are visible and have updates enabled, in z
 local sprite1 = picocalc.graphics.sprite.new(picocalc.graphics.image.new(16, 16))
 sprite1:add()
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     picocalc.display.clear(picocalc.display.BLUE)
     sprite1:moveBy(1, 0)                 -- update sprite positions
     picocalc.graphics.sprite.update()    -- draw them
@@ -2728,6 +2738,8 @@ local frame = 0
 local timer = 0
 
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     picocalc.display.clear(picocalc.display.BLACK)
     
     timer = timer + 1
@@ -2773,6 +2785,8 @@ local img1 = picocalc.graphics.image.new(16, 16)
 local img2 = picocalc.graphics.image.new(16, 16)
 local loop = picocalc.graphics.animation.loop.new(80, {img1, img2})
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     picocalc.display.clear(picocalc.display.BLUE)
     loop:update()
     loop:draw(100, 100)
@@ -2819,6 +2833,8 @@ Stops every blinker.
 local b = picocalc.graphics.animation.blinker.new(400, 200)
 b:startLoop()
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     picocalc.display.clear(picocalc.display.BLACK)
     if b:update() then
         picocalc.display.fillRect(100, 100, 8, 12, picocalc.display.WHITE)  -- the cursor
@@ -3193,6 +3209,9 @@ local wallCount, skipped = picocalc.graphics.sprite.addWallSprites(tilemap, {2})
 -- Scroll camera
 local scrollX, scrollY = 0, 0
 while true do
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
+    if picocalc.input.getButtons() & picocalc.input.BTN_RIGHT ~= 0 then scrollX = scrollX + 2 end
     picocalc.display.clear(picocalc.display.BLACK)
     tilemap:draw(scrollX, scrollY)
     picocalc.graphics.sprite.update()
