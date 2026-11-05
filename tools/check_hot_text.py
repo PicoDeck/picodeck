@@ -33,6 +33,11 @@ GROUPS = {
 }
 
 
+# libgcc the SDK's script would copy to SRAM for nothing (src/hot_text.ld).
+COLD_LIBGCC = ["__aeabi_unwind_cpp_pr0", "_Unwind_VRS_Pop", "__gnu_unwind_execute",
+               "_Unwind_Backtrace", "__aeabi_f2d"]
+
+
 def symbols(nm, elf):
     out = subprocess.run([nm, elf], check=True, capture_output=True, text=True).stdout
     syms = {}
@@ -64,6 +69,14 @@ def main():
                 errors.append(f"{name}: no symbol {f} (renamed? update GROUPS)")
             elif not lo <= addr < hi:
                 errors.append(f"{name}: {f} at {addr:#x} is outside {lo:#x}-{hi:#x}")
+    lo, hi = syms.get("__cold_libgcc_start__"), syms.get("__cold_libgcc_end__")
+    for f in COLD_LIBGCC:
+        addr = syms.get(f)
+        if lo is None or hi is None:
+            errors.append("no .cold_libgcc: is src/hot_text.ld linked?")
+            break
+        if addr is not None and not lo <= addr < hi:
+            errors.append(f"{f} at {addr:#x} is outside .cold_libgcc: it costs SRAM again")
     if errors:
         print("check_hot_text: FAILED\n  " + "\n  ".join(errors), file=sys.stderr)
         return 1
