@@ -225,6 +225,34 @@ static void test_pressed_repeat_is_flagged(void) {
   CHECK_EQ_INT(pop().flags & KBD_EVF_REPEAT, 0);
 }
 
+// docs/API-Input.md, "Shift and Alt": the controller recomputes a key's code at
+// every transition, so a key pressed before Shift and released under it never
+// releases its own code. BTN_* and the key-down set stay set until that key's
+// next press and release (the gamepad tracks this, test_kbd_pad.c; these do not).
+static void test_key_renamed_under_shift_sticks(void) {
+  reset();
+  begin_poll();
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, KEY_F1);
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, KEY_MOD_SHL);
+  kbd_evq_clear(&in.q);
+  begin_poll();
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_RELEASED, KEY_F6);  // F1, under its new name
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_RELEASED, KEY_MOD_SHL);
+  CHECK(btn.curr & BTN_F1);
+  CHECK(kbd_keyset_test(&in.down, KEY_F1));
+  CHECK_EV(pop(), KBD_EV_UP, KEY_MOD_SHL, 0, 0);  // no up for F1
+  CHECK_EQ_INT(in.q.count, 0);
+  // Its next press reads as a repeat; its release ends it.
+  begin_poll();
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_PRESSED, KEY_F1);
+  CHECK(pop().flags & KBD_EVF_REPEAT);
+  begin_poll();
+  kbd_fifo_apply(&in, &btn, KBD_FIFO_RELEASED, KEY_F1);
+  CHECK(!(btn.curr & BTN_F1));
+  CHECK(!kbd_keyset_test(&in.down, KEY_F1));
+  CHECK_EV(pop(), KBD_EV_UP, KEY_F1, 0, 0);
+}
+
 static void test_tap_inside_one_poll(void) {
   reset();
   begin_poll();
@@ -641,6 +669,7 @@ int main(void) {
   test_hold_after_clear_is_not_a_press();
   test_repeated_hold_after_clear_stays_quiet();
   test_pressed_repeat_is_flagged();
+  test_key_renamed_under_shift_sticks();
   test_tap_inside_one_poll();
   test_tap_then_press_again();
   test_ctrl_letter();
