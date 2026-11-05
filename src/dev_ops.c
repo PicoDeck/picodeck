@@ -8,6 +8,7 @@
 #include "drivers/pad_source.h"
 #include "drivers/sdcard.h"
 #include "drivers/sound.h"
+#include "os/app_identity.h"
 #include "os/gamepad_map.h"
 #include "os/launcher.h"
 #include "os/mv_op.h"
@@ -44,6 +45,34 @@ static bool dev_unzip_progress(int done, int total, const char *name,
     return true;
 }
 
+// Extracting over the running app's own directory fails on any file it holds
+// open (FatFS's file lock) and swaps the rest under a live app (issue #65).
+// Only that overlap is refused: `unzip` elsewhere while an app runs is fine,
+// as it always was. By FatFS identity, as in mv_op.c, and for the same reason:
+// the spelling proves nothing. An identity test that could not look (the
+// open-file table is full, which would stop the extraction too) is a refusal.
+static bool dev_unzip_dest_allowed(const char *dest, char *reply, size_t n) {
+    const app_identity_t *me = app_identity_current();
+    if (!me || !me->dir[0])
+        return true;
+    sdcard_within_t in_app = sdcard_path_within(me->dir, dest);
+    // The root holds every app, and has no cluster for the test to compare.
+    sdcard_within_t holds_app = strspn(dest, "/\\") == strlen(dest)
+                                    ? SDCARD_WITHIN_YES
+                                    : sdcard_path_within(dest, me->dir);
+    if (in_app == SDCARD_WITHIN_YES || holds_app == SDCARD_WITHIN_YES) {
+        snprintf(reply, n, "Error: unzip: an app is running from %s: exit it "
+                           "first", me->dir);
+        return false;
+    }
+    if (in_app == SDCARD_WITHIN_UNKNOWN || holds_app == SDCARD_WITHIN_UNKNOWN) {
+        snprintf(reply, n, "Error: unzip: cannot verify the destination (too "
+                           "many open files?): close files and retry");
+        return false;
+    }
+    return true;
+}
+
 bool dev_op_unzip(char *args, char *reply, size_t n) {
     // Blocks Core 0 for the duration (same contract as putb64: audio decoded
     // on Core 1 will starve). The engine validates entry names.
@@ -54,6 +83,8 @@ bool dev_op_unzip(char *args, char *reply, size_t n) {
         return false;
     }
     *dest++ = '\0';
+    if (!dev_unzip_dest_allowed(dest, reply, n))
+        return false;
     zip_reader_t zr;
     char err[ZIP_ERR_MAX];
     if (!zip_reader_open(&zr, zip_path, err)) {

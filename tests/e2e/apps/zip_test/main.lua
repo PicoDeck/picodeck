@@ -68,4 +68,14 @@ for i = 1, 4 do gs[i] = zip.open(base .. "hostile.zip") end
 log("ZE GC4 " .. tostring(gs[4] ~= nil))
 for i = 1, 4 do if gs[i] then gs[i]:close() end end
 
+-- 9 ── a destination that cannot be opened: named, not "write failed".
+fs.mkdir(out .. "3")
+fs.mkdir(out .. "3/good.txt")
+local ok9, err9 = zip.extract(base .. "hostile.zip", out .. "3")
+log("ZE BLOCKED ok=" .. tostring(ok9) .. " err=" .. tostring(err9))
+local ar9 = zip.open(base .. "hostile.zip")
+local ok10, err10 = ar9:extract("good.txt", out .. "3/good.txt")
+log("ZE BLOCKED1 ok=" .. tostring(ok10) .. " err=" .. tostring(err10))
+ar9:close()
+
 log("ZE DONE")

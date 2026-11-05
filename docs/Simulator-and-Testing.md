@@ -77,6 +77,15 @@ The PC simulator (`make simulator`, binary `build_sim/picodeck_simulator`) runs 
   their identity on the card, not by spelling; if that cannot be checked (the
   card's 16 open files are all in use) the move is refused with "cannot verify
   the move".
+- `unzip <zip> <dest>` extracts an archive on the card (it is how `push_app`
+  installs on a device). It runs while an app does, except over that app's own
+  directory: a destination that is the directory, inside it or above it is
+  refused (`Error: unzip: an app is running from <dir>: exit it first`), since
+  an open file cannot be replaced. A file that cannot be opened for writing
+  stops the extraction with `Error: unzip failed: cannot open <path>`; what was
+  already written stays. The MCP `push_app` checks `status` before the upload
+  and again right before the `unzip`, and stops with `an app is running` if one
+  is, whichever app it is.
 - `pad <buttons|none|off> [hold_ms]` drives a test gamepad, as a connected
   controller would: `pad up+a` holds Up and A until the next `pad` command,
   `pad a 100` holds A for 100 ms, `pad none` releases everything, `pad off`

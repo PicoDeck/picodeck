@@ -31,6 +31,7 @@ static int         s_blocking_while_busy;
 static int         s_rename_ok_left = -1;
 static int         s_renames;
 static bool        s_fail_reads;
+static char        s_locked[256];
 
 static fake_file_t *lookup(const char *path) {
     for (int i = 0; i < FAKE_FILES; i++)
@@ -68,6 +69,7 @@ void sdfake_reset(void) {
     s_rename_ok_left = -1;
     s_renames = 0;
     s_fail_reads = false;
+    s_locked[0] = '\0';
 }
 
 void sdfake_fail_rename_after(int n_ok) { s_rename_ok_left = n_ok; }
@@ -101,6 +103,10 @@ bool sdfake_dir_exists(const char *path) {
 
 void sdfake_limit_writes(int limit) { s_write_limit = limit; }
 
+void sdfake_lock_file(const char *path) {
+    strncpy(s_locked, path ? path : "", sizeof(s_locked) - 1);
+}
+
 // ── sdcard.h subset ──────────────────────────────────────────────────────────
 
 char *sdcard_read_file(const char *path, int *out_len) {
@@ -117,6 +123,8 @@ char *sdcard_read_file(const char *path, int *out_len) {
 
 sdfile_t sdcard_fopen(const char *path, const char *mode) {
     bool write = strchr(mode, 'w') != NULL;
+    if (write && s_locked[0] && strcmp(path, s_locked) == 0)
+        return NULL;
     fake_file_t *f = write ? create(path) : lookup(path);
     if (!f)
         return NULL;

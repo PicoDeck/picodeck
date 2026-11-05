@@ -2156,6 +2156,27 @@ def _hidden_name_ok(name: str) -> bool:
                         for c in name))
 
 
+_STATUS_APP_RE = re.compile(r"\[DEV\] Status: app=(.*?) app_uptime_ms=")
+
+
+def _running_app_hardware(port: str, tries: int = 3) -> str | None:
+    """The app the device is running, None at the launcher. A `status` reply
+    can be dropped, hence the tries; none at all raises, so a silent device is
+    not taken for one at the launcher."""
+    for _ in range(tries):
+        for line in do_command_hardware("status", port, 3.0):
+            m = _STATUS_APP_RE.search(line)
+            if m:
+                return None if m.group(1) == "launcher" else m.group(1)
+    raise RuntimeError(f"no Status reply in {tries} tries "
+                       "(firmware without `status`?)")
+
+
+def _push_app_refused(app: str, rel_dir: str) -> str:
+    return (f"Error: an app is running ({app}): exit it (exit_app) and push "
+            f"again. Nothing was extracted to /{rel_dir}.")
+
+
 @mcp.tool()
 async def push_app(local_dir: str, app_name: str = "",
                    device: str | None = None,
@@ -2174,7 +2195,9 @@ async def push_app(local_dir: str, app_name: str = "",
     Hardware: zips the directory in memory, uploads one file over serial,
     extracts it on-device with the `unzip` dev command and deletes the
     temporary archive — orders of magnitude faster than per-file transfers
-    for asset-heavy apps.
+    for asset-heavy apps. Stops with "an app is running" if one is, before
+    the upload or (a large upload takes minutes) by the time it ends: exit it
+    and push again.
 
     app_name defaults to the basename of local_dir.
     """
@@ -2244,7 +2267,19 @@ async def push_app(local_dir: str, app_name: str = "",
 
     tmp_zip = "/data/tmp/push_app.zip"
     try:
+        running = await asyncio.to_thread(_running_app_hardware, port)
+        if running:
+            return _push_app_refused(running, rel_dir)
         upload = await asyncio.to_thread(do_put_file_b64, port, data, tmp_zip)
+        # Someone can launch an app during the upload. `unzip` would then run
+        # inside it and fail on any file it holds open, leaving the destination
+        # partly updated (issue #65). The firmware also refuses the app's own
+        # directory, for the moment left between this check and the unzip.
+        running = await asyncio.to_thread(_running_app_hardware, port)
+        if running:
+            await asyncio.to_thread(do_command_hardware, f"rm {tmp_zip}", port,
+                                    10.0)
+            return _push_app_refused(running, rel_dir)
         # Extraction is SD-bound: allow generous headroom for slow cards.
         # unzip is silent while it inflates each file (a 700 KB file takes
         # ~1.8 s), so wait for its "Unzipped"/"Error:" line, not for quiet.
@@ -2257,7 +2292,9 @@ async def push_app(local_dir: str, app_name: str = "",
         if any("Unzipped" in ln for ln in lines):
             return (f"Pushed {count} files ({len(data)} bytes zipped) to "
                     f"/{rel_dir}\n{result}")
-        return f"Error: extraction did not complete:\n{result}\n({upload})"
+        return (f"Error: extraction did not complete (what was written before "
+                f"the failure stays, so /{rel_dir} may be partly updated):\n"
+                f"{result}\n({upload})")
     except Exception as e:
         return f"Error: {e}"
 

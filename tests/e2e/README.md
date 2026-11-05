@@ -139,7 +139,14 @@ and builds the device's traps in:
   running`). `usb` waits for the launcher. So `reboot()` exits the app first
   (or refuses) and `flash()` refuses while an app runs. A reboot is proven
   by uptime going back, never by `ver` (its timestamp lies after
-  incremental builds).
+  incremental builds). `unzip` runs mid-app, except over the app's own
+  directory (`Error: unzip: an app is running from <dir>: exit it first`).
+- **A push stops for an app started during it.** A large upload takes minutes,
+  and someone can launch an app on the device meanwhile. `push_app` exits a
+  running app when it starts, but one that has started by the end of the upload
+  is left alone: the MCP `push_app` re-checks `status` right before its `unzip`
+  and stops, so the push raises with `an app is running (<name>)` and the app's
+  directory stays as it was.
 - **One reader per port.** Before opening the port the run refuses one that
   another process holds (stop the MCP server's `stop_log_capture` first), a
   path that is not a serial tty, and a device that does not answer `ping`
