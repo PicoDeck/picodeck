@@ -473,6 +473,9 @@ set_source_files_properties(
 # Text rendering (drawText, the HUD of every game): -O2 like the blitters.
 set_source_files_properties(src/fonts/font.c PROPERTIES COMPILE_OPTIONS "-O2")
 
+# Terminal cell rendering (editor, ssh, every terminal app): -O2 like font.c.
+set_source_files_properties(src/os/terminal_render.c PROPERTIES COMPILE_OPTIONS "-O2")
+
 # gfx3d: -O2 like the display blitters (DISP_HOT), and no FMA contraction so a
 # triangle edge shared by two triangles evaluates bit-identically in both.
 set_source_files_properties(src/os/gfx3d.c PROPERTIES
