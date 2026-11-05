@@ -314,7 +314,8 @@ picodeck_unit_test(test_mp3_decode SOURCES ${SRC}/drivers/mp3_player.c
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_decode PRIVATE libmad_host)
 target_compile_options(test_mp3_decode PRIVATE -Wno-unused-parameter)
-# The ID3v2 tags an MP3 file's audio starts after (header-only).
+# The ID3 tags in an MP3 file (header-only): those its audio starts after, and
+# what counts as one further on.
 picodeck_unit_test(test_mp3_id3 INCLUDES ${SRC}/drivers)
 # libmad a granule at a time (mp3_player.c's half frames) against the
 # whole-frame decode: the same PCM.
