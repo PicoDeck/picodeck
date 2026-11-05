@@ -15,13 +15,12 @@ from helpers import case_params, lua_case_names, run_lua_app
 
 LIMIT_CASES = lua_case_names("config_limits_test")
 
-CAP_BUG = ("review: Core Medium — config stores have a fixed capacity and drop "
-           "extra keys silently (appconfig 4 entries, sysconfig a 1 KB pool)")
+CAP_BUG = ("review: Core Medium — sysconfig has a fixed capacity and drops extra "
+           "keys silently (a 1 KB pool); picocalc.config says so from set()")
 TRUNC_BUG = ("audit §3.9 — sysconfig truncates values at 127 chars silently")
 
 # sysconfig_eleven_keys passes: short keys no longer run out of slots.
 LIMIT_KNOWN_BUGS = {
-    "appconfig_five_keys": CAP_BUG,
     "sysconfig_fill_pool": CAP_BUG,
     "sysconfig_200_char_value": TRUNC_BUG,
 }

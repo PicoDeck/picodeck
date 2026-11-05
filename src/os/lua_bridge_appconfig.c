@@ -1,5 +1,6 @@
 #include "lua_bridge_internal.h"
 #include "app_identity.h"
+#include "appconfig.h"
 
 // Per-app store: always the running app's own /data/<id>/config.json.  The id
 // comes from app_identity (C), never from the APP_ID global, and the store is
@@ -32,18 +33,32 @@ static int l_config_get(lua_State *L) {
     return 1;
 }
 
+// set(key, value) -> true, or false and why (nothing stored; an existing key
+// keeps its old value). nil or "" deletes the key.
 static int l_config_set(lua_State *L) {
-    const char *key = luaL_checkstring(L, 1);
-    const char *val = lua_isnoneornil(L, 2) ? NULL : luaL_checkstring(L, 2);
+    size_t klen = 0, vlen = 0;
+    const char *key = luaL_checklstring(L, 1, &klen);
+    const char *val = lua_isnoneornil(L, 2) ? "" : luaL_checklstring(L, 2, &vlen);
 
+    const char *why = NULL;
     if (!bind_current_app())
-        return 0;
-
-    if (val)
-        g_api.appconfig->set(key, val);
-    else
-        g_api.appconfig->set(key, "");
-    return 0;
+        why = "no app is running";
+    else if (strlen(key) != klen)
+        why = "key contains a NUL byte";
+    else if (strlen(val) != vlen)
+        why = "value contains a NUL byte";
+    else {
+        appconfig_status_t st = appconfig_put(key, val);
+        if (st != APPCONFIG_OK)
+            why = appconfig_status_text(st);
+    }
+    if (why) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, why);
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    return 1;
 }
 
 static int l_config_save(lua_State *L) {

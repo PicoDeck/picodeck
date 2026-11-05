@@ -883,15 +883,20 @@ picocalc.config = {}
 ---@class picocalc.appconfig
 picocalc.appconfig = {}
 
----Read a per-app config value, returning `fallback` if the key is absent.
+---Read a per-app config value, returning `fallback` (as a string) if the key is absent.
 ---@param key string
----@param fallback? string
+---@param fallback? string|number
 ---@return string? value
 function picocalc.config.get(key, fallback) end
 
 ---Write a per-app config value (in memory only — call `save()` to persist).
+---`nil` or `""` deletes the key. Numbers read back as strings. At most 32 keys,
+---keys up to 31 bytes, values up to 255: over a limit nothing is stored and an
+---existing key keeps its old value.
 ---@param key string
----@param value string
+---@param value? string|number
+---@return boolean ok
+---@return string? why `"config full"`, `"key too long"`, `"value too long"`, `"empty key"`, `"value contains a NUL byte"`, `"out of memory"`
 function picocalc.config.set(key, value) end
 
 ---Persist the per-app config to `/data/<APP_ID>/config.json`.

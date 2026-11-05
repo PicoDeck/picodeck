@@ -524,61 +524,87 @@ local data = picocalc.sys.qmiPsramRead(buf, 0, 11)
 
 ## picocalc.config
 
-Persistent **per-app** key-value configuration storage, stored at `/data/<APP_ID>/config.json`. Each app gets its own isolated store. The same store is also available under the alias `picocalc.appconfig` — same data, two names.
+Persistent **per-app** key-value configuration storage, stored at `/data/<APP_ID>/config.json`. Each app gets its own isolated store. The same store is also available under the alias `picocalc.appconfig`: same data, two names.
 
-For the **system-wide** store shared by all apps (`/system/config.json`), use `picocalc.sysconfig` — see [API Sysconfig](API-Sysconfig.md).
+`picocalc.sysconfig` is the **system-wide** store shared by all apps (`/system/config.json`); see [API Sysconfig](API-Sysconfig.md). It exists only for apps whose `app.json` declares the `"sysconfig"` requirement (otherwise it is nil).
 
-`picocalc.sysconfig` exists only for apps whose `app.json` declares the `"sysconfig"` requirement (otherwise it is nil).
+### Which store to use
+
+| Store | For | Shape |
+|---|---|---|
+| `picocalc.config` | This app's settings | Up to 32 string values, 255 bytes each |
+| `picocalc.game.save` | This app's progress, scores, anything larger | Any Lua table, one JSON file per named slot ([API Game](API-Game.md)) |
+| `picocalc.fs` + `picocalc.json` | Your own files and formats | Whatever you write ([API Filesystem](API-Filesystem.md), [API JSON](API-JSON.md)) |
+| `picocalc.sysconfig` | The OS's own settings (WiFi, brightness, time zone) | Needs the `"sysconfig"` requirement |
+
+### Limits
+
+- **32 keys.** A new key past that is refused: `set` returns `false, "config full"`. Replacing an existing key still works, and deleting one makes room.
+- **Keys up to 31 bytes, values up to 255.** Longer ones are refused, never cut short: `set` returns `false, "key too long"` or `false, "value too long"` and an existing key keeps its old value.
+- **Values are strings.** A number is accepted and reads back as a string (`set("n", 5)`, then `get("n")` is `"5"`); any other type raises an argument error. A string with a NUL byte in it is refused.
+
+The store loads itself the first time you call any of its functions, so an explicit `load()` is not needed. It takes about 9 KB of the Lua heap once it holds a key, freed when the app exits.
+
+A `config.json` you edit by hand or write yourself can hold more than this. `load` then `save` never deletes what the store could not load: more than 32 keys, over-long keys or values, and values that are not strings (numbers, `true`, nested arrays and objects) are written back as they were. `get` does not see them; `set` or deleting that key replaces it, and `clear` and `reset` drop them with everything else.
 
 ### Functions
 
-#### `picocalc.config.get(key)`
+#### `picocalc.config.get(key [, fallback])`
 Retrieves a configuration value.
 
 - **Parameters:**
   - `key` (string): Configuration key
-- **Returns:** (string or nil) Value, or `nil` if key does not exist
+  - `fallback` (string or number, optional): Returned, as a string, if the key does not exist
+- **Returns:** (string or nil) Value, or `fallback`, or `nil` if the key does not exist and no fallback was given
 
 ```lua
-local highscore = picocalc.config.get("highscore")
+local highscore = picocalc.config.get("highscore", "0")
+local volume = tonumber(picocalc.config.get("volume", 80))
 ```
 
 ---
 
 #### `picocalc.config.set(key [, value])`
-Sets a configuration value. Pass `nil` as value to delete the key.
+Sets a configuration value in memory; call `save()` to keep it. A `value` of `nil` or `""`, or none at all, deletes the key.
 
 - **Parameters:**
   - `key` (string): Configuration key
-  - `value` (string or nil): Value to store, or `nil` to delete
-- **Returns:** None
+  - `value` (string, number or nil): Value to store, or `nil` to delete
+- **Returns:** `true`, or `false` and a reason when nothing was stored (`"config full"`, `"key too long"`, `"value too long"`, `"empty key"`, `"value contains a NUL byte"`, `"out of memory"`)
+
+Deleting a key that does not exist returns `true`.
 
 ```lua
 picocalc.config.set("highscore", "1000")
 picocalc.config.set("old_key", nil)  -- Delete key
+
+local ok, err = picocalc.config.set("notes", very_long_text)
+if not ok then
+    picocalc.sys.log("config: " .. err)  -- "value too long": use game.save
+end
 ```
 
 ---
 
 #### `picocalc.config.save()`
-Saves the current configuration to `/data/<APP_ID>/config.json`.
+Saves the current configuration to `/data/<APP_ID>/config.json`, creating `/data/<APP_ID>` if needed. The file is replaced in one step, so a failed save leaves the previous file.
 
 - **Parameters:** None
-- **Returns:** (boolean) `true` on success, `false` on error
+- **Returns:** (boolean) `true` on success, `false` on error. It also returns `false`, and writes nothing, if the file exists but could not be read when the store loaded (a card error, or no memory for it), since saving would delete the keys in it; a later `load()` that works, or `reset()`, ends that.
 
 ```lua
 if picocalc.config.save() then
-    print("Config saved")
+    picocalc.sys.log("Config saved")
 end
 ```
 
 ---
 
 #### `picocalc.config.load()`
-Loads configuration from `/data/<APP_ID>/config.json`.
+Reloads the configuration from `/data/<APP_ID>/config.json`, dropping unsaved changes. Not needed before the first `get`: the store loads itself.
 
 - **Parameters:** None
-- **Returns:** (boolean) `true` on success, `false` on error
+- **Returns:** (boolean) `true` if the file was read, `false` otherwise. On a first run there is no file yet, so `false` is normal: the store is simply empty.
 
 ```lua
 picocalc.config.load()
@@ -603,7 +629,7 @@ picocalc.config.save()  -- persist the empty config
 Resets the app configuration by deleting the config file from the SD card and clearing the in-memory state.
 
 - **Parameters:** None
-- **Returns:** (boolean) `true` if the file was deleted successfully, `false` on error
+- **Returns:** (boolean) `true`, whether or not there was a file to delete
 
 ```lua
 if picocalc.config.reset() then

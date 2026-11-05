@@ -573,8 +573,10 @@ typedef struct {
 // --- App Config -------------------------------------------------------------
 // Per-app key/value config persisted at /data/<APP_ID>/config.json.
 // Nothing loads it for a native app: the store is unbound at every app start
-// and exit, so call load() with your own id first. Max 4 keys, 32-char keys,
-// 256-char values.
+// and exit, so call load() with your own id first. At most 32 keys, keys up to
+// 31 bytes, values up to 255. Over a limit set() stores nothing (it returns
+// nothing either: read the key back with get() if it matters) and the serial
+// log says why. The store takes ~9 KB of PSRAM once it holds a key.
 
 typedef struct {
     // Bind and load the running app's own config. Only the running app's id
@@ -583,9 +585,10 @@ typedef struct {
     bool        (*load)(const char *app_id);
     // Save in-memory config to /data/<APP_ID>/config.json.
     bool        (*save)(void);
-    // Get value for key. Returns fallback (may be NULL) if key not found.
+    // Get value for key. Returns fallback (may be NULL) if key not found. The
+    // pointer stays good until the key is deleted or the store cleared.
     const char* (*get)(const char *key, const char *fallback);
-    // Set value for key.
+    // Set value for key; an empty value deletes it. See the limits above.
     void        (*set)(const char *key, const char *value);
     // Clear all in-memory entries (does not delete the file).
     void        (*clear)(void);
