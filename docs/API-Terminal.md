@@ -64,10 +64,10 @@ Enable or disable cursor blinking.
 ## Colours
 
 #### `term:setColors(fg, bg)`
-Set the default foreground and background colours (RGB565).
+Set the foreground and background colours (RGB565) for what is written next. An escape sequence's reset (`ESC[0m`, `ESC[39m`, `ESC[49m`) goes back to white on black, not to these.
 
 #### `term:getColors()` → `fg, bg`
-Return the current default foreground and background colours.
+Return the current foreground and background colours, which escape sequences change too.
 
 #### ANSI colour codes
 `term:write()` reads these codes. A colour number N means the same colour as palette index N of a new `picocalc.chargrid` grid ([API Chargrid](API-Chargrid.md)).

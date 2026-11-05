@@ -1,5 +1,5 @@
 ---
-title: "API Mod Player"
+title: "API Modplayer"
 ---
 
 Tracker module music playback: **MOD files only**, the ProTracker family. Supported: modules tagged `M.K.`, `M!K!`, `FLT4`, `1CHN`–`9CHN` or `10CH`–`32CH` (1 to 32 channels), and untagged 15-sample Soundtracker modules. XM, S3M, IT and `FLT8` modules are not supported: `load` returns `false`. A file may be at most 512 KB.

@@ -41,7 +41,7 @@ The bracket holds the app's display name (`"name"` in `app.json`). The line unde
 | `OTA IGNORED` | `/system/update.bin` was there with no update requested; it is renamed `update.bin.stale` |
 | `OS ERROR` | The launcher itself failed to start |
 
-**Reading a Lua error.** The position is the file and line: `/apps/my_app/main.lua:3:` for `main.lua`, and the same form for a module loaded with `require`. The screen shows the same message (dismiss it with **Esc**). There is no stack trace on the device, on the screen or in the log. In the simulator, its test channel's outcome for the app includes one.
+**Reading a Lua error.** The position is the file and line: `/apps/my_app/main.lua:3:` for `main.lua`, and the same form for a module loaded with `require`. The screen shows the same message (dismiss it with **Esc**). There is no stack trace on the device, on the screen or in the log. In the simulator, the test log has one (source `err`).
 
 To log your own errors, catch them with `pcall` and call `picocalc.sys.log` (USB serial) or write your own file: nothing lets an app add to `error.log`.
 

@@ -20,7 +20,7 @@ store reads.
 1. A public GitHub repo, not a fork, with `app.json` at the root. It needs `id`, `name` and `version`, all strings. The id must fit the store's rules, stricter than the firmware's: lower case, reverse-DNS, like `com.example.myapp` ([id rules](App-Json-Reference.md#id)).
 2. Add the topic `picodeck-app` under the repo's About settings.
 3. Bump `version` in `app.json`, then tag: the index reads `app.json` at the release's tag.
-4. Create a Release with exactly one `.zip` whose root holds `app.json` and `main.lua` or `main.elf`, with no folder around them:
+4. Create a Release with one `.zip` (or several, naming the one to use in [`asset`](App-Json-Reference.md#fields)) whose root holds `app.json` and `main.lua` or `main.elf`, with no folder around them:
 
    ```sh
    cd myapp && zip -r ../myapp.zip .

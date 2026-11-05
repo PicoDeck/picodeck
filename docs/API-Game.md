@@ -1,5 +1,5 @@
 ---
-title: "API — Game Framework"
+title: "API Game"
 ---
 
 Game-framework helpers: a 2D camera, a scene manager, and per-app persistent save files. Three sub-namespaces: `picocalc.game.camera`, `picocalc.game.scene`, and `picocalc.game.save`.

@@ -1,5 +1,5 @@
 ---
-title: "API — Video Playback"
+title: "API Video"
 ---
 
 PicoDeck supports MJPEG video playback from AVI files stored on the SD card. Video is decoded on Core 0 using JPEGDEC and displayed via the standard display framebuffer. Audio tracks (MP3) are decoded on Core 1 via a shared ring buffer.
@@ -314,5 +314,5 @@ When `player:play()` is called, the system clock is raised to **300 MHz** to fit
 ## See also
 
 - [Crash Logging and Watchdog](Crash-Logging-and-Watchdog.md) — fault recovery and reboot behavior
-- [API — Audio and Sound](API-Audio-and-Sound.md) — MP3 player, sound samples, tone generation
-- [API — Display and Graphics](API-Display-and-Graphics.md) — display primitives used alongside video
+- [API Audio and Sound](API-Audio-and-Sound.md) — MP3 player, sound samples, tone generation
+- [API Display and Graphics](API-Display-and-Graphics.md) — display primitives used alongside video

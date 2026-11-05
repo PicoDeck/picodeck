@@ -41,4 +41,4 @@ cd myapp
 make
 ```
 
-That gives `main.elf`. Edit `app.json` (the [`app.json` reference](https://picodeck.net/docs/app-json-reference/) has every field), then copy `main.elf` and `app.json` to `/apps/<name>/` on the card, or on a [simulator card](https://picodeck.net/docs/simulator-and-testing/#the-sd-card-is-a-folder). [Native App Development](https://picodeck.net/docs/native-loading/) has the rest.
+That gives `main.elf`. Edit `app.json` (the [`app.json` reference](https://picodeck.net/docs/app-json-reference/) has every field), then copy `main.elf` and `app.json` to `/apps/<dir>/` on the card, or on a [simulator card](https://picodeck.net/docs/simulator-and-testing/#the-sd-card-is-a-folder). [Native App Development](https://picodeck.net/docs/native-loading/) has the rest.
