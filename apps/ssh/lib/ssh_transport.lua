@@ -16,6 +16,7 @@ local MSG = {
     DEBUG                = 4,
     SERVICE_REQUEST      = 5,
     SERVICE_ACCEPT       = 6,
+    EXT_INFO             = 7,
     KEXINIT              = 20,
     NEWKEYS              = 21,
     KEX_ECDH_INIT        = 30,
@@ -24,6 +25,8 @@ local MSG = {
     USERAUTH_FAILURE     = 51,
     USERAUTH_SUCCESS     = 52,
     USERAUTH_BANNER      = 53,
+    GLOBAL_REQUEST       = 80,
+    REQUEST_FAILURE      = 82,
     CHANNEL_OPEN         = 90,
     CHANNEL_OPEN_CONFIRM = 91,
     CHANNEL_OPEN_FAILURE = 92,
@@ -257,41 +260,67 @@ function transport:take_packet()
     return packet:sub(6, 5 + payload_length)
 end
 
--- Wait for one whole packet.
-function transport:recv_packet(timeout_ms)
+-- Deal with a message that can arrive at any time, whatever the caller is waiting
+-- for. Returns true if it was one (the connection may have ended: see self.dead).
+function transport:handle_common_message(payload)
+    local msg_type = string.byte(payload, 1)
+
+    if msg_type == MSG.IGNORE or msg_type == MSG.DEBUG or msg_type == MSG.UNIMPLEMENTED then
+        return true
+    elseif msg_type == MSG.DISCONNECT then
+        local _, desc_pos = wire.read_uint32(payload, 2)  -- reason code
+        local desc = wire.read_string(payload, desc_pos) or "unknown"
+        self:fail("server disconnected: " .. desc)
+        return true
+    elseif not self.recv_cipher then
+        return false  -- during the first key exchange, the rest are the caller's to refuse
+    elseif msg_type == MSG.EXT_INFO then
+        return true  -- not asked for, and nothing here would use it
+    elseif msg_type == MSG.GLOBAL_REQUEST then
+        -- OpenSSH sends hostkeys-00@openssh.com right after login, and keepalives
+        -- that want a reply. This client supports none: RFC 4254 section 4.
+        local _, pos = wire.read_string(payload, 2)
+        if wire.read_boolean(payload, pos) then
+            self:send_packet(string.char(MSG.REQUEST_FAILURE))
+        end
+        return true
+    elseif msg_type == MSG.KEXINIT then
+        -- A server waits for the exchange before sending more, so without this the
+        -- session would just stop. 3 = SSH_DISCONNECT_KEY_EXCHANGE_FAILED.
+        local reason = "server asked to re-key, which this client cannot do"
+        self:send_packet(string.char(MSG.DISCONNECT) .. wire.uint32(3)
+                         .. wire.string(reason) .. wire.string(""))
+        self:fail(reason)
+        return true
+    end
+    return false
+end
+
+-- Take the next message for the caller out of recv_buf, without waiting. Returns its
+-- payload, or nil if more bytes are needed or the connection has ended (self.dead).
+function transport:take_message()
+    while true do
+        local payload = self:take_packet()
+        if not payload then return nil end
+        if not self:handle_common_message(payload) then return payload end
+    end
+end
+
+-- Wait for the next message for the caller.
+function transport:recv_packet_skip(timeout_ms)
     timeout_ms = timeout_ms or 30000
     local start = picocalc.sys.getTimeMs()
     while true do
-        local payload = self:take_packet()
+        local payload = self:take_message()
         if payload or self.dead then return payload end
 
         local had = #self.recv_buf
         if not self:fill_buf() then return self:connection_closed() end
-        if #self.recv_buf == had then
-            if picocalc.sys.getTimeMs() - start > timeout_ms then
-                self.error = "timeout waiting for the server"
-                return nil
-            end
-            picocalc.sys.sleep(5)
+        if picocalc.sys.getTimeMs() - start > timeout_ms then
+            self.error = "timeout waiting for the server"
+            return nil
         end
-    end
-end
-
--- Receive a packet, skipping IGNORE and DEBUG messages
-function transport:recv_packet_skip(timeout_ms)
-    while true do
-        local payload = self:recv_packet(timeout_ms)
-        if not payload then return nil end
-        local msg_type = string.byte(payload, 1)
-        if msg_type == MSG.IGNORE or msg_type == MSG.DEBUG then
-            -- skip
-        elseif msg_type == MSG.DISCONNECT then
-            local _, desc_pos = wire.read_uint32(payload, 2)  -- reason code
-            local desc = wire.read_string(payload, desc_pos) or "unknown"
-            return self:fail("server disconnected: " .. desc)
-        else
-            return payload
-        end
+        if #self.recv_buf == had then picocalc.sys.sleep(5) end
     end
 end
 

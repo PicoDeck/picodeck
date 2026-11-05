@@ -7,6 +7,7 @@ local connection = {}
 connection.__index = connection
 
 local MSG = {
+    UNIMPLEMENTED         = 3,
     CHANNEL_OPEN          = 90,
     CHANNEL_OPEN_CONFIRM  = 91,
     CHANNEL_OPEN_FAILURE  = 92,
@@ -231,20 +232,34 @@ function connection:process_packet(payload)
         self.transport:send_packet(close_payload)
 
     elseif msg_type == MSG.CHANNEL_REQUEST then
-        -- Server-initiated requests (e.g. exit-status, exit-signal)
-        -- Just acknowledge them
+        -- Server-initiated requests: exit-status and exit-signal want no reply. Any
+        -- that does (keepalive@openssh.com) is not one this client supports: refuse it.
         local _, pos = wire.read_uint32(payload, 2)
         local req_type
         req_type, pos = wire.read_string(payload, pos)
         local want_reply = wire.read_boolean(payload, pos)
         if want_reply then
-            local success_payload = string.char(MSG.CHANNEL_SUCCESS)
-                                 .. wire.uint32(self.remote_channel)
-            self.transport:send_packet(success_payload)
+            self.transport:send_packet(string.char(MSG.CHANNEL_FAILURE)
+                                       .. wire.uint32(self.remote_channel))
         end
 
+    elseif msg_type == MSG.CHANNEL_OPEN then
+        -- RFC 4254 section 5.1: 1 = SSH_OPEN_ADMINISTRATIVELY_PROHIBITED
+        local _, pos = wire.read_string(payload, 2)  -- channel type
+        local sender_channel = wire.read_uint32(payload, pos)
+        if sender_channel then
+            self.transport:send_packet(string.char(MSG.CHANNEL_OPEN_FAILURE)
+                                       .. wire.uint32(sender_channel) .. wire.uint32(1)
+                                       .. wire.string("not supported") .. wire.string(""))
+        end
+
+    elseif msg_type == MSG.CHANNEL_SUCCESS or msg_type == MSG.CHANNEL_FAILURE then
+        -- The reply to a request nothing is still waiting on
+
     else
-        -- Unknown channel message — ignore
+        -- RFC 4253 section 11.4: answer anything unknown, with its sequence number
+        self.transport:send_packet(string.char(MSG.UNIMPLEMENTED)
+                                   .. wire.uint32(self.transport.recv_seq - 1))
     end
 
     -- Replenish window if we've consumed enough
@@ -271,10 +286,10 @@ function connection:poll(timeout_ms)
         local alive = transport:fill_buf()
 
         -- Whole packets only: one still arriving stays buffered for the next poll.
-        local payload = transport:take_packet()
+        local payload = transport:take_message()
         while payload do
             self:process_packet(payload)
-            payload = transport:take_packet()
+            payload = transport:take_message()
         end
 
         if not alive and not self.closed then transport:connection_closed() end

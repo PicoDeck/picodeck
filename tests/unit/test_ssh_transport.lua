@@ -404,6 +404,147 @@ local function test_poll_ends_session()
     server:close()
 end
 
+-- ── Messages that can arrive at any time ────────────────────────────────────
+
+local CHANNEL_SUCCESS = string.char(99)
+
+local function global_request(name, want_reply)
+    return string.char(80) .. wire.string(name) .. wire.boolean(want_reply)
+end
+
+-- What a server may send before the reply a caller is waiting for.
+local NOT_FOR_THE_CALLER = {
+    {string.char(2) .. wire.string("padding"), "IGNORE"},
+    {string.char(3) .. wire.uint32(9), "UNIMPLEMENTED"},
+    {string.char(4) .. wire.boolean(false) .. wire.string("note") .. wire.string(""), "DEBUG"},
+    {string.char(7) .. wire.uint32(1) .. wire.string("server-sig-algs") .. wire.string("rsa-sha2-256"), "EXT_INFO"},
+    {global_request("hostkeys-00@openssh.com", false), "GLOBAL_REQUEST"},
+}
+
+local function test_common_messages()
+    for _, m in ipairs(NOT_FOR_THE_CALLER) do
+        local t, server = encrypted_session()
+        server:send(m[1])
+        server:send(CHANNEL_SUCCESS)
+        check(t:recv_packet_skip(300) == CHANNEL_SUCCESS, m[2] .. " is passed over while waiting: " .. tostring(t.error))
+        check(#server:received() == 0, m[2] .. " needs no answer")
+        server:close()
+
+        local ch, _, session_server = open_channel()
+        session_server:send(m[1])
+        session_server:send(channel_data("after"))
+        ch:poll(0)
+        check(ch:read() == "after", m[2] .. " is passed over in the session")
+        check(not ch.closed, m[2] .. " leaves the session open: " .. tostring(ch.error))
+        check(#session_server:received() == 0, m[2] .. " needs no answer in the session")
+        session_server:close()
+    end
+end
+
+-- RFC 4254 section 4: a request that wants a reply gets one, in both paths.
+local function test_global_request_reply()
+    local t, server = encrypted_session()
+    server:send(global_request("keepalive@openssh.com", true))
+    server:send(CHANNEL_SUCCESS)
+    check(t:recv_packet_skip(300) == CHANNEL_SUCCESS, "wanted a reply: still passed over")
+    local sent = server:received()
+    check(#sent == 1 and sent[1] == string.char(82), "wanted a reply: REQUEST_FAILURE")
+    server:close()
+
+    local ch, _, session_server = open_channel()
+    session_server:send(global_request("keepalive@openssh.com", true))
+    ch:poll(0)
+    sent = session_server:received()
+    check(#sent == 1 and sent[1] == string.char(82), "wanted a reply in the session: REQUEST_FAILURE")
+    check(not ch.closed, "the session goes on: " .. tostring(ch.error))
+    session_server:close()
+end
+
+local function check_rekey_refused(what, t, server)
+    check(t.dead, what .. ": the connection ends")
+    check(t.error and t.error:find("re-key", 1, true), what .. ": says why: " .. tostring(t.error))
+    local sent = server:received()
+    check(#sent == 1 and sent[1]:byte(1) == 1, what .. ": tells the server (DISCONNECT)")
+end
+
+-- The client cannot run a second key exchange; left alone, the server would wait for it for ever.
+local function test_rekey_refused()
+    local kexinit = HANDSHAKES[1].I_S
+    local t, server = encrypted_session()
+    server:send(kexinit)
+    check(t:recv_packet_skip(300) == nil, "while waiting: no message for the caller")
+    check_rekey_refused("while waiting", t, server)
+    server:close()
+
+    local ch, session_t, session_server = open_channel()
+    session_server:send(channel_data("before"))
+    session_server:send(kexinit)
+    ch:poll(0)
+    check(ch:read() == "before", "in the session: data before it is delivered")
+    check(ch.closed, "in the session: it ends")
+    check(ch.error and ch.error:find("re-key", 1, true), "in the session: says why: " .. tostring(ch.error))
+    check_rekey_refused("in the session", session_t, session_server)
+    session_server:close()
+
+    -- The first KEXINIT is the start of the handshake, not a re-key.
+    local plain = transport.new(fake_conn(wire.build_packet(kexinit)))
+    check(plain:recv_packet_skip(300) == kexinit, "before keys, KEXINIT goes to the handshake")
+    check(not plain.dead, "before keys, nothing is wrong")
+end
+
+-- RFC 4253 section 7.1: only key exchange messages before the keys, so these are errors there.
+local function test_messages_before_keys()
+    for _, m in ipairs({{global_request("x", true), 80}, {string.char(7), 7}}) do
+        local conn = fake_conn(wire.build_packet(m[1]))
+        local t = transport.new(conn)
+        check(t:recv_packet_skip(300) == m[1], m[2] .. " before keys goes to the caller, who refuses it")
+        check(#conn.tx == 0, m[2] .. " before keys is not answered")
+    end
+end
+
+-- What the session loop sends back for channel messages it does not act on.
+local function test_session_replies()
+    -- RFC 4254 section 5.4: an unknown channel request is refused, not accepted.
+    local ch, _, server = open_channel()
+    server:send(string.char(98) .. wire.uint32(0) .. wire.string("keepalive@openssh.com") .. wire.boolean(true))
+    ch:poll(0)
+    local sent = server:received()
+    check(#sent == 1 and sent[1] == string.char(100) .. wire.uint32(7), "unknown channel request: CHANNEL_FAILURE")
+
+    server:send(string.char(98) .. wire.uint32(0) .. wire.string("exit-status") .. wire.boolean(false) .. wire.uint32(0))
+    ch:poll(0)
+    check(#server:received() == 0, "exit-status wants no reply")
+    server:close()
+
+    -- RFC 4254 section 5.1: a channel the server opens is refused.
+    ch, _, server = open_channel()
+    server:send(string.char(90) .. wire.string("x11") .. wire.uint32(5) .. wire.uint32(1024) .. wire.uint32(1024))
+    ch:poll(0)
+    sent = server:received()
+    check(#sent == 1 and sent[1]:byte(1) == 92, "a channel the server opens: CHANNEL_OPEN_FAILURE")
+    check(sent[1] and wire.read_uint32(sent[1], 2) == 5, "...naming the server's channel")
+    check(not ch.closed, "...and the session goes on")
+    server:close()
+
+    -- RFC 4253 section 11.4: anything unknown gets UNIMPLEMENTED with its sequence number.
+    ch, _, server = open_channel()
+    server:send(channel_data("first"))
+    server:send(string.char(200) .. "mystery")
+    ch:poll(0)
+    sent = server:received()
+    check(#sent == 1 and sent[1] == string.char(3) .. wire.uint32(1), "an unknown message: UNIMPLEMENTED, its number")
+    check(not ch.closed, "...and the session goes on")
+    server:close()
+
+    -- A late reply to a request is known, so it is not unimplemented.
+    ch, _, server = open_channel()
+    server:send(CHANNEL_SUCCESS .. wire.uint32(0))
+    server:send(string.char(100) .. wire.uint32(0))
+    ch:poll(0)
+    check(#server:received() == 0, "a late channel reply needs no answer")
+    server:close()
+end
+
 -- ── Framing and encodings (RFC 4253 section 6) ──────────────────────────────
 
 local function test_packet_framing()
@@ -533,6 +674,11 @@ else
     test_hostile_banner()
     test_poll_packet_in_pieces()
     test_poll_ends_session()
+    test_common_messages()
+    test_global_request_reply()
+    test_rekey_refused()
+    test_messages_before_keys()
+    test_session_replies()
     test_packet_framing()
     test_mpint()
     test_disconnect_reason()
