@@ -53,7 +53,7 @@ STACK_TOP := 0x20080000
 endif
 ifeq ($(MAP),scratch-sram)     # stack and every gfx3d allocation in SRAM: no PSRAM data at all
 STACK_TOP := 0x20080000
-HEAP_BASE := 0x20070000
+HEAP_BASE := 0x20080000
 endif
 LDFLAGS := -nostartfiles --specs=nano.specs --specs=nosys.specs -Wl,--gc-sections -Wl,-T,$(HERE)/guest/guest.ld \
 	-Wl,--defsym=TEXT_BASE=$(TEXT_BASE) -Wl,--defsym=RAMTEXT_BASE=$(RAMTEXT_BASE) \
