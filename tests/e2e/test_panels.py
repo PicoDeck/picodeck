@@ -224,3 +224,98 @@ def test_panels_hw_scroll(sim_factory, test_sd_card):
 
     _tap(simulator, "esc")
     _wait_for(simulator, "PHW EXIT quit")
+
+
+RIGID_COMIC = r"""
+local Panels = picocalc.sys.loadlib("panels")
+local disp = picocalc.display
+local comicData = {
+    name = "EmbedDoc",
+    sequences = {
+        {
+            scrollType = "scroll",
+            nextSequence = 1,
+            transition = "cut",
+            panels = {
+                { frame = { height = 250 }, backgroundColor = disp.rgb(200, 40, 40),
+                  layers = { { text = "TOP", x = 140, y = 20 } } },
+                { frame = { height = 250, marginBefore = 8 }, backgroundColor = disp.rgb(40, 180, 60),
+                  layers = { { text = "MID", x = 140, y = 120 } } },
+                { frame = { height = 250, marginBefore = 8 }, backgroundColor = disp.rgb(40, 80, 200),
+                  layers = { { text = "BOTTOM", x = 130, y = 200 } } },
+            },
+        },
+    },
+}
+local opts = { resume = false }
+"""
+
+
+def _scroll_shots(sim):
+    """The screen at rest, and after scrolling 4 and 8 steps."""
+    _wait_for(sim, "PANELS:HW on")
+    sim.set_time_multiplier(0)
+    _frame_barrier(sim)
+    shots = [sim.screenshot()]
+    for _ in range(2):
+        _scroll(sim, 4)
+        shots.append(sim.screenshot())
+    return shots
+
+
+def test_panels_doc_embed_loop_matches_start(sim_factory, test_sd_card, tmp_path):
+    """The loop on the page, verbatim, on a hardware-scroll sequence: the same
+    pixels as Panels.start, and Esc gets out of it. The unconditional flush the
+    page used to show scrambled this screen."""
+    from helpers import PROJECT_ROOT, stage_lua_app
+    text = (PROJECT_ROOT / "docs" / "Library-Panels.md").read_text()
+    section = text.split("### `Panels.new(comicData [, opts])`", 1)[1]
+    loop = section.split("```lua\n", 1)[1].split("```", 1)[0]
+
+    _stage_panels_lib(test_sd_card)
+    stage_lua_app(test_sd_card, "embed_start",
+                  RIGID_COMIC + 'Panels.start(comicData, opts)\n')
+    stage_lua_app(test_sd_card, "embed_doc", RIGID_COMIC + loop)
+
+    sim = _paused_sim(sim_factory, test_sd_card)
+    sim.clear_log()
+    sim.launch_app("embed_start")
+    want = _scroll_shots(sim)
+    assert want[1] != want[0] and want[2] != want[1]
+    sim.set_time_multiplier(50)
+    sim.keypress("esc")
+    sim.wait_for_exit(timeout=10)
+
+    sim.clear_log()
+    sim.launch_app("embed_doc")
+    got = _scroll_shots(sim)
+    assert got == want
+    sim.set_time_multiplier(50)
+    sim.keypress("esc")
+    out = sim.wait_for_exit(timeout=10)
+    assert out.get("result") == "returned", out
+
+
+def test_panels_logs_a_missing_image_once(simulator, test_sd_card):
+    """The doc says logged and skipped. It was logged, and looked for on the
+    card, every frame the panel was up."""
+    from helpers import stage_lua_app
+    _stage_panels_lib(test_sd_card)
+    code = r"""
+local Panels = picocalc.sys.loadlib("panels")
+local comic = Panels.new({ name = "Missing", sequences = { { panels = {
+    { frame = { height = 320 }, layers = { { image = "nope.png" } } },
+} } } })
+for i = 1, 40 do
+    picocalc.input.update()
+    comic:update()
+    if comic.drewThisFrame ~= false then picocalc.display.flush() end
+end
+comic:teardown()
+"""
+    stage_lua_app(test_sd_card, "missing_img", code)
+    simulator.launch_app("missing_img")
+    out = simulator.wait_for_exit(timeout=20)
+    assert out.get("result") == "returned", out
+    lines = [t for t in _texts(simulator) if "image load failed" in t]
+    assert len(lines) == 1, lines

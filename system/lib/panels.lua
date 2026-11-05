@@ -282,6 +282,7 @@ function Cache.new(source)
     return setmetatable({
         source    = source,
         images    = {},   -- path -> image userdata
+        missing   = {},   -- path -> true: failed to load, logged; not tried again until images are freed
         panelSets = {},   -- panel -> { paths... }
         pending   = nil,  -- path currently preloading on Core 1
     }, Cache)
@@ -306,6 +307,7 @@ end
 function Cache:get(path)
     local img = self.images[path]
     if img then return img end
+    if self.missing[path] then return nil end
     -- If Core 1 happens to be preloading exactly this image, collect it now
     -- rather than decoding twice.
     self:pollPreload()
@@ -313,6 +315,7 @@ function Cache:get(path)
     if img then return img end
     local ok, loaded = pcall(gfx.image.load, path)
     if not ok then
+        self.missing[path] = true
         sys.log("PANELS:ERR image load failed: " .. path)
         return nil
     end
@@ -322,7 +325,7 @@ end
 
 function Cache:ensurePanel(panel)
     for _, path in ipairs(panelImagePaths(self, panel)) do
-        if not self.images[path] then self:get(path) end
+        if not self.images[path] and not self.missing[path] then self:get(path) end
     end
 end
 
@@ -343,7 +346,7 @@ function Cache:prefetchPanel(panel)
     if not CAP.preload or self.pending then return end
     if psramFree() < Panels.Settings.minFreeBytes then return end
     for _, path in ipairs(panelImagePaths(self, panel)) do
-        if not self.images[path] then
+        if not self.images[path] and not self.missing[path] then
             local ok, started = pcall(gfx.image.preload, path)
             if ok and started then self.pending = path end
             return
@@ -366,11 +369,15 @@ function Cache:evictOutside(keep)
             dropped = true
         end
     end
-    if dropped then collectgarbage("step") end
+    if dropped then
+        self.missing = {}   -- a load that failed for memory may work now
+        collectgarbage("step")
+    end
 end
 
 function Cache:dropAll()
     self.images = {}
+    self.missing = {}
     if CAP.preload and self.pending then
         pcall(gfx.image.cancelPreload)
         self.pending = nil

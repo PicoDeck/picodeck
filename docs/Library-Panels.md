@@ -71,12 +71,20 @@ Blocking entry point. Validates the comic, runs the full input/update/draw loop 
 ### `Panels.new(comicData [, opts])`
 Non-blocking constructor for embedding a comic in your own frame loop. Validates and returns a comic object.
 
+Your loop does what `Panels.start` does for you: it polls the input, handles Esc (a comic reads the D-pad and Enter, nothing else) and flushes only the frames the comic did not present itself. An unconditional `flush()` scrambles the screen on a sequence that uses [hardware scrolling](#hardware-accelerated-scrolling).
+
 ```lua
 local comic = Panels.new(comicData, opts)
 while not comic:finished() do
     picocalc.input.update()
-    comic:update()                 -- handles input, draws; does NOT flush
-    picocalc.display.flush()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then
+        comic:saveProgress()
+        break
+    end
+    comic:update()                     -- handles input, draws; does NOT flush
+    if comic.drewThisFrame ~= false then
+        picocalc.display.flush()       -- false: nothing changed, or the comic
+    end                                -- already sent its own strips
 end
 comic:teardown()
 ```
@@ -85,7 +93,7 @@ Comic object methods:
 
 | Method | Description |
 |--------|-------------|
-| `comic:update()` | Run one frame: input, scrolling, caching, drawing. Does **not** flush. Sets `comic.drewThisFrame` (`false` when an idle frame was skipped — you may skip your `flush()` too). |
+| `comic:update()` | Run one frame: input, scrolling, caching, drawing. Does **not** flush. Sets `comic.drewThisFrame`: when it is `false` (an idle frame was skipped, or hardware scroll sent its own strips) you must skip your `flush()`. |
 | `comic:finished()` | `true` once the comic has ended. |
 | `comic:currentSequence()` | Current sequence index. |
 | `comic:goToSequence(idx)` | Jump to sequence `idx` using the current sequence's transition. |
@@ -139,10 +147,10 @@ Key repeat is configured from `Panels.Settings.repeatDelayMs` / `repeatRateMs` a
 | `direction` | number | `Panels.ScrollDirection.FORWARD` | `.FORWARD` (1) or `.REVERSE` (-1); reverse swaps the forward/back keys. |
 | `advanceControl` | number | forward D-pad key | `"advance"` mode: `BTN_*` constant that steps forward. The natural forward D-pad key **also** always advances. Can also be set per panel. |
 | `autoAdvanceMs` | number | `2500` | `"auto"` mode: milliseconds per panel. Can be overridden per panel. |
-| `audio` | table | — | Background music: `{ file = "bgm.wav", loop = true, volume = 0.8 }`. `file` resolves under `audio/`; `loop` replays on finish; `volume` optional. Started on sequence entry, stopped on exit. |
+| `audio` | table | — | Background music: `{ file = "bgm.wav", loop = true, volume = 80 }`. `file` resolves under `audio/`; `loop` replays on finish; `volume` optional, 0-100 as in `picocalc.sound` (a value like `0.8` is 1%). Started on sequence entry, stopped on exit. |
 | `backgroundColor` | number | `Settings.backgroundColor` | RGB565 clear colour for the sequence (also the panel-fill fallback). |
 | `nextSequence` | number | current index + 1 | Sequence entered when scrolling/advancing past the end. Must index an existing sequence. |
-| `transition` | string | `"fadeToBlack"` | Transition used when **leaving** this sequence: `"fadeToBlack"`, `"fadeToWhite"`, or `"cut"`. Fade duration is `Settings.transitionMs`. |
+| `transition` | string | `"fadeToBlack"` | Transition used when **leaving** this sequence: `"fadeToBlack"`, `"fadeToWhite"`, or `"cut"`. Validation does not check the name, and any other value fades to black. Fade duration is `Settings.transitionMs`. |
 
 ### Panel fields
 
@@ -150,7 +158,7 @@ Key repeat is configured from `Panels.Settings.repeatDelayMs` / `repeatRateMs` a
 |-------|------|---------|-------------|
 | `frame` | table | `{}` | `{ height, width, marginBefore, marginAfter }`. `height` is the panel's extent on a vertical axis, `width` on a horizontal one; the off-axis dimension is always the full 320 px screen. Extent defaults to `Settings.defaultFrameSize` (320). `marginBefore`/`marginAfter` add gaps (default 0). |
 | `layers` | array | — | Layer tables, drawn in order (first = back). |
-| `audio` | table | — | One-shot sound effect: `{ file = "chime.wav", scrollTrigger = 0.3, volume = 1.0 }`. Fires once per viewport entry, when the panel's scroll percentage reaches `scrollTrigger` (default 0) and the panel has not fully scrolled past. Re-arms when the panel leaves the screen. |
+| `audio` | table | — | One-shot sound effect: `{ file = "chime.wav", scrollTrigger = 0.3, volume = 100 }`. `volume` is 0-100. Fires once per viewport entry, when the panel's scroll percentage reaches `scrollTrigger` (default 0) and the panel has not fully scrolled past. Re-arms when the panel leaves the screen. |
 | `effect` | table | — | `{ type = "shake", strength = 3 }` — shakes the whole panel by ±`strength` px each frame. (`"blink"` is layer-only.) |
 | `borderless` | boolean | `false` | Suppress the panel border (`Settings.borderWidth` / `borderColor`). |
 | `backgroundColor` | number | sequence / `Settings.backgroundColor` | RGB565 fill behind the layers. |
@@ -170,7 +178,7 @@ Every layer needs at least one of `image`, `images`, or `text`.
 |-------|------|---------|-------------|
 | `image` | string | — | Image filename, resolved under `images/`. |
 | `images` | array | — | Array of filenames; the displayed frame follows the scroll percentage (frame `ceil(pct * n)`, clamped to 1..n). Under `"auto"` advance this reads as a timed animation. |
-| `text` | string | — | Text line drawn with the built-in font. |
+| `text` | string | — | Text line, drawn in the display's current font (`picocalc.display.setFont`; the built-in 6x8 unless your app chose another), or in `font` with `w` and `h` below. |
 | `x`, `y` | number | `0` | Offset from the panel's frame origin. |
 | `parallax` | number | `0` | 0–1. Extra shift along the scroll axis proportional to the panel's traversal: 0 = locked to the panel, larger values move faster (foreground). Zero shift when the panel is centred in the viewport. |
 | `color` | number | `Settings.textColor` | Text colour (single-line text layers). |
@@ -271,8 +279,8 @@ frame rate. The demo's "The Descent" sequence is a worked example.
 
 Embedders driving `Panels.new` directly must respect `comic.drewThisFrame`:
 when it is `false`, the library flushed its own strips and a full
-`display.flush()` would scramble the ring (see the header example in
-`panels.lua`).
+`display.flush()` would scramble the ring (see the loop under
+[`Panels.new`](#panelsnewcomicdata--opts)).
 
 On-device screenshot tools read the draw framebuffer, which holds the ring
 layout while the fast path is active — captures of a scrolling sequence look
@@ -342,7 +350,7 @@ Panels.start(comic, {
 
 - `Panels.validate` (run by `new`/`start`) fails loudly with a path to the mistake, e.g. `panels: sequences[1].panels[2].layers[1]: parallax must be a number 0..1`.
 - Runtime errors in `updateFunction`/`renderFunction` and validation errors surface on a full-screen **PANELS FAULT** display (also logged as `PANELS:ERR`); **Esc** returns `"error", err` from `Panels.start`.
-- Missing images and failed audio loads are logged and skipped — the comic keeps running. An unknown `animate.ease` name is logged once and replaced by `"linear"`.
+- Missing images and failed audio loads are logged and skipped — the comic keeps running. An image that failed is not tried again, and not logged again, until the comic next frees images. An unknown `animate.ease` name is logged once and replaced by `"linear"`.
 - On older firmware the library degrades instead of crashing: without the clip rect, layers overhang their panels; without `game.save`, progress is not persisted; without `picocalc.sound`, audio cues are silent.
 
 ---
