@@ -73,7 +73,9 @@ port; an SNTP server, through `PICODECK_SIM_NET_SNTP_URL`). The app `net_fw/main
 named in `/data/com.test.net_fw/servers.json`, so a case that crashes the
 simulator fails alone. They include regression tests for the fixed Core 0/
 Core 1 close races from the code review (`KNOWN_BUGS` is empty). The whole
-E2E suite also passes against this build.
+E2E suite also passes against this build. `test_network_contract.py` runs the
+same app's cases that state the documented behaviour on the default libcurl
+layer as well, so the two stacks cannot drift apart unnoticed.
 
 Paths are absolute, so any working directory inside the repo works. The config
 is the repo-level `pytest.ini`: 60 s per-test timeout (`pytest-timeout`), strict

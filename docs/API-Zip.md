@@ -16,7 +16,7 @@ List the file entries of a ZIP archive (directory entries are skipped).
 - **Returns:** (table or nil, string) Array of `{name, size, compressed_size}` entries, or `nil, errorString` on failure
 
 ```lua
-local entries, err = picocalc.zip.list("/apps/mygame/assets.zip")
+local entries, err = picocalc.zip.list(APP_DIR .. "/assets.zip")
 if entries then
     for _, e in ipairs(entries) do
         picocalc.sys.log(e.name .. " (" .. e.size .. " bytes)")
@@ -37,7 +37,7 @@ Extract every file in a ZIP archive to a directory. Parent directories are creat
 - **Errors:** `"permission denied (source)"`, `"permission denied (destination)"`, `"open failed"` (the archive), `"bad zip"`, or one of the [extraction errors](#extraction-errors).
 
 ```lua
-local ok, err = picocalc.zip.extract("/apps/mygame/assets.zip", "/data/com.example.mygame/assets",
+local ok, err = picocalc.zip.extract(APP_DIR .. "/assets.zip", picocalc.fs.appPath("assets"),
     function(done, total)
         picocalc.sys.log("extracting " .. done .. "/" .. total)
     end)
@@ -86,14 +86,16 @@ end
 ---
 
 #### `ar:exists(name)`
-Check whether an entry with this exact name exists. Names include any directory prefix inside the archive (for example `"images/hero.png"`).
+Check whether an entry with this name exists. Names include any directory prefix inside the archive (for example `"images/hero.png"`) and are compared ignoring case, here and in every call that takes an entry name.
 
 - **Parameters:**
   - `name` (string): Entry name
 - **Returns:** (boolean) `true` if the entry exists (directory entries included), `false` otherwise. Never returns an error string.
 
 ```lua
-if ar:exists("images/hero.png") then ... end
+if ar:exists("images/hero.png") then
+    picocalc.sys.log("the bundle has a hero")
+end
 ```
 
 ---
@@ -136,7 +138,7 @@ The index of an entry, for the index-addressed calls below. Indexes are 0-based,
 
 - **Parameters:**
   - `name` (string): Entry name
-- **Returns:** (number or nil) Entry index, or `nil` if no entry has that exact name
+- **Returns:** (number or nil) Entry index, or `nil` if no entry has that name (ignoring case)
 
 ```lua
 local i = ar:locate("music/theme.mod")
@@ -200,7 +202,7 @@ Stream one entry to a file on the SD card, using constant memory regardless of e
 - **Errors:** `"no such entry"`, `"permission denied (destination)"`, or one of the [extraction errors](#extraction-errors).
 
 ```lua
-local ok, err = ar:extract("music/theme.mod", "/data/com.example.mygame/theme.mod")
+local ok, err = ar:extract("music/theme.mod", picocalc.fs.appPath("theme.mod"))
 ```
 
 ---
@@ -215,7 +217,7 @@ Extract every file entry into a directory. Same behaviour as `picocalc.zip.extra
 - **Errors:** `"permission denied (destination)"` or one of the [extraction errors](#extraction-errors). Errors raised inside `progress_fn` are ignored; a `sys.exit()` from it stops the extraction and the app exits.
 
 ```lua
-local ok, err = ar:extractAll("/data/com.example.mygame/assets")
+local ok, err = ar:extractAll(picocalc.fs.appPath("assets"))
 ```
 
 ---
@@ -304,9 +306,9 @@ The calls that write files report the same messages:
 All paths respect the app sandbox:
 
 - `picocalc.zip.open`, `picocalc.zip.list` and the `zip_path` of `picocalc.zip.extract` need **read** access to the archive.
-- The destinations of `picocalc.zip.extract`, `ar:extract` and `ar:extractAll` need **write** access.
+- The destinations of `picocalc.zip.extract`, `ar:extract`, `ar:extractEntry` and `ar:extractAll` need **write** access.
 
-By default an app can read `/apps/<dirname>` and read/write `/data/<APP_ID>`; the `root-filesystem` requirement in `app.json` lifts this to the whole SD card.
+By default an app can read `/apps/<dir>` and files under `/system/lib/`, and read and write `/data/<APP_ID>`; the `root-filesystem` requirement in `app.json` lifts this to the whole SD card.
 
 ---
 
@@ -332,6 +334,7 @@ Entry names are strictly validated before an entry name may become a filesystem 
 - The reader is seek-based: the archive is streamed from the SD card, so opening costs one pass over the central directory, not the archive size, and the archive is never copied to the heap.
 - Extraction (`extract`, `ar:extract`, `ar:extractAll`) streams with constant memory, whatever the entry size.
 - The SD bus is shared with Core 1 audio (MP3 and file player). Pace big `ar:read` calls: decompressing a multi-megabyte entry holds the SD bus long enough to starve audio decode, so do large reads at load screens, not mid-gameplay.
+- A large entry can take a long time. These calls keep feeding the device's watchdog, but your app does not run during one, so the system menu and Exit App wait until it returns (`extract` and `ar:extractAll` check for an exit between files).
 
 ---
 
@@ -356,18 +359,19 @@ if (!z) return;
 int idx = api->zip->locate(z, "images/hero.png");        // -1 if absent
 pczip_stat_t st;
 if (idx >= 0 && api->zip->statIndex(z, idx, &st)) {
-    void *buf = umm_malloc(st.size);                     // caller allocates
+    void *buf = api->psram->qmiAlloc(st.size ? st.size : 1);  // caller allocates
     if (buf) {
         int got = api->zip->read(z, idx, buf, st.size);  // bytes written, < 0 on error
         if (got >= 0) {
             // ... use buf[0..got) ...
         }
-        umm_free(buf);
+        api->psram->qmiFree(buf);
     }
 }
 
 // Or stream an entry to the SD card with constant memory:
-api->zip->extractEntry(z, idx, "/data/com.example.mygame/hero.png");
+if (idx >= 0)
+    api->zip->extractEntry(z, idx, "/data/com.example.mygame/hero.png");
 
 api->zip->close(z);
 ```

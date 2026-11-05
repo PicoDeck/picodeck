@@ -696,6 +696,309 @@ case_fw("tcp_connect_timeout", function()
     T.ok(now() - t0 < 3000, "took too long")
 end)
 
+-- ── The documented contract, on both network stacks ─────────────────────────
+-- test_network_contract.py runs these against the libcurl simulator too.
+
+-- setByteRange reaches the wire: a 206 with the slice, for the next request.
+case_fw("http_range_next_request", function()
+    local conn = net.http.new(HOST, cfg.http, false, "range")
+    conn:setByteRange(10, 19)
+    local r = request("/range", { conn = conn })
+    T.ok(wait(function() return r.complete or r.closed end, 3000), "no answer")
+    T.eq(r.status, 206, "status of the ranged request")
+    T.eq(#body(r), 10, "slice length")
+    -- The same connection's next request is a plain one again.
+    r.chunks = {}
+    local again = false
+    conn:setRequestCompleteCallback(function() again = true end)
+    T.ok(conn:get("/range"), "second get")
+    T.ok(wait(function() return again end, 3000), "second request")
+    r.drain()
+    T.eq(conn:getResponseStatus(), 200, "status of the next request")
+    T.eq(#body(r), 1000, "whole body on the next request")
+    conn:close()
+end)
+
+-- A negative `to` is open-ended, to the end of the file.
+case_fw("http_range_open_ended", function()
+    local conn = net.http.new(HOST, cfg.http, false, "range")
+    conn:setByteRange(990, -1)
+    local r = request("/range", { conn = conn })
+    T.ok(wait(function() return r.complete or r.closed end, 3000), "no answer")
+    T.eq(r.status, 206, "status")
+    T.eq(#body(r), 10, "slice to the end")
+    conn:close()
+end)
+
+case_fw("http_read_timeout_fraction", function()
+    local t0 = now()
+    local r = request("/hang", { read_timeout = 0.5 })
+    T.ok(wait(function() return r.closed end, 3000), "no read timeout")
+    local dt = now() - t0
+    T.ok(dt >= 400, "timed out too early: " .. dt .. " ms")
+    T.ok(dt < 2000, "timed out too late: " .. dt .. " ms")
+    T.ok(tostring(r.err):find("read timeout", 1, true),
+         "error: " .. tostring(r.err))
+end)
+
+-- 0 turns the read timeout off, as TCP's does.
+case_fw("http_read_timeout_zero_is_off", function()
+    local r = request("/slowok", { read_timeout = 0 })
+    T.ok(wait(function() return r.complete or r.closed end, 4000), "no answer")
+    T.ok(r.complete, "failed: " .. tostring(r.err))
+    T.eq(body(r), "hello picodeck", "body")
+    r.conn:close()
+end)
+
+case_fw("http_connect_timeout_fraction", function()
+    local conn = net.http.new(HOST, cfg.blackhole, false, "ct")
+    local t0 = now()
+    local r = request("/ok", { conn = conn, connect_timeout = 0.5 })
+    T.ok(wait(function() return r.closed end, 3000), "no connect timeout")
+    local dt = now() - t0
+    T.ok(dt >= 400, "timed out too early: " .. dt .. " ms")
+    T.ok(dt < 2000, "timed out too late: " .. dt .. " ms")
+end)
+
+case_fw("http_connect_timeout_zero_is_off", function()
+    local conn = net.http.new(HOST, cfg.blackhole, false, "ct")
+    local r = request("/ok", { conn = conn, connect_timeout = 0 })
+    wait(function() return r.closed end, 700)
+    T.eq(r.closed, false, "failed although the timeout is off: " .. tostring(r.err))
+    conn:close()
+end)
+
+case_fw("http_body_cut_short_fails", function()
+    local r = request("/short")
+    T.ok(wait(function() return r.complete or r.closed end, 3000), "no end")
+    T.eq(r.complete, false, "a cut-short body reported complete")
+    T.ok(r.closed, "closed callback")
+    T.ok(r.err, "an error text")
+end)
+
+-- More than the 4 KB default ring, read slowly: every byte arrives.
+case_fw("http_big_body_default_ring", function()
+    local conn = net.http.new(HOST, cfg.http, false, "ring")
+    local chunks, complete, closed = {}, false, false
+    conn:setRequestCompleteCallback(function() complete = true end)
+    conn:setConnectionClosedCallback(function() closed = true end)
+    T.ok(conn:get("/big"), "get")
+    local n = 0
+    while not closed do
+        local d = conn:read(8192)
+        if d then
+            chunks[#chunks + 1] = d
+            n = n + #d
+        elseif complete then
+            break
+        end
+        pc.sys.sleep(1)
+    end
+    T.ok(complete, "failed: " .. tostring(conn:getError()))
+    local data = table.concat(chunks)
+    T.eq(#data, 1048576, "size")
+    T.eq(adler(data), cfg.big_sum, "checksum")
+    conn:close()
+end)
+
+-- A second connect() while one runs is refused.
+case_fw("tcp_connect_twice_refused", function()
+    local s = T.ok(pc.tcp.new(HOST, cfg.blackhole, false), "tcp.new")
+    T.ok(s:connect(), "first connect")
+    local ok, err = s:connect()
+    T.eq(ok, false, "second connect while connecting")
+    T.ok(err, "a reason")
+    s:close()
+    local e = tcp_open()
+    ok, err = e:connect()
+    T.eq(ok, false, "connect while connected")
+    T.ok(err, "a reason")
+    e:close()
+end)
+
+case_fw("tcp_read_timeout_fraction", function()
+    local s = tcp_open()
+    s:setReadTimeout(0.3)
+    local t0 = now()
+    T.ok(wait(function() return s:error() ~= nil end, 2000),
+         "no read timeout within 2 s")
+    T.ok(now() - t0 >= 200, "too early")
+    T.ok(s:error():find("read timeout", 1, true), s:error())
+    T.eq(s:isConnected(), false, "isConnected")
+    s:close()
+end)
+
+-- The waits run the service pass, so callbacks fire inside them.
+case_fw("tcp_waits_run_callbacks", function()
+    local s = T.ok(pc.tcp.new(HOST, cfg.echo, false), "tcp.new")
+    local connected, reads = false, 0
+    s:setConnectCallback(function() connected = true end)
+    s:setReadCallback(function() reads = reads + 1 end)
+    -- An HTTP request in flight must make progress during the waits too.
+    local r = request("/ok")
+    T.ok(s:connect(), "connect")
+    T.ok(s:waitConnected(3), "waitConnected")
+    -- The connect event comes from the same pass that fires it.
+    pc.sys.sleep(0)
+    T.ok(connected, "connect callback")
+    -- Nothing to read for a while: the whole wait is service passes.
+    T.eq(s:waitData(0.4), false, "waitData with nothing sent")
+    T.ok(r.complete or r.closed, "the HTTP callbacks did not fire during the wait")
+    T.eq(s:write("x"), 1, "write")
+    T.ok(s:waitData(3), "waitData")
+    pc.sys.sleep(20)
+    T.ok(reads > 0, "read callback")
+    s:close()
+    r.conn:close()
+end)
+
+-- A read callback set does not make waitData miss the data it waits for.
+case_fw("tcp_wait_data_with_read_callback", function()
+    local s = tcp_open()
+    local got = {}
+    s:setReadCallback(function(c)
+        local d = c:read()
+        if d then got[#got + 1] = d end
+    end)
+    T.eq(s:write("hello"), 5, "write")
+    T.ok(s:waitData(3), "waitData returned false although data came")
+    pc.sys.sleep(20)
+    T.ok(wait(function() return #table.concat(got) == 5 end, 1000), "callback data")
+    s:close()
+end)
+
+-- The documented retry: a burst of small writes all arrive, in order.
+case_fw("tcp_write_retry_pattern", function()
+    local s = tcp_open()
+    local function write_all(conn, data)
+        while true do
+            local n = conn:write(data)
+            if n >= 0 then return true end
+            if not conn:isConnected() then return false, conn:error() end
+            pc.sys.sleep(5)
+        end
+    end
+    local sent = {}
+    for i = 1, 200 do
+        local b = string.char(32 + i % 90)
+        sent[i] = b
+        T.ok(write_all(s, b), "write " .. i)
+    end
+    T.eq(tcp_read_until(s, 200), table.concat(sent), "echo")
+    s:close()
+end)
+
+case_fw("tcp_connect_timeout_zero_is_off", function()
+    local s = T.ok(pc.tcp.new(HOST, cfg.blackhole, false), "tcp.new")
+    s:setConnectTimeout(0)
+    T.ok(s:connect(), "connect")
+    wait(function() return s:error() ~= nil end, 700)
+    T.eq(s:error(), nil, "failed although the timeout is off")
+    s:close()
+end)
+
+-- A socket closed from a callback during the wait ends the wait.
+case_fw("tcp_wait_survives_close_in_callback", function()
+    local s = T.ok(pc.tcp.new(HOST, cfg.echo, false), "tcp.new")
+    s:setConnectCallback(function(c) c:close() end)
+    T.ok(s:connect(), "connect")
+    T.eq(s:waitConnected(3), false, "closed in the callback")
+    local w = tcp_open()
+    local conn = net.http.new(HOST, cfg.http, false, "closer")
+    conn:setRequestCompleteCallback(function() w:close() end)
+    T.ok(conn:get("/ok"), "get")
+    T.eq(w:waitData(3), false, "closed in a callback during waitData")
+    conn:close()
+end)
+
+-- ── download.toFile ──────────────────────────────────────────────────────────
+
+local function dl_url(path) return "http://" .. HOST .. ":" .. cfg.http .. path end
+local function dl_dest(name) return "/data/" .. APP_ID .. "/" .. name end
+local function put(path, text)
+    local f = T.ok(pc.fs.open(path, "w"), "open " .. path)
+    f:write(text)
+    f:close()
+end
+
+case_fw("download_replaces_existing", function()
+    local dl = pc.sys.loadlib("download")
+    local dest = dl_dest("replace.bin")
+    put(dest, "old contents")
+    local ok, err = dl.toFile(dl_url("/ok"), dest)
+    T.ok(ok, "failed: " .. tostring(err))
+    T.eq(pc.fs.readFile(dest), "hello picodeck", "new contents")
+    T.eq(pc.fs.exists(dest .. ".part"), false, "no .part left")
+    T.eq(pc.fs.exists(dest .. ".old"), false, "no .old left")
+end)
+
+case_fw("download_keeps_existing_on_failure", function()
+    local dl = pc.sys.loadlib("download")
+    local dest = dl_dest("keep.bin")
+    put(dest, "precious")
+    for _, path in ipairs({ "/notfound", "/short", "/empty", "/redir-none" }) do
+        local ok, err = dl.toFile(dl_url(path), dest, { timeoutMs = 4000 })
+        T.eq(ok, false, path .. " returned true")
+        T.ok(err, path .. ": no reason")
+        T.eq(pc.fs.readFile(dest), "precious", path .. " lost the file")
+        T.eq(pc.fs.exists(dest .. ".part"), false, path .. " left a .part")
+    end
+    -- Nothing listening: refused before a byte arrives.
+    local ok = dl.toFile("http://" .. HOST .. ":1/x", dest, { timeoutMs = 4000 })
+    T.eq(ok, false, "refused connection returned true")
+    T.eq(pc.fs.readFile(dest), "precious", "the refused connection lost the file")
+end)
+
+case_fw("download_failure_leaves_no_file", function()
+    local dl = pc.sys.loadlib("download")
+    local dest = dl_dest("none.bin")
+    local ok, err = dl.toFile(dl_url("/short"), dest, { timeoutMs = 4000 })
+    T.eq(ok, false, "returned true")
+    T.eq(pc.fs.exists(dest), false, "a file was left")
+    T.eq(pc.fs.exists(dest .. ".part"), false, "a .part was left")
+end)
+
+case_fw("download_relative_redirects", function()
+    local dl = pc.sys.loadlib("download")
+    local dest = dl_dest("redir.bin")
+    for _, path in ipairs({ "/redir-abs", "/redir-root", "/redir-rel",
+                            "/redir-rel-up", "/redir-scheme",
+                            "/sub/dir/redir-rel", "/sub/dir/redir-rel-up" }) do
+        pc.fs.delete(dest)
+        local ok, err = dl.toFile(dl_url(path), dest, { timeoutMs = 4000 })
+        T.ok(ok, path .. ": " .. tostring(err))
+        T.eq(pc.fs.readFile(dest), "hello picodeck", path)
+    end
+    local ok, err = dl.toFile(dl_url("/redir-loop"), dest,
+                              { timeoutMs = 4000, maxRedirects = 2 })
+    T.eq(ok, false, "loop")
+    T.eq(err, "too many redirects", "loop reason")
+end)
+
+-- The failure reason is the connection's own, not "connection closed".
+case_fw("download_reports_the_real_error", function()
+    local dl = pc.sys.loadlib("download")
+    local dest = dl_dest("err.bin")
+    local ok, err = dl.toFile(dl_url("/short"), dest, { timeoutMs = 4000 })
+    T.eq(ok, false, "returned true")
+    T.ok(err and err ~= "connection closed", "reason: " .. tostring(err))
+    ok, err = dl.toFile(dl_url("/notfound"), dest, { timeoutMs = 4000 })
+    T.eq(err, "HTTP 404", "404 reason")
+end)
+
+case_fw("download_progress_totals", function()
+    local dl = pc.sys.loadlib("download")
+    local seen = {}
+    local ok, err = dl.toFile(dl_url("/chunked"), dl_dest("p.bin"), {
+        onProgress = function(r, t) seen[#seen + 1] = { r, t } end,
+    })
+    T.ok(ok, tostring(err))
+    T.ok(#seen >= 2, "progress calls")
+    T.eq(seen[1][2], 0, "total unknown while chunks arrive")
+    T.eq(seen[#seen][1], 14, "final received")
+    T.eq(seen[#seen][2], 14, "the final call passes received as total")
+end)
+
 -- ── Run the one selected case ───────────────────────────────────────────────
 
 local fn = cases[cfg.case]

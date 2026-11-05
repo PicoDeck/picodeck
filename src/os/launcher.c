@@ -933,6 +933,8 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   display_set_font(0);            // nor the previous app's font selection
   font_registry_unload_all();     // nor its loaded fonts
   perf_init();                    // nor its perf pacing target
+  sd_set_slow_mode(false);        // nor a slow SD bus (left on by an app that
+                                  // exited mid-download)
 #ifndef PICODECK_SIMULATOR
   // Nor a dev run's `xipstat prio core0`: Core 0 winning every bus
   // arbitration would leave Core 1 and the DMA (audio) the scraps.

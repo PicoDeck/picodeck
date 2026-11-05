@@ -166,6 +166,8 @@ The watchdog resets the device 10 seconds after it was last fed. Boot steps feed
 
 After a watchdog reset, the next boot prints `watchdog_caused_reboot=1` to the serial console and, if an app was running, leaves the record described under [running.txt](#runningtxt).
 
+An app has to let the system run at least once in those 10 seconds. A Lua app does so all the time while Lua code runs, and the calls that can take long (`conn:waitConnected`, `conn:waitData`, `fs.copy`, `fs.read`, `fs.readFile` and `fs.write` of a large file, `picocalc.zip.extract` and the archive read and extract methods) keep feeding it themselves, whatever the size; the menu and Exit App wait until they return.
+
 ---
 
 ## Testing the crash handler

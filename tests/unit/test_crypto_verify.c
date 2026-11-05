@@ -7,6 +7,7 @@
 #include <stdlib.h>
 
 #include "check.h"
+#include "fakes/sdcard_fake.h"
 #include "crypto.h"
 #include "crypto_vectors.h"
 #include "rng.h"
@@ -131,9 +132,24 @@ static void test_recorded_handshakes(void) {
     }
 }
 
+// sha256File must not hand back the hash of what it read before an error.
+static void test_sha256_file_read_error(void) {
+    uint8_t h[32];
+    sdfake_reset();
+    sdfake_put("/f.bin", "abc", 3);
+    CHECK(crypto_sha256_file("/f.bin", h));
+    static const uint8_t abc[4] = {0xba, 0x78, 0x16, 0xbf};
+    CHECK(memcmp(h, abc, sizeof(abc)) == 0);
+    sdfake_fail_reads(true);
+    CHECK(!crypto_sha256_file("/f.bin", h));
+    sdfake_fail_reads(false);
+    CHECK(!crypto_sha256_file("/absent.bin", h));
+}
+
 int main(void) {
     test_ecdsa();
     test_rsa();
     test_recorded_handshakes();
+    test_sha256_file_read_error();
     return check_report("test_crypto_verify");
 }

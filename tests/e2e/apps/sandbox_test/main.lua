@@ -182,4 +182,23 @@ T.case("appconfig_app_id_traversal", function()
          "config.save() did not write /data/com.test.sandbox/config.json")
 end)
 
+-- ── A refused listing says so, and still works with ipairs ─────────────────
+
+T.case("listDir_refused_says_why", function()
+    local t, err = fs.listDir("/system")
+    T.eq(#t, 0, "nothing listed")
+    T.eq(err, "permission denied", "second return")
+    for _ in ipairs(fs.listDir("/system")) do T.fail("listed") end
+    local own, own_err = fs.listDir(OWN)
+    T.ok(#own >= 0, "own directory")
+    T.eq(own_err, nil, "no second return when allowed")
+end)
+
+T.case("glob_refused_says_why", function()
+    local t, err = fs.glob("/system", "*")
+    T.eq(#t, 0, "nothing listed")
+    T.eq(err, "permission denied", "second return")
+    for _ in ipairs(fs.glob("/system", "*")) do T.fail("listed") end
+end)
+
 T.done()

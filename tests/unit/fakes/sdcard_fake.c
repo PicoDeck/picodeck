@@ -141,6 +141,8 @@ sdfile_t sdcard_fopen(const char *path, const char *mode) {
 
 int sdcard_fread(sdfile_t fh, void *buf, int len) {
     if (s_busy) s_blocking_while_busy++;
+    if (s_fail_reads)
+        return -1;
     fake_handle_t *h = fh;
     if (!h || len <= 0)
         return 0;

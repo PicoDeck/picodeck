@@ -5,6 +5,8 @@
 
 #include "zip_util.h"
 
+#include "hardware/watchdog.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -170,6 +172,10 @@ int zip_reader_locate(zip_reader_t *zr, const char *name) {
 // whose state — decompressor included — is heap-allocated through the
 // archive's allocator (umm_malloc/PSRAM on firmware via miniz_picodeck.h).
 
+// Chunk size for SD writes during streamed extraction (heap, not stack), and
+// the step of an in-memory read.
+#define ZIP_STREAM_CHUNK (16u * 1024u)
+
 // Decompress entry idx into dst (which must hold st.m_uncomp_size bytes).
 // Returns true only when the entry decompressed completely with a good CRC
 // (mz_zip_reader_extract_iter_free performs both checks).
@@ -180,10 +186,14 @@ static bool iter_read_full(zip_reader_t *zr, int idx, uint8_t *dst,
     if (!it) return false;
     size_t total = 0;
     while (total < dst_cap) {
-        size_t n = mz_zip_reader_extract_iter_read(it, dst + total,
-                                                   dst_cap - total);
+        // In steps, feeding the watchdog: a large entry outlasts its 10 s, and
+        // nothing else runs during this C call.
+        size_t step = dst_cap - total;
+        if (step > ZIP_STREAM_CHUNK) step = ZIP_STREAM_CHUNK;
+        size_t n = mz_zip_reader_extract_iter_read(it, dst + total, step);
         if (n == 0) break;
         total += n;
+        watchdog_update();
     }
     return mz_zip_reader_extract_iter_free(it) == MZ_TRUE;
 }
@@ -257,9 +267,6 @@ int zip_reader_read_to_buf(zip_reader_t *zr, int idx, void *buf,
 
 // ── Streamed extraction ──────────────────────────────────────────────────────
 
-// Chunk size for SD writes during streamed extraction (heap, not stack).
-#define ZIP_STREAM_CHUNK (16u * 1024u)
-
 // A destination that will not open is not a failed write: FatFS's file lock
 // refuses a file someone holds open, whatever the free space (issue #65). The
 // file name is the useful end of a path too long for the buffer.
@@ -307,6 +314,7 @@ static bool extract_streamed(zip_reader_t *zr, int idx, const char *dest_path,
                 write_failed = true;
                 break;
             }
+            watchdog_update();  // as iter_read_full: one entry can take minutes
         }
     }
     bool ok = it && mz_zip_reader_extract_iter_free(it) == MZ_TRUE &&

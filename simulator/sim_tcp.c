@@ -14,6 +14,8 @@
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netdb.h>
@@ -42,6 +44,33 @@ static void set_socket_fd(tcp_conn_t *c, int fd) {
 
 static int conn_index(tcp_conn_t *c) {
     return (int)(c - s_conns);
+}
+
+// Guards the receive ring: Core 1 fills it while Core 0 reads it.
+static pthread_mutex_t s_rx_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// Deadlines use the host's clock, not the simulator's (virtual) one: the
+// network runs in real time.
+static uint32_t real_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u);
+}
+
+static bool deadline_passed(uint32_t now, uint32_t deadline) {
+    return deadline != 0 && (int32_t)(now - deadline) > 0;
+}
+
+static void pending_set(tcp_conn_t *c, uint32_t bits) {
+    __atomic_fetch_or(&c->pending, bits, __ATOMIC_RELAXED);
+}
+
+// FAILED with an error text; the socket (if any) is gone.
+static void conn_fail(tcp_conn_t *c, const char *fmt, const char *arg) {
+    snprintf(c->err, sizeof(c->err), fmt, arg);
+    c->deadline_connect = c->deadline_read = 0;
+    c->state = TCP_STATE_FAILED;
+    pending_set(c, TCP_CB_FAILED);
 }
 
 // ── Ring buffer helpers ─────────────────────────────────────────────────────
@@ -116,6 +145,7 @@ tcp_conn_t *tcp_alloc(void) {
             if (!s_conns[i].rx_buf)
                 return NULL;
             s_conns[i].rx_cap = TCP_RECV_BUF_DEFAULT;
+            s_conns[i].connect_timeout_ms = 15000;
             s_conns[i].in_use = true;
             s_is_tls[i] = false;
             return &s_conns[i];
@@ -127,8 +157,13 @@ tcp_conn_t *tcp_alloc(void) {
 void tcp_free(tcp_conn_t *c) {
     if (!c)
         return;
-    if (c->pcb)
-        tcp_close(c);
+    // Core 1 closes the socket and leaves the slot before it is cleared (the
+    // close of a connect still queued comes after it, in order).
+    tcp_close(c);
+    for (int i = 0; i < 200 && (c->pcb != NULL || c->state == TCP_STATE_QUEUED); i++) {
+        struct timespec ts = {0, 1000000};  // 1 ms
+        nanosleep(&ts, NULL);
+    }
     free(c->rx_buf);
     int idx = conn_index(c);
     s_is_tls[idx] = false;
@@ -146,17 +181,24 @@ tcp_conn_t *tcp_get_conn(int idx) {
 bool tcp_connect(tcp_conn_t *c, const char *host, uint16_t port, bool use_ssl) {
     if (!c || !wifi_is_available())
         return false;
+    if (c->state != TCP_STATE_IDLE && c->state != TCP_STATE_CLOSED &&
+        c->state != TCP_STATE_FAILED)
+        return false;  // in progress or connected, as on the device
     if (host != c->host) {  // Lua passes the slot's own buffer
         strncpy(c->host, host, sizeof(c->host) - 1);
         c->host[sizeof(c->host) - 1] = '\0';
     }
     c->port = port;
     c->use_ssl = use_ssl;
-    c->state = TCP_STATE_QUEUED;
     c->pending = 0;
+    pthread_mutex_lock(&s_rx_lock);
     c->rx_head = c->rx_tail = c->rx_count = 0;
+    pthread_mutex_unlock(&s_rx_lock);
     c->err[0] = '\0';
     c->fingerprint[0] = '\0';
+    c->deadline_connect = c->connect_timeout_ms ? real_ms() + c->connect_timeout_ms : 0;
+    c->deadline_read = 0;
+    c->state = TCP_STATE_QUEUED;
 
     conn_req_t req = {.type = CONN_REQ_TCP_CONNECT, .conn = (http_conn_t *)c};
     return wifi_req_push(&req);
@@ -186,7 +228,7 @@ int tcp_write(tcp_conn_t *c, const void *buf, int len) {
 }
 
 void tcp_close(tcp_conn_t *c) {
-    if (!c || !c->pcb)
+    if (!c || (!c->pcb && c->state != TCP_STATE_QUEUED))
         return;
     conn_req_t req = {.type = CONN_REQ_TCP_CLOSE, .conn = (http_conn_t *)c};
     wifi_req_push(&req);
@@ -195,8 +237,9 @@ void tcp_close(tcp_conn_t *c) {
 // ── Data reading (Core 0) ───────────────────────────────────────────────────
 
 int tcp_read(tcp_conn_t *c, void *buf, int len) {
-    if (!c || len == 0 || c->rx_count == 0)
+    if (!c || len == 0)
         return 0;
+    pthread_mutex_lock(&s_rx_lock);
     uint32_t n = ((uint32_t)len < c->rx_count) ? (uint32_t)len : c->rx_count;
 
     uint32_t till_end = c->rx_cap - c->rx_tail;
@@ -211,11 +254,17 @@ int tcp_read(tcp_conn_t *c, void *buf, int len) {
         c->rx_tail = n - till_end;
     }
     c->rx_count -= n;
+    pthread_mutex_unlock(&s_rx_lock);
     return (int)n;
 }
 
 uint32_t tcp_bytes_available(tcp_conn_t *c) {
-    return c ? c->rx_count : 0;
+    if (!c)
+        return 0;
+    pthread_mutex_lock(&s_rx_lock);
+    uint32_t n = c->rx_count;
+    pthread_mutex_unlock(&s_rx_lock);
+    return n;
 }
 
 const char *tcp_get_error(tcp_conn_t *c) {
@@ -248,7 +297,11 @@ void tcp_set_connect_timeout(tcp_conn_t *c, uint32_t ms) {
 }
 
 void tcp_set_read_timeout(tcp_conn_t *c, uint32_t ms) {
-    if (c) c->read_timeout_ms = ms;
+    if (!c)
+        return;
+    c->read_timeout_ms = ms;
+    if (c->state == TCP_STATE_CONNECTED)
+        c->deadline_read = ms ? real_ms() + ms : 0;
 }
 
 uint32_t tcp_take_pending(tcp_conn_t *c) {
@@ -263,11 +316,19 @@ uint32_t tcp_take_pending(tcp_conn_t *c) {
 extern bool sim_network_blocked(void);
 extern const char *sim_wifi_get_error(void);
 
+// The socket is up: CONNECTED, with the read timeout running.
+static void connected(tcp_conn_t *c) {
+    c->deadline_connect = 0;
+    c->deadline_read = c->read_timeout_ms ? real_ms() + c->read_timeout_ms : 0;
+    c->state = TCP_STATE_CONNECTED;
+    pending_set(c, TCP_CB_CONNECT);
+}
+
 void sim_tcp_start_connect(tcp_conn_t *c) {
+    if (c->state != TCP_STATE_QUEUED)
+        return;  // closed before Core 1 got to it
     if (sim_network_blocked()) {
-        snprintf(c->err, sizeof(c->err), "network error: %s", sim_wifi_get_error());
-        c->state = TCP_STATE_FAILED;
-        c->pending |= TCP_CB_FAILED;
+        conn_fail(c, "network error: %s", sim_wifi_get_error());
         return;
     }
     int idx = conn_index(c);
@@ -276,9 +337,7 @@ void sim_tcp_start_connect(tcp_conn_t *c) {
         // TLS: use libcurl CONNECT_ONLY
         CURL *easy = curl_easy_init();
         if (!easy) {
-            snprintf(c->err, sizeof(c->err), "curl_easy_init failed");
-            c->state = TCP_STATE_FAILED;
-            c->pending |= TCP_CB_FAILED;
+            conn_fail(c, "%s", "curl_easy_init failed");
             return;
         }
 
@@ -292,14 +351,13 @@ void sim_tcp_start_connect(tcp_conn_t *c) {
         curl_easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, c->insecure ? 0L : 2L);
         curl_easy_setopt(easy, CURLOPT_SSL_ENABLE_ALPN, 0L);
         curl_easy_setopt(easy, CURLOPT_CERTINFO, 1L);
-        curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 10L);
+        curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT_MS, (long)c->connect_timeout_ms);
 
         // Blocking perform on Core 1 — OK since it's a background thread
+        c->state = TCP_STATE_CONNECTING;
         CURLcode res = curl_easy_perform(easy);
         if (res != CURLE_OK) {
-            snprintf(c->err, sizeof(c->err), "TLS connect: %s", curl_easy_strerror(res));
-            c->state = TCP_STATE_FAILED;
-            c->pending |= TCP_CB_FAILED;
+            conn_fail(c, "TLS connect: %s", curl_easy_strerror(res));
             curl_easy_cleanup(easy);
             return;
         }
@@ -307,8 +365,7 @@ void sim_tcp_start_connect(tcp_conn_t *c) {
         sim_peer_fingerprint(easy, c->fingerprint, sizeof(c->fingerprint));
         c->pcb = easy;
         s_is_tls[idx] = true;
-        c->state = TCP_STATE_CONNECTED;
-        c->pending |= TCP_CB_CONNECT;
+        connected(c);
         printf("[TCP] TLS connected to %s:%u (slot %d)\n", c->host, c->port, idx);
     } else {
         // Plain TCP: POSIX socket
@@ -321,42 +378,40 @@ void sim_tcp_start_connect(tcp_conn_t *c) {
 
         int err = getaddrinfo(c->host, port_str, &hints, &res);
         if (err != 0 || !res) {
-            snprintf(c->err, sizeof(c->err), "DNS: %s", gai_strerror(err));
-            c->state = TCP_STATE_FAILED;
-            c->pending |= TCP_CB_FAILED;
+            conn_fail(c, "DNS: %s", gai_strerror(err));
             if (res) freeaddrinfo(res);
             return;
         }
 
         int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
         if (fd < 0) {
-            snprintf(c->err, sizeof(c->err), "socket: %s", strerror(errno));
-            c->state = TCP_STATE_FAILED;
-            c->pending |= TCP_CB_FAILED;
+            conn_fail(c, "socket: %s", strerror(errno));
             freeaddrinfo(res);
             return;
         }
 
-        // Connect (blocking on Core 1 is OK)
-        if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
-            snprintf(c->err, sizeof(c->err), "connect: %s", strerror(errno));
-            c->state = TCP_STATE_FAILED;
-            c->pending |= TCP_CB_FAILED;
+        // Non-blocking from the start: sim_tcp_poll finishes the connect, so
+        // an unanswered one times out as on the device and holds up nothing.
+        int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+        int rc = connect(fd, res->ai_addr, res->ai_addrlen);
+        if (rc < 0 && errno != EINPROGRESS) {
+            conn_fail(c, "connect: %s", strerror(errno));
             close(fd);
             freeaddrinfo(res);
             return;
         }
         freeaddrinfo(res);
 
-        // Set non-blocking for subsequent reads
-        int flags = fcntl(fd, F_GETFL, 0);
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-
         set_socket_fd(c, fd);
         s_is_tls[idx] = false;
-        c->state = TCP_STATE_CONNECTED;
-        c->pending |= TCP_CB_CONNECT;
-        printf("[TCP] Connected to %s:%u (slot %d, fd %d)\n", c->host, c->port, idx, fd);
+        if (rc == 0) {
+            connected(c);
+            printf("[TCP] Connected to %s:%u (slot %d, fd %d)\n", c->host, c->port, idx, fd);
+        } else {
+            c->state = TCP_STATE_CONNECTING;
+        }
     }
 }
 
@@ -369,22 +424,40 @@ void sim_tcp_do_write(tcp_conn_t *c, void *data, uint32_t len) {
     int idx = conn_index(c);
 
     if (s_is_tls[idx]) {
-        // TLS: curl_easy_send
-        size_t sent = 0;
-        CURLcode res = curl_easy_send((CURL *)c->pcb, data, len, &sent);
-        if (res != CURLE_OK && res != CURLE_AGAIN) {
-            snprintf(c->err, sizeof(c->err), "TLS send: %s", curl_easy_strerror(res));
-            c->state = TCP_STATE_FAILED;
-            c->pending |= TCP_CB_FAILED;
+        // TLS: curl_easy_send, all of it (the device's stack buffers a write).
+        const char *p = data;
+        size_t left = len;
+        for (int tries = 0; left > 0 && tries < 2000; tries++) {
+            size_t sent = 0;
+            CURLcode res = curl_easy_send((CURL *)c->pcb, p, left, &sent);
+            if (res != CURLE_OK && res != CURLE_AGAIN) {
+                conn_fail(c, "TLS send: %s", curl_easy_strerror(res));
+                break;
+            }
+            p += sent;
+            left -= sent;
+            if (res == CURLE_AGAIN) {
+                struct timespec ts = {0, 1000000};  // 1 ms
+                nanosleep(&ts, NULL);
+            }
         }
     } else {
-        // Plain TCP: send()
+        // Plain TCP: send(), all of it (the device's stack buffers a write).
         int fd = get_socket_fd(c);
-        ssize_t sent = send(fd, data, len, MSG_NOSIGNAL);
-        if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            snprintf(c->err, sizeof(c->err), "send: %s", strerror(errno));
-            c->state = TCP_STATE_FAILED;
-            c->pending |= TCP_CB_FAILED;
+        const char *p = data;
+        size_t left = len;
+        for (int tries = 0; left > 0 && tries < 2000; tries++) {
+            ssize_t sent = send(fd, p, left, MSG_NOSIGNAL);
+            if (sent >= 0) {
+                p += sent;
+                left -= (size_t)sent;
+            } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                struct pollfd pfd = {.fd = fd, .events = POLLOUT};
+                poll(&pfd, 1, 1);
+            } else {
+                conn_fail(c, "send: %s", strerror(errno));
+                break;
+            }
         }
     }
 
@@ -407,9 +480,33 @@ void sim_tcp_do_close(tcp_conn_t *c) {
         c->pcb = NULL;
     }
 
+    c->deadline_connect = c->deadline_read = 0;
     c->state = TCP_STATE_CLOSED;
-    c->pending |= TCP_CB_CLOSED;
+    pending_set(c, TCP_CB_CLOSED);
     s_is_tls[idx] = false;
+}
+
+// A timeout: the socket goes, and the slot fails with the device's text.
+static void poll_fail_timeout(tcp_conn_t *c, int idx, const char *what, uint32_t ms) {
+    if (s_is_tls[idx])
+        curl_easy_cleanup((CURL *)c->pcb);
+    else
+        close(get_socket_fd(c));
+    c->pcb = NULL;
+    s_is_tls[idx] = false;
+    char msg[48];
+    snprintf(msg, sizeof(msg), "%s timeout (%ums)", what, (unsigned)ms);
+    conn_fail(c, "%s", msg);
+}
+
+// Received bytes: into the ring, and the read timeout starts over.
+static void got_data(tcp_conn_t *c, const uint8_t *data, uint32_t len) {
+    pthread_mutex_lock(&s_rx_lock);
+    rx_write(c, data, len);
+    pthread_mutex_unlock(&s_rx_lock);
+    if (c->read_timeout_ms)
+        c->deadline_read = real_ms() + c->read_timeout_ms;
+    pending_set(c, TCP_CB_READ);
 }
 
 // ── sim_tcp_poll() — called from wifi_poll() on Core 1 ──────────────────────
@@ -417,10 +514,42 @@ void sim_tcp_do_close(tcp_conn_t *c) {
 void sim_tcp_poll(void) {
     for (int i = 0; i < TCP_MAX_CONNECTIONS; i++) {
         tcp_conn_t *c = &s_conns[i];
-        if (!c->in_use || c->state != TCP_STATE_CONNECTED || !c->pcb)
+        if (!c->in_use || !c->pcb)
             continue;
+        uint32_t now = real_ms();
 
+        if (c->state == TCP_STATE_CONNECTING) {
+            if (s_is_tls[i])
+                continue;
+            int cfd = get_socket_fd(c);
+            struct pollfd cp = {.fd = cfd, .events = POLLOUT};
+            if (poll(&cp, 1, 0) > 0) {
+                int so = 0;
+                socklen_t solen = sizeof(so);
+                getsockopt(cfd, SOL_SOCKET, SO_ERROR, &so, &solen);
+                if (so) {
+                    close(cfd);
+                    c->pcb = NULL;
+                    conn_fail(c, "connect: %s", strerror(so));
+                } else {
+                    connected(c);
+                    printf("[TCP] Connected to %s:%u (slot %d, fd %d)\n", c->host, c->port, i, cfd);
+                }
+            } else if (deadline_passed(now, c->deadline_connect)) {
+                poll_fail_timeout(c, i, "connect", c->connect_timeout_ms);
+            }
+            continue;
+        }
+        if (c->state != TCP_STATE_CONNECTED)
+            continue;
+        if (deadline_passed(now, c->deadline_read)) {
+            poll_fail_timeout(c, i, "read", c->read_timeout_ms);
+            continue;
+        }
+
+        pthread_mutex_lock(&s_rx_lock);
         uint32_t space = c->rx_cap - c->rx_count;
+        pthread_mutex_unlock(&s_rx_lock);
         if (space == 0)
             continue;
 
@@ -432,14 +561,14 @@ void sim_tcp_poll(void) {
             size_t nread = 0;
             CURLcode res = curl_easy_recv((CURL *)c->pcb, buf, to_read, &nread);
             if (res == CURLE_OK && nread > 0) {
-                rx_write(c, buf, (uint32_t)nread);
-                c->pending |= TCP_CB_READ;
+                got_data(c, buf, (uint32_t)nread);
             } else if (res != CURLE_AGAIN) {
                 // CURLE_OK with nothing read: the server closed (a TLS
                 // close_notify, which Gemini servers always send); any other
                 // result but CURLE_AGAIN is an error. Either way it is over.
+                c->deadline_read = 0;
                 c->state = TCP_STATE_CLOSED;
-                c->pending |= TCP_CB_CLOSED;
+                pending_set(c, TCP_CB_CLOSED);
                 curl_easy_cleanup((CURL *)c->pcb);
                 c->pcb = NULL;
                 s_is_tls[i] = false;
@@ -452,24 +581,23 @@ void sim_tcp_poll(void) {
             if (ret > 0 && (pfd.revents & POLLIN)) {
                 ssize_t n = recv(fd, buf, to_read, 0);
                 if (n > 0) {
-                    rx_write(c, buf, (uint32_t)n);
-                    c->pending |= TCP_CB_READ;
+                    got_data(c, buf, (uint32_t)n);
                 } else if (n == 0) {
                     // Peer closed
+                    c->deadline_read = 0;
                     c->state = TCP_STATE_CLOSED;
-                    c->pending |= TCP_CB_CLOSED;
+                    pending_set(c, TCP_CB_CLOSED);
                     close(fd);
                     c->pcb = NULL;
                 } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                    snprintf(c->err, sizeof(c->err), "recv: %s", strerror(errno));
-                    c->state = TCP_STATE_FAILED;
-                    c->pending |= TCP_CB_FAILED;
+                    conn_fail(c, "recv: %s", strerror(errno));
                     close(fd);
                     c->pcb = NULL;
                 }
             } else if (ret > 0 && (pfd.revents & (POLLERR | POLLHUP))) {
+                c->deadline_read = 0;
                 c->state = TCP_STATE_CLOSED;
-                c->pending |= TCP_CB_CLOSED;
+                pending_set(c, TCP_CB_CLOSED);
                 close(fd);
                 c->pcb = NULL;
             }

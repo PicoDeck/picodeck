@@ -326,17 +326,18 @@ static int l_http_setByteRange(lua_State *L) {
   return 0;
 }
 
-// conn:setConnectTimeout(seconds)
+// conn:setConnectTimeout(seconds): fractions allowed, 0 turns it off.  Written
+// to the slot in ms: the native setter takes whole seconds (fixed by the ABI).
 static int l_http_setConnectTimeout(lua_State *L) {
   http_ud_t *ud = check_http_open(L, 1);
-  g_api.http->setConnectTimeout(ud->conn, (int)luaL_checknumber(L, 2));
+  ud->conn->connect_timeout_ms = lb_secs_to_ms(luaL_checknumber(L, 2));
   return 0;
 }
 
-// conn:setReadTimeout(seconds)
+// conn:setReadTimeout(seconds): as setConnectTimeout.
 static int l_http_setReadTimeout(lua_State *L) {
   http_ud_t *ud = check_http_open(L, 1);
-  g_api.http->setReadTimeout(ud->conn, (int)luaL_checknumber(L, 2));
+  ud->conn->read_timeout_ms = lb_secs_to_ms(luaL_checknumber(L, 2));
   return 0;
 }
 

@@ -402,6 +402,33 @@ def test_browse_cannot_start_outside_the_sandbox(sim, start):
     assert picked.startswith(f"/data/{app_id}/"), picked
 
 
+def test_browse_start_directory_is_the_top(sim):
+    """Esc goes up to the start directory and cancels there, for a start
+    outside the data directory too (it used to jump into the data directory,
+    so an app could neither cancel from where it started nor stay there)."""
+    (Path(sim.sd_card_path) / "data" / "top_dir" / "sub").mkdir(parents=True, exist_ok=True)
+    (Path(sim.sd_card_path) / "data" / "top_dir" / "sub" / "f.txt").write_text("x")
+    stage_lua_app(sim.sd_card_path, "browse_top",
+                  BROWSE_APP.replace("START", json.dumps("/data/top_dir/sub")),
+                  requirements=["root-filesystem"])
+    seq = sim.get_log_buffer(tail=1).get("next_seq", 0)
+    sim.launch_app("browse_top")
+    sim.wait_for_log("T7:BROWSING", timeout=15, since_seq=seq)
+    time.sleep(0.5)  # the browser is up
+    sim.keypress("esc")
+    out = sim.wait_for_exit(timeout=5)
+    assert out.get("result") == "returned", out
+    texts = [e["text"] for e in sim.get_log_lines(seq)]
+    assert "T7:BROWSE nil" in texts, texts
+
+
+def test_browse_from_the_volume_root_returns_clean_paths(sim):
+    (Path(sim.sd_card_path) / "aaa_first.txt").write_text("x")
+    picked, _ = _browse(sim, "browse_slash", "/",
+                        requirements=["root-filesystem"])
+    assert picked.startswith("/") and not picked.startswith("//"), picked
+
+
 def test_browse_root_filesystem_app_may_start_anywhere(sim):
     picked, _ = _browse(sim, "browse_root", "/system",
                         requirements=["root-filesystem"])
