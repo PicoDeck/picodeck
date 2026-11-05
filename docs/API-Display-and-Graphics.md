@@ -2037,7 +2037,7 @@ Gets the sprite's dimensions.
 Sets the sprite's scale. Sprites scale uniformly: both axes draw at `scale`. For a non-uniform size, draw the image with [`img:drawStretched`](#imagedrawstretchedx-y-w-h--srcrect).
 
 - **Parameters:**
-  - `scale` (number): Scale factor
+  - `scale` (number): Scale factor. One that is not above 0, or takes the larger image edge past 4096 px, draws nothing.
   - `yScale` (number, optional): Stored and returned by `getScale`, but not applied (defaults to `scale`)
 - **Returns:** None
 

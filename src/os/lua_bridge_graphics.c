@@ -1524,6 +1524,13 @@ static void sprite_draw_at(const lua_sprite_t *s, int x, int y) {
                                s->flip_x, s->flip_y, s->transparent_color);
     return;
   }
+  // A scale TGX cannot draw (see IMAGE_SCALE_MAX_DST): nothing, rather than
+  // overflowing its edge functions. img:drawScaled raises for the same values, but
+  // setScale takes anything and a sprite's scale can be left over from anywhere.
+  if (nn == 1) {
+    const float edge = (float)(src_w > src_h ? src_w : src_h) * s->scale;
+    if (!(edge > 0.0f && edge <= IMAGE_SCALE_MAX_DST)) return;
+  }
   // The scaling paths take no flip, so a flipped sprite draws a mirrored copy.
   uint16_t *mirror = NULL;
   if (s->flip_x || s->flip_y)

@@ -726,6 +726,19 @@ T.case("rotation: a sprite rotates and keeps its key", function()
     T.eq(D.getPixel(110, 115), GREEN)
 end)
 
+T.case("scale: a sprite scale that cannot be drawn draws nothing", function()
+    fresh()
+    local s = S.new(solid(10, 10, RED))
+    for _, k in ipairs({ 0, -1, 1000, 100000, 0 / 0 }) do
+        s:setScale(k)
+        s:draw(5, 5)
+        T.eq(D.getPixel(10, 10), 0, "scale " .. tostring(k))
+    end
+    s:setScale(2)
+    s:setRotation(1e6)
+    s:draw(50, 50)
+end)
+
 T.case("scale: drawScaled does not shift the unrotated image", function()
     fresh()
     local img = solid(10, 10, RED)
