@@ -781,6 +781,24 @@ local function test_disconnect_reason()
     check(t.error and t.error:find("connection closed", 1, true), "reported as closed: " .. tostring(t.error))
 end
 
+-- ── The manifest ─────────────────────────────────────────────────────────────
+
+-- The store (apps/store/main.lua, install_app) refuses an app whose min_firmware is
+-- newer than the firmware it runs on. 0.6.0 is the first release with the overflow-safe
+-- verifiers this app relies on (src/os/ssh_blob.c).
+local function test_manifest()
+    local root = package.path:match("^(.*)/apps/ssh/")
+    local f = assert(io.open(root .. "/apps/ssh/app.json"))
+    local manifest = f:read("a")
+    f:close()
+    local function version(text)
+        local a, b, c = text:match("(%d+)%.(%d+)%.(%d+)")
+        return tonumber(a) * 10000 + tonumber(b) * 100 + tonumber(c)
+    end
+    local min_firmware = manifest:match('"min_firmware"%s*:%s*"([^"]+)"')
+    check(version(min_firmware) <= version("0.6.0"), "installable on the 0.6.0 release: min_firmware " .. min_firmware)
+end
+
 -- ── A real sshd ─────────────────────────────────────────────────────────────
 
 local function live_session(key, kex, algo)
@@ -881,4 +899,5 @@ else
     test_packet_framing()
     test_mpint()
     test_disconnect_reason()
+    test_manifest()
 end
