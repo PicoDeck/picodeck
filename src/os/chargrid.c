@@ -1,6 +1,7 @@
 // The chargrid model (chargrid.h). Pure C; built at -O2 with
 // -ffp-contract=off on the device.
 #include "chargrid.h"
+#include "color256.h"
 
 #include <string.h>
 
@@ -21,25 +22,6 @@ const char *chargrid_check_size(int cols, int rows, int cell_w, int cell_h) {
   return NULL;
 }
 
-static uint16_t rgb565(int r, int g, int b) {
-  return (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
-}
-
-void chargrid_default_palette(uint16_t pal[256]) {
-  static const uint32_t k_base[16] = {
-      0x000000, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080, 0xC0C0C0,
-      0x808080, 0xFF0000, 0x00FF00, 0xFFFF00, 0x0000FF, 0xFF00FF, 0x00FFFF, 0xFFFFFF};
-  static const uint8_t k_level[6] = {0, 95, 135, 175, 215, 255};
-  for (int i = 0; i < 16; i++)
-    pal[i] = rgb565((int)(k_base[i] >> 16), (int)(k_base[i] >> 8) & 0xFF,
-                    (int)k_base[i] & 0xFF);
-  for (int r = 0; r < 6; r++)
-    for (int g = 0; g < 6; g++)
-      for (int b = 0; b < 6; b++)
-        pal[16 + 36 * r + 6 * g + b] = rgb565(k_level[r], k_level[g], k_level[b]);
-  for (int i = 0; i < 24; i++) pal[232 + i] = rgb565(8 + 10 * i, 8 + 10 * i, 8 + 10 * i);
-}
-
 chargrid_t *chargrid_create(int cols, int rows, int cell_w, int cell_h) {
   if (chargrid_check_size(cols, rows, cell_w, cell_h)) return NULL;
   const size_t n = (size_t)cols * (size_t)rows;
@@ -58,7 +40,7 @@ chargrid_t *chargrid_create(int cols, int rows, int cell_w, int cell_h) {
   g->fg = g->glyph + n;
   g->bg = g->fg + n;
   memset(g->fg, CG_DEFAULT_FG, n);
-  chargrid_default_palette(g->palette);
+  memcpy(g->palette, color256_palette, sizeof(g->palette));
   chargrid_set_font(g, NULL);
   g->dirty = true;
   return g;

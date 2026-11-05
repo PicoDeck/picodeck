@@ -67,6 +67,40 @@ Set the default foreground and background colours (RGB565).
 #### `term:getColors()` → `fg, bg`
 Return the current default foreground and background colours.
 
+#### ANSI colour codes
+`term:write()` reads these codes. A colour number N means the same colour as palette index N of a new `picocalc.chargrid` grid ([API Chargrid](API-Chargrid.md)).
+
+| Code | Sets |
+|---|---|
+| `\27[30m`-`\27[37m`, `\27[40m`-`\27[47m` | Foreground, background: colours 0-7 |
+| `\27[90m`-`\27[97m`, `\27[100m`-`\27[107m` | Foreground, background: colours 8-15 |
+| `\27[38;5;Nm`, `\27[48;5;Nm` | Foreground, background: colour N, 0-255 (above that the code is ignored) |
+| `\27[38;2;R;G;Bm`, `\27[48;2;R;G;Bm` | Foreground, background: any colour, reduced to RGB565 |
+| `\27[39m`, `\27[49m` | Foreground, background: back to white, black |
+
+Colours 0-15:
+
+| N | Colour | Codes | RGB | RGB565 |
+|---|---|---|---|---|
+| 0 | Black | 30, 40 | 0, 0, 0 | `0x0000` |
+| 1 | Red | 31, 41 | 128, 0, 0 | `0x8000` |
+| 2 | Green | 32, 42 | 0, 128, 0 | `0x0400` |
+| 3 | Yellow | 33, 43 | 128, 128, 0 | `0x8400` |
+| 4 | Blue | 34, 44 | 0, 0, 128 | `0x0010` |
+| 5 | Magenta | 35, 45 | 128, 0, 128 | `0x8010` |
+| 6 | Cyan | 36, 46 | 0, 128, 128 | `0x0410` |
+| 7 | White | 37, 47 | 192, 192, 192 | `0xC618` |
+| 8 | Grey | 90, 100 | 128, 128, 128 | `0x8410` |
+| 9 | Bright red | 91, 101 | 255, 0, 0 | `0xF800` |
+| 10 | Bright green | 92, 102 | 0, 255, 0 | `0x07E0` |
+| 11 | Bright yellow | 93, 103 | 255, 255, 0 | `0xFFE0` |
+| 12 | Bright blue | 94, 104 | 0, 0, 255 | `0x001F` |
+| 13 | Bright magenta | 95, 105 | 255, 0, 255 | `0xF81F` |
+| 14 | Bright cyan | 96, 106 | 0, 255, 255 | `0x07FF` |
+| 15 | Bright white | 97, 107 | 255, 255, 255 | `0xFFFF` |
+
+Colours 16-231 are a 6×6×6 cube (`16 + 36r + 6g + b`, where 0-5 stand for the levels 0, 95, 135, 175, 215, 255), and 232-255 are greys (8, 18, ... 238).
+
 ---
 
 ## Scrolling
@@ -296,6 +330,7 @@ Block until a printable character is typed. Returns the character as a string.
 
 Same name, different shape:
 
+- `write`: only Lua reads ANSI escape sequences. The native call puts each byte in a cell as it is, so native code sets colours with `setColors`.
 - `getScrollbackLine`: native fills a `uint16_t` cell array for a 0-based `line`; Lua takes a 1-based line and returns a plain string (characters only, no colours).
 - `setCursorVisible` and `setCursorBlink` are global: one setting shared by every terminal. The native entries take no `terminal_t*`; the Lua methods are called on an object as usual but the setting still applies to all terminals.
 
