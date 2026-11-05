@@ -74,7 +74,7 @@ pc.sys.log("debug message")
 local bat = pc.sys.getBattery()  -- 0-100, -1 before the first reading
 
 -- Filesystem (SD card)
-local data = pc.fs.readFile(pc.fs.appPath("save.json"))  -- /data/<app id>/save.json
+local data = pc.fs.readFile(pc.fs.appPath("save.json"))  -- /data/<APP_ID>/save.json
 ```
 
 ---

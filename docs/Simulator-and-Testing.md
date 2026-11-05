@@ -33,7 +33,7 @@ Without `--recurse-submodules`, `make simulator` stops and gives the command tha
 
 ## The SD card is a folder
 
-`--sd-card` names the card's **root**, not the apps folder. Each app is in `<root>/apps/<name>/`, as on a real card:
+`--sd-card` names the card's **root**, not the apps folder. Each app is in `<root>/apps/<dir>/`, as on a real card:
 
 ```
 mycard/

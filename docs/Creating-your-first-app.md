@@ -4,7 +4,7 @@ title: "Creating your first app"
 
 ## Your First App
 
-Creating an app is incredibly straightforward. You only need two files in a folder of your own, at `/apps/<name>/` on the SD card. Call this one `myapp`.
+Creating an app is incredibly straightforward. You only need two files in a folder of your own, at `/apps/<dir>/` on the SD card. Call this one `myapp`.
 
 1. `app.json`: A simple file describing your app. The [`app.json` reference](App-Json-Reference.md) has every field.
 

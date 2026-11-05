@@ -297,7 +297,7 @@ With `{ resume = true }`, the comic saves and restores automatically:
 
 - **What is saved:** the current sequence index and `Panels.vars` — not the scroll position within a sequence.
 - **When:** on entering a new sequence, and on **Esc** quit.
-- **Where:** via `picocalc.game.save`, under the key `panels_<APP_ID>_<name>` (non-alphanumeric characters replaced with `_`) in the app's own save slots (`/data/<app id>/saves/`). The long key is kept so progress saved by older firmware in the shared `/saves` directory is picked up.
+- **Where:** via `picocalc.game.save`, under the key `panels_<APP_ID>_<name>` (non-alphanumeric characters replaced with `_`) in the app's own save slots (`/data/<APP_ID>/saves/`). The long key is kept so progress saved by older firmware in the shared `/saves` directory is picked up.
 - **Cleared:** automatically when the comic finishes, so a completed comic restarts from the beginning.
 
 On firmware without `picocalc.game.save`, saving degrades to a no-op.
@@ -326,8 +326,8 @@ A custom source is any table with the same shape:
 ```lua
 Panels.start(comic, {
     source = {
-        imagePath = function(name) return "/data/mycomic/art/" .. name end,
-        audioPath = function(name) return "/data/mycomic/snd/" .. name end,
+        imagePath = function(name) return picocalc.fs.appPath("art/" .. name) end,
+        audioPath = function(name) return picocalc.fs.appPath("snd/" .. name) end,
     },
 })
 ```

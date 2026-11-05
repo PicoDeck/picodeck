@@ -61,7 +61,7 @@ Declare `audio` if your app makes sound, since the store lists it. Any other nam
 
 ### Native apps
 
-The requirements above are enforced by the Lua bridge. A [native app](Native-Loading.md) has full access to the card and memory whatever it declares, `/system/config.json` with its WiFi password included, so native apps are not sandboxed. `http`, `system_clock_khz` and `min_psram_kb` work the same for native apps, since the launcher handles them.
+The requirements above are enforced by the Lua bridge. A [native app](Native-Loading.md) has full access to the card and memory whatever it declares, `/system/config.json` with its WiFi password included, so native apps are not sandboxed. `http`, `system_clock_khz` and `min_psram_kb` work the same for native apps, since the launcher handles them. `/data/<APP_ID>` is not created for a native app: call `fs->mkdir` before opening anything in it.
 
 ### Checking Requirements in Lua
 
@@ -83,7 +83,7 @@ Without `root-filesystem`, a Lua app can reach only:
 - **Read**: `/apps/<dir>/` (your app's folder) and `/system/lib/`
 - **Read and write**: `/data/<APP_ID>/` (your app's data folder)
 
-Relative paths and any `..` are refused. Your data folder does not exist until something creates it: `fs.appPath`, `fs.browse`, `config.save`, a [save slot](API-Game.md) or your own `fs.mkdir`. Until then, a direct `fs.open` of a path inside it returns `nil, "cannot open file"`. Use `picocalc.fs.appPath("filename")` to get a path there; it creates the folder.
+Relative paths and any `..` are refused. Your data folder exists when your app starts. Use `picocalc.fs.appPath("filename")` to get a path there.
 
 #### What a refused call does
 
@@ -91,18 +91,18 @@ The same check guards `picocalc.fs` and every loader that takes a path, but a re
 
 | Call | Refused result |
 |------|----------------|
-| `graphics.image.load`, `image.loadRegion`, `image.preload` | **raises** `access denied` |
+| `graphics.image.load`, `image.loadRegion`, `image.loadScaled`, `image.getInfo`, `image.preload` | **raises** `access denied` |
 | `graphics.font.new` | **raises** `access denied: <path>` |
 | `display.loadFont` | `nil, "access denied: <path>"` |
 | `sound.sample`, `sound.sampleplayer` (with a path), `sample:load`, `fileplayer:load`, `mp3player:load`, `crypto.sha256File` | `nil, "access denied"` |
 | `sample:save`, `modplayer:load`, `video:load` | `false, "access denied"` |
-| `zip.open` | `nil, "permission denied"` |
+| `zip.open`, `zip.list` | `nil, "permission denied"` |
 | `zip.extract`, `fs.rename`, `fs.copy` | `false, "permission denied (source)"` or `(destination)` |
 | `fs.open`, `fs.stat` | `nil, "permission denied"` |
 | `fs.delete`, `fs.deleteRecursive` | `false, "permission denied"` |
 | `fs.mkdir` | `false`, no message |
 | `fs.readFile` | `nil`, no message |
-| `fs.listDir`, `fs.glob` | `{}`, an empty table, the same as an empty directory |
+| `fs.listDir`, `fs.glob` | `{}, "permission denied"`: an empty table, so `ipairs` still works |
 | `fs.exists`, `fs.isDir` | `false` |
 | `fs.size` | `-1` |
 | `require` | **raises**, as for a module that does not exist |
@@ -111,6 +111,6 @@ The same check guards `picocalc.fs` and every loader that takes a path, but a re
 
 ### App ids
 
-The `id` in `app.json` names your data directory (`/data/<id>`). The rules, and the App Store's stricter ones, are in the [`app.json` reference](App-Json-Reference.md#id).
+The `id` in `app.json` names your data directory (`/data/<APP_ID>`, folded to lower case). The rules, and the App Store's stricter ones, are in the [`app.json` reference](App-Json-Reference.md#id).
 
 Use `picocalc.fs.appPath("filename")` to get paths within your app's data directory.

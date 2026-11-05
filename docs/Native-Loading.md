@@ -39,7 +39,7 @@ A native application typically consists of:
 - `main.elf`: The compiled binary.
 - `app.json`: Metadata for the launcher (name, description, requirements).
 
-Place these files in `/apps/<your_app_name>/` on the SD card.
+Place these files in `/apps/<dir>/` on the SD card.
 
 ### app.json
 
@@ -333,7 +333,9 @@ The application is expected to return control to the OS by returning from `picod
 
 Anything the app got through the API and did not free — files, images, samples and players, video/MOD players, terminals, AES/ECDH contexts, `qmiAlloc` blocks, HTTP/TCP connections, fonts, menu items, zip handles — is released when `picodeck_main` returns. Do not rely on double frees being harmless: a stale pointer whose address was reused by a newer handle frees that newer object.
 
-### Per-app config, randomness
+### Per-app data, config, randomness
+
+`/data/<APP_ID>` is not created for a native app, as it is for a Lua app, and `fs->open` in a missing folder returns `NULL`. Call `fs->mkdir` on it first. `appconfig->save` creates it for itself.
 
 `appconfig`: nothing loads it for you. Call `api->appconfig->load(your_app_id)` first; another app's id is refused. On an app's first run, with no file yet, `load` returns false but the store is bound all the same, so `set` and `save` work: do not treat that false as fatal. `crypto->randomBytes` returns `bool` (false = buffer zeroed, no healthy generator). There is no system-config table in the native API.
 

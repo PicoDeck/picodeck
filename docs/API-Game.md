@@ -448,7 +448,7 @@ Clear all values shared across scenes.
 
 ## picocalc.game.save
 
-Per-app save slots, one JSON file each at `/data/<app id>/saves/<key>.json`.
+Per-app save slots, one JSON file each at `/data/<APP_ID>/saves/<key>.json`.
 
 - Keys are 1-128 bytes of `[A-Za-z0-9._-]`, contain no `..` and do not start
   with `.`. Any other key is refused: `set` returns `false, "invalid save name"`,
