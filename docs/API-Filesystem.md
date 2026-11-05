@@ -12,9 +12,20 @@ Filesystem access to the SD card (FAT32).
 Opens a file on the SD card.
 
 - **Parameters:**
-  - `path` (string): Absolute file path (e.g., `"/apps/hello/data.txt"`)
-  - `mode` (string, optional): File mode (`"r"`, `"w"`, `"a"`, `"rb"`, `"wb"`, etc.). Defaults to `"r"`. A mode containing `r` but no `w` or `a` (including `"r+"`) opens the file read-only.
-- **Returns:** a file handle (userdata), or `nil, err` (`"permission denied"`, `"cannot open file"`, `"too many open files"`)
+  - `path` (string): Absolute file path. The parent directory must exist.
+  - `mode` (string, optional): File mode, see below. Defaults to `"r"`.
+- **Returns:** a file handle (userdata), or `nil, err` (`"permission denied"`, `"cannot open file"`, `"too many open files"`). A 17th open file reads `"cannot open file"`.
+
+Modes are not C's `fopen` modes. Only the letters `r`, `w` and `a` count; `b` and `+` change nothing:
+
+| Mode | Reads | Writes | Missing file | Existing file |
+|---|---|---|---|---|
+| `"r"`, `"rb"`, `"r+"` | Yes | No | Fails | Kept |
+| `"w"`, `"wb"`, `"w+"` | No | Yes | Created | Emptied |
+| `"a"`, `"ab"`, `"a+"` | No | Yes | Created | Kept; writing starts at the end |
+| `"rw"` | Yes | Yes | Created | Kept |
+
+A file open for writing cannot be opened a second time, and a file that is open in any mode cannot be opened for writing, renamed or deleted, until it is closed.
 
 Handles have methods — `f:read(n)`, `f:write(s)`, `f:seek(offset [, whence])`, `f:tell()`,
 `f:close()` — identical to the `picocalc.fs.*` functions. A handle closes
@@ -39,7 +50,7 @@ Reads bytes from an open file.
 - **Parameters:**
   - `file` (userdata): File handle from `open()`
   - `length` (number): Number of bytes to read
-- **Returns:** (string or nil) Data read, or `nil` on error
+- **Returns:** (string or nil) Data read. `nil` at end of file, for a length of 0, and on an error (including a handle not open for reading).
 
 Raises on a negative length or a closed handle; the length is clamped to the bytes left in the file.
 
@@ -55,7 +66,9 @@ Writes data to an open file.
 - **Parameters:**
   - `file` (userdata): File handle from `open()`
   - `data` (string): Data to write
-- **Returns:** (number) Number of bytes written
+- **Returns:** (number) Number of bytes written, or `-1` on an error (including a handle not open for writing).
+
+A full card is not an error: the call returns a smaller count. Compare it with the length of your data whenever losing the end of a file matters. See [Saving a file safely](#saving-a-file-safely).
 
 ```lua
 local n = picocalc.fs.write(f, "content")
@@ -69,6 +82,8 @@ Closes an open file.
 - **Parameters:**
   - `file` (userdata): File handle from `open()`
 - **Returns:** None
+
+Closing flushes the file to the card. It reports nothing, so a flush that failed shows only as a size smaller than you wrote: `picocalc.fs.size(path)` after closing tells you.
 
 ---
 
@@ -295,7 +310,9 @@ if not ok then print("Delete failed: " .. err) end
 ---
 
 #### `picocalc.fs.rename(src, dst)`
-Rename or move a file. Both paths subject to sandbox.
+Rename or move a file or directory. The parent of `dst` must exist.
+
+**`rename` refuses an existing `dst`**: unlike POSIX, it does not replace it (`false, "rename failed"`). That includes a change of case alone, since names are not case-sensitive. Delete the old file first; see [Saving a file safely](#saving-a-file-safely).
 
 - **Parameters:**
   - `src` (string): Current path
@@ -381,6 +398,41 @@ Enable or disable slow SD card mode. Slow mode reduces SPI clock speed for compa
 ```lua
 picocalc.fs.setSlowMode(true)  -- Use slower SPI clock for compatibility
 ```
+
+---
+
+### Saving a file safely
+
+Writing over a file in place loses it if the power goes or the card fills part way. Write a temporary file, check it, and only then replace the old one. `rename` will not replace an existing file on the device, so delete the old one first:
+
+```lua
+local function save(name, text)
+    local path = picocalc.fs.appPath(name)
+    local tmp = path .. ".tmp"
+    local f, err = picocalc.fs.open(tmp, "w")
+    if not f then return false, err end
+    local n = f:write(text)
+    f:close()
+    -- A full card is a short count, not an error, and close reports nothing.
+    if n ~= #text or picocalc.fs.size(tmp) ~= #text then
+        picocalc.fs.delete(tmp)
+        return false, "write failed"
+    end
+    picocalc.fs.delete(path)  -- rename refuses an existing target
+    return picocalc.fs.rename(tmp, path)
+end
+
+local ok, err = save("save.json", '{"score": 100}')
+if not ok then print("Save failed: " .. err) end
+```
+
+If the power goes between the `delete` and the `rename`, only the `.tmp` is left, and it is complete: when loading, use it if the file itself is missing.
+
+---
+
+### Long calls
+
+The device resets if the system goes 10 seconds without feeding its watchdog. The calls here keep feeding it, whatever the size of the file, but your app does not run while one is in progress, so the system menu and Exit App wait until it returns. At the card's roughly 300-480 KB/s (about 100 KB/s under slow mode), reading, writing or copying a few MB in one call takes seconds. Read large files in pieces, or give `copy` a progress function, to stay responsive.
 
 ---
 

@@ -91,8 +91,86 @@ static void test_open_limit(void) {
   rmdir(dir);
 }
 
+// Modes mean what the firmware's mode_to_fatfs makes them.
+static void test_modes(void) {
+  char dir[] = "/tmp/picodeck_sdcard_XXXXXX";
+  CHECK(mkdtemp(dir) != NULL);
+  CHECK(hal_sdcard_init(dir));
+  char buf[16];
+  const char *p = "/data/modes.txt";
+
+  void *h = hal_sdcard_open(p, "r");
+  CHECK(h == NULL);  // "r" needs the file
+  h = hal_sdcard_open(p, "r+");
+  CHECK(h == NULL);  // so does "r+"
+
+  h = hal_sdcard_open(p, "w+");  // creates, write-only
+  CHECK(h != NULL);
+  CHECK(hal_sdcard_write_checked(h, "abcdef", 6) == 6);
+  CHECK(hal_sdcard_seek(h, 0) == 0);
+  CHECK(hal_sdcard_read_checked(h, buf, 2) == -1);
+  hal_sdcard_close(h);
+
+  h = hal_sdcard_open(p, "r+");  // read-only, as "r"
+  CHECK(h != NULL);
+  CHECK(hal_sdcard_write_checked(h, "Q", 1) == -1);
+  CHECK(hal_sdcard_read_checked(h, buf, 2) == 2);
+  CHECK(memcmp(buf, "ab", 2) == 0);
+  hal_sdcard_close(h);
+
+  h = hal_sdcard_open(p, "rw");  // both, no truncation; stdio needs no help
+  CHECK(h != NULL);
+  CHECK(hal_sdcard_read_checked(h, buf, 2) == 2);
+  CHECK(hal_sdcard_write_checked(h, "XY", 2) == 2);
+  CHECK(hal_sdcard_read_checked(h, buf, 2) == 2);
+  CHECK(memcmp(buf, "ef", 2) == 0);
+  hal_sdcard_close(h);
+
+  h = hal_sdcard_open(p, "a");  // starts at the end; a seek moves it, as FatFS
+  CHECK(h != NULL);
+  CHECK(hal_sdcard_tell(h) == 6);
+  CHECK(hal_sdcard_read_checked(h, buf, 1) == -1);
+  CHECK(hal_sdcard_write_checked(h, "g", 1) == 1);
+  CHECK(hal_sdcard_seek(h, 0) == 0);
+  CHECK(hal_sdcard_write_checked(h, "A", 1) == 1);
+  hal_sdcard_close(h);
+
+  h = hal_sdcard_open(p, "r");
+  CHECK(hal_sdcard_read_checked(h, buf, 7) == 7);
+  CHECK(memcmp(buf, "AbXYefg", 7) == 0);
+  hal_sdcard_close(h);
+
+  h = hal_sdcard_open(p, "w");  // truncates
+  CHECK(h != NULL);
+  hal_sdcard_close(h);
+  CHECK(hal_sdcard_size(p) == 0);
+
+  h = hal_sdcard_open("/data/new_a.txt", "ab");  // creates
+  CHECK(h != NULL);
+  hal_sdcard_close(h);
+  h = hal_sdcard_open("/data/new_rw.txt", "rw");  // creates
+  CHECK(h != NULL);
+  hal_sdcard_close(h);
+  CHECK(hal_sdcard_isdir("/data"));
+  CHECK(!hal_sdcard_isdir(p));
+
+  char name[256];
+  const char *files[] = {"modes.txt", "new_a.txt", "new_rw.txt"};
+  for (int i = 0; i < 3; i++) {
+    snprintf(name, sizeof(name), "%s/data/%s", dir, files[i]);
+    remove(name);
+  }
+  const char *sub[] = {"apps", "data", "system"};
+  for (int i = 0; i < 3; i++) {
+    snprintf(name, sizeof(name), "%s/%s", dir, sub[i]);
+    rmdir(name);
+  }
+  rmdir(dir);
+}
+
 int main(void) {
   test_resolve();
   test_open_limit();
+  test_modes();
   return check_report("test_sim_sdcard");
 }

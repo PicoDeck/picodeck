@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <strings.h>
 #include <dirent.h>
 #include <stdatomic.h>
 #include <time.h>
@@ -656,6 +657,16 @@ char* sdcard_read_file(const char* path, int* out_len) {
     if (out_len) *out_len = (int)got;
     return buf;
 }
+// A host timestamp in FAT's packed date and time, as FatFS gives them.
+static void sim_fat_time(time_t t, uint16_t* fdate, uint16_t* ftime) {
+    struct tm tm;
+    localtime_r(&t, &tm);
+    int year = tm.tm_year + 1900;
+    if (year < 1980) year = 1980;
+    *fdate = (uint16_t)(((year - 1980) << 9) | ((tm.tm_mon + 1) << 5) | tm.tm_mday);
+    *ftime = (uint16_t)((tm.tm_hour << 11) | (tm.tm_min << 5) | (tm.tm_sec / 2));
+}
+
 int sdcard_list_dir(const char* path,
                     void (*callback)(const sdcard_entry_t* entry, void* user),
                     void* user) {
@@ -696,10 +707,8 @@ int sdcard_list_dir(const char* path,
         struct stat st;
         if (stat(entry_path, &st) == 0) {
             sdc_entry.is_dir = S_ISDIR(st.st_mode);
-            sdc_entry.size = (uint32_t)st.st_size;
-            // Set default date/time (Jan 1, 2020)
-            sdc_entry.fdate = (2020 - 1980) << 9 | 1 << 5 | 1;
-            sdc_entry.ftime = 0;
+            sdc_entry.size = sdc_entry.is_dir ? 0 : (uint32_t)st.st_size;  // as FatFS
+            sim_fat_time(st.st_mtime, &sdc_entry.fdate, &sdc_entry.ftime);
         } else {
             sdc_entry.is_dir = false;
             sdc_entry.size = 0;
@@ -730,7 +739,7 @@ int sdcard_list_dir(const char* path,
 //   sdcard_fsize_handle → int, -1 on error
 sdfile_t sdcard_fopen(const char* path, const char* mode) { return hal_sdcard_open(path, mode); }
 void sdcard_fclose(sdfile_t f) { hal_sdcard_close(f); }
-int sdcard_fread(sdfile_t f, void* buf, int len) { return (int)hal_sdcard_read(f, buf, (size_t)len); }
+int sdcard_fread(sdfile_t f, void* buf, int len) { return hal_sdcard_read_checked(f, buf, (size_t)len); }
 // No cross-core SD mutex in the simulator: the try-read finds the card busy
 // only when a test asks (the `set_sd_busy` RPC: for `ms` once `after_reads`
 // more try-reads have gone through, as if Core 0 then held the card that
@@ -789,8 +798,11 @@ int sdcard_fsize_handle(sdfile_t f) {
     fseek(fp, pos, SEEK_SET);
     return size >= 0 ? (int)size : -1;
 }
-int sdcard_fwrite(sdfile_t f, const void* buf, int len) { return (int)hal_sdcard_write(f, buf, (size_t)len); }
-int sdcard_fsize(const char* path) { return hal_sdcard_size(path); }
+int sdcard_fwrite(sdfile_t f, const void* buf, int len) { return hal_sdcard_write_checked(f, buf, (size_t)len); }
+int sdcard_fsize(const char* path) {
+    // f_stat gives a directory a size of 0, the host its own figure.
+    return hal_sdcard_isdir(path) ? 0 : hal_sdcard_size(path);
+}
 bool sdcard_mkdir(const char* path) {
     // Match hardware semantics: f_mkdir is single-level (no parent creation)
     // and FR_EXIST counts as success.
@@ -852,6 +864,13 @@ bool sdcard_rename(const char* oldpath, const char* newpath) {
     if (!hal_sdcard_resolve(oldpath, full_old, sizeof(full_old)) ||
         !hal_sdcard_resolve(newpath, full_new, sizeof(full_new)))
         return false;
+    // FatFS parity: f_rename refuses an existing target (FR_EXIST), where
+    // POSIX rename would replace it, and FAT names are case-insensitive, so a
+    // change of case alone is a rename onto itself and refused too. A save that
+    // writes a temp file and renames it over the old one fails on the device.
+    struct stat st;
+    if (lstat(full_new, &st) == 0 || strcasecmp(full_old, full_new) == 0)
+        return false;
     return rename(full_old, full_new) == 0;
 }
 bool sdcard_copy(const char* src, const char* dst,
@@ -891,8 +910,8 @@ bool sdcard_stat(const char* path, sdcard_stat_t* out) {
     if (stat(full_path, &host_st) != 0) return false;
     out->size = (uint32_t)host_st.st_size;
     out->is_dir = S_ISDIR(host_st.st_mode);
-    out->fdate = 0;
-    out->ftime = 0;
+    out->size = out->is_dir ? 0 : (uint32_t)host_st.st_size;  // as f_stat
+    sim_fat_time(host_st.st_mtime, &out->fdate, &out->ftime);
     return true;
 }
 bool sdcard_disk_info(uint32_t* out_free_kb, uint32_t* out_total_kb) {
