@@ -788,7 +788,10 @@ class HwTarget(Target):
         device); no reboot, since the dev `launch` reads a hidden app fresh.
         hidden=False pushes to /apps/<name>, which the launcher lists: it
         reboots when the launcher's boot-time cache cannot know the app as
-        pushed (a new or changed manifest, or an id `list` does not show)."""
+        pushed (a new or changed manifest, or an id `list` does not show).
+        Raises if an app has started by the end of the upload (the MCP
+        push_app checks again before its unzip): it is someone's, so it is not
+        exited here."""
         src = Path(local_dir)
         name = name or src.name
         man_path = src / "app.json"

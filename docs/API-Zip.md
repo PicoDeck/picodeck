@@ -34,6 +34,7 @@ Extract every file in a ZIP archive to a directory. Parent directories are creat
   - `dest_dir` (string): Destination directory
   - `progress_fn` (function, optional): Progress callback receiving `(done, total)` after each extracted file
 - **Returns:** (boolean, string) `true` on success, or `false, errorString` on failure
+- **Errors:** `"permission denied (source)"`, `"permission denied (destination)"`, `"open failed"` (the archive), `"bad zip"`, or one of the [extraction errors](#extraction-errors).
 
 ```lua
 local ok, err = picocalc.zip.extract("/apps/mygame/assets.zip", "/data/com.example.mygame/assets",
@@ -167,7 +168,7 @@ the destination is caller-chosen as always.
   - `index` (number): Entry index, **0-based, as in the C API** (`0 .. numEntries() - 1`). Must be an integer
   - `dest_path` (string): Destination file path (subject to the write sandbox)
 - **Returns:** (boolean, string) `true` on success, or `false, errorString`
-- **Errors:** raises `archive is closed` on a closed archive; other failures come back as `false, error`. An index outside `0 .. numEntries() - 1` returns `false, "no such entry"` **before** the destination is opened, so an existing file at `dest_path` is left untouched
+- **Errors:** raises `archive is closed` on a closed archive; other failures come back as `false, error` (`"permission denied (destination)"` or one of the [extraction errors](#extraction-errors)). An index outside `0 .. numEntries() - 1` returns `false, "no such entry"` **before** the destination is opened, so an existing file at `dest_path` is left untouched
 
 ---
 
@@ -196,7 +197,7 @@ Stream one entry to a file on the SD card, using constant memory regardless of e
   - `name` (string): Entry name
   - `dest_path` (string): Destination file path (parent directories are created as needed)
 - **Returns:** (boolean, string) `true` on success, or `false, errorString` on failure
-- **Errors:** `"no such entry"`, `"permission denied (destination)"`, or an engine message (`"mkdir failed"`, `"extract failed"`, ...). A failed extraction removes the partial file.
+- **Errors:** `"no such entry"`, `"permission denied (destination)"`, or one of the [extraction errors](#extraction-errors).
 
 ```lua
 local ok, err = ar:extract("music/theme.mod", "/data/com.example.mygame/theme.mod")
@@ -211,7 +212,7 @@ Extract every file entry into a directory. Same behaviour as `picocalc.zip.extra
   - `dest_dir` (string): Destination directory
   - `progress_fn` (function, optional): Progress callback receiving `(done, total)` after each extracted file
 - **Returns:** (boolean, string) `true` on success, or `false, errorString` on failure
-- **Errors:** `"permission denied (destination)"` or an engine message (entry-count or total-size cap exceeded, write failure, ...). Errors raised inside `progress_fn` are ignored; a `sys.exit()` from it stops the extraction and the app exits.
+- **Errors:** `"permission denied (destination)"` or one of the [extraction errors](#extraction-errors). Errors raised inside `progress_fn` are ignored; a `sys.exit()` from it stops the extraction and the app exits.
 
 ```lua
 local ok, err = ar:extractAll("/data/com.example.mygame/assets")
@@ -277,6 +278,24 @@ ar:close()
 ```
 
 Keep the archive open for the app's lifetime instead of re-opening it per read: `open` pays the central-directory walk once, and each later read seeks straight to its entry.
+
+---
+
+### Extraction errors
+
+The calls that write files report the same messages:
+
+| Error | Meaning | The file |
+|---|---|---|
+| `"cannot open <path>"` | The file could not be opened for writing. Most often something holds it open: your app, or a player streaming it, since an open file cannot be replaced. Also a directory of that name, or too many files open. A very long path is cut at its start (`cannot open ...ets/music/theme.qoa`). | Left as it was |
+| `"write failed"` | A write came up short, usually a full card. | Removed: its old contents went when it was opened |
+| `"extract failed"` | The entry's data is corrupt or unsupported. | Removed, as above |
+| `"mkdir failed"` | A parent directory could not be created. | Not touched |
+| `"path too long"` | The destination plus the entry name is 512 bytes or more (`picocalc.zip.extract`, `ar:extractAll`). | Not touched |
+| `"entry count cap"`, `"size cap"` | Over a [limit](#limits-and-name-validation) (`picocalc.zip.extract`, `ar:extractAll`). | Nothing is written |
+| `"out of memory"` | No room for the extraction buffer. | Not touched |
+
+`picocalc.zip.extract` and `ar:extractAll` stop at the first failure and do not roll back: the files already written stay and the later entries are not touched, so the destination can end up partly updated. To replace something that must stay whole, extract into a new directory and `picocalc.fs.rename` it into place once that has succeeded.
 
 ---
 

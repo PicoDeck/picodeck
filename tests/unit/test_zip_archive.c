@@ -104,8 +104,92 @@ static void test_extract_entry_bad_index_keeps_dest(void) {
   zip_reader_close(&zr);
 }
 
+// A destination that cannot be opened is not a failed write: FatFS's file lock
+// refusing a file someone holds open read as a full card (issue #65). The file
+// is left as it was; a short write removes the partial file.
+static void test_extract_open_failure_is_not_a_write_failure(void) {
+  static const char dest[] = "/apps/a/hello.txt";
+  sdfake_reset();
+  sdfake_put("/t.zip", (const char *)k_zip, sizeof(k_zip));
+  sdfake_put(dest, "old", 3);
+  sdfake_lock_file(dest);
+  zip_reader_t zr;
+  char err[ZIP_ERR_MAX] = "";
+  CHECK(zip_reader_open(&zr, "/t.zip", err));
+  int idx = zip_reader_locate(&zr, "hello.txt");
+  CHECK(!zip_reader_extract_entry(&zr, idx, dest, err));
+  CHECK_STR(err, "cannot open /apps/a/hello.txt");
+  size_t len = 0;
+  const char *d = sdfake_get(dest, &len);
+  CHECK(d && len == 3 && memcmp(d, "old", 3) == 0);
+
+  sdfake_lock_file(NULL);
+  sdfake_limit_writes(0);
+  CHECK(!zip_reader_extract_entry(&zr, idx, dest, err));
+  CHECK_STR(err, "write failed");
+  CHECK(sdfake_get(dest, NULL) == NULL);
+  sdfake_limit_writes(-1);
+  zip_reader_close(&zr);
+}
+
+// The error buffer is short and the file name is the useful end of the path.
+static void test_open_failure_keeps_the_end_of_a_long_path(void) {
+  static const char dest[] =
+      "/data/com.example.a.rather.long.application.id/assets/levels/world1/"
+      "stage3/background/music/intro/track01.qoa";
+  CHECK(strlen(dest) > ZIP_ERR_MAX);
+  sdfake_reset();
+  sdfake_put("/t.zip", (const char *)k_zip, sizeof(k_zip));
+  sdfake_lock_file(dest);
+  zip_reader_t zr;
+  char err[ZIP_ERR_MAX] = "";
+  CHECK(zip_reader_open(&zr, "/t.zip", err));
+  CHECK(!zip_reader_extract_entry(&zr, zip_reader_locate(&zr, "hello.txt"),
+                                  dest, err));
+  CHECK(strncmp(err, "cannot open ...", 15) == 0);
+  CHECK(strlen(err) == ZIP_ERR_MAX - 1);
+  CHECK(strcmp(err + strlen(err) - strlen("/intro/track01.qoa"),
+               "/intro/track01.qoa") == 0);
+  zip_reader_close(&zr);
+}
+
+// extract_all stops at the first failure with no rollback: what was already
+// written stays, the blocked file and the entries after it keep their old
+// contents (docs/API-Zip.md).
+static void test_extract_all_stops_at_the_first_failure(void) {
+  sdfake_reset();
+  sdfake_put("/t.zip", (const char *)k_zip, sizeof(k_zip));
+  sdfake_put("/d/empty.txt", "old", 3);
+  sdfake_lock_file("/d/empty.txt");
+  zip_reader_t zr;
+  char err[ZIP_ERR_MAX] = "";
+  zip_extract_result_t res;
+  CHECK(zip_reader_open(&zr, "/t.zip", err));
+  CHECK(!zip_reader_extract_all(&zr, "/d", NULL, NULL, NULL, &res, err));
+  CHECK_STR(err, "cannot open /d/empty.txt");
+  CHECK_EQ_INT(res.files_done, 1);
+  CHECK_EQ_INT(res.files_total, 2);
+  size_t len = 0;
+  const char *d = sdfake_get("/d/hello.txt", &len);
+  CHECK(d && len == 11 && memcmp(d, "hello world", 11) == 0);
+  d = sdfake_get("/d/empty.txt", &len);
+  CHECK(d && len == 3 && memcmp(d, "old", 3) == 0);
+
+  sdfake_reset();
+  sdfake_put("/t.zip", (const char *)k_zip, sizeof(k_zip));
+  sdfake_lock_file("/d/hello.txt");
+  CHECK(!zip_reader_extract_all(&zr, "/d", NULL, NULL, NULL, &res, err));
+  CHECK_STR(err, "cannot open /d/hello.txt");
+  CHECK_EQ_INT(res.files_done, 0);
+  CHECK(sdfake_get("/d/empty.txt", NULL) == NULL);
+  zip_reader_close(&zr);
+}
+
 int main(void) {
   test_read();
   test_extract_entry_bad_index_keeps_dest();
+  test_extract_open_failure_is_not_a_write_failure();
+  test_open_failure_keeps_the_end_of_a_long_path();
+  test_extract_all_stops_at_the_first_failure();
   return check_report("test_zip_archive");
 }

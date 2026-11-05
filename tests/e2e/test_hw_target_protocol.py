@@ -90,6 +90,8 @@ class FakeDevice:
         self.reboot_delay = 0.2
         self.unzip_s = 0.0   # silence between unzip's echo and its reply
         self.scan_s = 0.0    # after a boot, `list` shows no apps for this long
+        self.on_upload = None   # called when a putb64 has completed
+        self.unzip_error = None  # unzip replies this as "[DEV] Error: ..."
 
     # -- helpers --
     def install(self, app: FakeApp, cached=True):
@@ -128,6 +130,8 @@ class FakeDevice:
             self.putb64 = None
             self.emit(f"[DEV] File received: {path} ({len(raw)} bytes) "
                       f"fnv1a={_fnv1a(bytes(raw)):08x}")
+            if self.on_upload:
+                self.on_upload()
         else:
             self.putb64 = (path, size, raw)
             self.emit(f"[DEV] ACK {len(raw)}")
@@ -272,6 +276,9 @@ class FakeDevice:
             self.emit(f"[DEV] Deleted: {path}" if gone
                       else f"[DEV] Error: rm failed: {path}")
         elif cmd.startswith("unzip "):
+            if self.unzip_error:
+                self.emit(f"[DEV] Error: {self.unzip_error}")
+                return
             zpath, dest = cmd[6:].split(" ", 1)
             with zipfile.ZipFile(io.BytesIO(self.files[zpath])) as zf:
                 names = zf.namelist()
@@ -854,6 +861,64 @@ def test_push_waits_for_unzipped_when_the_echo_holds_a_marker(hw, dev, tmp_path)
     assert dev.commands.index("rm /data/tmp/push_app.zip") \
         > next(i for i, c in enumerate(dev.commands) if c.startswith("unzip ")), \
         dev.commands
+
+
+def test_push_stops_when_an_app_starts_during_the_upload(hw, dev, tmp_path):
+    # Issue #65: a large upload takes minutes, so someone can launch an app
+    # from the launcher meanwhile. The push must not extract into a live app.
+    game = FakeApp("game", "Nova Rail", "com.test.game", hold=True)
+    dev.install(game)
+    dev.on_upload = lambda: setattr(dev, "running", game)
+    d = _app_dir(tmp_path, "game")
+    (d / "main.lua").write_text("-- new\n")
+    with pytest.raises(HwTargetError, match=r"an app is running \(Nova Rail\)"):
+        hw.push_app(d, hidden=False)
+    assert not [c for c in dev.commands if c.startswith("unzip ")], dev.commands
+    assert dev.files["/apps/game/main.lua"] == b"-- fake\n"
+    # The app is left alone, and the archive does not stay on the card.
+    assert dev.running is game
+    assert "/data/tmp/push_app.zip" not in dev.files
+
+
+def test_mcp_push_refuses_before_uploading_when_an_app_runs(hw, dev, tmp_path):
+    # No point in minutes of upload to learn what is known at the start.
+    dev.running = FakeApp("game", "Nova Rail", "com.test.game", hold=True)
+    msg = asyncio.run(pm.push_app(str(_app_dir(tmp_path, "other")), "",
+                                  device=hw.port))
+    assert msg.startswith("Error: an app is running (Nova Rail)"), msg
+    assert not [c for c in dev.commands
+                if c.startswith(("putb64 ", "unzip "))], dev.commands
+
+
+def test_push_retries_a_dropped_status_before_the_unzip(hw, dev, tmp_path):
+    dev.on_upload = lambda: setattr(dev, "drop_next_status", 2)
+    msg = asyncio.run(pm.push_app(str(_app_dir(tmp_path, "drop")), "",
+                                  device=hw.port))
+    assert msg.startswith("Pushed"), msg
+    assert dev.files["/apps/drop/main.lua"] == b"return\n"
+
+
+def test_push_stops_when_status_never_answers_before_the_unzip(hw, dev, tmp_path):
+    dev.on_upload = lambda: setattr(dev, "drop_next_status", 3)
+    msg = asyncio.run(pm.push_app(str(_app_dir(tmp_path, "mute")), "",
+                                  device=hw.port))
+    assert msg.startswith("Error:") and "status" in msg, msg
+    assert not [c for c in dev.commands if c.startswith("unzip ")], dev.commands
+
+
+def test_push_reports_the_devices_reason_for_a_failed_unzip(hw, dev, tmp_path):
+    # An app can still start between the check and the unzip, or a file can be
+    # held open by something else: the device's reply is what the user reads.
+    reason = "unzip failed: cannot open /apps/held/assets/track01.qoa"
+    dev.unzip_error = reason
+    d = _app_dir(tmp_path, "held")
+    msg = asyncio.run(pm.push_app(str(d), "", device=hw.port))
+    assert msg.startswith("Error: extraction did not complete"), msg
+    assert reason in msg, msg
+    assert "partly updated" in msg, msg
+    assert "rm /data/tmp/push_app.zip" in dev.commands
+    with pytest.raises(HwTargetError, match="cannot open /apps/held"):
+        hw.push_app(d, hidden=False)
 
 
 def test_push_waits_for_the_launcher_to_list_a_new_app(hw, dev, tmp_path):

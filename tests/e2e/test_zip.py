@@ -99,6 +99,11 @@ def test_zip_hardening_and_handles(simulator, test_sd_card):
     assert "ZE CLOSED_RAISES true" in joined
     assert "ZE GC4 true" in joined
 
+    # A destination that cannot be opened is named (issue #65).
+    blocked = "ok=false err=cannot open /data/com.test.ziptest/out3/good.txt"
+    assert f"ZE BLOCKED {blocked}" in joined
+    assert f"ZE BLOCKED1 {blocked}" in joined
+
     # Filesystem outcome: none of the hostile names escaped the destination.
     out_dir = test_sd_card / "data" / "com.test.ziptest" / "out"
     assert (out_dir / "good.txt").exists()

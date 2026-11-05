@@ -133,6 +133,95 @@ def test_unzip_while_lua_app_running(simulator, test_sd_card):
     assert simulator.is_alive()
 
 
+def _tree(root: Path) -> dict:
+    return {p.relative_to(root).as_posix(): p.read_bytes()
+            for p in root.rglob("*") if p.is_file()}
+
+
+def test_unzip_refused_over_the_running_app(simulator, test_sd_card):
+    """Issue #65: an app holds its own files open, and FatFS refuses to replace
+    those, so extracting into a live app fails partway. Only the overlap is
+    refused: the command still works elsewhere while the app runs (the test
+    above) and on the same directory once the app has exited."""
+    members = _build_archive(test_sd_card / "data" / "push.zip")
+    app_dir = test_sd_card / "apps" / "harness_ticker"
+    before = _tree(test_sd_card / "apps")
+
+    simulator.launch_app("harness_ticker")
+    _wait_running(simulator)
+
+    # The directory, any spelling of it, below it, and the ones that hold it.
+    for dest in ("/apps/harness_ticker", "/apps//harness_ticker/",
+                 "/apps/harness_ticker/assets/new", "/apps", "/"):
+        r = _dev(simulator, f"unzip /data/push.zip {dest}")
+        assert r["ok"] is False, (dest, r)
+        assert ("Error: unzip: an app is running from /apps/harness_ticker"
+                in r["output"]), (dest, r)
+    assert _tree(test_sd_card / "apps") == before, "the refused unzip wrote files"
+    assert not (test_sd_card / "app.json").exists()
+    assert simulator.call("get_running_app")["running"], "the refusal stopped the app"
+
+    # A neighbour whose name starts the same is not the app's directory.
+    r = _dev(simulator, "unzip /data/push.zip /apps/harness_ticker2")
+    assert r["ok"] is True, r
+    _assert_extracted(test_sd_card / "apps" / "harness_ticker2", members)
+
+    r = _dev(simulator, "exit")
+    assert r["ok"] is True, r
+    assert simulator.wait_for_exit(timeout=15)["result"] in ("returned",
+                                                              "exit_sentinel")
+    r = _dev(simulator, "unzip /data/push.zip /apps/harness_ticker")
+    assert r["ok"] is True, r
+    _assert_extracted(app_dir, members)
+
+
+def test_unzip_refused_over_a_running_hidden_app(simulator, test_sd_card):
+    """push_app's own destinations: /apps/.test/<name> and /apps/.dev/<name>."""
+    _build_archive(test_sd_card / "data" / "push.zip")
+    hidden = test_sd_card / "apps" / ".test" / "ticker"
+    shutil.copytree(test_sd_card / "apps" / "harness_ticker", hidden)
+    before = _tree(hidden)
+
+    simulator.launch_app("ticker")
+    _wait_running(simulator)
+
+    r = _dev(simulator, "unzip /data/push.zip /apps/.test/ticker")
+    assert r["ok"] is False, r
+    assert "an app is running from /apps/.test/ticker" in r["output"], r
+    assert _tree(hidden) == before
+
+    r = _dev(simulator, "unzip /data/push.zip /apps/.dev/ticker")
+    assert r["ok"] is True, r
+
+    r = _dev(simulator, "exit")
+    assert r["ok"] is True, r
+    simulator.wait_for_exit(timeout=15)
+
+
+def test_unzip_names_a_destination_it_cannot_open(simulator, test_sd_card):
+    """A file that cannot be opened for writing is `cannot open <path>`, not
+    `write failed`, which reads like a full card (issue #65). On the device
+    that is FatFS's file lock on a file someone holds open; the simulator has
+    no file lock, so a directory in the file's place stands in. Extraction
+    stops there with no rollback: what was written stays, the rest is as it
+    was."""
+    with zipfile.ZipFile(test_sd_card / "data" / "push.zip", "w") as z:
+        z.writestr("a_first.txt", "new first")
+        z.writestr("b_blocked.txt", "new blocked")
+        z.writestr("c_last.txt", "new last")
+    dest = test_sd_card / "data" / "unz"
+    (dest / "b_blocked.txt").mkdir(parents=True)
+    (dest / "a_first.txt").write_text("old first")
+    (dest / "c_last.txt").write_text("old last")
+
+    r = _dev(simulator, "unzip /data/push.zip /data/unz")
+    assert r["ok"] is False, r
+    assert r["output"] == ("Error: unzip failed: cannot open "
+                           "/data/unz/b_blocked.txt"), r
+    assert (dest / "a_first.txt").read_text() == "new first"
+    assert (dest / "c_last.txt").read_text() == "old last"
+
+
 @pytest.mark.sd(fixtures=[], reserve=1)  # stages native_pad_probe
 def test_unzip_while_native_app_running(simulator, test_sd_card):
     """A native app's sys->poll() serves the command, as the firmware's
@@ -144,6 +233,12 @@ def test_unzip_while_native_app_running(simulator, test_sd_card):
     simulator.launch_app("native_pad_probe")
     _wait_running(simulator)
 
+    # Not over the app itself (a native app has an identity too)...
+    r = _dev(simulator, "unzip /data/push.zip /apps/native_pad_probe")
+    assert r["ok"] is False, r
+    assert "an app is running from /apps/native_pad_probe" in r["output"], r
+
+    # ...but anywhere else.
     r = _dev(simulator, "unzip /data/push.zip /data/unz_native")
     assert r["ok"] is True, r
     assert f"Unzipped {len(members)} files" in r["output"]

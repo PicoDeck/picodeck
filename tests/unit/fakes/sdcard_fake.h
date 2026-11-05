@@ -12,6 +12,9 @@ const char *sdfake_get(const char *path, size_t *len);
 bool        sdfake_dir_exists(const char *path);
 // Make the next sdcard_fwrite calls write at most `limit` bytes (-1 = off).
 void        sdfake_limit_writes(int limit);
+// sdcard_fopen(path, "w") fails and leaves the file as it is, as FatFS's file
+// lock does for a file someone holds open (NULL = off).
+void        sdfake_lock_file(const char *path);
 // While set, sdcard_try_fread_at reports SDCARD_BUSY (the other core holds
 // the SD card) and counts the attempt.
 void        sdfake_set_busy(bool busy);

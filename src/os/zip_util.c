@@ -260,6 +260,18 @@ int zip_reader_read_to_buf(zip_reader_t *zr, int idx, void *buf,
 // Chunk size for SD writes during streamed extraction (heap, not stack).
 #define ZIP_STREAM_CHUNK (16u * 1024u)
 
+// A destination that will not open is not a failed write: FatFS's file lock
+// refuses a file someone holds open, whatever the free space (issue #65). The
+// file name is the useful end of a path too long for the buffer.
+static void zip_set_open_err(char err[ZIP_ERR_MAX], const char *path) {
+    size_t len = strlen(path);
+    if (len + sizeof("cannot open ") <= ZIP_ERR_MAX)
+        zip_set_err(err, "cannot open %s", path);
+    else
+        zip_set_err(err, "cannot open ...%s",
+                    path + len - (ZIP_ERR_MAX - sizeof("cannot open ...")));
+}
+
 // Core streamed extract — no entry-name validation (callers do that).
 // Iterator API for the same stack-size reason as iter_read_full above.
 static bool extract_streamed(zip_reader_t *zr, int idx, const char *dest_path,
@@ -279,7 +291,7 @@ static bool extract_streamed(zip_reader_t *zr, int idx, const char *dest_path,
     sdfile_t f = sdcard_fopen(dest_path, "w");
     if (!f) {
         zr->mz.m_pFree(zr->mz.m_pAlloc_opaque, chunk);
-        zip_set_err(err, "write failed");
+        zip_set_open_err(err, dest_path);
         return false;
     }
 

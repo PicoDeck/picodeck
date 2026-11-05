@@ -24,7 +24,11 @@
 // launcher loop then drops it.
 bool dev_op_exit(char *reply, size_t n);
 
-// "unzip <zip> <dest>": args is modified (split at the space).
+// "unzip <zip> <dest>": args is modified (split at the space). Refuses a
+// destination that is the running app's directory, inside it or above it
+// ("Error: unzip: an app is running from <dir>: exit it first"); anywhere else
+// it runs while an app does. A failure part way leaves what was already
+// written ("Error: unzip failed: cannot open <path>" and the like).
 bool dev_op_unzip(char *args, char *reply, size_t n);
 
 // "rm <path>": delete a file or a directory tree.
