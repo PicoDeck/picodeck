@@ -1280,6 +1280,7 @@ function PicoDeckFilePlayer:pause() end
 ---Resume after pause.
 function PicoDeckFilePlayer:resume() end
 
+---Return `true` while playing.
 ---@return boolean
 function PicoDeckFilePlayer:isPlaying() end
 
@@ -2351,6 +2352,7 @@ function picocalc.graphics.sprite.spriteWithText(text, maxWidth, maxHeight, bgCo
 ---@param scale_y? number Stored when given, not applied: sprites draw at one factor
 function PicoDeckSprite:setImage(image, flip, scale, scale_y) end
 
+---Return the sprite's image (the image object itself).
 ---@return PicoDeckImage?
 function PicoDeckSprite:getImage() end
 
@@ -2366,27 +2368,34 @@ function PicoDeckSprite:remove() end
 ---The same as remove().
 function PicoDeckSprite:removeSprite() end
 
+---Move the sprite to absolute coordinates.
 ---@param x integer
 ---@param y integer
 function PicoDeckSprite:moveTo(x, y) end
 
+---Move the sprite by a relative offset.
 ---@param dx integer
 ---@param dy integer
 function PicoDeckSprite:moveBy(dx, dy) end
 
+---Return the sprite's position.
 ---@return integer x
 ---@return integer y
 function PicoDeckSprite:getPosition() end
 
+---Set the Z-index, which orders `graphics.sprite.update()`: a lower z draws first.
 ---@param z integer
 function PicoDeckSprite:setZIndex(z) end
 
+---Return the sprite's Z-index.
 ---@return integer
 function PicoDeckSprite:getZIndex() end
 
+---Show or hide the sprite.
 ---@param visible boolean
 function PicoDeckSprite:setVisible(visible) end
 
+---Return `true` if the sprite is visible.
 ---@return boolean
 function PicoDeckSprite:isVisible() end
 
@@ -2395,25 +2404,31 @@ function PicoDeckSprite:isVisible() end
 ---@param cy integer
 function PicoDeckSprite:setCenter(cx, cy) end
 
+---Return the sprite's center point.
 ---@return integer cx
 ---@return integer cy
 function PicoDeckSprite:getCenter() end
 
+---Return the sprite's center point as a table.
 ---@return integer[] point `{cx, cy}`: one table, not two values
 function PicoDeckSprite:getCenterPoint() end
 
+---Set the sprite's dimensions (bounds only: drawing uses the image's own size).
 ---@param w integer
 ---@param h integer
 function PicoDeckSprite:setSize(w, h) end
 
+---Return the sprite's dimensions.
 ---@return integer w
 ---@return integer h
 function PicoDeckSprite:getSize() end
 
+---Set the sprite's scale. Sprites scale uniformly: both axes draw at `scale`.
 ---@param scale number
 ---@param scale_y? number Defaults to `scale`. Stored, not applied: sprites draw at one factor
 function PicoDeckSprite:setScale(scale, scale_y) end
 
+---Return the sprite's scale factors.
 ---@return number scale
 ---@return number scale_y
 function PicoDeckSprite:getScale() end
@@ -2422,6 +2437,7 @@ function PicoDeckSprite:getScale() end
 ---@param nn integer Positive
 function PicoDeckSprite:setScaleNN(nn) end
 
+---Set a per-sprite transparent colour, overriding the global one.
 ---@param color? integer RGB565; nil or nothing uses the global key
 function PicoDeckSprite:setTransparentColor(color) end
 
@@ -2431,9 +2447,11 @@ function PicoDeckSprite:setTransparentColor(color) end
 ---@param scale_y? number Also sets the vertical scale
 function PicoDeckSprite:setRotation(radians, scale, scale_y) end
 
+---Return the sprite's rotation angle in radians.
 ---@return number
 function PicoDeckSprite:getRotation() end
 
+---Create a copy of the sprite.
 ---@return PicoDeckSprite
 function PicoDeckSprite:copy() end
 
@@ -2447,15 +2465,19 @@ function PicoDeckSprite:setSourceRect(x, y, w, h) end
 ---Remove the source-rect restriction.
 function PicoDeckSprite:clearSourceRect() end
 
+---Enable or disable automatic updates by `graphics.sprite.update()`.
 ---@param enabled boolean
 function PicoDeckSprite:setUpdatesEnabled(enabled) end
 
+---Return `true` if updates are enabled.
 ---@return boolean
 function PicoDeckSprite:updatesEnabled() end
 
+---Set a user-defined tag value.
 ---@param tag integer
 function PicoDeckSprite:setTag(tag) end
 
+---Return the sprite's tag.
 ---@return integer
 function PicoDeckSprite:getTag() end
 
@@ -2467,6 +2489,7 @@ function PicoDeckSprite:setImageDrawMode(mode) end
 ---@param flip boolean
 function PicoDeckSprite:setImageFlip(flip) end
 
+---Return the horizontal flip state.
 ---@return boolean flip Horizontal flip
 function PicoDeckSprite:getImageFlip() end
 
@@ -2482,12 +2505,14 @@ function PicoDeckSprite:setIgnoresDrawOffset(ignore) end
 ---@overload fun(self: PicoDeckSprite, rect: PicoDeckRect)
 function PicoDeckSprite:setBounds(x, y, w, h) end
 
+---Return the rectangle `setBounds` stored.
 ---@return integer x
 ---@return integer y
 ---@return integer w
 ---@return integer h
 function PicoDeckSprite:getBounds() end
 
+---Return the rectangle `setBounds` stored, as a table.
 ---@return { x: integer, y: integer, w: integer, h: integer }
 function PicoDeckSprite:getBoundsRect() end
 
@@ -2495,6 +2520,7 @@ function PicoDeckSprite:getBoundsRect() end
 ---@param opaque boolean
 function PicoDeckSprite:setOpaque(opaque) end
 
+---Return the sprite's opaque flag.
 ---@return boolean
 function PicoDeckSprite:isOpaque() end
 
@@ -2510,9 +2536,11 @@ function PicoDeckSprite:draw(x, y) end
 ---Draw this sprite if it is visible and has updates enabled. No callback is called.
 function PicoDeckSprite:update() end
 
+---Enable collision detection for `moveWithCollisions` and the `overlappingSprites` calls. Off by default, except for wall and empty collision sprites.
 ---@param enabled boolean
 function PicoDeckSprite:setCollisionsEnabled(enabled) end
 
+---Return `true` if collisions are enabled.
 ---@return boolean
 function PicoDeckSprite:collisionsEnabled() end
 
@@ -2525,6 +2553,7 @@ function PicoDeckSprite:collisionsEnabled() end
 ---@overload fun(self: PicoDeckSprite, rect: PicoDeckRect)
 function PicoDeckSprite:setCollideRect(x, y, w, h) end
 
+---Return the collision rectangle as set: `0, 0, 0, 0` until one is, while the sprite collides at its drawn box.
 ---@return integer x
 ---@return integer y
 ---@return integer w
@@ -2861,6 +2890,7 @@ function PicoDeckBlinker:stop() end
 ---Remove from the global blinker list.
 function PicoDeckBlinker:remove() end
 
+---Return `true` if the blinker is running.
 ---@return boolean
 function PicoDeckBlinker:isRunning() end
 
@@ -3236,9 +3266,11 @@ function PicoDeckVideoPlayer:showOSD() end
 ---@param ms integer
 function PicoDeckVideoPlayer:setOSDTimeout(ms) end
 
+---`true` while playing.
 ---@return boolean
 function PicoDeckVideoPlayer:isPlaying() end
 
+---`true` while paused.
 ---@return boolean
 function PicoDeckVideoPlayer:isPaused() end
 
@@ -3264,12 +3296,15 @@ function PicoDeckVideoPlayer:hasAudio() end
 ---@param vol integer 0–100
 function PicoDeckVideoPlayer:setVolume(vol) end
 
+---Return the current volume.
 ---@return integer
 function PicoDeckVideoPlayer:getVolume() end
 
+---Mute or unmute the audio (the video still plays).
 ---@param muted boolean
 function PicoDeckVideoPlayer:setMuted(muted) end
 
+---Return the current mute state.
 ---@return boolean
 function PicoDeckVideoPlayer:isMuted() end
 
@@ -3321,6 +3356,7 @@ function PicoDeckCamera:setPosition(x, y) end
 ---@param dy number
 function PicoDeckCamera:move(dx, dy) end
 
+---Return the camera position in world coordinates.
 ---@return number x
 ---@return number y
 function PicoDeckCamera:getPosition() end
@@ -3330,6 +3366,7 @@ function PicoDeckCamera:getPosition() end
 ---@param zoom number Clamped to 0.1-10
 function PicoDeckCamera:setZoom(zoom) end
 
+---Return the current zoom factor.
 ---@return number
 function PicoDeckCamera:getZoom() end
 
@@ -3596,15 +3633,19 @@ function PicoDeckTerminal:render() end
 ---the framebuffers since the last render. Partial with `display.flushRows`.
 function PicoDeckTerminal:renderDirty() end
 
+---Return the total number of columns in the terminal grid.
 ---@return integer
 function PicoDeckTerminal:getCols() end
 
+---Return the total number of rows in the terminal grid.
 ---@return integer
 function PicoDeckTerminal:getRows() end
 
+---Show or hide the cursor. One setting shared by every terminal.
 ---@param visible boolean
 function PicoDeckTerminal:setCursorVisible(visible) end
 
+---Enable or disable cursor blinking. One setting shared by every terminal.
 ---@param blink boolean
 function PicoDeckTerminal:setCursorBlink(blink) end
 
@@ -3612,6 +3653,7 @@ function PicoDeckTerminal:setCursorBlink(blink) end
 ---@param name string `"scientifica"` or `"scientifica_bold"`
 function PicoDeckTerminal:setFont(name) end
 
+---Return the current font name.
 ---@return string name
 function PicoDeckTerminal:getFont() end
 
@@ -3909,6 +3951,7 @@ function PicoDeckModPlayer:pause() end
 ---Resume after pause.
 function PicoDeckModPlayer:resume() end
 
+---Return `true` while playing.
 ---@return boolean
 function PicoDeckModPlayer:isPlaying() end
 
@@ -3916,6 +3959,7 @@ function PicoDeckModPlayer:isPlaying() end
 ---@param vol integer 0–100
 function PicoDeckModPlayer:setVolume(vol) end
 
+---Return the current playback volume.
 ---@return integer
 function PicoDeckModPlayer:getVolume() end
 
