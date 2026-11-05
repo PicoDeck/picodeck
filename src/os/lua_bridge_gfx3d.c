@@ -302,6 +302,51 @@ static int l_gfx3d_beginScene(lua_State *L) {
 }
 
 // Optional trailing (scale, bias, sortAsOne) starting at argument `opt`.
+#if defined(PICODECK_SRAM_LEAF_STACK)
+#include "leaf_stack.h"
+
+// gfx3d_draw and gfx3d_end on the SRAM leaf stack (leaf_stack.h). Neither can
+// raise: gfx3d's only allocator is umm_malloc, whose failure it reports by
+// return value, and the only Lua API under them is resolve_sprite, whose
+// getfield finds an interned key the registry anchors, so nothing allocates.
+typedef struct {
+  gfx3d_t *g;
+  const gfx3d_mesh_t *m;
+  const float *rot, *pos;
+  float scale, bias;
+  bool one;
+} leaf_draw_t;
+
+static void leaf_draw(void *p) {
+  const leaf_draw_t *a = (const leaf_draw_t *)p;
+  gfx3d_draw(a->g, a->m, a->rot, a->pos, a->scale, a->bias, a->one);
+}
+
+static void run_draw(gfx3d_t *g, const gfx3d_mesh_t *m, const float *rot, const float *pos,
+                     float scale, float bias, bool one) {
+  leaf_draw_t a = {g, m, rot, pos, scale, bias, one};
+  leaf_stack_call(leaf_draw, &a);
+}
+
+typedef struct {
+  gfx3d_t *g;
+  const gfx3d_target_t *t;
+} leaf_end_t;
+
+static void leaf_end(void *p) {
+  const leaf_end_t *a = (const leaf_end_t *)p;
+  gfx3d_end(a->g, a->t);
+}
+
+static void run_end(gfx3d_t *g, const gfx3d_target_t *t) {
+  leaf_end_t a = {g, t};
+  leaf_stack_call(leaf_end, &a);
+}
+#else
+#define run_draw gfx3d_draw
+#define run_end gfx3d_end
+#endif
+
 static void draw_instance(lua_State *L, const gfx3d_mesh_t *m, const float rot[9],
                           const float pos[3], int opt) {
   const float scale = lb_optfloat(L, opt, 1.0f);
@@ -309,7 +354,7 @@ static void draw_instance(lua_State *L, const gfx3d_mesh_t *m, const float rot[9
   const bool one = lua_toboolean(L, opt + 2);
   if (!(scale > 0.0f)) luaL_argerror(L, opt, "scale must be positive");
   const uint32_t t0 = now_us();
-  gfx3d_draw(s_g, m, rot, pos, scale, bias, one);
+  run_draw(s_g, m, rot, pos, scale, bias, one);
   s_us_geom += now_us() - t0;
 }
 
@@ -363,7 +408,7 @@ static int l_gfx3d_drawList(lua_State *L) {
       return luaL_error(L, "gfx3d.drawList: list[%d] is not a live mesh", (int)i);
     }
     const uint32_t t0 = now_us();
-    gfx3d_draw(s_g, u->m, ident, origin, 1.0f, bias, false);
+    run_draw(s_g, u->m, ident, origin, 1.0f, bias, false);
     geom += now_us() - t0;
     lua_pop(L, 1);
   }
@@ -438,7 +483,7 @@ static int l_gfx3d_endScene(lua_State *L) {
   const gfx3d_target_t t = {d.fb, d.stride, d.clip_x0, d.clip_y0, d.clip_x1,
                             d.clip_y1, d.swap, resolve_sprite, L};
   const uint32_t t0 = now_us();
-  gfx3d_end(s_g, &t);
+  run_end(s_g, &t);
   s_us_raster = now_us() - t0;
   s_in_scene = false;
   return 0;

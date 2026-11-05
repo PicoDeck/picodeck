@@ -62,5 +62,23 @@ SECTIONS
         . = ALIGN(4);
         __hot_text_end__ = .;
     } > FLASH
+
+    /* libgcc that the SDK's script copies to SRAM with the rest of libgcc, for
+       no reason here: the C++ unwinder (no exceptions in this firmware: nothing
+       ever throws, it is linked only for the personality routines .ARM.exidx
+       names) and the soft double add's object, whose add, subtract and integer
+       conversions are all wrapped by pico_double, leaving __aeabi_f2d for
+       printf-style paths. Nothing in SRAM calls them. They were 4.9 KB of SRAM;
+       tools/check_hot_text.py fails the build if they drift back. */
+    .cold_libgcc : ALIGN(4)
+    {
+        __cold_libgcc_start__ = .;
+        *libgcc.a:unwind-arm.o(.text* .rodata*)
+        *libgcc.a:pr-support.o(.text* .rodata*)
+        *libgcc.a:libunwind.o(.text* .rodata*)
+        *libgcc.a:_arm_addsubdf3.o(.text* .rodata*)
+        . = ALIGN(4);
+        __cold_libgcc_end__ = .;
+    } > FLASH
 }
 INSERT AFTER .text;

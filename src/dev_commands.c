@@ -13,6 +13,9 @@
 #include "drivers/wifi.h"
 #include "os/launcher.h"
 #include "os/app_stack.h"
+#if defined(PICODECK_SRAM_LEAF_STACK)
+#include "os/leaf_stack.h"
+#endif
 #include "os/os.h"
 #include "os/core0_idle.h"
 #include "os/xip_stats.h"
@@ -579,6 +582,10 @@ static void dev_command_run(void *arg) {
                    g_app_stack_owner == APP_STACK_LUA ? "lua" : "native",
                    (unsigned long)app_stack_high_water(base, size),
                    (unsigned long)size);
+#if defined(PICODECK_SRAM_LEAF_STACK)
+        printf(" leaf_peak=%lu leaf_size=%lu", (unsigned long)leaf_stack_peak(),
+               (unsigned long)LEAF_STACK_BYTES);
+#endif
         // Peak of the last launcher-side command on the OS command stack.
         printf(" os_cmd_peak=%lu os_cmd_size=%lu\n",
                (unsigned long)app_stack_os_last_peak(),
