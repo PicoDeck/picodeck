@@ -78,6 +78,7 @@ What single calls cost, from one firmware build (±40% between builds, as above)
 - **Avoid a new table per frame.** Reuse them. Every allocation that is not a small Lua object costs at least one 200-byte block of the heap.
 - **Try the generational collector.** `collectgarbage("generational")` cut frame work by 2-16% on most screens of a demo app and raised it 12% on one, so measure it on yours.
 - C-call-heavy Lua pays about 10-50% more because the VM's stack is in PSRAM. Pure Lua loops do not.
+- **Collisions cost movers times sprites.** With collisions on, `moveWithCollisions` walks every sprite in the manager once per axis moved, however far the move: about 2.7 µs a pair at 200 MHz. Moving every sprite along one axis each frame took 8 ms at 50 sprites, 28 ms at 100, 64 ms at 150 and 107 ms at 200, before drawing anything, so about 110 sprites use all of a 30 fps frame, and about 80 if they move diagonally. With collisions off the same call takes 14 ms at 200, because it only sets the position. Leave them off on sprites that don't need them.
 - Numbers are 32-bit: integers are exact to 2^31 and floats to 2^24.
 
 ## Files and sound

@@ -91,6 +91,8 @@ end
 local ok, err = write_all(conn, "GET / HTTP/1.0\r\n\r\n")
 ```
 
+**A lost frame stalls the socket.** The device's TCP stack does not resend what it sends, so if WiFi loses a frame, the server receives nothing more from that socket, with no error on either side. HTTP and TLS run over the same stack. Data coming from the server is not affected, because the server resends it. On one home network, about 1 frame in 500 was lost: 200 one-byte writes stalled in 15-28% of runs, and a single 200-byte write never did (0 of 48). So send a message in one write rather than many, and if your protocol can, use a reply timeout and reconnect.
+
 ---
 
 #### `conn:read([max_len])`
