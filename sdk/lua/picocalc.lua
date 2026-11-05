@@ -1643,6 +1643,7 @@ function picocalc.ui.drawHeader(title) end
 ---Draw a status bar at the bottom of the screen.
 ---@param left? string Left-aligned text
 ---@param right? string Right-aligned text
+---@return integer height rows the footer covers (18), from y = 302
 function picocalc.ui.drawFooter(left, right) end
 
 ---Draw a tab bar. Returns the new active tab index and the tab-bar height.
@@ -1662,7 +1663,7 @@ function picocalc.ui.drawTabs(y, tabs, active_index, prev_key, next_key) end
 function picocalc.ui.textInput(prompt, default) end
 
 ---Show a blocking yes/no confirmation dialog. Returns `true` if the user confirms.
----@param message string
+---@param message string Wraps at 43 characters; the box grows, up to 20 lines
 ---@return boolean
 function picocalc.ui.confirm(message) end
 
@@ -1670,8 +1671,127 @@ function picocalc.ui.confirm(message) end
 ---@param cx integer Centre x
 ---@param cy integer Centre y
 ---@param r? integer Radius
----@param frame? integer Animation frame index (auto-advances if omitted)
+---@param frame? integer Animation frame index (default 0: pass a counter to animate)
 function picocalc.ui.drawSpinner(cx, cy, r, frame) end
+
+---Draw a splash screen with the PicoDeck logo, and present it.
+---@param status? string
+---@param subtext? string
+function picocalc.ui.splash(status, subtext) end
+
+---Draw a panel/card with an optional title bar.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param h integer
+---@param title? string
+---@return integer content_y where the panel's content starts
+function picocalc.ui.drawPanel(x, y, w, h, title) end
+
+---Draw a single-line text field (rendering only: it handles no input).
+---@param x integer
+---@param y integer
+---@param w integer Shows `(w - 8) / 6` characters
+---@param text string
+---@param cursor_pos integer 0-based
+---@param scroll_offset integer Characters to skip from the start of `text`
+---@param focused? boolean
+---@param show_cursor? boolean
+---@return integer height 13
+function picocalc.ui.drawTextField(x, y, w, text, cursor_pos, scroll_offset, focused, show_cursor) end
+
+---Draw a multi-line text area (rendering only: it handles no input).
+---@param x integer
+---@param y integer
+---@param w integer Rows show `(w - 8) / 6` characters
+---@param h integer
+---@param text string
+---@param segments integer[] 0-based row-start offsets, as `wrapText` returns them
+---@param scroll_y integer Rows to skip
+---@param cursor_row integer 0-based, from the first segment
+---@param cursor_col integer 0-based
+---@param focused? boolean
+---@param show_cursor? boolean
+---@return integer rows how many rows the box shows
+function picocalc.ui.drawTextArea(x, y, w, h, text, segments, scroll_y, cursor_row, cursor_col, focused, show_cursor) end
+
+---Draw a selectable list row.
+---@param x integer
+---@param y integer
+---@param w integer Shows `(w - 8) / 6` characters
+---@param text string
+---@param selected? boolean
+---@param focused? boolean
+---@return integer height 13
+function picocalc.ui.drawListItem(x, y, w, text, selected, focused) end
+
+---Draw a progress bar.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param h integer
+---@param progress number 0.0 to 1.0
+---@param fill_color? integer RGB565 (default green)
+function picocalc.ui.drawProgress(x, y, w, h, progress, fill_color) end
+
+---Draw a checkbox.
+---@param x integer
+---@param y integer
+---@param checked? boolean
+---@param focused? boolean
+---@return integer height 10
+function picocalc.ui.drawCheckbox(x, y, checked, focused) end
+
+---Draw a radio button.
+---@param x integer
+---@param y integer
+---@param selected? boolean
+---@param focused? boolean
+---@return integer height 11
+function picocalc.ui.drawRadio(x, y, selected, focused) end
+
+---Draw a horizontal divider line.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param color? integer RGB565
+---@return integer height 1
+function picocalc.ui.drawDivider(x, y, w, color) end
+
+---Draw a toast bar at a y of your choice, now. For a toast the OS shows and times, use `toast`.
+---@param y integer
+---@param text string
+---@param bg_color? integer RGB565 (default dark grey, also for 0)
+---@return integer height 14
+function picocalc.ui.drawToast(y, text, bg_color) end
+
+---Push a system toast: the OS draws it over your frames for about 3 s. Up to 63
+---bytes of text. Three can wait behind the one showing; a fourth drops the oldest.
+---@param text string
+---@param style? integer `TOAST_INFO` (default), `TOAST_SUCCESS`, `TOAST_WARNING` or `TOAST_ERROR`
+function picocalc.ui.toast(text, style) end
+
+picocalc.ui.TOAST_INFO = 0
+picocalc.ui.TOAST_SUCCESS = 1
+picocalc.ui.TOAST_WARNING = 2
+picocalc.ui.TOAST_ERROR = 3
+
+---Draw a button.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param label string
+---@param focused? boolean
+---@param pressed? boolean
+---@return integer height 15
+function picocalc.ui.drawButton(x, y, w, label, focused, pressed) end
+
+---Word-wrap text for `drawTextArea`. `\n` always starts a new row.
+---@param text string
+---@param max_cols integer Columns per row; zero or less makes the whole text one row
+---@return integer[] segments 0-based byte offsets where the rows start
+---@return integer rows
+function picocalc.ui.wrapText(text, max_cols) end
 
 -- =============================================================================
 -- picocalc.perf  (performance profiling)
@@ -2888,8 +3008,8 @@ function PicoDeckCamera:setPosition(x, y) end
 ---@param dy integer
 function PicoDeckCamera:move(dx, dy) end
 
----@return integer x
----@return integer y
+---@return number x
+---@return number y
 function PicoDeckCamera:getPosition() end
 
 ---@param zoom number
@@ -2953,10 +3073,10 @@ function PicoDeckCamera:stopShake() end
 function PicoDeckCamera:worldToScreen(wx, wy) end
 
 ---Convert screen-space coordinates to world-space.
----@param sx integer
----@param sy integer
----@return integer wx
----@return integer wy
+---@param sx number
+---@param sy number
+---@return number wx
+---@return number wy
 function PicoDeckCamera:screenToWorld(sx, sy) end
 
 ---Update camera position (advances follow target, shake, etc.).
@@ -2974,20 +3094,27 @@ function PicoDeckCamera:getOffset() end
 ---@class picocalc.game.scene
 picocalc.game.scene = {}
 
----@class PicoDeckScene : userdata
-local PicoDeckScene = {}
+---A plain table with up to four functions. They are called with no `self`:
+---write `function play.update(dt)`, not `function play:update(dt)`. An error in
+---one stops the app like any other Lua error. Nothing runs at Exit App, so save
+---when data changes rather than in `exit()`.
+---@class PicoDeckScene
+---@field update? fun(dt: number)
+---@field draw? fun()
+---@field enter? fun() Runs again when a `pop` reveals the scene
+---@field exit? fun() Runs when `switch` or `pop` leaves the scene
 
----Create a new Scene. A scene is a table-like object with `update()`, `draw()`,
----`enter()`, and `exit()` lifecycle methods.
+---Create a new, empty scene: the same as `{}`.
 ---@return PicoDeckScene
 function picocalc.game.scene.new() end
 
----Add a scene to the manager (does not make it active).
+---Add a scene to the manager (does not make it active). At most 16 scenes, and
+---names of up to 63 bytes. An existing name is replaced, on the stack too.
 ---@param name string
 ---@param scene PicoDeckScene
 function picocalc.game.scene.add(name, scene) end
 
----Remove a named scene.
+---Remove a named scene, and take it off the stack with no `exit()`.
 ---@param name string
 function picocalc.game.scene.remove(name) end
 
@@ -3000,15 +3127,17 @@ function picocalc.game.scene.has(name) end
 ---@param name string
 function picocalc.game.scene.switch(name) end
 
----Push a scene on the stack without exiting the current one.
+---Push a scene on the stack (at most 4 deep) and call its `enter()`. The scene
+---below gets no `exit()` and stops running: only the top scene updates and draws.
 ---@param name string
 function picocalc.game.scene.push(name) end
 
----Pop the top scene off the stack and return to the previous scene.
+---Pop the top scene (`exit()`) and return to the previous one, whose `enter()`
+---runs again. Popping the last scene raises an error.
 function picocalc.game.scene.pop() end
 
----Return the current scene.
----@return PicoDeckScene?
+---Return the current scene's name, as `switch` takes it.
+---@return string?
 function picocalc.game.scene.getCurrent() end
 
 ---Call `update(dt)` on the current scene.
@@ -3018,11 +3147,32 @@ function picocalc.game.scene.update(dt) end
 ---Call `draw()` on the current scene.
 function picocalc.game.scene.draw() end
 
----Return (or create) an object pool associated with a scene.
----@param name string Scene name
+---Create an object pool, up to 8 per app. Each call makes a new one. An error
+---in the factory is raised from `acquire` and `prewarm`.
+---@param name string A label: it becomes the table's `name` field
 ---@param factory fun(): any Factory function for new objects
----@return table pool
+---@return PicoDeckObjectPool pool
 function picocalc.game.scene.objectPool(name, factory) end
+
+---Holds up to 64 idle objects.
+---@class PicoDeckObjectPool
+---@field name string
+local PicoDeckObjectPool = {}
+
+---Take the most recently released object, or call the factory for a new one.
+---@return any
+function PicoDeckObjectPool:acquire() end
+
+---Return an object for reuse. With 64 idle already, it is dropped.
+---@param obj any
+function PicoDeckObjectPool:release(obj) end
+
+---Add `count` new idle objects (at most 64, and stopping when the pool is full).
+---@param count integer
+function PicoDeckObjectPool:prewarm(count) end
+
+---Discard every idle object.
+function PicoDeckObjectPool:clear() end
 
 ---Set a global value accessible to all scenes.
 ---@param key string
@@ -3084,9 +3234,10 @@ picocalc.terminal = {}
 local PicoDeckTerminal = {}
 
 ---Create a terminal widget with `cols` × `rows` characters and `scrollback_lines` of history.
----@param cols integer
----@param rows integer
----@param scrollback_lines? integer
+---A terminal of up to 22 rows draws from y = 28; a taller one moves up to fit.
+---@param cols? integer 1-53 (default 53)
+---@param rows? integer 1-26 (default 26)
+---@param scrollback_lines? integer At most 5000; zero or less means the default, 1000
 ---@return PicoDeckTerminal
 function picocalc.terminal.new(cols, rows, scrollback_lines) end
 
@@ -3117,14 +3268,17 @@ function PicoDeckTerminal:setColors(fg, bg) end
 ---@return integer bg
 function PicoDeckTerminal:getColors() end
 
----Scroll the terminal by `lines` lines (positive = down).
+---Shift the grid's contents, destructively: positive moves them up, the top rows
+---going into the scrollback; negative moves them down, the bottom rows being lost.
+---To look back without changing anything, use `setScrollbackOffset`.
 ---@param lines integer
 function PicoDeckTerminal:scroll(lines) end
 
 ---Render the full terminal to the display.
 function PicoDeckTerminal:render() end
 
----Render only dirty (changed) cells to the display.
+---Render only dirty rows to the display, or everything if a `flush()` has swapped
+---the framebuffers since the last render. Partial with `display.flushRows`.
 function PicoDeckTerminal:renderDirty() end
 
 ---@return integer
@@ -3140,10 +3294,10 @@ function PicoDeckTerminal:setCursorVisible(visible) end
 function PicoDeckTerminal:setCursorBlink(blink) end
 
 ---Select the font for this terminal.
----@param font_id integer One of the FONT_* constants
-function PicoDeckTerminal:setFont(font_id) end
+---@param name string `"scientifica"` or `"scientifica_bold"`
+function PicoDeckTerminal:setFont(name) end
 
----@return integer
+---@return string name
 function PicoDeckTerminal:getFont() end
 
 ---Mark all cells as dirty (forces a full re-render on next `renderDirty`).
@@ -3171,7 +3325,7 @@ function PicoDeckTerminal:getScrollbackLine(line) end
 ---@return integer
 function PicoDeckTerminal:getScrollbackOffset() end
 
----Set the scrollback display offset.
+---View the text `offset` lines back from the live grid (0 = live).
 ---@param offset integer
 function PicoDeckTerminal:setScrollbackOffset(offset) end
 
@@ -3183,11 +3337,11 @@ function PicoDeckTerminal:waitForAnyKey() end
 ---@return integer button_mask
 function PicoDeckTerminal:waitForKey(key) end
 
----Return the next key event without blocking, or `nil` if no key is pending.
+---The buttons that went down at the last `input.update()`, or `nil`. Does not poll.
 ---@return integer?
 function PicoDeckTerminal:readKey() end
 
----Return the next ASCII character without blocking, or `nil`.
+---The character of the last `input.update()`, or `nil`. Does not poll.
 ---@return string?
 function PicoDeckTerminal:readChar() end
 
@@ -3581,25 +3735,27 @@ function picocalc.json.decode(text) end
 function picocalc.json.isNull(v) end
 
 -- =============================================================================
--- picocalc.repl  (interactive Lua REPL)
+-- picocalc.repl  (console input bar and scrolling output)
 -- =============================================================================
 
 ---@class picocalc.repl
 picocalc.repl = {}
 
----Read a line of REPL input (non-blocking). Returns the line, or nil if no
----complete line is ready (also nil on Esc).
+---Read a line of REPL input (non-blocking; it polls the keyboard itself). Returns
+---the line, or nil if no complete line is ready. Esc also reads as nil, and keeps
+---the typed text: check `input.getButtonsPressed()` straight after this.
 ---@return string?
 function picocalc.repl.readline() end
 
----Print to the REPL output.
+---Print to the REPL output. With no arguments it only draws the screen.
 ---@param ... any
 function picocalc.repl.print(...) end
 
----Clear the REPL screen.
+---Clear the REPL screen and forget its output and any typed text.
 function picocalc.repl.clear() end
 
----Enable or disable input echo.
+---Enable or disable input echo. Off, the bar shows `*`s and a submitted line is
+---returned but not added to the output.
 ---@param flag boolean
 function picocalc.repl.echo(flag) end
 

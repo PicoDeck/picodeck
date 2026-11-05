@@ -8,10 +8,11 @@ local fs    = pc.fs
 local sys   = pc.sys
 local ui    = pc.ui
 
--- Terminal setup (53 cols x 26 rows, minus 2 rows for status/footer = 24 text rows)
+-- Terminal setup: 53 cols, and the rows that fit between the header and the
+-- footer: (302 - 21) / 12 = 23
 local TERM_COLS = 53
-local TERM_ROWS = 24
-local TEXT_ROWS = 24
+local TERM_ROWS = 23
+local TEXT_ROWS = 23
 
 -- Colors for terminal
 local TEXT_FG          = disp.WHITE
@@ -187,8 +188,8 @@ end
 
 -- ── Word wrap layout (mirrors src/os/text_wrap.c) ─────────────────────────────
 -- Word wrap is done entirely editor-side: the terminal's own word wrap must
--- stay OFF. Writing 24 full-length logical lines with terminal wrap on
--- overflows the 24-row cell buffer (putChar auto-wraps long lines onto extra
+-- stay OFF. Writing 23 full-length logical lines with terminal wrap on
+-- overflows the 23-row cell buffer (putChar auto-wraps long lines onto extra
 -- rows and scrolls the top of the buffer into scrollback).
 
 local WRAP_BREAK = { [" "]=true, ["\t"]=true, ["-"]=true, [","]=true, ["."]=true,
@@ -590,7 +591,7 @@ local function redraw_screen()
 
     if word_wrap then
         -- Editor-side word wrap: write exactly one wrap segment per terminal
-        -- row so the 24-row cell buffer can never overflow. A row that
+        -- row so the 23-row cell buffer can never overflow. A row that
         -- continues on the next row is padded to the full terminal width so
         -- the next write auto-wraps via putChar, which marks the terminal's
         -- continuation flag (keeps the line-number gutter blank on

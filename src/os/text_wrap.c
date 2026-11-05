@@ -45,3 +45,18 @@ int text_wrap_segments(const char *text, int text_len, int max_cols,
 
     return visual_rows > 0 ? visual_rows : 1;
 }
+
+int text_wrap_next_row(const char *text, int text_len, int pos, int max_cols) {
+    if (max_cols <= 0) return -1;
+
+    int remaining = text_len - pos;
+    // A newline right after max_cols characters still ends this row, so look
+    // one further. Stopping there keeps a long line's rows cheap.
+    int look = remaining < max_cols + 1 ? remaining : max_cols + 1;
+    for (int i = 0; i < look; i++) {
+        if (text[pos + i] == '\n') return pos + i + 1;
+    }
+
+    if (remaining <= max_cols) return -1;
+    return pos + text_wrap_find_break(text + pos, remaining, max_cols);
+}

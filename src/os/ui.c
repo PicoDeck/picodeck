@@ -250,8 +250,8 @@ int ui_draw_header(const char *title) {
 }
 
 void ui_draw_footer(const char *left_text, const char *right_text) {
-  display_fill_rect(0, FB_HEIGHT - 18, FB_WIDTH, 18, C_HEADER_BG);
-  display_fill_rect(0, FB_HEIGHT - 18, FB_WIDTH, 1, C_BORDER);
+  display_fill_rect(0, FB_HEIGHT - UI_FOOTER_H, FB_WIDTH, UI_FOOTER_H, C_HEADER_BG);
+  display_fill_rect(0, FB_HEIGHT - UI_FOOTER_H, FB_WIDTH, 1, C_BORDER);
 
   if (left_text && left_text[0]) {
     display_draw_text(8, FB_HEIGHT - 13, left_text, C_TEXT_DIM, C_HEADER_BG);
@@ -332,30 +332,50 @@ void ui_draw_splash(const char *status, const char *subtext) {
 #define DLG_W       280
 #define DLG_X       ((FB_WIDTH  - DLG_W) / 2)
 
-// Draw a wrapped message into a dialog box at (x, y_start).
-// Returns the y coordinate after the last line drawn.
-static int dlg_draw_message(int x, int y, int w, const char *msg, uint16_t bg) {
-  if (!msg || !msg[0]) return y;
-  const int COLS = w / 6; // chars that fit (6px font)
-  while (*msg) {
-    int avail = strlen(msg);
-    int take  = avail > COLS ? COLS : avail;
-    // Try to break at a word boundary
-    if (avail > COLS) {
-      for (int k = take - 1; k > 0; k--) {
-        if (msg[k] == ' ' || msg[k] == '/') { take = k; break; }
-      }
+// One line of a dialog message `cols` wide: *len characters of msg, broken at
+// a newline, or at a word boundary when it does not fit. Returns where the next
+// line starts.
+static const char *dlg_next_line(const char *msg, int cols, int *len) {
+  int avail = 0;
+  while (avail <= cols && msg[avail] && msg[avail] != '\n') avail++;
+  int take = avail;
+  if (avail > cols) {
+    take = cols;
+    for (int k = take - 1; k > 0; k--) {
+      if (msg[k] == ' ' || msg[k] == '/') { take = k; break; }
     }
+  }
+  *len = take;
+  msg += take;
+  if (*msg == ' ' || *msg == '\n') msg++; // not shown on the next line
+  return msg;
+}
+
+// The lines a message takes, at most max_lines.
+static int dlg_count_lines(const char *msg, int cols, int max_lines) {
+  int lines = 0;
+  while (*msg && lines < max_lines) {
+    int len;
+    msg = dlg_next_line(msg, cols, &len);
+    lines++;
+  }
+  return lines;
+}
+
+// Draw a wrapped message into a dialog box at (x, y), max_lines at most.
+static void dlg_draw_message(int x, int y, int cols, const char *msg, uint16_t bg,
+                             int max_lines) {
+  for (int i = 0; *msg && i < max_lines; i++) {
+    int take;
+    const char *next = dlg_next_line(msg, cols, &take);
     char line[64];
     int n = take < (int)sizeof(line) - 1 ? take : (int)sizeof(line) - 1;
     memcpy(line, msg, n);
     line[n] = '\0';
     display_draw_text(x, y, line, COLOR_WHITE, bg);
     y += 12;
-    msg += take;
-    if (*msg == ' ') msg++; // skip leading space on next line
+    msg = next;
   }
-  return y;
 }
 
 // ── ui_text_input ─────────────────────────────────────────────────────────────
@@ -459,6 +479,7 @@ static bool ui_text_input_run(const char *prompt, const char *default_val,
 }
 
 #define UI_CONFIRM_GRACE_MS 400u
+#define DLG_MAX_LINES 20  // 44 + 20 * 12 + 18 = 302: the tallest box on the panel
 
 // ── ui_confirm ────────────────────────────────────────────────────────────────
 
@@ -471,26 +492,20 @@ static bool ui_confirm_run(const char *message) {
   // "yes" (sys.applyUpdate relies on this).
   kbd_discard_pending();
   kbd_consume_menu_press();  // a stale press was not made at this dialog
-  // Measure how many lines the message needs (up to 2)
+  // The box grows with the message, up to a screenful of lines.
   const int COLS = (DLG_W - 20) / 6;
-  int msg_len = message ? strlen(message) : 0;
-  int lines   = msg_len == 0 ? 1 : (msg_len + COLS - 1) / COLS;
-  if (lines > 2) lines = 2;
+  const char *text = message ? message : "Are you sure?";
+  int lines = dlg_count_lines(text, COLS, DLG_MAX_LINES);
+  if (lines < 1) lines = 1;
 
   const int DH = 44 + lines * 12 + 18; // border + text lines + hint
   const int DY = (FB_HEIGHT - DH) / 2;
-
-  // OS modals draw full-screen even if the app set a clip rect.
-  int saved_cx, saved_cy, saved_cw, saved_ch;
-  display_get_clip_rect(&saved_cx, &saved_cy, &saved_cw, &saved_ch);
-  display_clear_clip_rect();
 
   display_darken();
   display_fill_rect(DLG_X, DY, DLG_W, DH, DLG_BG);
   display_draw_rect(DLG_X, DY, DLG_W, DH, DLG_BORDER);
 
-  dlg_draw_message(DLG_X + 10, DY + 14, DLG_W - 20,
-                   message ? message : "Are you sure?", DLG_BG);
+  dlg_draw_message(DLG_X + 10, DY + 14, COLS, text, DLG_BG, DLG_MAX_LINES);
 
   const char *hint = "Enter=Yes  Esc=No";
   int hw = display_text_width(hint);
@@ -505,7 +520,7 @@ static bool ui_confirm_run(const char *message) {
     dev_commands_poll();
     dev_commands_process();
     // Let a dev "exit" unwind this modal (cancel; the Lua hook handles exit).
-    if (dev_commands_wants_exit()) { display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false; }
+    if (dev_commands_wants_exit()) return false;
     // The menu key is ignored: No can mean "discard" to the app (an editor's
     // "Save changes?"), so it never answers a dialog. It is still taken, or
     // it would open the system menu once the dialog had been answered.
@@ -522,31 +537,48 @@ static bool ui_confirm_run(const char *message) {
       sleep_ms(20);
       continue;
     }
-    if (btns & BTN_ESC || c == 'n' || c == 'N') { display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false; }
-    if ((btns & BTN_ENTER) || c == 'y' || c == 'Y') { display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return true; }
+    if (btns & BTN_ESC || c == 'n' || c == 'N') return false;
+    if ((btns & BTN_ENTER) || c == 'y' || c == 'Y') return true;
     watchdog_update();
     sleep_ms(20);
   }
 }
 
-// System modals draw in the built-in 6x8 font whatever the app has selected,
-// and give the app's font back on every way out.
+// System modals draw in the built-in 6x8 font and full-screen, whatever font
+// and clip rect the app has set, and give the app both back on every way out.
+typedef struct {
+  int font;
+  int cx, cy, cw, ch;
+} modal_saved_t;
+
+static void modal_enter(modal_saved_t *s) {
+  s->font = display_get_font();
+  display_set_font(0);
+  display_get_clip_rect(&s->cx, &s->cy, &s->cw, &s->ch);
+  display_clear_clip_rect();
+}
+
+static void modal_leave(const modal_saved_t *s) {
+  display_set_clip_rect(s->cx, s->cy, s->cw, s->ch);
+  display_set_font(s->font);
+}
+
 bool ui_text_input(const char *prompt, const char *default_val,
                    char *out_buf, int out_len) {
-  int saved_font = display_get_font();
-  display_set_font(0);
+  modal_saved_t saved;
+  modal_enter(&saved);
   bool ok = ui_text_input_run(prompt, default_val, out_buf, out_len);
   kbd_hide_held();  // the answering key and what was typed are not the app's
-  display_set_font(saved_font);
+  modal_leave(&saved);
   return ok;
 }
 
 bool ui_confirm(const char *message) {
-  int saved_font = display_get_font();
-  display_set_font(0);
+  modal_saved_t saved;
+  modal_enter(&saved);
   bool ok = ui_confirm_run(message);
   kbd_hide_held();  // the answering key is not the app's
-  display_set_font(saved_font);
+  modal_leave(&saved);
   return ok;
 }
 

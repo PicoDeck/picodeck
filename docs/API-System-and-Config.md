@@ -428,7 +428,7 @@ The libraries in the repo's `system/lib/` are the ones that exist. Each is a pla
 |------|------|------|
 | `"download"` | `download.lua` | [Library-Download](Library-Download.md) |
 | `"panels"` | `panels.lua` | [Library-Panels](Library-Panels.md) |
-| `"widgets"` | `widgets.lua` | none (a widget toolkit; read the file header) |
+| `"widgets"` | `widgets.lua` | [Library-Widgets](Library-Widgets.md) |
 
 `require` (see [Standard-Lua-Libraries](Standard-Lua-Libraries.md)) also searches `/system/lib`, after your app's folder. Since nothing installs these files on a user's card, [a published app should bundle what it uses](Publishing-Apps.md#bundle-the-libraries-you-use).
 
