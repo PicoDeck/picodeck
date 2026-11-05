@@ -47,6 +47,10 @@
       {
         "label": "Library Panels",
         "page": "Library-Panels.md"
+      },
+      {
+        "label": "Library Widgets",
+        "page": "Library-Widgets.md"
       }
     ]
   },

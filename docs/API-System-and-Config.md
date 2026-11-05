@@ -404,7 +404,7 @@ The libraries in the repo's `system/lib/` are the ones that exist. Each is a pla
 |------|------|------|
 | `"download"` | `download.lua` | [Library-Download](Library-Download.md) |
 | `"panels"` | `panels.lua` | [Library-Panels](Library-Panels.md) |
-| `"widgets"` | `widgets.lua` | none (a widget toolkit; read the file header) |
+| `"widgets"` | `widgets.lua` | [Library-Widgets](Library-Widgets.md) |
 
 `require` (see [Standard-Lua-Libraries](Standard-Lua-Libraries.md)) also searches `/system/lib`.
 
