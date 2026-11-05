@@ -259,6 +259,28 @@ T.case("write_on_read_handle", function()
     T.eq(fs.readFile(path), "abc", "unchanged")
 end)
 
+T.case("mkdir_details", function()
+    T.eq(fs.mkdir(fs.appPath("test_no_parent/child")), false, "a missing parent")
+    local dir = fs.appPath("test_stat_dir")
+    T.ok(fs.mkdir(dir), "new directory")
+    T.ok(fs.mkdir(dir), "an existing directory is fine")
+    local file = fs.appPath("test_a_file")
+    write(file, "x")
+    T.eq(fs.mkdir(file), false, "a file of that name")
+    T.eq(fs.isDir(file), false, "still a file")
+end)
+
+T.case("volume_root_cannot_be_deleted", function()
+    for _, root in ipairs({ "/", "//", "/.", "/./" }) do
+        local ok, err = fs.deleteRecursive(root)
+        T.eq(ok, false, "deleteRecursive " .. root)
+        T.ok(err, "reason")
+        T.eq(fs.delete(root), false, "delete " .. root)
+    end
+    T.ok(fs.isDir("/apps"), "/apps survived")
+    T.ok(fs.isDir("/data"), "/data survived")
+end)
+
 T.case("stat_fields", function()
     local file = fs.appPath("test_a_file")
     write(file, "12345")

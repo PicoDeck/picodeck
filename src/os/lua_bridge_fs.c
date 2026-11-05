@@ -10,6 +10,7 @@
 
 #include <limits.h>
 #include <string.h>
+#include <strings.h>
 
 // ── Filesystem sandbox ──────────────────────────────────────────────────────
 // Apps may touch only (unless "root-filesystem" is granted):
@@ -29,6 +30,21 @@ bool fs_sandbox_check(lua_State *L, const char *path, bool write) {
   if (!me)
     return fs_path_allowed(path, write, NULL, NULL, false);
   return fs_path_allowed(path, write, me->dir, me->data_dir, me->root_fs);
+}
+
+// The SD volume root ("/", "//", "/.", "/./"...: slashes and whole "."
+// segments only). FatFS f_stat refuses it (the root has no
+// directory entry) while the simulator's host stat() succeeds, so exists /
+// stat / isDir answer for it here, identically on both: an existing, empty-
+// sized directory. Only a root-filesystem app gets past fs_sandbox_check.
+static bool path_is_root(const char *path) {
+  if (path[0] != '/') return false;
+  for (const char *c = path; *c;) {
+    if (*c == '/') { c++; continue; }
+    if (c[0] == '.' && (c[1] == '/' || c[1] == '\0')) { c++; continue; }
+    return false;
+  }
+  return true;
 }
 
 // ── File handles ────────────────────────────────────────────────────────────
@@ -236,21 +252,6 @@ static void fs_file_register_mt(lua_State *L) {
   lb_register_type(L, FS_FILE_MT, l_fs_file_methods, l_fs_file_meta);
 }
 
-// The SD volume root ("/", "//", "/.", "/./"...: slashes and whole "."
-// segments only). FatFS f_stat refuses it (the root has no
-// directory entry) while the simulator's host stat() succeeds, so exists /
-// stat / isDir answer for it here, identically on both: an existing, empty-
-// sized directory. Only a root-filesystem app gets past fs_sandbox_check.
-static bool path_is_root(const char *path) {
-  if (path[0] != '/') return false;
-  for (const char *c = path; *c;) {
-    if (*c == '/') { c++; continue; }
-    if (c[0] == '.' && (c[1] == '/' || c[1] == '\0')) { c++; continue; }
-    return false;
-  }
-  return true;
-}
-
 static int l_fs_exists(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
   if (!fs_sandbox_check(L, path, false)) {
@@ -353,7 +354,13 @@ static int l_fs_mkdir(lua_State *L) {
     lua_pushboolean(L, false);
     return 1;
   }
-  lua_pushboolean(L, sdcard_mkdir(path));
+  if (path_is_root(path)) {  // f_mkdir refuses it; the host's says it exists
+    lua_pushboolean(L, true);
+    return 1;
+  }
+  // FatFS reports any existing name as "exists": a file is not a directory.
+  sdcard_stat_t st;
+  lua_pushboolean(L, sdcard_mkdir(path) && sdcard_stat(path, &st) && st.is_dir);
   return 1;
 }
 
@@ -414,6 +421,11 @@ static int l_fs_delete(lua_State *L) {
     lua_pushstring(L, "permission denied");
     return 2;
   }
+  if (path_is_root(path)) {
+    lua_pushboolean(L, false);
+    lua_pushliteral(L, "cannot delete the volume root");
+    return 2;
+  }
   if (sdcard_delete(path)) {
     lua_pushboolean(L, true);
     return 1;
@@ -429,6 +441,13 @@ static int l_fs_delete_recursive(lua_State *L) {
   if (!fs_sandbox_check(L, path, true)) {
     lua_pushboolean(L, false);
     lua_pushstring(L, "permission denied");
+    return 2;
+  }
+  // Refused here on both targets. The device's sdcard_stat happens to refuse
+  // the root; the simulator's host walk would empty the whole card.
+  if (path_is_root(path)) {
+    lua_pushboolean(L, false);
+    lua_pushliteral(L, "cannot delete the volume root");
     return 2;
   }
   if (sdcard_delete_recursive(path)) {

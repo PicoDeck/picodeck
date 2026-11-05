@@ -169,7 +169,7 @@ end
 ---
 
 #### `picocalc.fs.mkdir(path)`
-Creates a directory at the specified path.
+Creates one directory. Its parent must exist; to make a chain, create each level in turn.
 
 - **Parameters:**
   - `path` (string): Absolute directory path to create
@@ -285,8 +285,8 @@ if not ok then print("Copy failed: " .. err) end
 Delete a file. Subject to filesystem sandbox.
 
 - **Parameters:**
-  - `path` (string): File path to delete
-- **Returns:** (boolean) `true` on success; `(false, string)` on failure
+  - `path` (string): Path to delete
+- **Returns:** (boolean) `true` on success; `(false, string)` on failure (`"permission denied"`, `"delete failed"`: missing, a directory with files in it, or a file still open; `"cannot delete the volume root"`)
 
 ```lua
 local ok, err = picocalc.fs.delete("/data/myapp/old_save.json")
@@ -296,7 +296,7 @@ if not ok then print("Delete failed: " .. err) end
 ---
 
 #### `picocalc.fs.deleteRecursive(path)`
-Delete a directory and all its contents. Subject to filesystem sandbox.
+Delete a directory and all its contents, or a single file. The volume root is refused, for every app.
 
 - **Parameters:**
   - `path` (string): Directory path to delete
