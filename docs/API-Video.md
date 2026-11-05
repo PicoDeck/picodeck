@@ -287,9 +287,9 @@ Audio playback is automatically stopped and the ring freed when `player:stop()` 
 
 ## Clock speed during playback
 
-When `player:play()` is called, the system clock is raised from 200 MHz to **300 MHz** to fit MJPEG decode within the 40 ms frame budget. The clock is restored when `player:stop()` is called.
+When `player:play()` is called, the system clock is raised to **300 MHz** to fit MJPEG decode within the 40 ms frame budget. It stays there while paused and after the end of the video, until `player:stop()` or until the player is garbage collected. Then it goes back to what it was: 200 MHz, or the clock your app asked for with `system_clock_khz` in `app.json`. With two players, the clock goes back when the last of them stops.
 
-Because the CYW43 WiFi PIO divider cannot be updated at runtime, **WiFi is disconnected** before the overclock and reconnected (using saved credentials) after restore. Apps that require persistent WiFi connections should avoid video playback, or mute the audio and skip the overclock by using a custom playback loop.
+**WiFi is disconnected** for the same stretch, muted or not, because the radio's traffic and power are not wanted during playback. Connections open at that moment fail. If WiFi was connected before `play()`, it reconnects after the clock goes back, using the saved credentials, a network the app joined itself included: the reconnect goes to the saved one. It takes a few seconds, so wait for it before you make a request. No API plays a video with WiFi left up.
 
 ---
 

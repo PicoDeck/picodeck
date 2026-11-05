@@ -9,6 +9,7 @@ hardware only.
 measures one window while the fixture plays, and sends nothing else to
 the device meanwhile. AUDIO_LISTEN=1 runs test_listen, which needs a
 person listening at the device. ffmpeg (on PATH) makes the music."""
+import json
 import math
 import os
 import re
@@ -466,6 +467,98 @@ def test_output_rate_survives_the_video_boost(target):
     assert stats["mp3_underruns"] * 10 < frames, stats
     after = audiostat(target)
     assert after["out"] == 0 and after["sys_khz"] == 200000, after
+
+
+# ── The clock after a video ───────────────────────────────────────────────────
+# The video player boosts to 300 MHz and goes back to what the clock was: an
+# app's own system_clock_khz stays its own after stop(), and two players share
+# one boost (it used to be a literal 200 MHz, whoever asked).
+
+VCLOCK_APP, VCLOCK_ID = "video_clock", "com.test.video_clock"
+VCLOCK_FIXTURE = r'''
+local T = picocalc.sys.loadlib("picotest")
+local fs, sys, input = picocalc.fs, picocalc.sys, picocalc.input
+local function mark(name)
+  local f = fs.open(fs.appPath(name), "w")
+  fs.write(f, "1")
+  fs.close(f)
+end
+local function run(v, ms)
+  local t_end = sys.getTimeMs() + ms
+  while sys.getTimeMs() < t_end do
+    if v then v:update() end
+    input.update()
+    sys.sleep(1)
+  end
+end
+T.case("clock", function()
+  local a = picocalc.video.player()
+  local b = picocalc.video.player()
+  T.ok(a:load(APP_DIR .. "/clip.avi"), "load clip.avi")
+  T.ok(b:load(APP_DIR .. "/clip.avi"), "load clip.avi again")
+  a:setLoop(true)
+  b:setLoop(true)
+  a:play()
+  mark("one_playing")
+  run(a, 3000)
+  b:play()
+  a:stop()               -- the second player still needs the boost
+  mark("second_playing")
+  run(b, 3000)
+  b:stop()
+  mark("stopped")
+  run(nil, 3000)
+end)
+T.done()
+'''
+
+
+def _wait_for_mark(target, name, timeout=20.0):
+    path = f"/data/{VCLOCK_ID}/{name}"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            target.read_file(path)
+            return
+        except FileNotFoundError:
+            time.sleep(0.2)
+    raise AssertionError(f"no {path} after {timeout} s")
+
+
+@pytest.mark.parametrize("own_khz", [0, 250000], ids=["default", "own_clock"])
+def test_video_gives_the_clock_back(target, own_khz):
+    if not FFMPEG:
+        pytest.skip("ffmpeg makes the clip")
+    before = own_khz or 200000
+    manifest = {"id": VCLOCK_ID, "name": VCLOCK_APP, "version": "1.0",
+                "description": "E2E: the clock after a video",
+                "author": "PicoDeck E2E", "requirements": ["audio"]}
+    if own_khz:
+        manifest["system_clock_khz"] = own_khz
+    with tempfile.TemporaryDirectory() as tmp:
+        clip = Path(tmp) / "clip.avi"
+        subprocess.run([FFMPEG, "-v", "error", "-y",
+                        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=20",
+                        "-t", "2", "-c:v", "mjpeg", "-pix_fmt", "yuvj420p",
+                        "-q:v", "12", str(clip)], check=True)
+        target.stage_lua_app(VCLOCK_APP, VCLOCK_FIXTURE, requirements=("audio",),
+                             id=VCLOCK_ID,
+                             files={"app.json": json.dumps(manifest),
+                                    "clip.avi": clip.read_bytes()})
+    for name in ("one_playing", "second_playing", "stopped", "test_results.json"):
+        target.delete_file(f"/data/{VCLOCK_ID}/{name}")
+    target.ensure_launcher()
+    target.launch_app(VCLOCK_APP)
+    _wait_for_mark(target, "one_playing")
+    assert audiostat(target)["sys_khz"] == 300000
+    _wait_for_mark(target, "second_playing")
+    assert audiostat(target)["sys_khz"] == 300000, "the boost went with the first player"
+    _wait_for_mark(target, "stopped")
+    assert audiostat(target)["sys_khz"] == before, "the clock after stop()"
+    outcome = target.wait_for_exit(timeout=30)
+    assert outcome["result"] == "returned", outcome
+    assert_passed(target.wait_for_results(VCLOCK_ID))
+    assert audiostat(target)["sys_khz"] == 200000, "the launcher's clock"
 
 
 # ── The video player's audio: loops, seeks, pause, volume ─────────────────────
