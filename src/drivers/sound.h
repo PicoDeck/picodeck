@@ -38,6 +38,7 @@ typedef struct {
     void *loop_callback_arg;
     volatile bool finish_pending;  // set by mixer (Core 1 ISR), fired by pump
     volatile bool loop_pending;
+    volatile bool in_pump;         // the pump is calling this player's callbacks
 } sound_player_t;
 
 void sound_init(void);
@@ -83,8 +84,13 @@ void sound_player_set_loop_callback(sound_player_t *player, int (*cb)(void *), v
  * reads, so the voice is free for another player while the owner of the copy
  * (the Lua bridge's temporary players) can still read it and play it again.
  * Core 0 only. A park is refused (false, nothing changes) while the voice is
- * audible or the mixer's flag for a callback waits for sound_pump_callbacks. */
-bool sound_player_park(sound_player_t *voice, sound_player_t *parked);
+ * audible, the mixer's flag for a callback waits for sound_pump_callbacks, the
+ * pump is calling a callback, or a callback it called has left work for its owner:
+ * cb_busy(arg) true for either callback's argument (NULL: none). All of it is one
+ * step under the mixer lock, so cb_busy only reads, and a callback is never caught
+ * between the pump taking the flag and the owner seeing what it did. */
+bool sound_player_park(sound_player_t *voice, sound_player_t *parked,
+                       bool (*cb_busy)(void *arg));
 void sound_player_unpark(sound_player_t *voice, const sound_player_t *parked);
 /* A voice's index, 0 .. SOUND_MAX_PLAYERS - 1. */
 int sound_player_voice(const sound_player_t *voice);

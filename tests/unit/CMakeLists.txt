@@ -174,6 +174,14 @@ picodeck_unit_test(test_color256
                    INCLUDES ${PICODECK_ROOT}/simulator/stubs
                    DEFINES CG_MALLOC=malloc CG_FREE=free)
 target_compile_options(test_color256 PRIVATE -Wno-unused-parameter)  # terminal.c
+# The terminal's ANSI parser, over the real terminal.
+picodeck_unit_test(test_terminal_parser
+                   SOURCES ${SRC}/os/color256.c ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c
+                   ${SRC}/os/terminal.c ${SRC}/os/terminal_parser.c
+                   ${CMAKE_CURRENT_SOURCE_DIR}/fakes/umm_fake.c
+                   INCLUDES ${PICODECK_ROOT}/simulator/stubs
+                   DEFINES CG_MALLOC=malloc CG_FREE=free)
+target_compile_options(test_terminal_parser PRIVATE -Wno-unused-parameter)  # terminal.c
 # Lattice hash, value noise and fBm (src/os/noise.h, header-only).
 picodeck_unit_test(test_noise)
 target_compile_options(test_noise PRIVATE -ffp-contract=off -Wdouble-promotion)
@@ -241,6 +249,7 @@ picodeck_unit_test(test_sdcard_driver SOURCES ${SRC}/drivers/sdcard.c
                 ${CMAKE_CURRENT_SOURCE_DIR}/fakes/umm_fake.c
                 INCLUDES ${FEEDCOUNT} ${PICODECK_ROOT}/simulator/stubs ${FATFS_DIR}
                 ${SRC} ${SRC}/drivers)
+target_link_libraries(test_sdcard_driver PRIVATE Threads::Threads)
 
 # The simulator's SD-root containment (host filesystem; sim_log_err faked).
 picodeck_unit_test(test_sim_sdcard SOURCES ${PICODECK_ROOT}/simulator/hal/hal_sdcard.c

@@ -111,7 +111,7 @@ local function request(path, opts)
     if opts.post then
         ok, why = conn:post(path, opts.post)
     else
-        ok, why = conn:get(path)
+        ok, why = conn:get(path, opts.headers)
     end
     T.ok(ok, "request refused: " .. tostring(why))
     return r
@@ -730,6 +730,51 @@ case_fw("http_range_open_ended", function()
     conn:close()
 end)
 
+-- The bridge builds a request's extra headers in one buffer of 4095 bytes, line
+-- ends included. More is refused, in every form, and nothing goes out.
+case_fw("http_headers_too_long", function()
+    local conn = net.http.new(HOST, cfg.http, false, "hdrs")
+    local a5k = string.rep("a", 5000)
+    local many = {}
+    for i = 1, 60 do many["X-Pad-" .. i] = string.rep("b", 80) end
+    local lines = {}
+    for i = 1, 60 do lines[i] = "X-Pad-" .. i .. ": " .. string.rep("b", 80) end
+    local forms = {
+        { "string", "X-Long: " .. a5k },
+        { "array", { "X-Long: " .. a5k } },
+        { "array_late", { "X-Short: 1", "X-Long: " .. a5k } },
+        { "array_adds_up", lines },
+        { "kv", { ["X-Long"] = a5k } },
+        { "kv_adds_up", many },
+        -- 4094 bytes, and then its line end does not fit.
+        { "string_line_end", "X-Fit: " .. string.rep("a", 4094 - 7) },
+    }
+    for _, form in ipairs(forms) do
+        local name, h = form[1], form[2]
+        local ok, why = conn:get("/ok", h)
+        T.eq(ok, false, name .. ": get")
+        T.ok(why and why:find("too long", 1, true), name .. ": get: " .. tostring(why))
+        ok, why = conn:post("/echo", h, "x")
+        T.eq(ok, false, name .. ": post")
+        T.ok(why and why:find("too long", 1, true), name .. ": post: " .. tostring(why))
+    end
+
+    -- Exactly the limit goes out, on the same connection: the refusals left it
+    -- idle.
+    for _, h in ipairs({
+        "X-Fit: " .. string.rep("a", 4095 - 7 - 2) .. "\r\n",
+        "X-Fit: " .. string.rep("a", 4095 - 7 - 2),
+        { "X-Fit: " .. string.rep("a", 4095 - 7 - 2) },
+        { ["X-Fit"] = string.rep("a", 4095 - 7 - 2) },
+    }) do
+        local r = request("/ok", { conn = conn, headers = h })
+        T.ok(wait(function() return r.complete or r.closed end, 3000), "no answer")
+        T.eq(r.status, 200, "status")
+        T.eq(body(r), "hello picodeck", "body")
+    end
+    conn:close()
+end)
+
 case_fw("http_read_timeout_fraction", function()
     local t0 = now()
     local r = request("/hang", { read_timeout = 0.5 })
@@ -814,6 +859,31 @@ case_fw("tcp_connect_twice_refused", function()
     T.eq(ok, false, "connect while connected")
     T.ok(err, "a reason")
     e:close()
+end)
+
+-- A callback replaced or cleared is let go, not kept in the registry for good.
+case_fw("tcp_replaced_callback_is_released", function()
+    local s = T.ok(pc.tcp.new(HOST, cfg.echo, false), "tcp.new")
+    local function released(set, clear)
+        local weak = setmetatable({}, { __mode = "v" })
+        local f = function() end
+        weak[1] = f
+        set(s, f)
+        f = nil
+        collectgarbage()
+        collectgarbage()
+        T.ok(weak[1] ~= nil, "the current callback stays")
+        clear()
+        collectgarbage()
+        collectgarbage()
+        return weak[1] == nil
+    end
+    for _, name in ipairs({ "setConnectCallback", "setReadCallback", "setCloseCallback" }) do
+        local set = s[name]
+        T.ok(released(set, function() set(s, function() end) end), name .. ": replaced")
+        T.ok(released(set, function() set(s, nil) end), name .. ": cleared")
+    end
+    s:close()
 end)
 
 case_fw("tcp_read_timeout_fraction", function()

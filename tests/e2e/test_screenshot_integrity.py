@@ -118,3 +118,30 @@ def test_base64_transfers_under_log_noise(noisy):
         first = _pixels(pm._do_screenshot_b64_once(noisy.port))
         assert _pixels(pm._do_screenshot_b64_once(noisy.port)) == first
     noisy.delete_file(path)
+
+
+@pytest.mark.hardware
+def test_binary_put_under_log_noise(noisy):
+    """`put`: raw bytes in, read in thread mode beside TinyUSB's own interrupt work
+    (through the stdio driver, under its mutex), its FNV-1a in the reply and the
+    bytes on the card."""
+    pm = noisy.pm
+    data = bytes(range(256)) * 64
+    path = f"/data/{APP_ID}/put.bin"
+    with pm._exclusive_serial(noisy.port):
+        ser = pm.open_serial(noisy.port, timeout=0.2)
+        try:
+            reader = pm.LineReader(ser)
+            for i in range(4):
+                ser.write(f"put {path} {len(data)}\n".encode())
+                ser.flush()
+                reader.wait_marker([b"Ready to receive"], [b"Failed to open", b"Usage:"], 5.0)
+                ser.write(data)
+                ser.flush()
+                final = reader.wait_marker([b"File received"], [b"Error"], 30.0)
+                fnv = int(final.split(b"fnv1a=")[1].split()[0], 16)
+                assert fnv == pm._fnv1a(data), f"put {i}"
+        finally:
+            ser.close()
+        assert pm._do_get_file_b64_once(noisy.port, path) == data
+    noisy.delete_file(path)

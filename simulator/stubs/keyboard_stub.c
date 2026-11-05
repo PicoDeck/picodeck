@@ -185,6 +185,8 @@ void kbd_poll(void) {
         // This poll's presses and chars; a key the app saw go down still
         // comes up.
         kbd_evq_drop_newest_keep_ups(&s_in.q, s_in.ev_pushed, &down_before);
+        kbd_hide_swallowed(&s_hide, &s_pad, &pad_before, &s_in.down, &down_before,
+                           hal_input_injected_down());
         for (int i = 0; i < 8; i++)
             s_in.down.bits[i] &= down_before.bits[i];
         // The waking click is retired for good (kbd_inject_drop_oneshots):

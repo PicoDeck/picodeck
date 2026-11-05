@@ -745,16 +745,3 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff) {
     return RES_PARERR;
   }
 }
-
-/* ─── SPI speed control ────────────────────────────────────────────────────
- *
- * CYW43 radio EMI corrupts SPI0 at 25 MHz (see hardware.h SD_SPI_BAUD).
- * Callers that write to SD while the CYW43 may still be active can drop
- * to a safe speed (1 MHz) where the noise margin is large enough.
- */
-
-#define SD_SAFE_BAUD (1000 * 1000) /* 1 MHz — immune to CYW43 EMI */
-
-void sd_set_slow_mode(bool slow) {
-  spi_set_baudrate(SD_SPI_PORT, slow ? SD_SAFE_BAUD : SD_SPI_BAUD);
-}

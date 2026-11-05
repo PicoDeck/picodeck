@@ -558,6 +558,24 @@ static inline void kbd_hide_add_down(kbd_hide_t *h, const kbd_keyset_t *down,
 // One key transition (KBD_FIFO_*): true when it was a hidden key's, so it must
 // not be decoded. Shift and Alt are still tracked for the gamepad, which folds
 // the codes other keys take under them.
+// The idle-dim wake swallow, before it takes this poll's keys out of the key-down
+// set (`except`: injected ones, as in kbd_hide_add_down). What went down in this
+// poll and is still down stays hidden until it is released: only forgotten, a key
+// the controller repeats as PRESSED came back as a fresh press at its first repeat
+// (Enter held ~350 ms on a dimmed launcher woke it and then started an app). Its
+// release will not reach the gamepad (kbd_hide_item), so its slot goes now, or the
+// button's other key could never release the button.
+static inline void kbd_hide_swallowed(kbd_hide_t *h, kbd_pad_t *p,
+                                      const kbd_pad_t *pad_before,
+                                      const kbd_keyset_t *down,
+                                      const kbd_keyset_t *down_before,
+                                      uint32_t except) {
+  kbd_keyset_t fresh;
+  for (int w = 0; w < 8; w++)
+    fresh.bits[w] = down->bits[w] & ~down_before->bits[w];
+  kbd_hide_add_down(h, &fresh, except);
+  p->down &= pad_before->down;
+}
 static inline bool kbd_hide_item(kbd_hide_t *h, kbd_pad_t *p,
                                  const kbd_padmap_t *m, uint8_t state,
                                  uint8_t key) {

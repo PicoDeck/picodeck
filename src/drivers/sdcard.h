@@ -125,7 +125,9 @@ bool sdcard_disk_info(uint32_t *out_free_kb, uint32_t *out_total_kb);
 
 // Drop SPI0 to 1 MHz (slow=true) for writes during CYW43 radio activity,
 // or restore full speed (slow=false). CYW43 EMI corrupts SPI0 at 25 MHz;
-// 1 MHz has enough noise margin to be immune.
+// 1 MHz has enough noise margin to be immune. Core 0 thread context only: a
+// change waits for the read Core 1 has in flight (g_sdcard_mutex); a call that
+// finds the bus as asked touches nothing.
 void sd_set_slow_mode(bool slow);
 
 // ── Convenience: read entire file into a heap-allocated buffer ─────────────-

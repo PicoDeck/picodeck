@@ -286,12 +286,12 @@ static void test_park_frees_the_voice_and_keeps_the_state(void) {
   sound_player_t parked;
   sound_player_play(p, 0);
   CHECK(!(sound_voices_parkable() & (1u << sound_player_voice(p))));
-  CHECK(!sound_player_park(p, &parked));  // audible
+  CHECK(!sound_player_park(p, &parked, NULL));  // audible
   CHECK(p->in_use && p->playing);
 
   sound_player_stop(p);
   CHECK(sound_voices_parkable() & (1u << sound_player_voice(p)));
-  CHECK(sound_player_park(p, &parked));
+  CHECK(sound_player_park(p, &parked, NULL));
   CHECK(!p->in_use && !p->playing && !p->sample);
   CHECK(!parked.in_use && !parked.playing);
   CHECK(parked.sample == s);
@@ -327,7 +327,7 @@ static void test_unpark_plays_on_from_where_it_was(void) {
   sound_player_t parked;
   p->paused = true;
   CHECK(sound_voices_parkable() & (1u << sound_player_voice(p)));
-  CHECK(sound_player_park(p, &parked));
+  CHECK(sound_player_park(p, &parked, NULL));
   CHECK(parked.playing && parked.paused);
   CHECK_EQ_INT((int)(parked.position), where);
 
@@ -368,10 +368,10 @@ static void test_park_waits_for_a_callback_flag(void) {
   CHECK(!p->playing && p->finish_pending);
 
   sound_player_t parked;
-  CHECK(!sound_player_park(p, &parked));
+  CHECK(!sound_player_park(p, &parked, NULL));
   sound_pump_callbacks();
   CHECK_EQ_INT((int)(s_fired), 1);
-  CHECK(sound_player_park(p, &parked));
+  CHECK(sound_player_park(p, &parked, NULL));
   CHECK(!p->finish_callback && !p->finish_pending);
   CHECK(parked.finish_callback == count_fired);
 
@@ -382,8 +382,82 @@ static void test_park_waits_for_a_callback_flag(void) {
   for (int i = 0; i < 8 && p->playing; i++)
     mix();
   CHECK(p->finish_pending);
-  CHECK(sound_player_park(p, &parked));
+  CHECK(sound_player_park(p, &parked, NULL));
   CHECK(!p->finish_pending);
+  sound_sample_destroy(s);
+}
+
+// Core 1's pump clears the flag under the lock and calls the callback outside it. A
+// park landing in that gap would free the voice and move the callback's registration
+// off it, with the callback on its way: it would never fire. The callback runs here
+// exactly where the gap is, so what it does is what Core 0 could do there.
+static sound_player_t *s_gap_voice;
+static int s_gap_parks;
+static bool s_gap_parked;
+static int park_in_the_gap(void *arg) {
+  (void)arg;
+  sound_player_t parked;
+  s_gap_parks++;
+  s_gap_parked = sound_player_park(s_gap_voice, &parked, NULL);
+  return 0;
+}
+
+static void test_park_waits_for_the_pump(void) {
+  sound_init();
+  sound_sample_t *s = blank(0.001f);
+  sound_player_t *p = sound_player_create();
+  sound_player_set_sample(p, s);
+  sound_player_set_finish_callback(p, park_in_the_gap, NULL);
+  sound_player_play(p, 1);
+  for (int i = 0; i < 8 && p->playing; i++)
+    mix();
+  CHECK(!p->playing && p->finish_pending);
+
+  s_gap_voice = p;
+  s_gap_parks = 0;
+  s_gap_parked = true;
+  sound_pump_callbacks();
+  CHECK_EQ_INT(s_gap_parks, 1);
+  CHECK(!s_gap_parked);
+  CHECK(p->in_use && p->finish_callback == park_in_the_gap);
+
+  // The pump is done: the voice can go.
+  sound_player_t parked;
+  CHECK(sound_player_park(p, &parked, NULL));
+  CHECK(!p->in_use);
+  sound_sample_destroy(s);
+}
+
+// What a callback leaves for its owner (the Lua bridge's pending flag) counts until the
+// owner has taken it, and is read in one step with the rest of the park's checks.
+static int s_owner_flag;
+static int s_owner_arg;
+static int leave_work(void *arg) {
+  (void)arg;
+  s_owner_flag = 1;
+  return 0;
+}
+static bool owner_busy(void *arg) { return arg == &s_owner_arg && s_owner_flag; }
+
+static void test_park_waits_for_the_callbacks_owner(void) {
+  sound_init();
+  sound_sample_t *s = blank(0.001f);
+  sound_player_t *p = sound_player_create();
+  sound_player_set_sample(p, s);
+  sound_player_set_finish_callback(p, leave_work, &s_owner_arg);
+  sound_player_play(p, 1);
+  for (int i = 0; i < 8 && p->playing; i++)
+    mix();
+  s_owner_flag = 0;
+  sound_pump_callbacks();
+  CHECK_EQ_INT(s_owner_flag, 1);
+
+  sound_player_t parked;
+  CHECK(!sound_player_park(p, &parked, owner_busy));
+  CHECK(p->in_use);
+  s_owner_flag = 0;  // the owner runs it
+  CHECK(sound_player_park(p, &parked, owner_busy));
+  CHECK(!p->in_use);
   sound_sample_destroy(s);
 }
 
@@ -438,6 +512,8 @@ int main(void) {
   test_park_frees_the_voice_and_keeps_the_state();
   test_unpark_plays_on_from_where_it_was();
   test_park_waits_for_a_callback_flag();
+  test_park_waits_for_the_pump();
+  test_park_waits_for_the_callbacks_owner();
   test_clock_counts_milliseconds_of_output();
   test_blank_samples_are_silent();
   CHECK(s_stream_starts > 0);

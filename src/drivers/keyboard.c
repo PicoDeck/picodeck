@@ -294,10 +294,12 @@ static void kbd_poll_impl(bool bg) {
       // ...and this poll's queued presses and chars. Releases of keys that
       // were down before this poll stay, so a key the app saw go down still
       // comes up; ups of keys pressed in this poll go with their downs. Keys
-      // first seen down in this poll are forgotten (their HOLD then reads as
-      // a quiet hold).
+      // first seen down in this poll are forgotten, and stay hidden until
+      // they are released (their repeats would read as presses).
       kbd_evq_drop_newest_keep_ups(&s_in.q, s_in.ev_pushed, &down_before);
       kbd_chars_drop_newest(&s_in, s_in.char_pushed);
+      kbd_hide_swallowed(&s_hide, &s_btn.pad, &pad_before, &s_in.down,
+                         &down_before, s_inj.active | s_inj.held);
       for (int i = 0; i < 8; i++)
         s_in.down.bits[i] &= down_before.bits[i];
       // A waking injected one-shot must be retired for good here, not just

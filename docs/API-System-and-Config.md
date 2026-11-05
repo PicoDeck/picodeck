@@ -84,7 +84,7 @@ Checks if the device is powered via USB (GP24 VBUS sense).
 ---
 
 #### `picocalc.sys.resetIdleTimer()`
-Resets the idle screen-dim timer. Call on user activity to keep the display from dimming (see the `dim_timeout_s` key in [API Sysconfig](API-Sysconfig.md)). An app starts with the timer fresh and the screen lit. The key press that wakes a screen dimmed while an app runs does not reach the app.
+Resets the idle screen-dim timer. Call on user activity to keep the display from dimming (see the `dim_timeout_s` key in [API Sysconfig](API-Sysconfig.md)). An app starts with the timer fresh and the screen lit. The key press that wakes a screen dimmed while an app runs does not reach the app, nor do its repeats: the key reads as up until it is released.
 
 - **Parameters:** None
 - **Returns:** None

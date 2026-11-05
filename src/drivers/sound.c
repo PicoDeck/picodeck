@@ -205,11 +205,20 @@ void sound_pump_callbacks(void) {
             loop = player->loop_callback;
             loop_arg = player->loop_callback_arg;
         }
+        // A park must not take the voice from here until the calls are done
+        // (sound_player_park). The callbacks can't be called under the lock: a
+        // native app's is the app's own code.
+        player->in_pump = fin || loop;
         mix_unlock();
         if (fin)
             fin(fin_arg);
         if (loop)
             loop(loop_arg);
+        if (fin || loop) {
+            mix_lock();
+            player->in_pump = false;
+            mix_unlock();
+        }
     }
 }
 
@@ -386,13 +395,16 @@ void sound_player_destroy(sound_player_t *player) {
     mix_unlock();
 }
 
-bool sound_player_park(sound_player_t *voice, sound_player_t *parked) {
+bool sound_player_park(sound_player_t *voice, sound_player_t *parked,
+                       bool (*cb_busy)(void *arg)) {
     if (!voice || !parked)
         return false;
     mix_lock();
     if ((voice->playing && !voice->paused) ||
         (voice->finish_pending && voice->finish_callback) ||
-        (voice->loop_pending && voice->loop_callback)) {
+        (voice->loop_pending && voice->loop_callback) || voice->in_pump ||
+        (cb_busy && ((voice->finish_callback && cb_busy(voice->finish_callback_arg)) ||
+                     (voice->loop_callback && cb_busy(voice->loop_callback_arg))))) {
         mix_unlock();
         return false;
     }

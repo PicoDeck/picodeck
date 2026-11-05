@@ -501,7 +501,176 @@ static void test_simulator_events(void) {
   CHECK(!kbd_hide_event(&hide, &btn.pad, &map, down));
 }
 
+// ── The idle-dim wake ───────────────────────────────────────────────────────
+
+// One poll of kbd_poll_impl in which these items wake a dimmed screen: its swallow,
+// in keyboard.c's order. Input the screen has already woken from is plain poll_items.
+static void poll_waking(uint32_t ms, bool bg, const item_t *items, int n) {
+  now += ms;
+  bool bg_run = bg || btn.in_bg;
+  kbd_poll_begin(&btn, bg, &raw);
+  uint32_t curr_before = btn.curr, prev_before = btn.prev;
+  kbd_pad_t pad_before = btn.pad;
+  uint8_t raw_before = raw;
+  in.ev_pushed = 0;
+  in.char_pushed = 0;
+  kbd_keyset_t down_before = in.down;
+  kbd_inject_poll(&inj, &btn, &in, &map, bg, now, HOLD_MS);
+  for (int i = 0; i < n; i++) {
+    if (kbd_hide_item(&hide, &btn.pad, &map, items[i].state, items[i].key))
+      continue;
+    uint8_t r = kbd_fifo_apply_pad(&in, &btn, &map, items[i].state, items[i].key);
+    if (r)
+      raw = r;
+  }
+  kbd_hide_tick(&hide, now);
+
+  kbd_buttons_swallow(&btn, bg_run, curr_before, prev_before);
+  kbd_pad_swallow(&btn.pad, bg_run, pad_before);
+  raw = bg_run ? raw_before : 0;
+  kbd_evq_drop_newest_keep_ups(&in.q, in.ev_pushed, &down_before);
+  kbd_chars_drop_newest(&in, in.char_pushed);
+  kbd_hide_swallowed(&hide, &btn.pad, &pad_before, &in.down, &down_before,
+                     inj.active | inj.held);
+  for (int i = 0; i < 8; i++)
+    in.down.bits[i] &= down_before.bits[i];
+  kbd_inject_drop_oneshots(&inj, &btn, &map);
+}
+
+static void wake_on(uint8_t key) {
+  item_t it = {KBD_FIFO_PRESSED, key};
+  poll_waking(16, false, &it, 1);
+}
+
+// Enter on a dimmed launcher, held: the controller repeats it as PRESSED from 300 ms
+// on. None of them is a press edge, so nothing starts. Its release is silent, and its
+// next press is a press.
+static void test_wake_key_repeating_as_pressed_stays_hidden(void) {
+  reset();
+  wake_on(KEY_ENTER);
+  CHECK_NOTHING();
+  for (int i = 0; i < 20; i++) {
+    if (i >= 18)
+      poll_one(16, KBD_FIFO_PRESSED, KEY_ENTER);
+    else
+      poll_none(16);
+    CHECK_NOTHING();
+  }
+  poll_one(16, KBD_FIFO_RELEASED, KEY_ENTER);
+  CHECK_NOTHING();
+  poll_one(16, KBD_FIFO_PRESSED, KEY_ENTER);
+  CHECK_EQ_U32(pressed(), BTN_ENTER);
+  CHECK(kbd_keyset_test(&in.down, KEY_ENTER));
+}
+
+// A key that repeats as HOLD reads no level either, where it used to read as held
+// with no edge once its first HOLD came.
+static void test_wake_key_repeating_as_hold_stays_hidden(void) {
+  reset();
+  wake_on(KEY_ESC);
+  CHECK_NOTHING();
+  poll_one(320, KBD_FIFO_HOLD, KEY_ESC);
+  CHECK_NOTHING();
+  poll_one(100, KBD_FIFO_HOLD, KEY_ESC);
+  CHECK_NOTHING();
+  poll_one(16, KBD_FIFO_RELEASED, KEY_ESC);
+  CHECK_NOTHING();
+  poll_one(16, KBD_FIFO_PRESSED, KEY_ESC);
+  CHECK_EQ_U32(pressed(), BTN_ESC);
+}
+
+// Tapped inside the waking poll: it is up already, so nothing is hidden.
+static void test_wake_key_tapped_in_one_poll(void) {
+  reset();
+  item_t tap[] = {{KBD_FIFO_PRESSED, KEY_UP}, {KBD_FIFO_RELEASED, KEY_UP}};
+  poll_waking(16, false, tap, 2);
+  CHECK_EQ_INT(hide.count, 0);
+  poll_one(16, KBD_FIFO_PRESSED, KEY_UP);
+  CHECK_EQ_U32(pressed(), BTN_UP);
+}
+
+// Only what went down in the waking poll: a key the app already saw keeps reading.
+static void test_wake_leaves_a_key_already_down(void) {
+  reset();
+  poll_one(16, KBD_FIFO_PRESSED, KEY_LEFT);
+  CHECK_EQ_U32(pressed(), BTN_LEFT);
+  wake_on(KEY_UP);
+  CHECK(!kbd_hide_has(&hide, KEY_LEFT));
+  CHECK(kbd_hide_has(&hide, KEY_UP));
+  poll_one(16, KBD_FIFO_RELEASED, KEY_LEFT);
+  CHECK_EQ_U32(released(), BTN_LEFT);
+  CHECK(!kbd_keyset_test(&in.down, KEY_LEFT));
+}
+
+// The gamepad: the hidden key's release will not reach it, so it must not stay tracked
+// as down, or the button's other key could never release the button.
+static void test_wake_key_leaves_no_pad_slot(void) {
+  reset();
+  map.key[0][1] = 'z';  // a second key on the first button, as a user can bind
+  uint8_t first = map.key[0][0];
+  wake_on(first);
+  CHECK_EQ_U32(btn.pad.curr, 0);
+  CHECK_EQ_U32(btn.pad.down, 0);
+  poll_one(16, KBD_FIFO_RELEASED, first);
+  CHECK_EQ_U32(btn.pad.curr, 0);
+
+  poll_one(16, KBD_FIFO_PRESSED, 'z');
+  CHECK_EQ_U32(pad_pressed(), 1);
+  poll_one(16, KBD_FIFO_RELEASED, 'z');
+  CHECK_EQ_U32(pad_released(), 1);
+  poll_none(16);
+  CHECK_EQ_U32(btn.pad.curr, 0);
+}
+
+// A release the controller never sends (Left under Shift): the quiet timer ends the
+// hiding, as for any hidden key, and the next press is a press.
+static void test_wake_key_with_a_silent_release(void) {
+  reset();
+  wake_on(KEY_LEFT);
+  for (int i = 0; i < 40; i++)
+    poll_none(16);
+  CHECK_EQ_INT(hide.count, 0);
+  poll_one(16, KBD_FIFO_PRESSED, KEY_LEFT);
+  CHECK_EQ_U32(pressed(), BTN_LEFT);
+}
+
+// In a sys.sleep's background polls too.
+static void test_wake_in_a_background_poll(void) {
+  reset();
+  item_t press = {KBD_FIFO_PRESSED, KEY_ENTER};
+  poll_waking(16, true, &press, 1);
+  poll_items(16, true, &press, 1);
+  poll_none(16);
+  CHECK_NOTHING();
+  item_t up = {KBD_FIFO_RELEASED, KEY_ENTER};
+  poll_items(16, true, &up, 1);
+  poll_none(16);
+  CHECK_NOTHING();
+  poll_one(16, KBD_FIFO_PRESSED, KEY_ENTER);
+  CHECK_EQ_U32(pressed(), BTN_ENTER);
+}
+
+// An injected key is no physical key, with no release to end the hiding: the one-shot
+// is retired for good by the wake, and a real press of that key right after reads.
+static void test_wake_by_an_injected_key_hides_nothing(void) {
+  reset();
+  inj.pending = BTN_UP;
+  poll_waking(16, false, NULL, 0);
+  CHECK_EQ_INT(hide.count, 0);
+  CHECK_NOTHING();
+  poll_one(16, KBD_FIFO_PRESSED, KEY_UP);
+  CHECK_EQ_U32(pressed(), BTN_UP);
+}
+
 int main(void) {
+  test_wake_key_repeating_as_pressed_stays_hidden();
+  test_wake_key_repeating_as_hold_stays_hidden();
+  test_wake_key_tapped_in_one_poll();
+  test_wake_leaves_a_key_already_down();
+  test_wake_key_leaves_no_pad_slot();
+  test_wake_key_with_a_silent_release();
+  test_wake_in_a_background_poll();
+  test_wake_by_an_injected_key_hides_nothing();
   test_held_esc_repeats_as_hold();
   test_held_arrow_repeats_as_pressed();
   test_repeat_and_release_together();

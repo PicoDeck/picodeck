@@ -7,9 +7,13 @@
 #include "drivers/sdcard.h"
 #include "ff.h"
 #include "diskio.h"
+#include "hardware.h"
 
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 int g_watchdog_feeds;
 static int s_heartbeats;
@@ -215,6 +219,102 @@ static void test_disk_info_stamps_the_heartbeat(void) {
   CHECK(total_kb > 0 && free_kb <= total_kb);
 }
 
+// ── The SD clock ────────────────────────────────────────────────────────────
+
+// spi_set_baudrate clears SSE for a moment, which can cost a read in flight the
+// byte in the shifter; spi_write_read_blocking then waits for it for good. Core
+// 1 reads with the SD mutex held, right through to the end of an image_load
+// nobody wants any more (image_preload_update), so the write has to wait.
+
+unsigned g_fake_spi_baud;
+static int s_baud_writes;
+static int s_baud_writes_during_read;
+static atomic_bool s_core1_reading;
+
+void fake_spi_baud_written(unsigned baud) {
+  g_fake_spi_baud = baud;
+  s_baud_writes++;
+  if (atomic_load(&s_core1_reading))
+    s_baud_writes_during_read++;
+}
+
+static atomic_bool s_core1_started;
+
+// Core 1, in the middle of a read of the card.
+static void *core1_read(void *arg) {
+  (void)arg;
+  recursive_mutex_enter_blocking(&g_sdcard_mutex);
+  atomic_store(&s_core1_reading, true);
+  atomic_store(&s_core1_started, true);
+  usleep(50 * 1000);
+  atomic_store(&s_core1_reading, false);
+  recursive_mutex_exit(&g_sdcard_mutex);
+  return NULL;
+}
+
+static void clock_reset(unsigned baud) {
+  reset();
+  g_fake_spi_baud = baud;
+  s_baud_writes = 0;
+  s_baud_writes_during_read = 0;
+  atomic_store(&s_core1_started, false);
+}
+
+static void set_slow_during_a_read(bool slow) {
+  pthread_t t;
+  CHECK_EQ_INT(pthread_create(&t, NULL, core1_read, NULL), 0);
+  while (!atomic_load(&s_core1_started))
+    usleep(100);
+  sd_set_slow_mode(slow);
+  pthread_join(t, NULL);
+}
+
+static void test_slow_mode_waits_for_a_read_in_flight(void) {
+  clock_reset(SD_SPI_BAUD);
+  set_slow_during_a_read(true);
+  CHECK_EQ_INT(s_baud_writes, 1);
+  CHECK_EQ_INT(s_baud_writes_during_read, 0);
+  CHECK(g_fake_spi_baud == 1000 * 1000);
+
+  s_baud_writes = 0;
+  s_baud_writes_during_read = 0;
+  atomic_store(&s_core1_started, false);
+  set_slow_during_a_read(false);
+  CHECK_EQ_INT(s_baud_writes, 1);
+  CHECK_EQ_INT(s_baud_writes_during_read, 0);
+  CHECK(g_fake_spi_baud == SD_SPI_BAUD);
+}
+
+// The launcher asks at every app's exit, and nearly always it is off already.
+static void test_slow_mode_already_as_asked_leaves_the_block_alone(void) {
+  clock_reset(SD_SPI_BAUD);
+  sd_set_slow_mode(false);
+  CHECK_EQ_INT(s_baud_writes, 0);
+
+  // Not even while a read is in flight, and without waiting for it.
+  set_slow_during_a_read(false);
+  CHECK_EQ_INT(s_baud_writes, 0);
+
+  clock_reset(1000 * 1000);
+  sd_set_slow_mode(true);
+  CHECK_EQ_INT(s_baud_writes, 0);
+
+  // A failed card recovery can leave the 400 kHz init clock: off restores it.
+  clock_reset(400 * 1000);
+  sd_set_slow_mode(false);
+  CHECK_EQ_INT(s_baud_writes, 1);
+  CHECK(g_fake_spi_baud == SD_SPI_BAUD);
+}
+
+// The mutex is recursive: a caller that holds it does not wait for itself.
+static void test_slow_mode_with_the_lock_held(void) {
+  clock_reset(SD_SPI_BAUD);
+  recursive_mutex_enter_blocking(&g_sdcard_mutex);
+  sd_set_slow_mode(true);
+  recursive_mutex_exit(&g_sdcard_mutex);
+  CHECK_EQ_INT(s_baud_writes, 1);
+}
+
 int main(void) {
   s_disk = calloc(NSECT, 512);
   s_big = malloc(BIG);
@@ -228,6 +328,9 @@ int main(void) {
   test_copy_feeds_and_can_stop();
   test_directory_walks_feed();
   test_disk_info_stamps_the_heartbeat();
+  test_slow_mode_waits_for_a_read_in_flight();
+  test_slow_mode_already_as_asked_leaves_the_block_alone();
+  test_slow_mode_with_the_lock_held();
 
   f_unmount("");
   free(s_disk);

@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 import hw_target
+from helpers import app_rel_dir, stage_lua_app
 from test_menu_key_hold import hold_shim  # noqa: F401 (a fixture)
 from test_menu_toggle import Screen, _wait_colour, BLUE
 
@@ -621,3 +622,35 @@ def test_enter_held_on_exit_app_does_not_launch_the_next_app(host_enter, simulat
     time.sleep(0.5)                     # a launch would have begun by now
     assert not simulator.call("get_running_app")["running"], \
         "the held Enter started an app from the launcher"
+
+
+def _refused(sim):
+    return sum("not enough PSRAM to launch" in e["text"]
+               for e in sim.get_log_lines(0) if e["src"] == "err")
+
+
+def test_enter_held_on_a_refused_app_refuses_it_once(host_enter, sim_factory,
+                                                     test_sd_card):
+    """A refused launch returns to the launcher as an app's exit does, and a held
+    Enter's repeats are press edges there: without the hiding each one launched
+    the app again, a refusal screen and an error.log entry each."""
+    stage_lua_app(test_sd_card, "too_big", "return\n", hidden=False)
+    manifest = test_sd_card / app_rel_dir("too_big", False) / "app.json"
+    m = json.loads(manifest.read_text())
+    m["min_psram_kb"] = 1024 * 1024
+    m["name"] = "Aaa too big"           # first in the list: what Enter starts
+    manifest.write_text(json.dumps(m))
+    sim = sim_factory(test_sd_card)
+    sim.call("dev_command", {"cmd": "ping"})  # the launcher's loop is running
+
+    host_enter.press()
+    host_enter.wait_released()
+    time.sleep(0.5)                     # a launch would have begun by now
+    assert _refused(sim) == 1
+
+    # Released, the next press is a press.
+    sim.keypress("enter")
+    deadline = time.monotonic() + 5
+    while _refused(sim) < 2 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert _refused(sim) == 2

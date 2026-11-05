@@ -225,7 +225,7 @@ Returns `false` ("a request is already in progress") unless the connection is id
 
 - **Parameters:**
   - `path` (string): URL path (e.g., `"/api/data"`)
-  - `headers` (string or table, optional): Extra headers. Can be a raw string (`"Key: Value"`, or several lines joined with `"\r\n"`), a flat array of `"Key: Value"` strings, or a `{key=value}` table.
+  - `headers` (string or table, optional): Extra headers. Can be a raw string (`"Key: Value"`, or several lines joined with `"\r\n"`), a flat array of `"Key: Value"` strings, or a `{key=value}` table. They may take 4095 bytes in all, line ends included; more returns `false, "request headers too long (the limit is 4095 bytes)"` and nothing is sent.
 - **Returns:** (boolean) `true` if request started, or `false, errstr` on immediate failure
 
 ```lua
@@ -241,7 +241,7 @@ Returns `false` ("a request is already in progress") unless the connection is id
 
 - **Parameters:**
   - `path` (string): URL path
-  - `headers` (string or table, optional): Extra headers (omit to pass data as third arg)
+  - `headers` (string or table, optional): Extra headers, as for `conn:get` and with the same limit (omit to pass data as third arg)
   - `data` (string): Request body
 - **Returns:** (boolean) `true` if request started, or `false, errstr` on immediate failure
 

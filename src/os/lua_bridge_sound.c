@@ -945,10 +945,11 @@ static void temp_reap(lua_State *L) {
         lua_rawgeti(L, -1, v + 1);
         temp_player_t *t = lb_testudata(L, -1, PLAYER_USERDATA);
         // A callback the pump has handed over still has to fire: a dropped
-        // player's finaliser would give its slot back first.
-        if (t && !cb_pending(t->player->finish_callback_arg) &&
-            !cb_pending(t->player->loop_callback_arg) &&
-            sound_player_park(t->player, &t->parked)) {
+        // player's finaliser would give its slot back first. Checked inside the
+        // park, under the mixer lock: the pump can be between taking the flag and
+        // setting cb->pending, and any time before the park's own check would be
+        // too early.
+        if (t && sound_player_park(t->player, &t->parked, cb_pending)) {
             t->player = &t->parked;
             cb_to_uservalue(L, t->parked.finish_callback_arg, TEMP_UV_FINISH);
             cb_to_uservalue(L, t->parked.loop_callback_arg, TEMP_UV_LOOP);
