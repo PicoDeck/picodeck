@@ -1654,6 +1654,12 @@ Sprite system for game and graphics applications. Sprites are 2D objects that ca
 
 **Object lifetimes:** a sprite added with `add()` stays alive while displayed (no need to keep a reference); `remove()`/`removeSprites()`/`removeAll()` release it. `add()` is idempotent. A sprite keeps its image, stencil and tilemap alive; a spritesheet its image; a tilemap its tileset; an animation loop its frames. Sprite `width`/`height` are bounds only; drawing uses the image's own size.
 
+**Limits:** at most 256 sprites in the manager at once (`add()` raises `max sprites reached`, and walls and empty collision sprites count). A sprite that is not added costs no slot and can still be drawn with `sprite:draw()`.
+
+**Collision box:** every collision and query call tests a sprite's collide rect (`setCollideRect`) or, if it has none, the box it draws in: its size (or source rectangle) times its scale, at its position. A sprite with no image, size or collide rect has an empty box.
+
+**Rectangles and points as tables:** wherever a call takes a table, `{x = 1, y = 2, w = 3, h = 4}` and `{1, 2, 3, 4}` mean the same (and `{x, y}` for points, `{x1, y1, x2, y2}` for lines). A named field wins over the same array slot, and a field that is not a number raises an error naming it.
+
 ### Constructor Functions
 
 #### `picocalc.graphics.sprite.new([image])`
@@ -1751,7 +1757,7 @@ end)
 
 #### `picocalc.graphics.sprite.querySpritesAtPoint(x, y)`  
 #### `picocalc.graphics.sprite.querySpritesAtPoint(point)`
-Queries all sprites at a specific point.
+Queries all sprites whose [collision box](#picocalcgraphicssprite) contains a point. This and the other `query` calls look at every sprite in the manager, whatever its `setCollisionsEnabled`, `setVisible` and group settings.
 
 - **Parameters:**
   - `x`, `y` (number): Coordinates, OR
@@ -1766,7 +1772,7 @@ local hits = picocalc.graphics.sprite.querySpritesAtPoint(160, 100)
 
 #### `picocalc.graphics.sprite.querySpritesInRect(x, y, w, h)`
 #### `picocalc.graphics.sprite.querySpritesInRect(rect)`
-Queries all sprites within a rectangular area.
+Queries all sprites whose [collision box](#picocalcgraphicssprite) overlaps a rectangle.
 
 - **Parameters:**
   - `x`, `y`, `w`, `h` (number), OR
@@ -1780,7 +1786,7 @@ local hits = picocalc.graphics.sprite.querySpritesInRect(0, 0, 100, 100)
 ---
 
 #### `picocalc.graphics.sprite.querySpritesAlongLine(x1, y1, x2, y2)`
-Queries all sprites that intersect a line segment.
+Queries all sprites whose [collision box](#picocalcgraphicssprite) a line segment touches.
 
 - **Parameters:**
   - `x1`, `y1` (number): Start point
@@ -1794,7 +1800,7 @@ local hits = picocalc.graphics.sprite.querySpritesAlongLine(0, 0, 320, 320)
 ---
 
 #### `picocalc.graphics.sprite.querySpriteInfoAlongLine(x1, y1, x2, y2)`
-Queries all sprites that intersect a line segment, returning detailed intersection info.
+Queries all sprites whose collision box a line segment crosses, returning where it first crosses each. A segment wholly inside a box touches no edge, so it counts for `querySpritesAlongLine` but not here.
 
 - **Parameters:**
   - `x1`, `y1` (number): Start point
@@ -2230,7 +2236,7 @@ Gets the sprite's opaque state.
 ---
 
 #### `sprite:setCollisionsEnabled(flag)`
-Enables collision detection for this sprite.
+Enables collision detection for this sprite: `moveWithCollisions` and the `overlappingSprites` calls. Off by default, except for wall and empty collision sprites. The `query` calls and `checkCollisions` do not need it.
 
 - **Parameters:**
   - `flag` (boolean): Enable collisions
@@ -2246,7 +2252,7 @@ Checks if collisions are enabled.
 ---
 
 #### `sprite:setCollideRect(x, y, w, h)` / `sprite:setCollideRect(rect)`
-Sets the sprite's collision rectangle.
+Sets the sprite's collision rectangle, relative to its position. In a table, a missing `w` or `h` takes the sprite's size.
 
 - **Parameters:**
   - `x`, `y`, `w`, `h` (number), OR
@@ -2256,14 +2262,14 @@ Sets the sprite's collision rectangle.
 ---
 
 #### `sprite:getCollideRect()`
-Gets the sprite's collision rectangle.
+Gets the sprite's collision rectangle as set: `0, 0, 0, 0` until one is, while the sprite collides at its [drawn box](#picocalcgraphicssprite).
 
 - **Returns:** (number, number, number, number) `x, y, w, h`
 
 ---
 
 #### `sprite:getCollideBounds()`
-Gets the absolute collision bounds (sprite position + collide rect).
+Gets the absolute collision box: the collide rect, or the drawn box if there is none, at the sprite's position.
 
 - **Returns:** (number, number, number, number) `x, y, w, h`
 
@@ -2314,7 +2320,7 @@ Clears the clipping rectangle of every sprite whose z-index is between `startZ` 
 ---
 
 #### `sprite:overlappingSprites()`
-Gets all sprites that overlap with this sprite.
+Gets the sprites in the manager whose collision box overlaps this one's. Collisions must be enabled on **both** sprites (`setCollisionsEnabled(true)`, off by default), or the answer is empty. Group masks do not filter it: only `moveWithCollisions` reads them.
 
 - **Returns:** (table) Array of overlapping sprites
 
@@ -2325,14 +2331,14 @@ local hits = mySprite:overlappingSprites()
 ---
 
 #### `sprite:allOverlappingSprites()`
-Gets all sprite pairs that overlap each other.
+Gets all pairs of sprites in the manager that overlap, under the same conditions as `overlappingSprites`. The sprite it is called on plays no part.
 
 - **Returns:** (table) Array of `{sprite1, sprite2}` pairs
 
 ---
 
 #### `sprite:setGroups(groups)`
-Sets collision group membership.
+Sets the groups this sprite belongs to. `moveWithCollisions` passes through a sprite when the mover's collides-with mask and the other's group mask are both non-zero and share no bit; a mask of 0 (the default) collides with everything.
 
 - **Parameters:**
   - `groups` (number): Bitmask of groups
@@ -2341,7 +2347,7 @@ Sets collision group membership.
 ---
 
 #### `sprite:setCollidesWithGroups(groups)`
-Sets which collision groups this sprite collides with.
+Sets which collision groups this sprite collides with in `moveWithCollisions` (see `setGroups`).
 
 - **Parameters:**
   - `groups` (number): Bitmask
@@ -2350,12 +2356,12 @@ Sets which collision groups this sprite collides with.
 ---
 
 #### `sprite:setGroupMask(mask)` / `sprite:getGroupMask()`
-Sets/gets the group mask.
+Sets/gets the group mask (`setGroupMask` is `setGroups`).
 
 ---
 
 #### `sprite:setCollidesWithGroupsMask(mask)` / `sprite:getCollidesWithGroupsMask()`
-Sets/gets the collision-with-groups mask.
+Sets/gets the collides-with mask (`setCollidesWithGroupsMask` is `setCollidesWithGroups`).
 
 ---
 
@@ -2365,7 +2371,7 @@ Resets the group masks to 0.
 ---
 
 #### `sprite:checkCollisions(x, y)` / `sprite:checkCollisions(point)`
-Checks if a point collides with the sprite's collision rect.
+Checks if a point lies in the sprite's [collision box](#picocalcgraphicssprite).
 
 - **Parameters:**
   - `x`, `y` (number), OR
@@ -2375,26 +2381,38 @@ Checks if a point collides with the sprite's collision rect.
 ---
 
 #### `sprite:moveWithCollisions(goalX, goalY)`
-Moves the sprite toward a goal position, sliding along the collision rects of other sprites. Requires collisions to be enabled (`setCollisionsEnabled(true)`).
+Moves the sprite toward a goal position, X first and then Y, stopping at the first sprite in the way on each axis and carrying on along the other, so it slides along walls. The whole path is checked, so a fast sprite cannot pass through a thin wall. Only other sprites in the manager with collisions enabled, and not excluded by the [group masks](#spritesetgroupsgroups), stop it. A sprite with collisions off just moves to the goal.
+
+A sprite that starts inside another can move out of it, but stays put if the goal is still inside it.
+
+Every hit stops the sprite: there is no way to choose another response. For a trigger zone the player walks through, leave the zone out of the player's collides-with mask and test it with `overlappingSprites`.
 
 - **Parameters:**
-  - `goalX`, `goalY` (number): Desired position
-- **Returns:** (number, number, table) `actualX, actualY, collisions` — the position reached, plus a table of collision records `{sprite, other, type, x, y, normal = {x, y}, touch}`
+  - `goalX`, `goalY` (number): Desired position (or one table `{x, y}`)
+- **Returns:** (number, number, table) `actualX, actualY, collisions` — the position reached, plus an array with one record per axis that was stopped:
+  - `sprite`: this sprite
+  - `other`: the sprite it hit
+  - `type`: the integer `1`, meaning a slide
+  - `normal`: `{x, y}`, pointing away from what was hit: `{x = -1, y = 0}` for a move to the right
+  - `touch`: `{x, y}`, the sprite's position when it stopped
 
 ```lua
+local sprite = picocalc.graphics.sprite.new(picocalc.graphics.image.new(16, 16))
+sprite:add()
+picocalc.graphics.sprite.addEmptyCollisionSprite(100, 0, 8, 320)   -- a wall
 sprite:setCollisionsEnabled(true)
-local x, y, hits = sprite:moveWithCollisions(goalX, goalY)
+local x, y, hits = sprite:moveWithCollisions(300, 40)              -- stops at x = 84
 for i, c in ipairs(hits) do
-    print("bumped", c.type, c.normal.x, c.normal.y)
+    print("bumped", c.touch.x, c.touch.y, c.normal.x, c.normal.y)
 end
 ```
 
 ---
 
 #### `sprite:collisionResponse()`
-Returns the sprite's collision response type.
+Always returns `"slide"`. `moveWithCollisions` does not call it, and it cannot be overridden, since assigning to a sprite field it does not know is ignored (see [Sprite Properties](#sprite-properties)).
 
-- **Returns:** (string) Response type (default `"slide"`)
+- **Returns:** (string) `"slide"`
 
 ---
 
@@ -2462,7 +2480,7 @@ bgSprite:add()
 ---
 
 #### `picocalc.graphics.sprite.addEmptyCollisionSprite(x, y, w, h)` / `picocalc.graphics.sprite.addEmptyCollisionSprite(rect)`
-Creates an invisible sprite with no image, positioned at `x, y` with a `w` by `h` collision rectangle, collisions enabled, and adds it to the sprite list. Useful for walls and trigger zones.
+Creates an invisible sprite with no image, positioned at `x, y` with a `w` by `h` collision rectangle, collisions enabled, and adds it to the sprite list. Useful for walls and, with group masks (see [`moveWithCollisions`](#spritemovewithcollisionsgoalx-goaly)), trigger zones.
 
 - **Parameters:**
   - `x`, `y`, `w`, `h` (number), OR

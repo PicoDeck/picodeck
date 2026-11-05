@@ -2216,9 +2216,10 @@ function PicoDeckSprite:setStencilPattern(level) end
 ---@return boolean
 function PicoDeckSprite:alphaCollision(other) end
 
----Move toward (goalX, goalY), sliding along any collision rects in the way.
+---Move toward (goalX, goalY), X then Y, stopping at the first sprite in the way
+---on each axis, so a fast sprite cannot pass through a wall.
 ---Returns the actual position reached plus a list of collisions; each
----collision is `{sprite, other, type, x, y, normal = {x, y}, touch}`.
+---collision is `{sprite, other, type = 1, normal = {x, y}, touch = {x, y}}`.
 ---@param goalX integer
 ---@param goalY integer
 ---@return integer actualX
@@ -2226,7 +2227,7 @@ function PicoDeckSprite:alphaCollision(other) end
 ---@return table[] collisions
 function PicoDeckSprite:moveWithCollisions(goalX, goalY) end
 
----Return this sprite's collision response mode (default `"slide"`).
+---Always `"slide"`: moveWithCollisions does not call it and it cannot be overridden.
 ---@return string
 function PicoDeckSprite:collisionResponse() end
 

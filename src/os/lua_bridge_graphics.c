@@ -2258,14 +2258,43 @@ static int l_sprite_getCollideRect(lua_State *L) {
   return 4;
 }
 
+// Returns the effective on-screen pixel dimensions of a sprite.
+// Uses frame dimensions if a source rect has been extracted, otherwise the
+// sprite's size, then applies NN or float scaling (one factor: as it draws).
+static void sprite_visual_size(const lua_sprite_t *s, int *w, int *h) {
+  int bw = s->frame_w > 0 ? s->frame_w : s->width;
+  int bh = s->frame_h > 0 ? s->frame_h : s->height;
+  const int nn = sprite_nn_scale(s);
+  if (nn > 1) {
+    *w = bw * nn;
+    *h = bh * nn;
+  } else {
+    *w = (int)(bw * s->scale);
+    *h = (int)(bh * s->scale);
+  }
+}
+
+// A sprite's collision box with the sprite at (px, py): its collide rect, or the
+// box it draws in if it has none. What every collision and query call tests.
+static void sprite_collide_bounds_at(const lua_sprite_t *s, int px, int py,
+                                      int *ox, int *oy, int *ow, int *oh) {
+  int cw, ch;
+  if (s->collide_w > 0) { cw = s->collide_w; ch = s->collide_h; }
+  else                   { sprite_visual_size(s, &cw, &ch); }
+  *ox = px + s->collide_x;
+  *oy = py + s->collide_y;
+  *ow = cw;
+  *oh = ch;
+}
+
 static int l_sprite_getCollideBounds(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
-  int bx = s->x + s->collide_x;
-  int by = s->y + s->collide_y;
+  int bx, by, bw, bh;
+  sprite_collide_bounds_at(s, s->x, s->y, &bx, &by, &bw, &bh);
   lua_pushinteger(L, bx);
   lua_pushinteger(L, by);
-  lua_pushinteger(L, s->collide_w);
-  lua_pushinteger(L, s->collide_h);
+  lua_pushinteger(L, bw);
+  lua_pushinteger(L, bh);
   return 4;
 }
 
@@ -2276,21 +2305,6 @@ static int l_sprite_clearCollideRect(lua_State *L) {
   s->collide_w = s->width;
   s->collide_h = s->height;
   return 0;
-}
-
-// Returns the effective on-screen pixel dimensions of a sprite.
-// Uses frame dimensions if a source rect has been extracted, otherwise the
-// full image dimensions, then applies NN or bilinear scaling.
-static void sprite_visual_size(const lua_sprite_t *s, int *w, int *h) {
-  int bw = s->frame_w > 0 ? s->frame_w : s->width;
-  int bh = s->frame_h > 0 ? s->frame_h : s->height;
-  if (s->use_nn_scaling && s->scale_nn > 1) {
-    *w = bw * s->scale_nn;
-    *h = bh * s->scale_nn;
-  } else {
-    *w = (int)(bw * s->scale);
-    *h = (int)(bh * s->scale_y);
-  }
 }
 
 static bool spritesOverlap(lua_sprite_t *a, lua_sprite_t *b) {
@@ -2414,11 +2428,11 @@ static int l_sprite_checkCollisions(lua_State *L) {
     py = lb_checkint(L, 3);
   }
   
-  int sx = s->x + s->collide_x;
-  int sy = s->y + s->collide_y;
+  int sx, sy, sw, sh;
+  sprite_collide_bounds_at(s, s->x, s->y, &sx, &sy, &sw, &sh);
   
-  bool hit = (px >= sx && px < sx + s->collide_w &&
-              py >= sy && py < sy + s->collide_h);
+  bool hit = (px >= sx && px < sx + sw &&
+              py >= sy && py < sy + sh);
   lua_pushboolean(L, hit);
   return 1;
 }
@@ -2438,11 +2452,11 @@ static int l_sprite_querySpritesAtPoint(lua_State *L) {
   
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *s = s_sprites[i];
-    int sx = s->x + s->collide_x;
-    int sy = s->y + s->collide_y;
+    int sx, sy, sw, sh;
+    sprite_collide_bounds_at(s, s->x, s->y, &sx, &sy, &sw, &sh);
     
-    if (px >= sx && px < sx + s->collide_w &&
-        py >= sy && py < sy + s->collide_h) {
+    if (px >= sx && px < sx + sw &&
+        py >= sy && py < sy + sh) {
       push_sprite(L, s);
       lua_rawseti(L, -2, ++count);
     }
@@ -2473,11 +2487,11 @@ static int l_sprite_querySpritesInRect(lua_State *L) {
   
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *s = s_sprites[i];
-    int sx = s->x + s->collide_x;
-    int sy = s->y + s->collide_y;
+    int sx, sy, sw, sh;
+    sprite_collide_bounds_at(s, s->x, s->y, &sx, &sy, &sw, &sh);
     
-    if (sx < rx + rw && sx + s->collide_w > rx &&
-        sy < ry + rh && sy + s->collide_h > ry) {
+    if (sx < rx + rw && sx + sw > rx &&
+        sy < ry + rh && sy + sh > ry) {
       push_sprite(L, s);
       lua_rawseti(L, -2, ++count);
     }
@@ -2495,45 +2509,86 @@ static int l_sprite_querySpritesInRect(lua_State *L) {
 #define COLLISION_OVERLAP 3
 #define COLLISION_BOUNCE  4
 
-// Helper: get collision bounds for a sprite at position (px, py)
-static void sprite_collide_bounds_at(const lua_sprite_t *s, int px, int py,
-                                      int *ox, int *oy, int *ow, int *oh) {
-  int cw, ch;
-  if (s->collide_w > 0) { cw = s->collide_w; ch = s->collide_h; }
-  else                   { sprite_visual_size(s, &cw, &ch); }
-  *ox = px + s->collide_x;
-  *oy = py + s->collide_y;
-  *ow = cw;
-  *oh = ch;
+// Does sprite `s` collide with `other` at all (collisions on, group masks)?
+static bool sprite_can_hit(const lua_sprite_t *s, const lua_sprite_t *other) {
+  if (other == s || !other->collisions_enabled) return false;
+  // Group mask check: if both masks are non-zero, require overlap
+  return !(s->collides_with_mask && other->group_mask &&
+           !(s->collides_with_mask & other->group_mask));
 }
 
-// Helper: check if sprite `s` at position (sx, sy) overlaps any other sprite
-// in the active list, respecting group masks.
-static bool sprite_overlaps_any_at(lua_sprite_t *s, int sx, int sy,
-                                    lua_sprite_t **hit_out) {
+// How far `s` can move along one axis from (start_x, start_y) towards `delta`
+// (the other axis fixed), and what stops it. The answer is exact for any length
+// and costs one pass over the list, not one per pixel. A sprite that overlaps
+// `s` at the start blocks only if `s` would still overlap it at the goal, so a
+// sprite caught inside another can leave but not go further in.
+static int sprite_sweep(const lua_sprite_t *s, int start_x, int start_y,
+                        bool along_x, int delta, lua_sprite_t **hit_out) {
   int ax, ay, aw, ah;
-  sprite_collide_bounds_at(s, sx, sy, &ax, &ay, &aw, &ah);
+  sprite_collide_bounds_at(s, start_x, start_y, &ax, &ay, &aw, &ah);
+  // a0/a1: the mover's box along the axis of travel; c0/c1: across it.
+  const int a0 = along_x ? ax : ay, alen = along_x ? aw : ah;
+  const int c0 = along_x ? ay : ax, clen = along_x ? ah : aw;
+  int allowed = delta;
+  *hit_out = NULL;
 
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *other = s_sprites[i];
-    if (other == s || !other->collisions_enabled) continue;
-    // Group mask check: if both masks are non-zero, require overlap
-    if (s->collides_with_mask && other->group_mask &&
-        !(s->collides_with_mask & other->group_mask)) continue;
-
+    if (!sprite_can_hit(s, other)) continue;
     int bx, by, bw, bh;
     sprite_collide_bounds_at(other, other->x, other->y, &bx, &by, &bw, &bh);
-    if (ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by) {
-      if (hit_out) *hit_out = other;
-      return true;
+    if (bw <= 0 || bh <= 0) continue;
+    const int b0 = along_x ? bx : by, blen = along_x ? bw : bh;
+    const int d0 = along_x ? by : bx, dlen = along_x ? bh : bw;
+    if (!(c0 < d0 + dlen && c0 + clen > d0)) continue;  // never in its way
+
+    int reach;
+    if (a0 < b0 + blen && a0 + alen > b0) {  // overlapping already
+      if (!(a0 + delta < b0 + blen && a0 + delta + alen > b0)) continue;
+      reach = 0;
+    } else if (delta > 0) {
+      if (b0 < a0 + alen || a0 + delta + alen <= b0) continue;  // behind, or short
+      reach = b0 - (a0 + alen);
+    } else {
+      if (b0 + blen > a0 || a0 + delta >= b0 + blen) continue;
+      reach = (b0 + blen) - a0;
+    }
+    if (delta > 0 ? reach < allowed : reach > allowed) {  // the nearest stops it
+      allowed = reach;
+      *hit_out = other;
     }
   }
-  return false;
+  return allowed;
+}
+
+// One entry of the collisions table on top of the stack, for the sprite at index 1.
+static void push_collision(lua_State *L, const lua_sprite_t *hit, int nx, int ny,
+                           int touch_x, int touch_y, int n) {
+  lua_createtable(L, 0, 5);
+  lua_pushvalue(L, 1);
+  lua_setfield(L, -2, "sprite");
+  push_sprite(L, hit);
+  lua_setfield(L, -2, "other");
+  lua_pushinteger(L, COLLISION_SLIDE);
+  lua_setfield(L, -2, "type");
+  lua_createtable(L, 0, 2);
+  lua_pushinteger(L, nx);
+  lua_setfield(L, -2, "x");
+  lua_pushinteger(L, ny);
+  lua_setfield(L, -2, "y");
+  lua_setfield(L, -2, "normal");
+  lua_createtable(L, 0, 2);
+  lua_pushinteger(L, touch_x);
+  lua_setfield(L, -2, "x");
+  lua_pushinteger(L, touch_y);
+  lua_setfield(L, -2, "y");
+  lua_setfield(L, -2, "touch");
+  lua_rawseti(L, -2, n);
 }
 
 // sprite:moveWithCollisions(goalX, goalY)
 // Returns: actualX, actualY, collisions
-// Collisions is a table of {sprite, other, type, normal, touch, move}
+// Collisions is a table of {sprite, other, type, normal, touch}
 static int l_sprite_moveWithCollisions(lua_State *L) {
   lua_sprite_t *s = check_sprite(L, 1);
   int goalX, goalY;
@@ -2554,109 +2609,29 @@ static int l_sprite_moveWithCollisions(lua_State *L) {
     return 3;
   }
 
-  int startX = s->x, startY = s->y;
-  int dx = goalX - startX;
-  int dy = goalY - startY;
-
   lua_createtable(L, 0, 0); // collisions table
   int coll_count = 0;
 
-  // Try X movement first, then Y (axis-separated resolution)
-  int finalX = startX, finalY = startY;
+  // X first, then Y from where X ended (axis-separated, so a blocked axis slides
+  // along the other). Always swept: a goal that is clear says nothing about what
+  // lies between it and the start.
+  int finalX = s->x, finalY = s->y;
+  lua_sprite_t *hit;
 
-  // --- X axis ---
-  if (dx != 0) {
-    lua_sprite_t *hit = NULL;
-    if (!sprite_overlaps_any_at(s, goalX, startY, &hit)) {
-      finalX = goalX;
-    } else {
-      int step = (dx > 0) ? 1 : -1;
-      int best = startX;
-      // Simple sweep: step pixel by pixel (capped at 320 iterations max)
-      int steps = abs(dx);
-      if (steps > FB_WIDTH) steps = FB_WIDTH;
-      for (int i = 1; i <= steps; i++) {
-        int testX = startX + step * i;
-        if (sprite_overlaps_any_at(s, testX, startY, &hit)) {
-          // Record collision
-          coll_count++;
-          lua_createtable(L, 0, 6);
-
-          // sprite (self)
-          lua_pushvalue(L, 1);
-          lua_setfield(L, -2, "sprite");
-          // other
-          push_sprite(L, hit);
-          lua_setfield(L, -2, "other");
-          // type (default: slide)
-          lua_pushinteger(L, COLLISION_SLIDE);
-          lua_setfield(L, -2, "type");
-          // normal
-          lua_createtable(L, 0, 2);
-          lua_pushinteger(L, dx > 0 ? -1 : 1);
-          lua_setfield(L, -2, "x");
-          lua_pushinteger(L, 0);
-          lua_setfield(L, -2, "y");
-          lua_setfield(L, -2, "normal");
-          // touch point
-          lua_createtable(L, 0, 2);
-          lua_pushinteger(L, best);
-          lua_setfield(L, -2, "x");
-          lua_pushinteger(L, startY);
-          lua_setfield(L, -2, "y");
-          lua_setfield(L, -2, "touch");
-
-          lua_rawseti(L, -2, coll_count);
-          break;
-        }
-        best = testX;
-      }
-      finalX = best;
-    }
+  if (goalX != finalX) {
+    int dx = goalX - finalX;
+    int moved = sprite_sweep(s, finalX, finalY, true, dx, &hit);
+    finalX += moved;
+    if (hit)
+      push_collision(L, hit, dx > 0 ? -1 : 1, 0, finalX, finalY, ++coll_count);
   }
 
-  // --- Y axis ---
-  if (dy != 0) {
-    lua_sprite_t *hit = NULL;
-    if (!sprite_overlaps_any_at(s, finalX, goalY, &hit)) {
-      finalY = goalY;
-    } else {
-      int step = (dy > 0) ? 1 : -1;
-      int best = startY;
-      int steps = abs(dy);
-      if (steps > FB_HEIGHT) steps = FB_HEIGHT;
-      for (int i = 1; i <= steps; i++) {
-        int testY = startY + step * i;
-        if (sprite_overlaps_any_at(s, finalX, testY, &hit)) {
-          coll_count++;
-          lua_createtable(L, 0, 6);
-
-          lua_pushvalue(L, 1);
-          lua_setfield(L, -2, "sprite");
-          push_sprite(L, hit);
-          lua_setfield(L, -2, "other");
-          lua_pushinteger(L, COLLISION_SLIDE);
-          lua_setfield(L, -2, "type");
-          lua_createtable(L, 0, 2);
-          lua_pushinteger(L, 0);
-          lua_setfield(L, -2, "x");
-          lua_pushinteger(L, dy > 0 ? -1 : 1);
-          lua_setfield(L, -2, "y");
-          lua_setfield(L, -2, "normal");
-          lua_createtable(L, 0, 2);
-          lua_pushinteger(L, finalX);
-          lua_setfield(L, -2, "x");
-          lua_pushinteger(L, best);
-          lua_setfield(L, -2, "y");
-          lua_setfield(L, -2, "touch");
-
-          lua_rawseti(L, -2, coll_count);
-          break;
-        }
-        best = testY;
-      }
-      finalY = best;
-    }
+  if (goalY != finalY) {
+    int dy = goalY - finalY;
+    int moved = sprite_sweep(s, finalX, finalY, false, dy, &hit);
+    finalY += moved;
+    if (hit)
+      push_collision(L, hit, 0, dy > 0 ? -1 : 1, finalX, finalY, ++coll_count);
   }
 
   s->x = finalX;
@@ -2669,8 +2644,9 @@ static int l_sprite_moveWithCollisions(lua_State *L) {
   return 3;
 }
 
-// sprite:collisionResponse(other) — returns response type string
-// Default is "slide". Apps can override this method in Lua.
+// sprite:collisionResponse(other) — returns response type string. Always
+// "slide": moveWithCollisions does not call it, and a sprite has no user fields
+// to override it with.
 static int l_sprite_collisionResponse(lua_State *L) {
   (void)check_sprite(L, 1); // self
   // Default response is "slide"
@@ -2792,10 +2768,8 @@ static int l_sprite_querySpritesAlongLine(lua_State *L) {
   
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *s = s_sprites[i];
-    int sx = s->x;
-    int sy = s->y;
-    int sw = s->width > 0 ? s->width : s->collide_w;
-    int sh = s->height > 0 ? s->height : s->collide_h;
+    int sx, sy, sw, sh;
+    sprite_collide_bounds_at(s, s->x, s->y, &sx, &sy, &sw, &sh);
     
     if (sprite_line_intersect(x1, y1, x2, y2, sx, sy, sw, sh)) {
       push_sprite(L, s);
@@ -2868,10 +2842,8 @@ static int l_sprite_querySpriteInfoAlongLine(lua_State *L) {
   
   for (int i = 0; i < s_sprite_count; i++) {
     lua_sprite_t *s = s_sprites[i];
-    int sx = s->x;
-    int sy = s->y;
-    int sw = s->width > 0 ? s->width : s->collide_w;
-    int sh = s->height > 0 ? s->height : s->collide_h;
+    int sx, sy, sw, sh;
+    sprite_collide_bounds_at(s, s->x, s->y, &sx, &sy, &sw, &sh);
     
     int ix, iy;
     if (sprite_line_rect_intersection(x1, y1, x2, y2, sx, sy, sw, sh, &ix, &iy)) {
