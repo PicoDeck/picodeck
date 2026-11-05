@@ -131,7 +131,7 @@ Every firmware that has `api->version` (v0.0.8 on) has these tables, so they nee
 | `api->fs` | `picocalc_fs_t` | SD card file I/O (open, read, write, list) |
 | `api->sys` | `picocalc_sys_t` | Time, battery, reboot, menu items, logging, `poll()`, `shouldExit()` |
 | `api->audio` | `picocalc_audio_t` | Tone generation, PCM streaming |
-| `api->wifi` | `picocalc_wifi_t` | WiFi connect/disconnect/status (Pico 2W only) |
+| `api->wifi` | `picocalc_wifi_t` | WiFi connect/disconnect/status |
 | `api->tcp` | `picocalc_tcp_t` | Raw TCP/TLS sockets (non-blocking) |
 | `api->ui` | `picocalc_ui_t` | Modal dialogs: text input, confirmation |
 | `api->psram` | `picocalc_psram_t` | PIO PSRAM and QMI PSRAM allocation |

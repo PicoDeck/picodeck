@@ -8,7 +8,7 @@ WiFi connectivity and HTTP client.
 
 ## picocalc.wifi
 
-WiFi connectivity functions (Pico 2W only).
+WiFi connectivity functions.
 
 ### Functions
 
@@ -16,7 +16,7 @@ WiFi connectivity functions (Pico 2W only).
 Checks if WiFi hardware is present.
 
 - **Parameters:** None
-- **Returns:** (boolean) `true` if WiFi is available (Pico 2W), `false` otherwise
+- **Returns:** (boolean) `true` if WiFi is available. On the Pimoroni Pico Plus 2 W, the only supported board, it is
 
 ```lua
 if picocalc.wifi.isAvailable() then
