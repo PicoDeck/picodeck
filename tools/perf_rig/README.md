@@ -55,7 +55,9 @@ Cache: 16 KB, 2 ways, 8-byte lines, 1024 sets, set = address mod 8 KB, one tag s
 | `stack-sram` | The stack to SRAM. |
 | `scratch-sram` | The stack and every gfx3d allocation to SRAM: no PSRAM data at all. Also impossible on the device. |
 
-Individual bases can be set too: `TEXT_BASE`, `RAMTEXT_BASE`, `LIB_BASE`, `RODATA_BASE`, `DATA_BASE`, `STACK_TOP`, `HEAP_BASE`, `FB_BASE`.
+Individual bases can be set too: `TEXT_BASE`, `RAMTEXT_BASE`, `LIB_BASE`, `RODATA_BASE`, `DATA_BASE`, `STACK_TOP`, `HEAP_BASE`, `FB_BASE`, and `LUAV_BASE` for `run-lua`.
+
+The firmware addresses are defaults in the Makefile, read from the build at commit b5ac305, and firmware changes move them. To refresh them: `arm-none-eabi-nm -n build/picodeck.elf | grep -E ' (mat_mul|sqrtf|qsort|luaV_execute)$'`.
 
 ## Emulator checks
 
@@ -79,7 +81,7 @@ The scene's own numbers: `drawn` avg 349 (device 358), max 544 (device 587), `tr
 **The +5% total is partly luck: the two phases err in opposite directions.**
 
 - **Raster** is only 13% cache stalls, so its error is in the core figures, not the cache model. Each of these alone takes it to about 5.0-5.2 ms: a taken branch at +1, a store at +0, or 0.8 cycles an instruction. All three are plausible on the M33 and none was applied, because the brief says not to tune them.
-- **Geometry** is 62% cache stalls. It reads low, as expected from what is left out, all of which adds time on the device: prefetch misses, the interrupts inside its timers, dirty lines left by Lua (`--dirty-frac 1` gives 5.72 ms).
+- **Geometry** is 63% cache stalls. It reads low, as expected from what is left out, all of which adds time on the device: prefetch misses, the interrupts inside its timers, dirty lines left by Lua (`--dirty-frac 1` gives 5.72 ms).
 
 **Lua's empty for-loop checks the core figures alone**, since it has no misses once running. The estimate is 40.0 cycles an iteration (200 ns): 25 instructions, 7 words loaded, 4 stored, 2 taken branches. The device's is ~180 ns (36 cycles), so the estimate is 11% high. That agrees in direction with raster: the core figures run somewhat high on the M33. One short loop cannot fix them, so they stay as they are.
 

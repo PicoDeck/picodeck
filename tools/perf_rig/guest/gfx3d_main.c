@@ -99,9 +99,12 @@ int main(void) {
     for (int i = 0; i < 3; i++) tg[i] = rd_f();
     for (int i = 0; i < 3; i++) up[i] = rd_f();
     RIG_FRAME_START();
+    // Outside the bridge's timers on the device, so reported apart.
+    RIG_PHASE(PHASE_BEGIN);
     gfx3d_set_projection(g, fov, zn, zf);
     gfx3d_look_at(g, e, tg, up);
     gfx3d_begin(g, false, 0);
+    RIG_PHASE(PHASE_IDLE);
     const int nops = (int)rd_u();
     for (int i = 0; i < nops; i++) {
       const uint32_t op = rd_u(), a = rd_u();

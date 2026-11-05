@@ -36,7 +36,7 @@ static param_t s_param[P_COUNT] = {
 };
 
 // ── Counters, per phase ─────────────────────────────────────────────────────
-enum { PH_IDLE, PH_GEOM, PH_RASTER, PH_COUNT };
+enum { PH_IDLE, PH_GEOM, PH_RASTER, PH_BEGIN, PH_COUNT };
 typedef struct {
   uint64_t instr, fp, fdiv, loads, stores, taken;
   uint64_t fmiss_flash, fmiss_psram, dmiss_flash, dmiss_psram, wb, dhit;
@@ -350,6 +350,11 @@ static void report(const char *label, bool show_device) {
            100 * (cg / (mhz * 1000) / 6.3 - 1), 100 * (cr / (mhz * 1000) / 4.1 - 1),
            100 * ((cg + cr) / (mhz * 1000) / 10.4 - 1));
   }
+  const counters_t *b = &s_c[PH_BEGIN];
+  printf("  outside the device's timers (setProjection, lookAt, beginScene): %.2f ms, "
+         "%.0f instructions, %.0f PSRAM misses, %.0f write-backs\n",
+         cycles_of(b) / n / (mhz * 1000), (double)b->instr / n,
+         (double)b->dmiss_psram / n, (double)b->wb / n);
   printf("  scene: tris_in avg %.0f max %" PRIu64 ", culled avg %.0f, clipped avg %.0f, drawn avg %.0f "
          "max %" PRIu64 ", overflow %" PRIu64 " (device: tris_in max 2353, drawn avg 358 max 587)\n",
          (double)s_stat_sum[0] / n, s_stat_max[0], (double)s_stat_sum[1] / n,

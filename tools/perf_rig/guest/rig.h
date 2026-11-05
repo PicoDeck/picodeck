@@ -2,7 +2,7 @@
 // are seen by the memory hook and cost nothing in the model.
 #pragma once
 #include <stdint.h>
-enum { PHASE_IDLE, PHASE_GEOM, PHASE_RASTER };
+enum { PHASE_IDLE, PHASE_GEOM, PHASE_RASTER, PHASE_BEGIN };
 #ifdef RIG_NATIVE  // guest/native.c: the same workload on the host, to check the emulator
 void native_frame_end(const void *fb);
 #define RIG_PHASE(p) ((void)(p))
