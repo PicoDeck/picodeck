@@ -20,6 +20,7 @@
 #include "os/serial_frame.h"
 #include "os/splash.h"
 #include "tusb.h"
+#include "pico/stdio/driver.h"
 #include "pico/stdio_usb.h"
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
@@ -188,8 +189,11 @@ void dev_commands_poll(void) {
     if (s_file_recv_handle) {
         uint8_t buf[FILE_RECEIVE_CHUNK_SIZE];
         while (s_file_recv_received < s_file_recv_expected) {
-            uint32_t got = tud_cdc_read(buf, FILE_RECEIVE_CHUNK_SIZE);
-            if (got == 0) break;
+            // Through the driver: it holds stdio_usb_mutex for the read, which
+            // keeps TinyUSB's background task out (console_gate.h has the hazard
+            // for the write side). No data, or the mutex busy, reads as < 0.
+            int got = stdio_usb.in_chars((char *)buf, FILE_RECEIVE_CHUNK_SIZE);
+            if (got <= 0) break;
             s_b64_last_rx_us = time_us_64();
             int written = sdcard_fwrite(s_file_recv_handle, buf, got);
             if (written < 0) {
