@@ -57,6 +57,12 @@ local repeat_delay = 15
 local repeat_rate  = 3
 local last_key     = 0
 
+-- Idle redraw: just past the terminal cursor's 500 ms blink, so each one moves
+-- the blink on, and it refreshes the header's clock and battery too.
+local IDLE_REDRAW_MS = 520
+local MESSAGE_MS     = 3000  -- how long the footer shows a message
+local last_draw_ms   = 0
+
 -- ── Large-file pager state ────────────────────────────────────────────────────
 local large_file        = false
 local large_total_lines = 0
@@ -677,7 +683,7 @@ end
 local function draw_command_bar()
     local pos = string.format("L%d C%d", cursor_y, cursor_x)
 
-    if message ~= "" and sys.getTimeMs() - message_time < 3000 then
+    if message ~= "" and sys.getTimeMs() - message_time < MESSAGE_MS then
         ui.drawFooter(message, pos)
     elseif large_file then
         ui.drawFooter("Read-only  F1:Help", pos)
@@ -988,17 +994,27 @@ local function main()
         -- so drawing never reads a stale window
         update_view_cache()
 
-        -- Draw
-        draw_status_bar()
-        redraw_screen()
-        draw_command_bar()
+        -- Draw on input (a key held counts: its repeat is timed in frames) and
+        -- for what changes by itself; otherwise sleep rather than redraw and
+        -- flush flat out while waiting for a key.
+        local now = sys.getTimeMs()
+        if pressed ~= 0 or held ~= 0 or char or now - last_draw_ms >= IDLE_REDRAW_MS or
+           (message ~= "" and now - message_time >= MESSAGE_MS and
+            last_draw_ms - message_time < MESSAGE_MS) then
+            last_draw_ms = now
+            draw_status_bar()
+            redraw_screen()
+            draw_command_bar()
 
-        -- Draw help overlay on top if active
-        if show_help then
-            draw_help_overlay()
+            -- Draw help overlay on top if active
+            if show_help then
+                draw_help_overlay()
+            end
+
+            disp.flush()
+        else
+            sys.sleep(16)
         end
-
-        disp.flush()
     end
 end
 
