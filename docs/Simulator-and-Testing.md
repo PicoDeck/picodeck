@@ -124,15 +124,44 @@ for line in call("get_log_buffer", tail=20)["lines"]:
 | `inject_button {button, action}` | `action` is `click`, `press` or `release`; `button` is `up down left right enter esc menu tab backspace del shift ctrl fn f1`-`f5` |
 | `inject_char {char}` | Types one character |
 | `screenshot {format}` | The screen, base64 in `data`: `png` (default) or `raw` (RGB565) |
-| `get_pixel`, `display_stats`, `display_diff` | Read a pixel, count frames, compare frames |
-| `get_log_buffer {since_seq, tail}` | Log lines with their source: `lua`, `native`, `os` or `err` |
-| `subscribe {"logs": true}` | Pushes `log` notifications |
-| `read_file`, `write_file`, `delete_file`, `list_dir`, `disk_info` | Files on the card |
+| `get_pixel {x, y, w, h}` | A pixel's `rgb565`, `r`, `g` and `b`, or with `w` and `h` (up to 16) a `pixels` array |
+| `display_stats {x, y}` | `present_count` (frames shown) and counts of what is on screen; `x` and `y` add `pixel_at` |
+| `display_diff {action}` | `action` `capture` keeps the screen; `compare` replies `{changed_pixels, change_pct, bbox}` against it |
+| `get_log_buffer {since_seq, tail}` | `{lines, next_seq, dropped, more}`; each line has `seq`, `t_ms`, `text` and a source `src`: `lua`, `native`, `os` or `err` |
+| `subscribe {logs}` | With `logs` true, pushes `log` notifications |
+| `read_file {path}` | Replies `{path, size, data}`, with `data` in base64 |
+| `write_file {path, data}` | `data` is base64, and the folder must exist. A request line over 256 KB (about 190 KB of file) is dropped with no reply, so copy a bigger file into the card folder yourself |
+| `delete_file {path}` | A file, not a folder |
+| `list_dir {path}` | Replies `{path, entries}`; each entry has `name`, `is_dir` and `size`. Names starting with a dot are left out |
+| `disk_info` | `{free_kb, total_kb}` |
 | `dev_command {cmd}` | Runs a [dev command](#dev-commands) |
-| `get_heap_info`, `get_audio_state`, `get_mp3_stats`, `get_terminal_buffer`, `get_crash_log` | Reads state |
-| `set_wifi_state`, `set_battery`, `get_backlight` | Pretend the WiFi or the battery changed; read the backlight level |
-| `set_time_multiplier`, `step_time {ms}` | Drive the virtual clock (below) |
+| `get_heap_info`, `get_audio_state`, `get_mp3_stats`, `get_crash_log` | Read state; none takes a parameter |
+| `get_terminal_buffer` | `{cols, rows, cursor_x, cursor_y, lines}` of the newest `picocalc.terminal`, or an error if the app has none |
+| `set_wifi_state {status, error_code, error_str}` | `connecting` or `failed` pin what `wifi.getStatus()` reports, with the network still working. `disconnected` or `not_available` take the network away, and `connected` or `online` give it back. `error` fails requests and connects, with `error_str` as the message. Anything else is refused |
+| `get_wifi_state` | `{status, ssid, ip}` |
+| `set_battery {percent, charging}` | What the battery calls report. A value you leave out goes back to its default, 100 and false |
+| `get_backlight` | `{level, dimmed}` |
+| `get_input_state` | `{issued_seq, consumed_seq}`: each `inject_*` replies an `input_seq`, and the OS has read that input once `consumed_seq` reaches it |
+| `get_button_state`, `get_display_buffer`, `get_sd_slow_mode` | The button masks; the screen as base64 RGB565; what `fs.setSlowMode` last set |
+| `play_tone {frequency, duration_ms}`, `stop_audio` | Starts a tone; stops tones and streams |
+| `set_sd_busy {ms, after_reads}` | Reports the card busy to audio streaming for `ms`, once `after_reads` more of its reads have gone through |
+| `ping`, `clear_log_buffer`, `wait_for_idle` | `{version, uptime_ms}`; empties the log; `{idle}`, whether no app is running, at once |
+| `set_time_multiplier {multiplier}`, `step_time {ms}` | Drive the virtual clock (below) |
 | `shutdown` | Quits the simulator |
+
+A method ignores a parameter it does not know, so a misspelt one usually shows up as the default being used. An error reply has `code` and `message`: the script above returns it in place of the result, so look for `message`.
+
+**Typing, from a script.** `inject_button enter` is a key press with no character, as it is for an app that reads buttons, so it does not finish a `ui.textInput`, which reads characters. Type it instead, and the same goes for Backspace:
+
+```python
+call("inject_char", char="a")
+time.sleep(0.2)                # one character per frame, so give the app one
+call("inject_char", char="\n")  # Enter's character: ui.textInput returns "a"
+```
+
+`ui.confirm` answers to `inject_button enter`, and to `esc`.
+
+**What the log holds.** `get_log_buffer` has `sys.log` lines, not `print` lines, which only reach the simulator's standard output. So log with `picocalc.sys.log` what a script needs to read.
 
 ### Testing your own app
 
@@ -231,6 +260,7 @@ The simulator has its own display code, so it can differ in any primitive. These
 | `sys.reboot()`, native `sys->reboot`, the menu's Reboot | Ends the app and returns to the launcher. The config and app list from boot stay | Reboots |
 | `sys.triggerFault()` | The simulator crashes (exit status 139), leaving `running.txt` | HardFault, crash record, reboot |
 | Battery | 100%, not charging, unless `set_battery` | Real |
+| Wall clock (`sys.getClock()`, the header's clock) | Not set: `synced` stays false and `epoch` 0, and the header shows no clock. `--test-mode` starts it at 2026-01-01 | Set over the network once WiFi is up |
 | Tracebacks | Sent to the test log (source `err`) | None |
 | Speed | Faster for Lua, far slower for native | Much of the time goes to PSRAM cache misses |
 | Native `sys->log` | Adds `[APP]`. No width or precision (`%5d` prints `2`), `%f` prints `<float>` and misaligns what follows, `%lld` misaligns too, and arguments past the seventh print `?` | `vprintf`, with no prefix |
