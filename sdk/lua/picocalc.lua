@@ -2986,8 +2986,11 @@ function PicoDeckFont:getName() end
 -- picocalc.gfx3d
 -- =============================================================================
 
+---A triangle mesh from `picocalc.gfx3d.newMesh`. It is freed when collected.
 ---@class PicoDeckMesh : userdata
 local PicoDeckMesh = {}
+
+---Return the vertex and triangle counts and the bounding sphere, which culling tests.
 ---@return integer nverts
 ---@return integer ntris
 ---@return number cx
@@ -2996,54 +2999,155 @@ local PicoDeckMesh = {}
 ---@return number radius
 function PicoDeckMesh:getInfo() end
 
+---A small retained-mode 3D renderer. Coordinates are right-handed with y up, and
+---the camera looks along negative z. Angles are radians, colours RGB565.
 ---@class picocalc.gfx3d
----@field DOUBLE_SIDED integer
----@field UNLIT integer
----@field NO_FOG integer
+---@field DOUBLE_SIDED integer Draw the triangle's back too, lit as its own side
+---@field UNLIT integer Ignore the light: always full colour
+---@field NO_FOG integer Ignore fog
 picocalc.gfx3d = {}
----@param verts number[] flat x, y, z list
----@param tris integer[] flat 1-based index list, 3 per triangle, CCW = front
----@param colors integer|integer[] one RGB565 colour, or one per triangle
----@param flags? integer|integer[] DOUBLE_SIDED | UNLIT | NO_FOG
+
+---Build a mesh.
+---@param verts number[] Flat `{x1, y1, z1, x2, y2, z2, ...}`; at most 4096 vertices
+---@param tris integer[] Flat 1-based vertex indices, three per triangle, counter-clockwise = front; at most 8192 triangles
+---@param colors integer|integer[] One RGB565 colour for every triangle, or one per triangle
+---@param flags? integer|integer[] `DOUBLE_SIDED`, `UNLIT` and `NO_FOG` added together, for all triangles or one value per triangle
 ---@return PicoDeckMesh
 function picocalc.gfx3d.newMesh(verts, tris, colors, flags) end
+
+---Set the screen rectangle the scene is drawn into. It is clipped to the screen, and
+---it is an error if nothing is left.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param h integer
 function picocalc.gfx3d.setViewport(x, y, w, h) end
+
+---Set the vertical field of view and the near and far planes.
+---@param fovY number 0.01-3.0 radians
+---@param near number Above 0
+---@param far number Above `near`
 function picocalc.gfx3d.setProjection(fovY, near, far) end
+
+---Place the camera from a position and angles.
+---@param x number
+---@param y number
+---@param z number
+---@param yaw number Positive turns left
+---@param pitch number Positive looks up
+---@param roll number Positive banks left
 function picocalc.gfx3d.setCamera(x, y, z, yaw, pitch, roll) end
----@param ux? number Up vector (default 0, 1, 0)
+
+---Place the camera at `e` looking at `t`. Raises when `e` equals `t`, or when `u` is
+---parallel to the view direction.
+---@param ex number
+---@param ey number
+---@param ez number
+---@param tx number
+---@param ty number
+---@param tz number
+---@param ux? number Up direction (default 0, 1, 0): tilting it rolls the camera
 ---@param uy? number
 ---@param uz? number
 function picocalc.gfx3d.lookAt(ex, ey, ez, tx, ty, tz, ux, uy, uz) end
----@param ambient? number Default 0.25
+
+---Set the direction towards the light and the ambient level. Raises on a zero direction.
+---@param dx number
+---@param dy number
+---@param dz number
+---@param ambient? number Clamped to 0-1 (default 0.25)
 function picocalc.gfx3d.setLight(dx, dy, dz, ambient) end
+
+---Blend each face towards `color`, linearly from depth `near` to depth `far`.
+---`setFog(nil)` turns fog off. Raises unless `0 <= near < far`.
+---@param near number
+---@param far number
+---@param color integer RGB565
+---@overload fun(off?: nil)
 function picocalc.gfx3d.setFog(near, far, color) end
----@param bands {[1]: number, [2]: integer}[]|nil
+
+---Fill the viewport before drawing with colour bands parallel to the horizon.
+---`setSky(nil)` turns it off. A band covers from its angle up to the next band's.
+---@param bands? {[1]: number, [2]: integer}[] 1-8 `{angle, color}` pairs, elevation angles in radians increasing within +-89 degrees
 function picocalc.gfx3d.setSky(bands) end
----@param clearColor? integer
+
+---Start a frame. The viewport is filled at `endScene()`, with the sky if one is set,
+---otherwise with `clearColor` if one is given.
+---@param clearColor? integer RGB565
 function picocalc.gfx3d.beginScene(clearColor) end
+
+---Draw one instance of a mesh at a position and rotation. Raises outside
+---`beginScene()`/`endScene()`.
+---@param mesh PicoDeckMesh
+---@param x number
+---@param y number
+---@param z number
+---@param yaw number
+---@param pitch number
+---@param roll number
 ---@param scale? number Default 1; must be positive
----@param bias? number Default 0
----@param sortAsOne? boolean
+---@param bias? number World units added to the depth used for ordering (default 0): positive draws it behind
+---@param sortAsOne? boolean Order the whole instance by the depth of its origin, for props that sit on long triangles
 function picocalc.gfx3d.draw(mesh, x, y, z, yaw, pitch, roll, scale, bias, sortAsOne) end
+
+---Like `draw`, but oriented by a forward vector (the model's -z points along it) and
+---an up vector. Raises when either is zero, or when they are parallel.
+---@param mesh PicoDeckMesh
+---@param x number
+---@param y number
+---@param z number
+---@param fx number
+---@param fy number
+---@param fz number
+---@param ux number
+---@param uy number
+---@param uz number
 ---@param scale? number Default 1; must be positive
 ---@param bias? number Default 0
 ---@param sortAsOne? boolean
 function picocalc.gfx3d.drawBasis(mesh, x, y, z, fx, fy, fz, ux, uy, uz, scale, bias, sortAsOne) end
----@param list table an array of meshes built in world coordinates
----@param bias number|nil depth bias for every mesh (default 0)
----@param start integer|nil the first index drawn; the rest wrap round (default 1)
+
+---Draw every mesh in `list` as it is, in world coordinates with no transform: one
+---call costs far less than a `draw` per mesh. Raises on an element that is not a mesh.
+---@param list PicoDeckMesh[]
+---@param bias? number Depth bias for every mesh (default 0)
+---@param start? integer The first index drawn, 1 to `#list`; the rest wrap round (default 1)
 function picocalc.gfx3d.drawList(list, bias, start) end
+
+---Draw distant scenery centred on the camera: it turns with the camera but never moves
+---with it, is never fogged or far-clipped, and is drawn before everything else.
+---@param mesh PicoDeckMesh
 function picocalc.gfx3d.drawBackground(mesh) end
+
+---Draw a camera-facing image centred at `(x, y, z)`, sorted with the triangles. The
+---image's transparent colour is honoured, and it stays alive until the next `beginScene()`.
+---@param image PicoDeckImage
+---@param x number
+---@param y number
+---@param z number
+---@param size number World units tall; must be positive
 ---@param sx? integer Source rect x (default 0)
 ---@param sy? integer Source rect y (default 0)
 ---@param sw? integer Source rect width (default: the rest of the image)
 ---@param sh? integer Source rect height (default: the rest of the image)
 ---@param bias? number Default 0
 function picocalc.gfx3d.drawSprite(image, x, y, z, size, sx, sy, sw, sh, bias) end
+
+---Fill the viewport (sky or clear colour) and draw everything, far to near, into the
+---back buffer. Call `display.flush()` afterwards as usual.
 function picocalc.gfx3d.endScene() end
----@return number|nil sx, number sy, number depth
+
+---Return a world point's position on screen, or `nil` if it is behind the near plane.
+---@param x number
+---@param y number
+---@param z number
+---@return number? sx `nil` alone when behind the near plane
+---@return number sy
+---@return number depth
 function picocalc.gfx3d.project(x, y, z) end
----@param t table|nil a table to fill and return instead of a new one
+
+---Return a table describing the last frame.
+---@param t? table A table to fill and return instead of a new one, so a per-frame call allocates nothing
 ---@return {tris_in: integer, culled: integer, clipped: integer, drawn: integer, sprites: integer, overflow: integer, us_geom: integer, us_raster: integer}
 function picocalc.gfx3d.getStats(t) end
 
@@ -4039,132 +4143,274 @@ function draw3DWireframeEx(verts, edges, angleX, angleY, angleZ, scx, scy, fov, 
 -- picocalc.chargrid
 -- =============================================================================
 
+---A grid of character cells, drawn in one call. Coordinates are 0-based cells:
+---writes outside the grid are dropped. Colours are indices into the grid's own
+---256-entry palette, glyphs a code 0-255 or a one-character string. Positions and
+---sizes are numbers (floats round); colours and codes must be integers.
 ---@class PicoDeckCharGrid : userdata
 local PicoDeckCharGrid = {}
+
+---Return the grid size in cells.
 ---@return integer cols
 ---@return integer rows
 function PicoDeckCharGrid:getSize() end
+
+---Return the cell size in pixels.
 ---@return integer cellW
 ---@return integer cellH
 function PicoDeckCharGrid:getCellSize() end
+
+---Rebuild the glyphs 0x20-0xFF from a font, keeping the cell size and any defined
+---glyphs. Raises if the font id is not loaded.
 ---@param fontId integer
 function PicoDeckCharGrid:setFont(fontId) end
+
+---Replace a glyph with a bitmap. A defined glyph survives `setFont`.
 ---@param code integer 1-255
 ---@param rows integer[] cellH rows, bit cellW-1 = leftmost pixel
 function PicoDeckCharGrid:defineGlyph(code, rows) end
+
+---Set palette entries from `first` onward. `first + #colors` may be at most 256.
 ---@param colors integer[] RGB565
 ---@param first? integer default 0
 function PicoDeckCharGrid:setPalette(colors, first) end
+
+---Set one palette entry; every cell using it changes at the next draw.
+---@param index integer 0-255
+---@param color integer RGB565
 function PicoDeckCharGrid:setColor(index, color) end
----@return integer color
+
+---Return one palette entry.
+---@param index integer 0-255
+---@return integer color RGB565
 function PicoDeckCharGrid:getColor(index) end
----@param glyphs string|integer[]
----@param dither? boolean
+
+---Set the ramp `shadeRow` maps levels through, 1-256 entries.
+---@param glyphs string|integer[] A UTF-8 string, or a table of codes
+---@param dither? boolean A 4x4 ordered dither spreads levels between entries
 function PicoDeckCharGrid:setRamp(glyphs, dither) end
----@param indices integer[]
----@param dither? boolean
+
+---Set the colour ramp `shadeRow` maps tones (or levels) through, 1-256 entries.
+---@param indices integer[] Palette indices
+---@param dither? boolean A 4x4 ordered dither spreads tones between entries
 function PicoDeckCharGrid:setColorRamp(indices, dither) end
----@param glyph? integer|string
----@param fg? integer
----@param bg? integer
+
+---Fill every cell.
+---@param glyph? integer|string default 0
+---@param fg? integer default 15
+---@param bg? integer default 0
 function PicoDeckCharGrid:clear(glyph, fg, bg) end
+
+---Set one cell. Nil colours are kept.
+---@param x number
+---@param y number
 ---@param glyph integer|string
 ---@param fg? integer
 ---@param bg? integer
 function PicoDeckCharGrid:set(x, y, glyph, fg, bg) end
+
+---Return one cell; `0, 0, 0` outside the grid.
+---@param x number
+---@param y number
 ---@return integer glyph
 ---@return integer fg
 ---@return integer bg
 function PicoDeckCharGrid:get(x, y) end
+
+---Fill a rectangle. Nil leaves that plane alone (`fill(x, y, w, h, nil, 9)` recolours).
+---@param x number
+---@param y number
+---@param w number
+---@param h number
 ---@param glyph? integer|string
+---@param fg? integer
+---@param bg? integer
 function PicoDeckCharGrid:fill(x, y, w, h, glyph, fg, bg) end
----@param glyphs string|integer[]|integer|nil
+
+---Write cells along row `y`. Each plane is a string (one byte per cell), a table of
+---integers, one integer (fills), or nil (left alone). The sequences must have equal
+---lengths; with none, the integers fill to the end of the row.
+---@param y number
+---@param glyphs? string|integer[]|integer
 ---@param fgs? string|integer[]|integer
 ---@param bgs? string|integer[]|integer
----@param x? integer
+---@param x? number First column (default 0)
 function PicoDeckCharGrid:setRow(y, glyphs, fgs, bgs, x) end
+
+---Return `n` cells from `x` as three strings. Cells outside the grid are left out.
+---@param y number
+---@param x? number default 0
+---@param n? number default: to the end of the row
 ---@return string glyphs
 ---@return string fgs
 ---@return string bgs
 function PicoDeckCharGrid:getRow(y, x, n) end
+
+---Like `setRow` for a rectangle: sequences hold `w * h` entries, row by row.
+---@param x number
+---@param y number
+---@param w number
+---@param h number
+---@param glyphs? string|integer[]|integer
+---@param fgs? string|integer[]|integer
+---@param bgs? string|integer[]|integer
 function PicoDeckCharGrid:setRect(x, y, w, h, glyphs, fgs, bgs) end
----@param levels number[]|nil
----@param tones? number[]
----@param x? integer
+
+---Shade cells along row `y`: levels pick glyphs through the ramp, tones pick
+---foreground colours through the colour ramp, and without tones levels pick the
+---colours too. Give levels or tones; raises when a needed ramp is not set.
+---@param y number
+---@param levels? number[] 0-1; non-numbers and holes count as 0
+---@param tones? number[] 0-1; the same length as `levels`
+---@param x? number First column (default 0)
 function PicoDeckCharGrid:shadeRow(y, levels, tones, x) end
----@return integer x
+
+---Write UTF-8 text; `\n` continues at `x` on the next row. Nil colours are kept.
+---@param x number
+---@param y number
+---@param text string
+---@param fg? integer
+---@param bg? integer
+---@return integer x The x after the text
 function PicoDeckCharGrid:print(x, y, text, fg, bg) end
----@return integer rows
+
+---Word-wrap text into rows `w` cells wide. Nil colours are kept.
+---@param x number
+---@param y number
+---@param w number
+---@param text string
+---@param fg? integer
+---@param bg? integer
+---@return integer rows The number of rows used
 function PicoDeckCharGrid:printWrapped(x, y, w, text, fg, bg) end
----@param style? integer BOX_SINGLE | BOX_BLOCK | BOX_ASCII
+
+---Draw a frame (nothing when `w` or `h` is below 2), leaving the inside untouched.
+---@param x number
+---@param y number
+---@param w number
+---@param h number
+---@param style? integer `BOX_SINGLE` (default), `BOX_BLOCK` or `BOX_ASCII`
+---@param fg? integer
+---@param bg? integer
 function PicoDeckCharGrid:box(x, y, w, h, style, fg, bg) end
+
+---Write multi-line UTF-8 art. Cells whose character is `transparent` are left alone.
+---@param x number
+---@param y number
+---@param art string
+---@param fg? integer
+---@param bg? integer
 ---@param transparent? string|integer default " "
 function PicoDeckCharGrid:stamp(x, y, art, fg, bg, transparent) end
+
+---Copy a rectangle of cells (all three planes) from `src`, which may be this grid, to
+---`(dx, dy)`. Overlapping copies are safe.
 ---@param src PicoDeckCharGrid
----@param transparentGlyph? integer|string
+---@param sx number
+---@param sy number
+---@param w number
+---@param h number
+---@param dx number
+---@param dy number
+---@param transparentGlyph? integer|string Source cells holding it are skipped
 function PicoDeckCharGrid:blit(src, sx, sy, w, h, dx, dy, transparentGlyph) end
+
+---Shift the contents and fill the cells that come into view.
+---@param dx number
+---@param dy number
+---@param glyph? integer|string default 0
+---@param fg? integer default 15
+---@param bg? integer default 0
 function PicoDeckCharGrid:scroll(dx, dy, glyph, fg, bg) end
+
+---Draw cells `sx..sx+w-1` by `sy..sy+h-1` with cell `(sx, sy)` at pixel `(px, py)`,
+---inside the display clip rect. Cells past the edge are clipped.
+---@param px number
+---@param py number
+---@param sx? number default 0
+---@param sy? number default 0
+---@param w? number default: the grid's cols
+---@param h? number default: the grid's rows
 function PicoDeckCharGrid:draw(px, py, sx, sy, w, h) end
+
+---Return whether any write happened since the last `draw`.
 ---@return boolean
 function PicoDeckCharGrid:isDirty() end
+
+---Return the last `draw`'s cells and its time in microseconds.
 ---@return {cells: integer, us: integer}
 function PicoDeckCharGrid:getStats() end
 
+---A compiled per-cell program from `picocalc.chargrid.shader`.
 ---@class PicoDeckCharShader : userdata
 local PicoDeckCharShader = {}
+
+---Set a declared uniform. Raises for an unknown name.
 ---@param name string a declared uniform
----@param value number
+---@param value number Finite
 function PicoDeckCharShader:set(name, value) end
+
+---Copy `values[1..n]` into a declared array. Raises for an unknown name.
 ---@param name string a declared array
 ---@param values number[] shader index 0 is values[1]
 ---@param n? integer default #values, at most 1024
 function PicoDeckCharShader:setArray(name, values, n) end
+
+---Run over a cell rect (default: the whole grid), clipped to the grid, and mark the
+---grid dirty. The layers follow in declaration order, and their count must match.
 ---@param grid PicoDeckCharGrid
 ---@param ... number|PicoDeckCharGrid optional x, y, w, h, then the declared layers in order
 function PicoDeckCharShader:run(grid, ...) end
+
+---Return the last run's cells and time, and the compiled program's size.
 ---@return {cells: integer, us: integer, instructions: integer, registers: integer}
 function PicoDeckCharShader:getStats() end
 
 ---@class picocalc.chargrid
----@field EMPTY integer
----@field DOT1 integer
----@field DOT2 integer
----@field DOT3 integer
----@field DOT4 integer
----@field SHADE1 integer
----@field SHADE2 integer
----@field SHADE3 integer
----@field SHADE4 integer
----@field HALF_TOP integer
----@field HALF_BOTTOM integer
----@field HALF_LEFT integer
----@field HALF_RIGHT integer
----@field BOX_H integer
----@field BOX_V integer
----@field BOX_TL integer
----@field BOX_TR integer
----@field BOX_BL integer
----@field BOX_BR integer
----@field BOX_LT integer
----@field BOX_RT integer
----@field BOX_TT integer
----@field BOX_BT integer
----@field BOX_X integer
----@field TRI_UP integer
----@field TRI_RIGHT integer
----@field TRI_DOWN integer
----@field TRI_LEFT integer
----@field BOX_SINGLE integer
----@field BOX_BLOCK integer
----@field BOX_ASCII integer
+---@field EMPTY integer Nothing: the cell's background only
+---@field DOT1 integer Dots of growing size: `·`
+---@field DOT2 integer `•`
+---@field DOT3 integer `●`
+---@field DOT4 integer `⬤`
+---@field SHADE1 integer Shades: `░`
+---@field SHADE2 integer `▒`
+---@field SHADE3 integer `▓`
+---@field SHADE4 integer `█`
+---@field HALF_TOP integer `▀`
+---@field HALF_BOTTOM integer `▄`
+---@field HALF_LEFT integer `▌`
+---@field HALF_RIGHT integer `▐`
+---@field BOX_H integer `─`
+---@field BOX_V integer `│`
+---@field BOX_TL integer `┌`
+---@field BOX_TR integer `┐`
+---@field BOX_BL integer `└`
+---@field BOX_BR integer `┘`
+---@field BOX_LT integer `├`
+---@field BOX_RT integer `┤`
+---@field BOX_TT integer `┬`
+---@field BOX_BT integer `┴`
+---@field BOX_X integer `┼`
+---@field TRI_UP integer `▲`
+---@field TRI_RIGHT integer `▶`
+---@field TRI_DOWN integer `▼`
+---@field TRI_LEFT integer `◀`
+---@field BOX_SINGLE integer `grid:box` style: single lines (the default)
+---@field BOX_BLOCK integer `grid:box` style: blocks
+---@field BOX_ASCII integer `grid:box` style: ASCII
 picocalc.chargrid = {}
----@param cols number
----@param rows number
----@param fontId? integer
----@param cellW? number
----@param cellH? number
+
+---Create a grid. Without a font, `cellW` and `cellH` are required, and leaving them
+---out raises.
+---@param cols number 1-1024, `cols * rows` at most 65,536
+---@param rows number 1-1024
+---@param fontId? integer A built-in font id or one from `display.loadFont`; nil for no font
+---@param cellW? number 1-16; defaults to the font's size
+---@param cellH? number 1-32; defaults to the font's size
 ---@return PicoDeckCharGrid
 function picocalc.chargrid.new(cols, rows, fontId, cellW, cellH) end
+
+---Compile a shader. It never raises for a bad program.
 ---@param source string
 ---@return PicoDeckCharShader|nil shader
 ---@return string? err "line L:C: message"
@@ -4174,18 +4420,27 @@ function picocalc.chargrid.shader(source) end
 -- picocalc.noise
 -- =============================================================================
 
+---Deterministic 2-D noise: the same inputs give the same results in the simulator and
+---on the device. Coordinates must be finite and a seed an integer, or it raises.
 ---@class picocalc.noise
 picocalc.noise = {}
+
+---The lattice hash of the integer point (`floor(x)`, `floor(y)`).
 ---@param x number floored
 ---@param y number floored
 ---@param seed? integer default 0
 ---@return number h in [0, 1)
 function picocalc.noise.hash(x, y, seed) end
+
+---Value noise: the hashes of the four surrounding lattice points, blended with
+---smoothstep weights.
 ---@param x number
 ---@param y number
 ---@param seed? integer default 0
 ---@return number v in [0, 1)
 function picocalc.noise.value(x, y, seed) end
+
+---Fractal noise: `octaves` layers of `value` at doubling frequency and halving weight.
 ---@param x number
 ---@param y number
 ---@param octaves integer 1-8
