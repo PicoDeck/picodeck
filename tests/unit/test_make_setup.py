@@ -106,7 +106,10 @@ def test_build_fetches_its_sources_itself():
 def test_simulator_run_uses_the_checkout_as_the_card():
     # --sd-card is the card root, so "--sd-card ./apps" gave an empty launcher
     # and created apps/, data/ and system/ inside apps/.
-    out = subprocess.run(["make", "-C", str(ROOT), "-n", "simulator-run"],
+    # -o simulator: only simulator-run's own recipe. `make -n` still runs the
+    # `simulator` recipe's $(MAKE) line, which fails where build_sim does not
+    # exist yet, as on a clean checkout, and then nothing else prints.
+    out = subprocess.run(["make", "-C", str(ROOT), "-n", "-o", "simulator", "simulator-run"],
                          capture_output=True, text=True, timeout=30).stdout
     assert "--sd-card ./apps" not in out
     assert "build_sim/picodeck_simulator" in [line.strip() for line in out.splitlines()]
