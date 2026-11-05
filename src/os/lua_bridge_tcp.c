@@ -31,11 +31,12 @@ static tcp_ud_t *check_tcp_open(lua_State *L, int idx) {
 }
 
 static int set_tcp_cb(lua_State *L, int idx, int *ref_ptr) {
-    if (lua_isnoneornil(L, idx)) {
-        *ref_ptr = LUA_NOREF;
+    if (!lua_isnoneornil(L, idx))
+        luaL_checktype(L, idx, LUA_TFUNCTION);
+    luaL_unref(L, LUA_REGISTRYINDEX, *ref_ptr);  // the one it replaces
+    *ref_ptr = LUA_NOREF;
+    if (lua_isnoneornil(L, idx))
         return 0;
-    }
-    luaL_checktype(L, idx, LUA_TFUNCTION);
     lua_settop(L, idx);
     *ref_ptr = luaL_ref(L, LUA_REGISTRYINDEX);
     return 0;

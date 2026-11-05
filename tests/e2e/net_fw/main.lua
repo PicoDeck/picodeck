@@ -861,6 +861,31 @@ case_fw("tcp_connect_twice_refused", function()
     e:close()
 end)
 
+-- A callback replaced or cleared is let go, not kept in the registry for good.
+case_fw("tcp_replaced_callback_is_released", function()
+    local s = T.ok(pc.tcp.new(HOST, cfg.echo, false), "tcp.new")
+    local function released(set, clear)
+        local weak = setmetatable({}, { __mode = "v" })
+        local f = function() end
+        weak[1] = f
+        set(s, f)
+        f = nil
+        collectgarbage()
+        collectgarbage()
+        T.ok(weak[1] ~= nil, "the current callback stays")
+        clear()
+        collectgarbage()
+        collectgarbage()
+        return weak[1] == nil
+    end
+    for _, name in ipairs({ "setConnectCallback", "setReadCallback", "setCloseCallback" }) do
+        local set = s[name]
+        T.ok(released(set, function() set(s, function() end) end), name .. ": replaced")
+        T.ok(released(set, function() set(s, nil) end), name .. ": cleared")
+    end
+    s:close()
+end)
+
 case_fw("tcp_read_timeout_fraction", function()
     local s = tcp_open()
     s:setReadTimeout(0.3)

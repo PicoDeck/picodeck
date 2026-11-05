@@ -45,6 +45,7 @@ CASES = [
     "tcp_connect_timeout",
     "tcp_connect_twice_refused",
     "tcp_read_timeout_fraction",
+    "tcp_replaced_callback_is_released",
     "tcp_waits_run_callbacks",
     "tcp_wait_survives_close_in_callback",
     "tcp_wait_data_with_read_callback",
