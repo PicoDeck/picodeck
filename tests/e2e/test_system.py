@@ -201,7 +201,7 @@ PROBE = (6, 40)
 
 
 class TestSystemMenu:
-    """System menu overlay triggered by the Sym/Menu key, over static_screen
+    """System menu overlay triggered by the system menu key, over static_screen
     (every frame identical, so any change is the menu's)."""
 
     def _open_static(self, sim):

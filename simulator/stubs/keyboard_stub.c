@@ -210,7 +210,7 @@ void kbd_poll(void) {
 
 // sys.sleep's poll: keep SDL (window events, quit) serviced. Key edges stay
 // in the HAL until the app's next kbd_poll(), as on the device; injected
-// Sym presses set the menu flag directly (kbd_inject_buttons), and a host
+// Menu key presses set the menu flag directly (kbd_inject_buttons), and a host
 // F10 during a sleep takes effect at the next kbd_poll().
 void kbd_poll_background(void) {
     SDL_PumpEvents();

@@ -64,7 +64,7 @@ void picodeck_main(const PicoCalcAPI *api,
 
     while (true) {
         s->poll();  // REQUIRED: polls keyboard, feeds the watchdog,
-                    // handles system menu (Sym key)
+                    // handles the system menu key (Shift+F5, reported as F10)
 
         if (s->shouldExit())  // User selected "Exit App" from system menu
             return;

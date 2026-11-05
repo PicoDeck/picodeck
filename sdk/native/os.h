@@ -25,7 +25,7 @@
 #define BTN_RIGHT     (1 << 3)
 #define BTN_ENTER     (1 << 4)    // Enter key
 #define BTN_ESC       (1 << 5)    // Escape key
-#define BTN_MENU      (1 << 6)    // System menu trigger (F10 key)
+#define BTN_MENU      (1 << 6)    // The system menu key: Shift+F5, reported as F10
 #define BTN_F1        (1 << 7)
 #define BTN_F2        (1 << 8)
 #define BTN_F3        (1 << 9)
@@ -270,7 +270,7 @@ typedef struct {
     void     (*log)(const char *fmt, ...);
     // Single OS tick for native apps: polls the keyboard, feeds the watchdog,
     // reclaims released HTTP/TCP slots and serves dev commands.  Also checks
-    // for the Sym (Menu) key and shows the system menu overlay automatically.
+    // for the system menu key (Shift+F5, reported as F10) and shows the system menu overlay automatically.
     // It fires no HTTP callbacks (native apps poll http->isComplete()).
     // Call in your main loop.
     void     (*poll)(void);

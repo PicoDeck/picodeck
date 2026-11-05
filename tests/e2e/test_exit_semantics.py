@@ -182,7 +182,7 @@ def _pixel_changes(sim, x, y, before, timeout):
 
 
 def test_menu_opens_during_long_sleep(simulator):
-    """A Sym press during a long sys.sleep opens the system menu at once
+    """A menu key press during a long sys.sleep opens the system menu at once
     (it used to wait for the sleep to end); its Exit App ends the app."""
     code = """
 local d = picocalc.display
@@ -225,7 +225,7 @@ while true do pcall(busy) end
 
 
 def test_key_edges_during_sleep_reach_the_app_after_it(simulator):
-    """sys.sleep polls the keyboard in the background (so the physical Sym
+    """sys.sleep polls the keyboard in the background (so the physical menu
     key works during it); keys that arrive meanwhile must still reach the
     app's next input.update(): the press edge, the char and the events."""
     code = """

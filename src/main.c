@@ -719,7 +719,7 @@ static const char* s_pending_launch = NULL;
 
 // Native-app tick: poll keyboard, feed the watchdog, reap released
 // HTTP/TCP slots (no HTTP callbacks for native apps), and
-// check the Sym (Menu) key to show the system menu overlay.
+// check the system menu key to show the system menu overlay.
 static void sys_poll(void) {
   kbd_poll();
   core0_heartbeat();

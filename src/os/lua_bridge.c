@@ -424,7 +424,7 @@ void lua_bridge_exit_reset(lua_State *L) {
 // hook (simulator, web build, firmware's no-alarm-slot fallback); on
 // firmware's normal timer-armed hook it fires as a count-1 hook about once
 // every 1 ms instead (the arming timer, see lua_bridge_hook_start). Either
-// way, it always does the cheap part (watchdog, exit request, Sym press:
+// way, it always does the cheap part (watchdog, exit request, menu key press:
 // flag reads) and runs the full pass (HTTP/TCP slot scans, sound callbacks,
 // the serial dev-command poll, which takes the stdio mutex and TinyUSB on
 // firmware, reboot flags, screenshots, low-memory GC) only when work was

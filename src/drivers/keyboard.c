@@ -184,7 +184,7 @@ bool kbd_init(void) {
 // the char the app has not read yet stays, and injected one-shots are
 // neither retired nor published. The app's next kbd_poll() then delivers
 // the press/release edges, chars and raw key of what arrived meanwhile;
-// only the OS-level Sym and Brk flags are set right away.
+// only the OS-level menu key and Brk flags are set right away.
 static void kbd_poll_impl(bool bg);
 
 void kbd_poll(void) { kbd_poll_impl(false); }
@@ -261,7 +261,7 @@ static void kbd_poll_impl(bool bg) {
 
   // The other gamepad sources (pad_source.h: the `pad` dev command, later a
   // Bluetooth or USB pad), ORed with the keyboard's aliases in the getters.
-  // A source's Home raises the menu like the Sym key (and, like it, wakes a
+  // A source's Home raises the menu like the menu key (and, like it, wakes a
   // dimmed screen without being swallowed).
   bool pad_home = pad_sources_poll(bg, now_ms);
   if (pad_home)

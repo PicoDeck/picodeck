@@ -49,7 +49,7 @@ static int l_sys_log(lua_State *L) {
 
 static int l_sys_sleep(lua_State *L) {
   int ms = (int)lb_checkint(L, 1);
-  // Every 10 ms: a background keyboard poll, so a physical Sym press is seen
+  // Every 10 ms: a background keyboard poll, so a physical menu key press is seen
   // during the sleep (it queues events and chars and accumulates press
   // edges without starting a new app-facing poll, so the app's next
   // input.update() still delivers them), then the same service pass as the
