@@ -798,6 +798,9 @@ static void launcher_refuse(const app_entry_t *app, const char *title,
       break;
     sleep_ms(100);
   }
+  // Back to the launcher, as at an app's exit (run_app_entry): a held Enter's
+  // repeats are press edges, and each would launch the app again.
+  kbd_hide_held();
 }
 
 // Runs *app (a listed entry, or a hidden one launched from the dev console;
