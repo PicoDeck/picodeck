@@ -86,7 +86,8 @@ typedef struct {
     // Returns bitmask of buttons released THIS frame
     uint32_t (*getButtonsReleased)(void);
     // Returns the last ASCII character typed (0 if none this frame)
-    // Includes full keyboard; use this for text input
+    // Includes full keyboard; use this for text input. It stays until the
+    // next poll, so call it once per frame: a loop until 0 never ends.
     char (*getChar)(void);
 } picocalc_input_t;
 

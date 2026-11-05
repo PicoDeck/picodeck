@@ -8,6 +8,7 @@ import time
 import pytest
 
 from helpers import stage_lua_app
+from test_menu_key_hold import hold_shim  # noqa: F401 (a fixture)
 
 
 class TestButtonInjection:
@@ -202,6 +203,14 @@ class TestEscExit:
         assert "uptime_ms" in result
 
 
+@pytest.fixture
+def host_a(hold_shim, monkeypatch):  # noqa: F811
+    """The shim holds the host's A key (list this before the simulator)."""
+    monkeypatch.setenv("KEYHOLD_SYM", str(ord("a")))
+    monkeypatch.setenv("KEYHOLD_MS", "100")
+    return hold_shim
+
+
 GETTERS_APP = """
 local input = picocalc.input
 local log = picocalc.sys.log
@@ -219,8 +228,10 @@ end
 
 
 class TestGetCharAndRawKey:
-    """Both keep their value until the next update(), as on the device, so a
-    `while c do c = getChar() end` loop never ends here either."""
+    """A typed key's char and the raw key stay until the next update(), as on the
+    device, so a `while c do c = getChar() end` loop never ends here either. An
+    injected char is read once, as on the device (keyboard.c's kbd_inject_char):
+    the harness's keypress is the one input that does not hang such a loop."""
 
     def _start(self, sim):
         stage_lua_app(sim.sd_card_path, "input_getters", GETTERS_APP)
@@ -229,10 +240,17 @@ class TestGetCharAndRawKey:
         sim.wait_for_log(r"^GETTERS_READY$", timeout=10, since_seq=seq)
         return seq
 
-    def test_reads_are_not_consumed_within_a_frame(self, simulator):
+    def test_a_typed_char_is_not_consumed_within_a_frame(self, host_a, simulator):
+        seq = self._start(simulator)
+        host_a.write_text("go")
+        simulator.wait_for_log(r"^CHAR a a$", timeout=5, since_seq=seq)
+        simulator.keypress("q")
+        simulator.wait_for_exit(timeout=5)
+
+    def test_an_injected_char_is_read_once(self, simulator):
         seq = self._start(simulator)
         simulator.keypress("a")
-        simulator.wait_for_log(r"^CHAR a a$", timeout=5, since_seq=seq)
+        simulator.wait_for_log(r"^CHAR a nil$", timeout=5, since_seq=seq)
         simulator.keypress("q")
         simulator.wait_for_exit(timeout=5)
 

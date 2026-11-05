@@ -33,6 +33,7 @@ static uint32_t s_buttons = 0;
 static uint32_t s_buttons_pressed = 0;
 static uint32_t s_buttons_released = 0;
 static char s_last_char = 0;
+static char s_injected_char = 0;  // until getChar reads it, as keyboard.c's s_inj.ch
 static uint8_t s_raw_key = 0;
 static bool s_screenshot_pressed = false;
 // The firmware's event queue + key-down set (kbd_event_queue.h). The HAL
@@ -147,9 +148,14 @@ void kbd_poll(void) {
         hal_input_raise_menu(false);
 
     // Get character input (a hidden key's chars stay hidden with it)
+    bool injected;
     do {
-        s_last_char = hal_input_get_char();
+        s_last_char = hal_input_get_char_ex(&injected);
     } while (s_last_char && kbd_hide_has(&s_hide, (uint8_t)s_last_char));
+    if (injected) {
+        s_injected_char = s_last_char;
+        s_last_char = 0;
+    }
 
     // Idle screen dimming, as keyboard.c's kbd_poll_impl: fresh input is
     // activity, and the input that wakes a dimmed screen never reaches the
@@ -206,10 +212,13 @@ void kbd_poll_background(void) {
     idle_dim_poll();
 }
 
-// Both keep their value until the next kbd_poll, as in keyboard.c: a loop that
-// reads until nil never ends there, so it must not end here.
+// As in keyboard.c: both keep their value until the next kbd_poll, so a loop
+// that reads until nil never ends there and must not end here. Only an injected
+// char is read once.
 char kbd_get_char(void) {
-    return s_last_char;
+    char c = s_last_char ? s_last_char : s_injected_char;
+    s_injected_char = 0;
+    return c;
 }
 
 uint8_t kbd_get_raw_key(void) {
@@ -329,6 +338,7 @@ void kbd_clear_state(void) {
     s_buttons_pressed = 0;
     s_buttons_released = 0;
     s_last_char = 0;
+    s_injected_char = 0;
     s_raw_key = 0;
     kbd_input_clear(&s_in);
     // An injected key still down keeps its gamepad button held, without a

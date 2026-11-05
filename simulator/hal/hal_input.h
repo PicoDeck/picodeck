@@ -61,6 +61,10 @@ void hal_input_read_buttons(uint32_t* out_buttons, uint32_t* out_pressed);
 // Get character input (for text entry)
 char hal_input_get_char(void);
 
+// The same; *injected says whether it came from inject_char rather than a host
+// key (the device reads the two differently: kbd_get_char).
+char hal_input_get_char_ex(bool *injected);
+
 // Poll for character (non-blocking)
 bool hal_input_poll_char(char* out_char);
 
