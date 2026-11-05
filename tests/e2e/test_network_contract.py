@@ -113,6 +113,8 @@ REFUSED_APP = """
 local T = picocalc.sys.loadlib("picotest")
 local dl = picocalc.sys.loadlib("download")
 T.case("download_refused_request_returns_at_once", function()
+    -- The firmware-net build's real WiFi layer takes no injection: nothing refuses.
+    if picocalc.wifi.isAvailable() then return end
     local t0 = picocalc.sys.getTimeMs()
     local ok, err = dl.toFile("http://127.0.0.1:{port}/ok", picocalc.fs.appPath("x.bin"),
                               {{ timeoutMs = 20000 }})
