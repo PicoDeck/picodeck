@@ -356,3 +356,35 @@ def test_doc_partial_redraw_example(simulator):
     # Header row and the last line both on the panel.
     assert lit(img, 0, 12) > 0
     assert lit(img, 12 * 9, 12 * 10) > 0
+
+
+# ── Apps sized to their bounds ───────────────────────────────────────────────
+
+def typed_line_shows(sim, app, first_row_y, last_row):
+    """Type more lines than fit, then one more of marks: its row must show."""
+    sim.launch_app(app, hidden=False)
+    time.sleep(0.6)
+    sim.keypress("esc")     # the file browser it starts in
+    time.sleep(0.3)
+    for _ in range(last_row + 6):
+        seq = sim.keypress("enter")["input_seq"]
+        sim.wait_input_consumed(seq)
+    before = sim.screenshot_pil().convert("RGB")
+    for ch in "#####":
+        seq = sim.keypress(ch)["input_seq"]
+        sim.wait_input_consumed(seq)
+    time.sleep(0.3)
+    after = sim.screenshot_pil().convert("RGB")
+    y0 = first_row_y + last_row * 12
+    changed = sum(1 for y in range(y0, y0 + 12) for x in range(320)
+                  if before.getpixel((x, y)) != after.getpixel((x, y)))
+    sim.exit_app()
+    sim.wait_for_exit(timeout=10)
+    return changed
+
+
+@pytest.mark.sd(fixtures=[], extra=[("apps/editor", "apps/editor")])
+def test_editor_shows_the_row_it_is_typing_on(simulator):
+    """It asked for 24 rows inside bounds that hold 23, so its last row never
+    drew: the line being typed at the bottom of the window was invisible."""
+    assert typed_line_shows(simulator, "editor", 21, 22) > 20
