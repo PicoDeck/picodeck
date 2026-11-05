@@ -610,6 +610,23 @@ if(PICODECK_MP3_SRAM)
   target_compile_definitions(picodeck PRIVATE PICODECK_MP3_SRAM=1)
 endif()
 
+# A/B experiments for a device run (Device checks in the review notes); all off
+# by default, each a whole-workload comparison, as layout alone moves one call
+# by +-40%.
+# gfx3d_draw and gfx3d_end on an SRAM stack (src/os/leaf_stack.h); 0 extra SRAM.
+option(PICODECK_SRAM_LEAF_STACK "Experiment: gfx3d on an SRAM leaf stack" OFF)
+if(PICODECK_SRAM_LEAF_STACK)
+  target_sources(picodeck PRIVATE src/os/leaf_stack.c)
+  target_compile_definitions(picodeck PRIVATE PICODECK_SRAM_LEAF_STACK=1)
+endif()
+# -O2 for the -Os files a Lua game calls every frame.
+option(PICODECK_HOT_O2 "Experiment: -O2 for the hot bridge files and the allocator" OFF)
+if(PICODECK_HOT_O2)
+  set_property(SOURCE src/os/lua_bridge.c src/os/lua_bridge_gfx3d.c
+      src/os/lua_bridge_display.c src/os/lua_psram_alloc.c
+      APPEND PROPERTY COMPILE_OPTIONS -O2)
+endif()
+
 # ── Print firmware size after build ───────────────────────────────────────────
 
 add_custom_command(TARGET picodeck POST_BUILD
@@ -625,6 +642,14 @@ add_custom_command(TARGET picodeck POST_BUILD
 set(_hot_ld ${CMAKE_SOURCE_DIR}/src/hot_text.ld)
 target_link_options(picodeck PRIVATE "LINKER:-T,${_hot_ld}")
 set_property(TARGET picodeck APPEND PROPERTY LINK_DEPENDS ${_hot_ld})
+# After hot_text.ld on the link line: its INSERT names a section from there, and
+# with that section missing ld silently puts this one at the start of flash.
+# gfx3d, display and fonts at their own fixed cache sets (src/hot_gfx.ld).
+option(PICODECK_HOT_GFX "Experiment: gfx3d and display code pinned after .hot_text" OFF)
+if(PICODECK_HOT_GFX)
+  target_link_options(picodeck PRIVATE "LINKER:-T,${CMAKE_SOURCE_DIR}/src/hot_gfx.ld")
+  set_property(TARGET picodeck APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/src/hot_gfx.ld)
+endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_custom_command(TARGET picodeck POST_BUILD
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_hot_text.py

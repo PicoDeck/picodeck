@@ -18,6 +18,9 @@
 #include <string.h>
 
 #include "app_stack.h"
+#if defined(PICODECK_SRAM_LEAF_STACK)
+#include "leaf_stack.h"
+#endif
 #include "hardware/watchdog.h"
 #include "pico/time.h"
 #include "umm_malloc.h"
@@ -43,7 +46,11 @@ static bool prof_cb(repeating_timer_t *rt) {
   }
   uint32_t psp;
   __asm volatile("mrs %0, psp" : "=r"(psp));
-  if (psp < (uint32_t)base || psp + 32u > (uint32_t)base + size) {
+  bool on_stack = psp >= (uint32_t)base && psp + 32u <= (uint32_t)base + size;
+#if defined(PICODECK_SRAM_LEAF_STACK)
+  on_stack = on_stack || leaf_stack_contains(psp, 32u);
+#endif
+  if (!on_stack) {
     s_skipped++;
     return true;
   }

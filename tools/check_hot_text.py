@@ -77,6 +77,9 @@ def main():
             break
         if addr is not None and not lo <= addr < hi:
             errors.append(f"{f} at {addr:#x} is outside .cold_libgcc: it costs SRAM again")
+    gfx = syms.get("__hot_gfx_start__")  # PICODECK_HOT_GFX, src/hot_gfx.ld
+    if gfx is not None and (gfx % SET_PERIOD or gfx < syms["__cold_libgcc_end__"]):
+        errors.append(f".hot_gfx at {gfx:#x}: not 8 KB aligned after .cold_libgcc")
     if errors:
         print("check_hot_text: FAILED\n  " + "\n  ".join(errors), file=sys.stderr)
         return 1
