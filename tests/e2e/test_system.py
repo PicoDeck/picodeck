@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from helpers import (measure_heap_probe, require_heap_metrics_live, log_texts,
+                     stage_lua_app,
                      lua_case_names, run_lua_app)
 
 SYS_CASES = lua_case_names("sys_test")
@@ -262,3 +263,21 @@ class TestConfigPersistence:
         assert "SYS:RUNS prev=1" in texts, (
             "second run did not load the first run's saved value\n"
             + second.describe())
+
+
+class TestPowerStatus:
+    """getPowerStatus reads what the header's charging bolt reads."""
+
+    def test_reports_the_keyboard_controllers_charging_state(self, simulator):
+        code = """
+        local p = picocalc.sys.getPowerStatus()
+        picocalc.sys.log("POWER " .. tostring(p.charging) .. " " .. p.percent)
+        """
+        stage_lua_app(simulator.sd_card_path, "power_status", code)
+        for percent, charging in ((42, True), (77, False)):
+            simulator.call("set_battery", {"percent": percent, "charging": charging})
+            seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+            simulator.launch_app("power_status")
+            simulator.wait_for_exit(timeout=10)
+            simulator.wait_for_log(rf"^POWER {str(charging).lower()} {percent}$",
+                                   timeout=5, since_seq=seq)

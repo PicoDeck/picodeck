@@ -115,7 +115,7 @@ static int l_sys_isUSBPowered(lua_State *L) {
 
 static int l_sys_getPowerStatus(lua_State *L) {
   lua_createtable(L, 0, 2);
-  lua_pushboolean(L, gpio_get(USB_VBUS_PIN));
+  lua_pushboolean(L, kbd_is_charging());  // as the header's bolt (ui.c)
   lua_setfield(L, -2, "charging");
   lua_pushinteger(L, kbd_get_battery_percent());
   lua_setfield(L, -2, "percent");

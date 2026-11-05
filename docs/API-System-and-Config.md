@@ -305,17 +305,17 @@ picocalc.sys.log("PicoDeck version: " .. version)
 ---
 
 #### `picocalc.sys.getPowerStatus()`
-Get detailed power status.
+Get detailed power status, as the keyboard controller reports it (the same reading as the charging bolt in the header).
 
 - **Parameters:** None
 - **Returns:** (table) With fields:
-  - `charging` (boolean): Whether the device is currently charging
-  - `percent` (number): Battery percentage (0-100)
+  - `charging` (boolean): Whether the battery is currently charging
+  - `percent` (number): Battery percentage (0-100), or -1 before the first reading, as `getBattery()`
 
 ```lua
 local power = picocalc.sys.getPowerStatus()
 if power.charging then
-    print("Charging: " .. power.percent .. "%")
+    picocalc.sys.log("Charging: " .. power.percent .. "%")
 end
 ```
 
