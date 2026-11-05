@@ -180,7 +180,7 @@ The struct exists three times: `src/os/os.h`, `sdk/native/os.h` and the simulato
 Apps are directories at `/apps/<name>/` on a FAT32 SD card containing:
 - `app.json` — `{"id":"com.example.app", "name":"...", "description":"...", "version":"...", "author":"...", "requirements":[...]}`
 - `main.lua` — Lua app (loop until `return` to exit to launcher)
-- `main.elf` — native C/TinyGo app (ELF32 PIE; native takes priority if both present)
+- `main.elf` — native app (ELF32 PIE; native takes priority if both present)
 
 The `id` becomes `/data/<id>`: 1-79 characters of `[A-Za-z0-9._-]`, folded to lower case; the launcher refuses an invalid one (rules in `src/os/CLAUDE.md`). Optional `"min_psram_kb": N` makes the launcher refuse to start the app (on-screen reason + error.log entry) unless the PSRAM heap has a single free block of at least N KB — the largest block is the test, not total free bytes.
 
