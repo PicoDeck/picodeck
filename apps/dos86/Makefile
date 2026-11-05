@@ -33,7 +33,7 @@ $(CPU_OBJ): fake86/cpu.c fake86/cpu.h fake86/config.h
 	$(OBJCOPY) --rename-section .text=.time_critical.cpu fake86/cpu_tmp.o $(CPU_OBJ)
 	rm -f fake86/cpu_tmp.o
 
-$(TARGET): $(SRCS) $(CPU_OBJ) linker.ld os.h app_abi.h
+$(TARGET): $(SRCS) $(CPU_OBJ) linker.ld ../../sdk/native/os.h ../../sdk/native/app_abi.h
 	$(CC) $(CFLAGS) $(SRCS) $(CPU_OBJ) $(LDFLAGS) -o $@
 	arm-none-eabi-strip $@
 	arm-none-eabi-size $@

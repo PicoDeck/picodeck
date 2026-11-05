@@ -49,16 +49,10 @@ extern char *uc_read_string(uc_engine *uc, uint32_t addr);
 #define EMU_API_BASE        0xE0000000u
 #define EMU_TRAMP_BASE      0xF0000000u
 #define EMU_REVCALL_BASE    0xF0010000u
-#define EMU_HEAP_BASE       0x40000000u
-#define EMU_HEAP_SIZE       (4u * 1024 * 1024)
 
 // From unicorn_runner.c
 extern uint32_t heap_alloc(uint32_t size);
 extern void heap_free(uint32_t addr);
-
-// Heap functions made accessible (they were static in unicorn_runner.c,
-// so we re-declare here and they will be moved to non-static later)
-// Actually, let's just include them as extern and make them non-static in runner.
 
 // Display functions (from simulator stubs)
 extern void display_clear(uint16_t color);
@@ -185,6 +179,7 @@ extern void sound_player_stop(sound_player_t *player);
 extern bool sound_player_is_playing(const sound_player_t *player);
 extern uint8_t sound_player_get_volume(const sound_player_t *player);
 extern void sound_player_set_volume(sound_player_t *player, uint8_t volume);
+extern void sound_player_set_loop(sound_player_t *player, bool loop);
 
 // Fileplayer (from sim_audio.c)
 extern fileplayer_t *fileplayer_create(void);
@@ -295,7 +290,7 @@ static void write_reg(uc_engine *uc, int reg, uint32_t val) {
 static uint32_t read_stack_arg(uc_engine *uc, int index) {
     // Args beyond r0-r3 are on the stack: SP + index*4
     uint32_t sp = read_reg(uc, UC_ARM_REG_SP);
-    uint32_t val;
+    uint32_t val = 0;  // sys->log reads 4 words whatever it was passed: past the stack's top, 0
     uc_mem_read(uc, sp + (uint32_t)index * 4, &val, 4);
     return val;
 }
@@ -677,16 +672,37 @@ enum {
 // Display trampoline handlers
 // =============================================================================
 
-// When drawing trampolines (clear, drawText, etc.) write to the host back
-// buffer, this flag tells tramp_display_flush() NOT to overwrite it with the
-// emulated framebuffer (EMU_FB_BASE), which apps using getBackBuffer() write
-// to directly. Reset to 0 after each flush.
-static int s_back_buffer_dirty = 0;
+// On the device draw calls and raw writes hit one buffer. Here the draw calls
+// draw into the simulator's host back buffer (host byte order), and raw writes
+// land in the emulated framebuffer (EMU_FB_BASE, panel byte order). An app that
+// never asks for the pointer only ever has the host buffer. Once it has asked,
+// the emulated framebuffer is the truth and the two are made equal around every
+// draw (unicorn_tramp_dispatch) and before every present, so drawing and raw
+// writes compose in order and the pointer reads what was drawn. A whole-buffer
+// copy each way per draw call is slow, but only apps that mix them pay it.
+// Unlike the device, that pointer never changes and its buffer never swaps.
+static bool s_fb_exposed = false;
+static uint16_t s_fb_swapped[320 * 320];
+
+// Raw writes -> the buffer the draw calls use.
+static void fb_pull_raw(uc_engine *uc) {
+    uint16_t *back = display_get_back_buffer();
+    uc_mem_read(uc, EMU_FB_BASE, back, sizeof(s_fb_swapped));
+    for (int i = 0; i < 320 * 320; i++)
+        back[i] = (uint16_t)((back[i] >> 8) | (back[i] << 8));
+}
+
+// What the draw calls drew -> the app's pointer.
+static void fb_push_drawn(uc_engine *uc) {
+    const uint16_t *back = display_get_back_buffer();
+    for (int i = 0; i < 320 * 320; i++)
+        s_fb_swapped[i] = (uint16_t)((back[i] >> 8) | (back[i] << 8));
+    uc_mem_write(uc, EMU_FB_BASE, s_fb_swapped, sizeof(s_fb_swapped));
+}
 
 static void tramp_display_clear(uc_engine *uc) {
     uint16_t color = (uint16_t)read_reg(uc, UC_ARM_REG_R0);
     display_clear(color);
-    s_back_buffer_dirty = 1;
 }
 
 static void tramp_display_set_pixel(uc_engine *uc) {
@@ -694,7 +710,6 @@ static void tramp_display_set_pixel(uc_engine *uc) {
     int y = (int)read_reg(uc, UC_ARM_REG_R1);
     uint16_t color = (uint16_t)read_reg(uc, UC_ARM_REG_R2);
     display_set_pixel(x, y, color);
-    s_back_buffer_dirty = 1;
 }
 
 static void tramp_display_fill_rect(uc_engine *uc) {
@@ -704,7 +719,6 @@ static void tramp_display_fill_rect(uc_engine *uc) {
     int h = (int)read_reg(uc, UC_ARM_REG_R3);
     uint16_t color = (uint16_t)read_stack_arg(uc, 0);
     display_fill_rect(x, y, w, h, color);
-    s_back_buffer_dirty = 1;
 }
 
 static void tramp_display_draw_rect(uc_engine *uc) {
@@ -714,7 +728,6 @@ static void tramp_display_draw_rect(uc_engine *uc) {
     int h = (int)read_reg(uc, UC_ARM_REG_R3);
     uint16_t color = (uint16_t)read_stack_arg(uc, 0);
     display_draw_rect(x, y, w, h, color);
-    s_back_buffer_dirty = 1;
 }
 
 static void tramp_display_draw_line(uc_engine *uc) {
@@ -724,7 +737,6 @@ static void tramp_display_draw_line(uc_engine *uc) {
     int y1 = (int)read_reg(uc, UC_ARM_REG_R3);
     uint16_t color = (uint16_t)read_stack_arg(uc, 0);
     display_draw_line(x0, y0, x1, y1, color);
-    s_back_buffer_dirty = 1;
 }
 
 static void tramp_display_draw_circle(uc_engine *uc) {
@@ -733,7 +745,6 @@ static void tramp_display_draw_circle(uc_engine *uc) {
     int r  = (int)read_reg(uc, UC_ARM_REG_R2);
     uint16_t color = (uint16_t)read_reg(uc, UC_ARM_REG_R3);
     display_draw_circle(cx, cy, r, color);
-    s_back_buffer_dirty = 1;
 }
 
 static void tramp_display_fill_circle(uc_engine *uc) {
@@ -742,7 +753,6 @@ static void tramp_display_fill_circle(uc_engine *uc) {
     int r  = (int)read_reg(uc, UC_ARM_REG_R2);
     uint16_t color = (uint16_t)read_reg(uc, UC_ARM_REG_R3);
     display_fill_circle(cx, cy, r, color);
-    s_back_buffer_dirty = 1;
 }
 
 static void tramp_display_draw_text(uc_engine *uc) {
@@ -754,7 +764,6 @@ static void tramp_display_draw_text(uc_engine *uc) {
     char *text = uc_read_string(uc, text_addr);
     int result = display_draw_text(x, y, text ? text : "", fg, bg);
     write_reg(uc, UC_ARM_REG_R0, (uint32_t)result);
-    s_back_buffer_dirty = 1;
 }
 
 // --- API v6 font trampolines ---
@@ -790,46 +799,18 @@ static void tramp_display_draw_text_transparent(uc_engine *uc) {
     uint16_t fg = (uint16_t)read_reg(uc, UC_ARM_REG_R3);
     int result = display_draw_text_transparent(x, y, text ? text : "", fg);
     write_reg(uc, UC_ARM_REG_R0, (uint32_t)result);
-    s_back_buffer_dirty = 1;
-}
-
-// Native ARM apps write big-endian RGB565 (matching the ST7365P display).
-// The simulator's SDL2 expects host-byte-order (little-endian on x86/ARM64).
-// Byte-swap after copying from emulated memory to host back buffer.
-static void byteswap_rgb565(uint16_t *buf, int count) {
-    for (int i = 0; i < count; i++) {
-        uint16_t p = buf[i];
-        buf[i] = (p >> 8) | (p << 8);
-    }
 }
 
 static int s_flush_count = 0;
 
 static void tramp_display_flush(uc_engine *uc) {
-    (void)uc;
     s_flush_count++;
     if (s_flush_count <= 5 || (s_flush_count % 100) == 0) {
-        printf("[UNICORN] display_flush #%d (dirty=%d)\n", s_flush_count, s_back_buffer_dirty);
+        printf("[UNICORN] display_flush #%d\n", s_flush_count);
         fflush(stdout);
     }
-    if (!s_back_buffer_dirty) {
-        // Copy the emulated framebuffer into the simulator's back buffer,
-        // then present via the normal display_flush() path.
-        uint16_t *back = display_get_back_buffer();
-        uc_mem_read(uc, EMU_FB_BASE, back, 320 * 320 * sizeof(uint16_t));
-        if (s_flush_count <= 5 || (s_flush_count % 500) == 0) {
-            // Debug: show raw values BEFORE byteswap
-            fprintf(stderr, "[UNICORN] pre-swap: [%04x %04x %04x %04x] center=%04x\n",
-                    back[0], back[1], back[2], back[3], back[160*320+160]);
-        }
-        byteswap_rgb565(back, 320 * 320);
-        if (s_flush_count <= 5 || (s_flush_count % 500) == 0) {
-            fprintf(stderr, "[UNICORN] post-swap: [%04x %04x %04x %04x] center=%04x\n",
-                    back[0], back[1], back[2], back[3], back[160*320+160]);
-        }
-    }
-    s_back_buffer_dirty = 0;
-
+    if (s_fb_exposed)
+        fb_pull_raw(uc);
     os_overlay_draw(OS_PRESENT_FLUSH, 0, 319);  // toast, Show FPS (as main.c)
     display_flush();
 }
@@ -869,37 +850,32 @@ static void tramp_display_draw_image_nn(uc_engine *uc) {
     // Same clip-once blitter as the firmware (display_clip.h).
     display_draw_image_nn(x, y, buf, src_w, src_h, scale);
     free(buf);
-    s_back_buffer_dirty = 1;  // Tell flush() not to overwrite from EMU_FB_BASE
 }
 
+// Both partial presents show the whole buffer here, so the overlay is drawn as
+// for flush() (each call counts as one frame: no flushRows sweep detection).
 static void tramp_display_flush_rows(uc_engine *uc) {
-    // flushRows(y0, y1) — copy relevant rows from emulated FB, then flush
-    uint32_t y0 = read_reg(uc, UC_ARM_REG_R0);
-    uint32_t y1 = read_reg(uc, UC_ARM_REG_R1);
-    if (y0 > 320) y0 = 0;
-    if (y1 > 320) y1 = 320;
-    uint16_t *back = display_get_back_buffer();
-    uint32_t offset = y0 * 320 * sizeof(uint16_t);
-    uint32_t len = (y1 - y0) * 320 * sizeof(uint16_t);
-    uc_mem_read(uc, EMU_FB_BASE + offset, back + y0 * 320, len);
-    byteswap_rgb565(back + y0 * 320, (y1 - y0) * 320);
-    // This path presents the whole buffer, so the overlay is drawn as for
-    // flush() (each call counts as one frame: no flushRows sweep detection).
+    if (s_fb_exposed)
+        fb_pull_raw(uc);
+    os_overlay_draw(OS_PRESENT_FLUSH, 0, 319);
+    uint16_t *drawn = display_get_back_buffer();
+    display_flush();
+    // flushRows does not swap on the device: the app goes on drawing what it drew.
+    memcpy(display_get_back_buffer(), drawn, sizeof(s_fb_swapped));
+}
+
+static void tramp_display_flush_region(uc_engine *uc) {
+    if (s_fb_exposed)
+        fb_pull_raw(uc);
     os_overlay_draw(OS_PRESENT_FLUSH, 0, 319);
     display_flush();
 }
 
-static void tramp_display_flush_region(uc_engine *uc) {
-    // flushRegion — copy entire emulated FB, then flush
-    uint16_t *back = display_get_back_buffer();
-    uc_mem_read(uc, EMU_FB_BASE, back, 320 * 320 * sizeof(uint16_t));
-    byteswap_rgb565(back, 320 * 320);
-    os_overlay_draw(OS_PRESENT_FLUSH, 0, 319);  // whole buffer, as above
-    display_flush();
-}
-
 static void tramp_display_get_back_buffer(uc_engine *uc) {
-    // Return the emulated framebuffer address
+    if (!s_fb_exposed) {
+        s_fb_exposed = true;
+        fb_push_drawn(uc);  // the frame so far, as the pointer shows it on the device
+    }
     write_reg(uc, UC_ARM_REG_R0, EMU_FB_BASE);
 }
 
@@ -917,7 +893,6 @@ static void tramp_display_fill_vline(uc_engine *uc) {
     int y1 = (int)read_reg(uc, UC_ARM_REG_R2);
     uint16_t color = (uint16_t)read_reg(uc, UC_ARM_REG_R3);
     display_fill_vline(x, y0, y1, color);
-    s_back_buffer_dirty = 1;
 }
 
 static void tramp_display_fill_hline(uc_engine *uc) {
@@ -926,7 +901,6 @@ static void tramp_display_fill_hline(uc_engine *uc) {
     int x1 = (int)read_reg(uc, UC_ARM_REG_R2);
     uint16_t color = (uint16_t)read_reg(uc, UC_ARM_REG_R3);
     display_fill_hline(y, x0, x1, color);
-    s_back_buffer_dirty = 1;
 }
 
 static void tramp_display_fill_triangle(uc_engine *uc) {
@@ -938,7 +912,6 @@ static void tramp_display_fill_triangle(uc_engine *uc) {
     int y2 = (int)read_stack_arg(uc, 1);
     uint16_t color = (uint16_t)read_stack_arg(uc, 2);
     display_fill_triangle(x0, y0, x1, y1, x2, y2, color);
-    s_back_buffer_dirty = 1;
 }
 
 static void tramp_display_draw_textured_column(uc_engine *uc) {
@@ -959,7 +932,6 @@ static void tramp_display_draw_textured_column(uc_engine *uc) {
     uc_mem_read(uc, tex_addr, buf, (size_t)pixels * 2);
     display_draw_textured_column(x, y0, y1, buf, tex_w, tex_h, tex_x, tex_y0, tex_y1);
     free(buf);
-    s_back_buffer_dirty = 1;
 }
 
 static void tramp_display_fill_vline_gradient(uc_engine *uc) {
@@ -969,7 +941,6 @@ static void tramp_display_fill_vline_gradient(uc_engine *uc) {
     uint16_t color_top = (uint16_t)read_reg(uc, UC_ARM_REG_R3);
     uint16_t color_bottom = (uint16_t)read_stack_arg(uc, 0);
     display_fill_vline_gradient(x, y0, y1, color_top, color_bottom);
-    s_back_buffer_dirty = 1;
 }
 
 static void tramp_display_set_clip_rect(uc_engine *uc) {
@@ -1028,7 +999,6 @@ static void tramp_display_draw_plane(uc_engine *uc) {
     uc_mem_read(uc, tex_addr, buf, (size_t)pixels * 2);
     display_draw_plane(buf, tex_w, tex_h, cam_x, cam_y, cam_z, angle, horizon_y, scale);
     free(buf);
-    s_back_buffer_dirty = 1;
 }
 
 // =============================================================================
@@ -1978,7 +1948,8 @@ static void tramp_http_get(uc_engine *uc) {
     http_conn_t *c = handle_unwrap(handle);
     char *path = uc_read_string(uc, path_addr);
     char *hdrs = hdrs_addr ? uc_read_string(uc, hdrs_addr) : NULL;
-    if (c && path) http_get(c, path, hdrs);
+    // As http_get_w (src/main.c): a request that cannot start finishes, failed.
+    if (c && path && !http_get(c, path, hdrs)) http_fail_unstarted(c);
 }
 
 static void tramp_http_post(uc_engine *uc) {
@@ -1998,7 +1969,7 @@ static void tramp_http_post(uc_engine *uc) {
             body[body_len] = '\0';
         }
     }
-    if (c && path) http_post(c, path, hdrs, body, body_len);
+    if (c && path && !http_post(c, path, hdrs, body, body_len)) http_fail_unstarted(c);
     free(body);
 }
 
@@ -2174,8 +2145,10 @@ static void tramp_snd_player_set_volume(uc_engine *uc) {
 }
 
 static void tramp_snd_player_set_loop(uc_engine *uc) {
-    // The sound_player doesn't have a direct set_loop, but repeat_count=0 with play means loop
-    (void)uc;
+    uint32_t handle = read_reg(uc, UC_ARM_REG_R0);
+    bool loop = read_reg(uc, UC_ARM_REG_R1) != 0;
+    sound_player_t *p = handle_unwrap(handle);
+    if (p) sound_player_set_loop(p, loop);
 }
 
 static void tramp_snd_player_free(uc_engine *uc) {
@@ -3065,6 +3038,7 @@ static tramp_handler_t s_dispatch[SLOT_TOTAL_COUNT];
 void unicorn_tramp_init(uc_engine *uc) {
     (void)uc;
     memset(s_dispatch, 0, sizeof(s_dispatch));
+    s_fb_exposed = false;  // a new emulated framebuffer, nothing handed out yet
 
     // Reset the shouldExit() latch (sim_native_api.c) for the new app run. It
     // is a process-lifetime static that shouldExit() clears on read; an app
@@ -3421,17 +3395,53 @@ void unicorn_tramp_init(uc_engine *uc) {
     s_dispatch[SLOT_GAMEPAD_GET_AXIS]             = tramp_gamepad_get_axis;
 }
 
+// The API calls that put pixels in the back buffer.
+static bool slot_draws(uint32_t slot) {
+    switch (slot) {
+    case SLOT_DISPLAY_CLEAR:
+    case SLOT_DISPLAY_SET_PIXEL:
+    case SLOT_DISPLAY_FILL_RECT:
+    case SLOT_DISPLAY_DRAW_RECT:
+    case SLOT_DISPLAY_DRAW_LINE:
+    case SLOT_DISPLAY_DRAW_CIRCLE:
+    case SLOT_DISPLAY_FILL_CIRCLE:
+    case SLOT_DISPLAY_DRAW_TEXT:
+    case SLOT_DISPLAY_DRAW_IMAGE_NN:
+    case SLOT_DISPLAY_FILL_VLINE:
+    case SLOT_DISPLAY_DRAW_TEXTURED_COLUMN:
+    case SLOT_DISPLAY_FILL_VLINE_GRADIENT:
+    case SLOT_DISPLAY_FILL_HLINE:
+    case SLOT_DISPLAY_FILL_TRIANGLE:
+    case SLOT_DISPLAY_DRAW_PLANE:
+    case SLOT_DISPLAY_DRAW_TEXT_TRANSPARENT:
+    case SLOT_PERF_DRAW_FPS:
+    case SLOT_TERM_RENDER:
+    case SLOT_TERM_RENDER_DIRTY:
+    case SLOT_GFX_DRAW:
+    case SLOT_GFX_DRAW_REGION:
+    case SLOT_GFX_DRAW_SCALED:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void unicorn_tramp_dispatch(uc_engine *uc, uint32_t slot) {
     if (slot >= SLOT_TOTAL_COUNT) {
         printf("[UNICORN] Invalid trampoline slot: %u\n", slot);
         write_reg(uc, UC_ARM_REG_R0, 0);
         return;
     }
+    bool sync = s_fb_exposed && slot_draws(slot);
+    if (sync)
+        fb_pull_raw(uc);
     if (s_dispatch[slot]) {
         s_dispatch[slot](uc);
     } else {
         tramp_stub(uc, slot);
     }
+    if (sync)
+        fb_push_drawn(uc);
 }
 
 uint32_t unicorn_tramp_get_slot_count(void) {

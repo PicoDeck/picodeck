@@ -204,6 +204,12 @@ bool http_get(http_conn_t *c, const char *path, const char *extra_hdr);
 bool http_post(http_conn_t *c, const char *path, const char *extra_hdr,
                const char *body, size_t body_len);
 
+// For a caller that cannot report http_get/http_post returning false (the native
+// API's void get/post, polled with isComplete): a request that never started
+// becomes a finished, failed one, with http_get_error saying why. A request
+// already running (what the call was refused for) is left alone: it will finish.
+void http_fail_unstarted(http_conn_t *c);
+
 // Read up to `len` bytes of body into `out`.  Returns bytes copied.
 uint32_t http_read(http_conn_t *c, uint8_t *out, uint32_t len);
 

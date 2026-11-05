@@ -6,7 +6,7 @@
 
 typedef enum {
     APP_TYPE_LUA    = 0,  // main.lua present
-    APP_TYPE_NATIVE = 1,  // main.elf present (C / TinyGo PIE binary)
+    APP_TYPE_NATIVE = 1,  // main.elf present (PIE binary)
 } app_type_t;
 
 // ── App discovery record ──────────────────────────────────────────────────────

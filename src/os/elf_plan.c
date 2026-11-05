@@ -10,6 +10,7 @@
 #define ELFDATA2LSB  1
 #define ET_DYN       3
 #define EM_ARM       40
+#define EF_ARM_ABI_FLOAT_HARD 0x00000400u
 
 #define DT_NULL      0
 #define DT_RELA      7
@@ -40,6 +41,7 @@ const char *elf_strerror(elf_err_t err) {
     case ELF_ERR_CLASS:            return "ELF: must be 32-bit little-endian";
     case ELF_ERR_NOT_PIE:          return "ELF: must be PIE (ET_DYN)";
     case ELF_ERR_NOT_ARM:          return "ELF: must be ARM";
+    case ELF_ERR_FLOAT_ABI:        return "ELF: hard-float ABI (-mfloat-abi=hard) not supported";
     case ELF_ERR_PHENTSIZE:        return "ELF: bad phdr entry size";
     case ELF_ERR_PHNUM:            return "ELF: bad phdr count";
     case ELF_ERR_PHDR_BOUNDS:      return "ELF: phdr table out of bounds";
@@ -97,6 +99,11 @@ elf_err_t elf_plan_header(const uint8_t *buf, uint32_t buf_len,
         return ELF_ERR_NOT_PIE;
     if (eh.e_machine != EM_ARM)
         return ELF_ERR_NOT_ARM;
+    // The API passes and returns floats in core registers (the firmware is
+    // softfp). A hard-float app would use s0-s15 and read garbage: it links, it
+    // loads, and only the calls that take or return a float go wrong.
+    if (eh.e_flags & EF_ARM_ABI_FLOAT_HARD)
+        return ELF_ERR_FLOAT_ABI;
     // Each phdr is read as an elf32_phdr_t; a shorter entry would make the
     // table walk read past the allocation.
     if (eh.e_phentsize != ELF_PHDR_SIZE)

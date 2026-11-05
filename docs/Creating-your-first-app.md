@@ -137,6 +137,6 @@ Every first-party app is a working example in the [`apps/`](https://github.com/P
 | [`systest`](https://github.com/PicoDeck/picodeck/tree/master/apps/systest) | A tour of the system APIs |
 | [`sdk/native`](https://github.com/PicoDeck/picodeck/tree/master/sdk/native) | **Native, C.** The template to [start a native app](Native-Loading.md) from |
 
-### Prefer C or C++?
+### Prefer C?
 
-If you want to build high-performance apps or prefer working in C/C++, check out our guide on [Native App Development](Native-Loading.md).
+If you want to build high-performance apps or prefer working in C (or a subset of C++), check out our guide on [Native App Development](Native-Loading.md).

@@ -3,6 +3,19 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// A text terminal widget: a grid of character cells with scrollback. Sizes are
+// in cells unless they say pixels, and colours are RGB565. It draws in its own
+// font, not the one display->setFont selects.
+// cols and rows only size the grid. What shows is set by the render bounds, in
+// pixels: by default y 28 to 302 at x 4 (below a header, above a footer), so a
+// full-screen terminal calls setRenderBounds(term, 0, 320), and rows past the
+// bottom bound are not drawn. render() and renderDirty() draw into the back
+// buffer and do not flush: call display->flush() afterwards.
+
 typedef struct terminal terminal_t;
 
 typedef struct {
@@ -54,3 +67,7 @@ typedef struct {
     void (*visualToLogical)(terminal_t* term, int vis_x, int vis_y, int* log_x, int* log_y);
     int (*calculateLineWraps)(terminal_t* term, int logical_line, int* segments, int max_segments);
 } picocalc_terminal_t;
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif

@@ -978,6 +978,20 @@ bool http_post(http_conn_t *c, const char *path, const char *extra_hdr,
   return start_request(c, "POST", path, extra_hdr, body, body_len);
 }
 
+void http_fail_unstarted(http_conn_t *c) {
+  if (!c)
+    return;
+  uint32_t irq = spin_lock_blocking(s_lock);
+  http_state_t st = st_get(c);
+  if (st == HTTP_STATE_IDLE || st == HTTP_STATE_DONE) {
+    if (!c->err[0])  // out of memory has said so already
+      snprintf(c->err, sizeof(c->err), "WiFi not available");
+    c->status_code = 0;
+    st_put(c, HTTP_STATE_FAILED);
+  }
+  spin_unlock(s_lock, irq);
+}
+
 uint32_t http_read(http_conn_t *c, uint8_t *out, uint32_t len) {
   if (!c || !out || len == 0)
     return 0;

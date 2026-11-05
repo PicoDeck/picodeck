@@ -168,7 +168,7 @@ Everything from `splash_start()` to `splash_finish()` runs while Core 1 plays th
 5. Add sources and link libraries in `CMakeLists.txt`
 
 ### Changing the native API (`PicoCalcAPI`)
-The struct exists three times: `src/os/os.h`, `sdk/native/os.h` and the simulator's trampoline tables (`simulator/unicorn_trampolines.c`). Never insert a field before `version` (it would move); add new fields after it, in the same order in both headers and the trampolines, bump `g_api.version` in `src/main.c` and the trampolines' version write together, then run `python3 tools/check_native_abi.py --cc arm-none-eabi-gcc` (CI's `native-sdk` job) and extend and rebuild the E2E probe (`tests/e2e/native/api_probe.c`, `make -C tests/e2e/native`); `tests/e2e/test_native.py` checks the running layout.
+The struct exists three times: `src/os/os.h`, `sdk/native/os.h` and the simulator's trampoline tables (`simulator/unicorn_trampolines.c`). Never insert a field before `version` (it would move); add new fields after it, in the same order in both headers and the trampolines, bump `g_api.version` in `src/main.c`, the trampolines' version write and `PICODECK_API_VERSION` in `sdk/native/os.h` together, then run `python3 tools/check_native_abi.py --cc arm-none-eabi-gcc` (CI's `native-sdk` job) and extend and rebuild the E2E probe (`tests/e2e/native/api_probe.c`, `make -C tests/e2e/native`); `tests/e2e/test_native.py` checks the running layout.
 
 ### Exposing a new Lua API
 1. Create `src/os/lua_bridge_<module>.c`
@@ -182,7 +182,7 @@ The struct exists three times: `src/os/os.h`, `sdk/native/os.h` and the simulato
 Apps are directories at `/apps/<name>/` on a FAT32 SD card containing:
 - `app.json` — `{"id":"com.example.app", "name":"...", "description":"...", "version":"...", "author":"...", "requirements":[...]}`
 - `main.lua` — Lua app (loop until `return` to exit to launcher)
-- `main.elf` — native C/TinyGo app (ELF32 PIE; native takes priority if both present)
+- `main.elf` — native app (ELF32 PIE; native takes priority if both present)
 
 The `id` becomes `/data/<id>`: 1-79 characters of `[A-Za-z0-9._-]`, folded to lower case; the launcher refuses an invalid one (rules in `src/os/CLAUDE.md`). Optional `"min_psram_kb": N` makes the launcher refuse to start the app (on-screen reason + error.log entry) unless the PSRAM heap has a single free block of at least N KB — the largest block is the test, not total free bytes.
 

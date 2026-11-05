@@ -23,6 +23,7 @@ typedef struct {
     bool in_use;        // slot allocated: sound_player_create .. sound_player_destroy
     bool playing;
     bool paused;
+    bool loop;          // sound_player_set_loop: repeat until stopped, whatever play's count
     uint32_t position;
     uint32_t phase;     // rate-conversion accumulator (Hz units at AUDIO_OUT_RATE)
     uint8_t volume;
@@ -65,6 +66,10 @@ void sound_player_destroy(sound_player_t *player);
 bool sound_player_set_sample(sound_player_t *player, sound_sample_t *sample);
 void sound_player_play(sound_player_t *player, uint8_t repeat_count);
 void sound_player_stop(sound_player_t *player);
+// true: repeat until stopped, also through later play() calls whatever their
+// count. false: play() counts again, and a sound now repeating for ever ends at
+// the end of this pass.
+void sound_player_set_loop(sound_player_t *player, bool loop);
 void sound_player_set_volume(sound_player_t *player, uint8_t volume);
 uint8_t sound_player_get_volume(const sound_player_t *player);
 bool sound_player_is_playing(const sound_player_t *player);

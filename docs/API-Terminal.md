@@ -257,6 +257,8 @@ Row 0 of the grid is drawn at `y_start`. A row that does not fully fit above `y_
 - `y_start` (number): First pixel row to draw on (0-based; below 0 reads as 0)
 - `y_end` (number): The pixel row below the last one to draw on (above 320 reads as 320). If it is not below `y_start`, the call changes nothing.
 
+A new terminal renders from y 28 to y 302 at x 4, below a header and above a footer, however many rows you asked for: a terminal that uses the whole screen must set its bounds.
+
 ```lua
 -- Under ui.drawHeader's 21 rows, above ui.drawFooter's 18: 23 text rows.
 local term = picocalc.terminal.new(53, 23)

@@ -1,0 +1,7 @@
+{
+    "id": "com.test.native_fidelity",
+    "name": "Native Fidelity Probe",
+    "description": "E2E fixture: one behaviour per mode, chosen by the app name (source: tests/e2e/native/fidelity_probe.c)",
+    "version": "1.0",
+    "author": "PicoDeck E2E"
+}

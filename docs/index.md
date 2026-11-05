@@ -15,7 +15,7 @@ The OS handles the low-level hardware details so you can focus on your app's log
 
 ## Native App Support
 
-For performance-critical applications or those who prefer C/C++, PicoDeck supports [Native App Development](Native-Loading.md) using a C API that mirrors the Lua SDK. Native apps are compiled as Position-Independent ELF binaries and loaded into PSRAM.
+For performance-critical applications or those who prefer C, PicoDeck supports [Native App Development](Native-Loading.md) using a C API over the same OS, with fewer conveniences than the Lua SDK (and a subset of C++ works too). Native apps are compiled as Position-Independent ELF binaries and loaded into PSRAM.
 
 ## Where to start
 

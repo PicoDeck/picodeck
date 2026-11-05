@@ -1,0 +1,7 @@
+{
+    "id": "com.test.native_libc",
+    "name": "Native Libc Probe",
+    "description": "E2E fixture: the C library recipe (source: tests/e2e/native/libc_probe.c)",
+    "version": "1.0",
+    "author": "PicoDeck E2E"
+}

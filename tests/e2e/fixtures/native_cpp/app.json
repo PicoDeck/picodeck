@@ -1,0 +1,7 @@
+{
+    "id": "com.test.native_cpp",
+    "name": "Native Cpp Probe",
+    "description": "E2E fixture: the C++ the docs describe (source: tests/e2e/native/cpp_probe.cpp)",
+    "version": "1.0",
+    "author": "PicoDeck E2E"
+}

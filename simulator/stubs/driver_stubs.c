@@ -18,6 +18,7 @@
 #include "../hal/hal_display.h"
 #include "../sim_socket.h"
 #include "umm_malloc.h"
+#include "idle_dim.h"
 // Real driver header — pulled in so the stub definitions below are checked
 // against the hardware signatures at compile time (any drift is an error).
 // "pico/mutex.h" inside it resolves to the simulator stub in stubs/pico/.
@@ -272,7 +273,8 @@ void display_clear(uint16_t color) {
     for (int i = 0; i < 320 * 320; i++) fb[i] = color;
 }
 
-void display_set_brightness(uint8_t brightness) { (void)brightness; }
+// As firmware (nothing here shows it; the get_backlight RPC reports the level).
+void display_set_brightness(uint8_t brightness) { idle_dim_set_app_brightness(brightness); }
 
 void display_set_pixel(int x, int y, uint16_t color) {
     if (x >= s_clip_x0 && x <= s_clip_x1 && y >= s_clip_y0 && y <= s_clip_y1) {

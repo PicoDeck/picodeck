@@ -2,13 +2,10 @@
 //
 // Build:   make
 // Deploy:  copy main.elf + app.json to /apps/hello_c/ on the SD card
+//          (apps/hello_c in this repository is this program)
 
 #include "app_abi.h"
 #include "os.h"
-
-// Convenience RGB565 macro (same as the OS uses)
-#define RGB565(r, g, b) \
-    ((uint16_t)(((r) & 0x1F) << 11 | ((g) & 0x3F) << 5 | ((b) & 0x1F)))
 
 void picodeck_main(const PicoCalcAPI *api,
                 const char *app_dir,
@@ -44,17 +41,17 @@ void picodeck_main(const PicoCalcAPI *api,
     // getChar() covers alphanumeric and punctuation keys.
     // Checking both means *any* key exits.
     while (true) {
-        d->clear(0x0000);
-        d->drawText(cx - 48, cy - 16, "Hello from C!", 0xFFFF, 0x0000);
-        d->drawText(cx - 60, cy,       line2,           RGB565(12, 24, 20), 0x0000);
-        d->drawText(cx - 52, cy + 16,  "Press any key...", RGB565(16, 32, 16), 0x0000);
+        d->clear(PC_COLOR_BLACK);
+        d->drawText(cx - 48, cy - 16, "Hello from C!", PC_COLOR_WHITE, PC_COLOR_BLACK);
+        d->drawText(cx - 60, cy,       line2,           PC_RGB565(96, 96, 160), PC_COLOR_BLACK);
+        d->drawText(cx - 52, cy + 16,  "Press any key...", PC_COLOR_GRAY, PC_COLOR_BLACK);
         if (api->version >= 6) {
             // API v6: font selection, measurement, and transparent text.
             d->setFont(PC_FONT_8X12);
             const char *msg = "API v6 fonts";
             int w = d->textWidth(msg);
-            d->fillRect(cx - w / 2 - 4, cy + 34, w + 8, d->getFontHeight() + 4, RGB565(4, 8, 16));
-            d->drawTextTransparent(cx - w / 2, cy + 36, msg, RGB565(31, 63, 0));
+            d->fillRect(cx - w / 2 - 4, cy + 34, w + 8, d->getFontHeight() + 4, PC_RGB565(32, 32, 128));
+            d->drawTextTransparent(cx - w / 2, cy + 36, msg, PC_COLOR_YELLOW);
             d->setFont(PC_FONT_6X8);
         }
         d->flush();

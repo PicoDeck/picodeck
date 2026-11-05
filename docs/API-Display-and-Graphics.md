@@ -267,7 +267,7 @@ Returns the display height in pixels.
 ---
 
 #### `picocalc.display.setBrightness(level)`
-Sets the display backlight brightness.
+Sets the display backlight brightness. The level holds until your app exits or the user changes the Brightness setting; the system menu always shows at the user's level, and idle dimming still applies.
 
 - **Parameters:**
   - `level` (number): Brightness value (0-255, where 255 is full brightness) (clamped)
@@ -850,11 +850,12 @@ end
 Native ELF apps access effects through the `picocalc_display_t` vtable:
 
 ```c
-void picodeck_main(PicoCalcAPI *api) {
+void picodeck_main(const PicoCalcAPI *api, const char *app_dir,
+                   const char *app_id, const char *app_name) {
     const picocalc_display_t *d = api->display;
 
-    d->clear(RGB565(0, 0, 0));
-    d->drawText(10, 10, "Hello", RGB565(255, 255, 255), RGB565(0, 0, 0));
+    d->clear(PC_COLOR_BLACK);
+    d->drawText(10, 10, "Hello", PC_COLOR_WHITE, PC_COLOR_BLACK);
 
     // Apply effects
     d->effectTint(255, 0, 0, 128);    // red tint

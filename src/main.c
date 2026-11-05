@@ -1020,13 +1020,17 @@ static pchttp_t http_newConn_w(const char *server, uint16_t port, bool use_ssl) 
     return (pchttp_t)c;
 }
 
+// get() and post() return nothing and apps poll isComplete(), so a request that
+// could not start has to finish, or the app's loop never would.
 static void http_get_w(pchttp_t c, const char *path, const char *extra_hdrs) {
-    http_get((http_conn_t *)c, path, extra_hdrs);
+    if (!http_get((http_conn_t *)c, path, extra_hdrs))
+        http_fail_unstarted((http_conn_t *)c);
 }
 
 static void http_post_w(pchttp_t c, const char *path, const char *extra_hdrs,
                         const char *body, uint32_t body_len) {
-    http_post((http_conn_t *)c, path, extra_hdrs, body, (size_t)body_len);
+    if (!http_post((http_conn_t *)c, path, extra_hdrs, body, (size_t)body_len))
+        http_fail_unstarted((http_conn_t *)c);
 }
 
 static int http_read_w(pchttp_t c, uint8_t *buf, uint32_t len) {
@@ -1146,13 +1150,8 @@ static void sp_playerSetVolume(pcsound_player_t p, uint8_t vol) {
     sound_player_set_volume((sound_player_t *)p, vol);
 }
 
-// sound.h has no sound_player_set_loop; repeat_count=0 with playerPlay means
-// the player won't loop — callers should use repeat_count to control looping.
-// We store loop intent as repeat_count=255 (max repeats) when loop=true,
-// and stop the player when loop=false.
 static void sp_playerSetLoop(pcsound_player_t p, bool loop) {
-    sound_player_t *sp = (sound_player_t *)p;
-    sp->repeat_count = loop ? 255 : 0;
+    sound_player_set_loop((sound_player_t *)p, loop);
 }
 
 static void sp_playerFree(pcsound_player_t p) {

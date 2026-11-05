@@ -79,5 +79,5 @@ end
 
 ### Native App Development
 
-If you prefer to write apps in C or C++ instead of Lua, see the [Native App Development](Native-Loading.md) guide. The C API mirrors the Lua modules documented here.
+If you prefer to write apps in C (or a subset of C++) instead of Lua, see the [Native App Development](Native-Loading.md) guide. The C API covers most of the modules documented here, not all: it lists [what only Lua has](Native-Loading.md#what-only-lua-has).
 
