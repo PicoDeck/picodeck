@@ -110,15 +110,20 @@ typedef struct {
 // the 16KB XIP cache (which thrashes against 24KB of JPEGDEC flash code).
 static JPEGDEC s_jpeg_sram;
 // Players alive (created, not yet destroyed): while there are none,
-// s_jpeg_sram is lent to chargrid shader runs. JPEGDEC holds only its
-// JPEGIMAGE, which openRAM clears before every frame, so what a run leaves
-// there does no harm. Create, destroy and runs are all on Core 0.
+// s_jpeg_sram is lent to chargrid shader runs and gfx3d draw calls, each for
+// that one C call. JPEGDEC holds only its JPEGIMAGE, which openRAM clears
+// before every frame, so what they leave there does no harm. Create, destroy
+// and the borrowers are all on Core 0.
 static int s_players;
 
 extern "C" void *charshader_sram(size_t *bytes) {
     if (s_players) return NULL;
     *bytes = sizeof(s_jpeg_sram);
     return &s_jpeg_sram;
+}
+
+extern "C" void *gfx3d_sram_scratch(size_t *bytes) {
+    return charshader_sram(bytes);
 }
 
 // --- Adaptive quality: 2x nearest-neighbor upscale callback ---
