@@ -4,7 +4,7 @@
 # Copy main.elf + app.json to /apps/<name>/ on the SD card.
 #
 # Requirements:
-#   arm-none-eabi-gcc (any modern version; Fedora: gcc-arm-none-eabi-cs)
+#   arm-none-eabi-gcc (any modern version; Fedora: arm-none-eabi-gcc-cs, Debian/Ubuntu: gcc-arm-none-eabi)
 
 CC      = arm-none-eabi-gcc
 CFLAGS  = -mcpu=cortex-m33 -mthumb \

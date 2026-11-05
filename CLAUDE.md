@@ -17,25 +17,27 @@ This file keeps only what applies across the tree. Record subsystem behaviour in
 
 ### Prerequisites
 
+A clone needs its submodules: `git clone --recurse-submodules`, or `git submodule update --init --recursive` afterwards (`make` names the fix when `third_party/` is empty). Lua and FatFS's upstream files are not tracked: `make setup` fetches them (`download-lua`, `download-fatfs` → `scripts/ci/fetch-fatfs.sh`), and `make build`, `make test-unit` and `make fuzz` do too.
+
 **Fedora/Linux:**
 ```bash
-sudo dnf install cmake gcc-arm-none-eabi-cs gcc-arm-none-eabi-cs-c++ newlib-arm-none-eabi
+sudo dnf install cmake curl unzip arm-none-eabi-gcc-cs arm-none-eabi-gcc-cs-c++ arm-none-eabi-newlib
 ```
 
-**macOS (one-shot):**
-```bash
-chmod +x setup.sh && ./setup.sh
-```
+**Debian/Ubuntu:** `sudo apt install cmake curl unzip gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib`
 
-**Pico SDK (required for all platforms):**
+**macOS:** `brew install cmake curl && brew install --cask gcc-arm-embedded` (not built by CI).
+
+**Pico SDK (required for the firmware on all platforms; 2.2.0 is what release builds pin):**
 ```bash
-git clone https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk
-cd ~/pico-sdk && git submodule update --init
+git clone --branch 2.2.0 https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk
+git -C ~/pico-sdk submodule update --init
 export PICO_SDK_PATH=~/pico-sdk
 ```
 
 ### Build
 ```bash
+make setup
 mkdir build && cd build
 cmake .. -DPICO_BOARD=pimoroni_pico_plus2_w_rp2350
 make -j4
@@ -46,7 +48,7 @@ Other board values: `pico2` (no PSRAM/WiFi), `pico_w`, `pico`. Note: the board n
 Output: `build/picodeck.uf2` — drag-and-drop to Pico in BOOTSEL mode.
 
 ### Debug
-USB serial at 115200 baud. App log calls appear as `[APP] message`. Lua errors display on-screen with stack trace (dismiss with **Esc**).
+USB serial at 115200 baud. Lua `sys.log` lines appear as `[APP] message`; a native `sys->log` line has no prefix on the device. Lua errors display on-screen, with no traceback (dismiss with **Esc**), and go to `/system/error.log`.
 
 **Serial transfers.** `screenshot` (binary), `screenshot64`, `getb64`, `putb64`, `get` and `put` share the port with the log, so each reports its FNV-1a (`screenshot`'s trailer: `src/os/serial_frame.h`). The host's readers (`tools/scrn_frame.py`, `tools/picodeck_mcp.py`; no host tool uses `get` or `put`) check it, read a damaged transfer to its end, retry, and raise rather than return one that failed (`_retry_transfer`). While one runs, the console gate (`src/console_gate.h`) drops, and counts, every other log write at the stdio drivers, from Core 1 and from Core 0's interrupts; the count prints as `[DEV] Console: N bytes of log output dropped during a transfer` when it ends, and HardFault and `panic()` open the gate first. So a line missing from the serial log may be a line the gate dropped. `lognoise <ms>` makes the noise that stresses this (`tests/e2e/test_screenshot_integrity.py`).
 
