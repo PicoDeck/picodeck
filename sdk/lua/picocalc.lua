@@ -1016,10 +1016,12 @@ function picocalc.sound.sample(path_or_duration, opts) end
 ---The player keeps its sample alive: dropping your own reference to the sample
 ---is safe while the player plays it. A path loads a Sample that belongs to the
 ---player (`getSample()` returns it); it is freed with the player, or once a
----`setSample` replaces it. Samples have no fixed limit; at most 8 sampleplayers
----exist at once, freed by the garbage collector.
+---`setSample` replaces it. Samples have no fixed limit; a sampleplayer holds one
+---of the 8 voices until the garbage collector frees it, and stops when it does.
+---For a sound effect you can drop, use `sample:play()`.
 ---@param sample_or_path? PicoDeckSample|string
----@return PicoDeckSamplePlayer
+---@return PicoDeckSamplePlayer? player `nil` with every voice taken
+---@return string? error
 function picocalc.sound.sampleplayer(sample_or_path) end
 
 ---Create a FilePlayer for streaming WAV files from the SD card.
@@ -1061,13 +1063,24 @@ function PicoDeckSample:decompress() end
 ---@return PicoDeckSample
 function PicoDeckSample:getSubsample(start_frame, end_frame) end
 
----Play this sample immediately. `when` is accepted but ignored (no scheduler
+---Play this sample on a temporary player, which you may drop: it plays to the
+---end whatever the collector does, keeps the sample alive, and gives its voice
+---back when it ends. Kept, it still works and `play()` takes a voice again. To
+---stop a looping one (`repeat_count` 0), keep it.
+---@param repeat_count? integer Plays, 0 = loop until stopped (default 1)
+---@param rate? number Playback rate multiplier (default 1.0)
+---@return PicoDeckSamplePlayer? player `nil` with no voice free (8 at once) or no data
+---@return string? error
+function PicoDeckSample:play(repeat_count, rate) end
+
+---As `play`, once, with a volume. `when` is accepted but ignored (no scheduler
 ---on this hardware — playback starts now).
 ---@param when number Reserved; ignored (but required)
 ---@param vol? integer Volume 0–100 (default 100; larger values clamp to 100)
----@param rightvol? integer Right volume (ignored — mono PWM)
+---@param rightvol? integer Ignored: a player has one volume, for both channels
 ---@param rate? number Playback rate multiplier (default 1.0)
----@return PicoDeckSamplePlayer player The player that is playing the sample (raises if none is free)
+---@return PicoDeckSamplePlayer? player `nil` with no voice free (8 at once) or no data
+---@return string? error
 function PicoDeckSample:playAt(when, vol, rightvol, rate) end
 
 -- ── PicoDeckSamplePlayer methods ────────────────────────────────────────────────
@@ -1084,7 +1097,7 @@ function PicoDeckSamplePlayer:getSample() end
 
 ---Start playback. `repeat_count` = number of plays (0 = loop until stopped).
 ---@param repeat_count? integer
----@return boolean? ok `true` if started, `nil` with nothing to play
+---@return boolean? ok `true` if started; `nil` with nothing to play, or for a finished player from `sample:play()` with no voice free
 ---@return string? error
 function PicoDeckSamplePlayer:play(repeat_count) end
 
@@ -1095,8 +1108,11 @@ function PicoDeckSamplePlayer:stop() end
 ---@return boolean
 function PicoDeckSamplePlayer:isPlaying() end
 
----Pause or resume playback.
+---Pause or resume playback. A player from `sample:play()` gives its voice back
+---while paused; resuming with none free returns `nil, errstr` and it stays paused.
 ---@param paused boolean
+---@return nil
+---@return string? error
 function PicoDeckSamplePlayer:setPaused(paused) end
 
 ---Return the sample length in frames.

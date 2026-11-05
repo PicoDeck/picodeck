@@ -260,21 +260,22 @@ def sim_module(sim_module_factory):
 @pytest.fixture(scope="session")
 def lua_suite(request, simulator_binary, tmp_path_factory):
     """Run a picotest fixture app once in its own simulator:
-    lua_suite(name, setup=None, timeout=30, fixtures=None, reserve=0)
+    lua_suite(name, setup=None, timeout=30, fixtures=None, reserve=0,
+              **PicodeckSimulator kwargs)
     -> helpers.LuaRun (`fixtures` / `reserve`: see build_sd_card).
 
     For module-scoped fixtures that expand an app's cases into one pytest id
     each. `setup(sd_path)` runs before boot (stage files). The simulator is
     stopped after the run; its health problems land in LuaRun.problems.
     """
-    def run(name, setup=None, timeout=30.0, fixtures=None, reserve=0):
+    def run(name, setup=None, timeout=30.0, fixtures=None, reserve=0, **kwargs):
         base = tmp_path_factory.mktemp(f"suite_{name}")
         sd = build_sd_card(base / "sd_card", fixtures=fixtures, reserve=reserve,
                            default_sd=Path(request.config.getoption("--sd-card-path")))
         if setup:
             setup(sd)
         sim = new_simulator(request.config, simulator_binary, sd,
-                            base / "crash.log")
+                            base / "crash.log", **kwargs)
         try:
             result = run_lua_app(sim, name, timeout=timeout)
         finally:

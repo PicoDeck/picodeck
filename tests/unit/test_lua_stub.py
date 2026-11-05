@@ -86,10 +86,11 @@ def test_optional_marked_required_is_caught():
 
 
 def test_raising_returns_do_not_hide_the_real_return_count():
-    # l_sample_playAt: `return luaL_error(...)` on failure, `return 1` on success.
-    fixed = "---@return PicoDeckSamplePlayer player The player that is playing the sample (raises if none is free)\n"
+    # l_crypto_randomBytes: `return luaL_error(...)` on failure, `return 1` on success.
+    fixed = "---@param n integer\n---@return string bytes\nfunction picocalc.crypto.randomBytes"
     assert STUB.count(fixed) == 1
-    assert any("playAt" in p for p in cls.check(STUB.replace(fixed, "")))
+    broken = fixed.replace("---@return string bytes\n", "")
+    assert any("randomBytes" in p for p in cls.check(STUB.replace(fixed, broken)))
 
 
 def test_one_line_return_list_counts_each_value():

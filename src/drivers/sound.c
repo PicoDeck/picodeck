@@ -385,6 +385,56 @@ void sound_player_destroy(sound_player_t *player) {
     mix_unlock();
 }
 
+bool sound_player_park(sound_player_t *voice, sound_player_t *parked) {
+    if (!voice || !parked)
+        return false;
+    mix_lock();
+    if ((voice->playing && !voice->paused) ||
+        (voice->finish_pending && voice->finish_callback) ||
+        (voice->loop_pending && voice->loop_callback)) {
+        mix_unlock();
+        return false;
+    }
+    memcpy(parked, (const void *)voice, sizeof(*parked));
+    parked->in_use = false;
+    player_stop_locked(voice);
+    voice->sample = NULL;
+    voice->finish_callback = NULL;
+    voice->finish_callback_arg = NULL;
+    voice->loop_callback = NULL;
+    voice->loop_callback_arg = NULL;
+    voice->finish_pending = false;
+    voice->loop_pending = false;
+    voice->in_use = false;
+    mix_unlock();
+    return true;
+}
+
+void sound_player_unpark(sound_player_t *voice, const sound_player_t *parked) {
+    if (!voice || !parked)
+        return;
+    mix_lock();
+    memcpy((void *)voice, parked, sizeof(*voice));
+    voice->in_use = true;
+    voice->finish_pending = false;
+    voice->loop_pending = false;
+    mix_unlock();
+}
+
+int sound_player_voice(const sound_player_t *voice) {
+    return (int)(voice - s_context.players);
+}
+
+uint32_t sound_voices_parkable(void) {
+    uint32_t mask = 0;
+    for (int i = 0; i < SOUND_MAX_PLAYERS; i++) {
+        const sound_player_t *p = &s_context.players[i];
+        if (p->in_use && (!p->playing || p->paused))
+            mask |= 1u << i;
+    }
+    return mask;
+}
+
 bool sound_player_set_sample(sound_player_t *player, sound_sample_t *sample) {
     if (!player || !sample)
         return false;

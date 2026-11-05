@@ -74,6 +74,19 @@ float sound_player_get_rate(const sound_player_t *player);
 void sound_player_set_finish_callback(sound_player_t *player, int (*cb)(void *), void *arg);
 void sound_player_set_loop_callback(sound_player_t *player, int (*cb)(void *), void *arg);
 
+/* Parking: a player's state moved off its voice into a copy the mixer never
+ * reads, so the voice is free for another player while the owner of the copy
+ * (the Lua bridge's temporary players) can still read it and play it again.
+ * Core 0 only. A park is refused (false, nothing changes) while the voice is
+ * audible or the mixer's flag for a callback waits for sound_pump_callbacks. */
+bool sound_player_park(sound_player_t *voice, sound_player_t *parked);
+void sound_player_unpark(sound_player_t *voice, const sound_player_t *parked);
+/* A voice's index, 0 .. SOUND_MAX_PLAYERS - 1. */
+int sound_player_voice(const sound_player_t *voice);
+/* Bit i set: voice i has a player that a park may take (not audible: stopped,
+ * finished or paused). No lock: sound_player_park decides. */
+uint32_t sound_voices_parkable(void);
+
 sound_sample_t *sound_sample_new_blank(float seconds, uint32_t sample_rate, uint8_t bits_per_sample, uint8_t channels);
 sound_sample_t *sound_sample_get_subsample(const sound_sample_t *sample, uint32_t start_frame, uint32_t end_frame);
 int sound_get_playing_source_count(void);

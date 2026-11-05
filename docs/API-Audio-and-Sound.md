@@ -253,12 +253,17 @@ local clip = sample:getSubsample(0, 22050)  -- first second at 44100 Hz
 ---
 
 #### `sample:play([repeatCount [, rate]])`
-Creates a temporary SamplePlayer, starts playback, and returns the player. Convenience method.
+Plays the sample on a temporary SamplePlayer and returns the player, which you are free to drop. This is the simple way to play a sound effect (see [Playing sound effects](#playing-sound-effects)).
+
+- While it plays, a temporary player is safe from the garbage collector with or without your reference, and it keeps the Sample alive, so you may drop that too.
+- When it finishes or you stop it, its voice is free again within a few milliseconds, even if you kept the player. A player you kept goes on working: `isPlaying()` is `false`, the getters and setters still answer, and `play()` takes a voice again.
+- A looping one (`repeatCount` `0`) plays until you stop it, so keep the player: nothing else can stop it before the app exits.
+- With all 8 voices taken it returns `nil, errstr` and plays nothing.
 
 - **Parameters:**
-  - `repeatCount` (number, optional): Number of times to play (default `1`)
+  - `repeatCount` (number, optional): Number of times to play, `0` to loop until stopped (default `1`)
   - `rate` (number, optional): Playback rate multiplier (default `1.0`)
-- **Returns:** (userdata) SamplePlayer object
+- **Returns:** (userdata) SamplePlayer object, or `nil, errstr` with no voice free or no data in the sample
 
 ```lua
 local s = picocalc.sound.sample("/apps/myapp/beep.wav")
@@ -269,19 +274,19 @@ s:play(3, 1.5)     -- play 3 times at 150% speed
 ---
 
 #### `sample:playAt(when [, vol [, rightvol [, rate]]])`
-Creates a temporary SamplePlayer and starts playback. The `when` parameter is accepted for API compatibility but ignored on this hardware (playback starts immediately).
+Plays the sample once on a temporary SamplePlayer, as `sample:play()` does, with a volume. The `when` parameter is accepted for API compatibility but ignored on this hardware (playback starts immediately).
 
 - **Parameters:**
   - `when` (number): Ignored (accepted for API compatibility)
   - `vol` (number, optional): Volume 0–100 (default `100`; larger values clamp)
-  - `rightvol` (number, optional): Ignored (mono PWM output)
+  - `rightvol` (number, optional): Ignored. The output is stereo, but a player has one volume: `vol` sets both channels, and there is no panning.
   - `rate` (number, optional): Playback rate multiplier (default `1.0`)
-- **Returns:** (userdata) SamplePlayer object
+- **Returns:** (userdata) SamplePlayer object, or `nil, errstr` with no voice free or no data in the sample
 
 ```lua
 local s = picocalc.sound.sample("/apps/myapp/beep.wav")
-local player = s:playAt(0, 200)       -- play at volume 200
-local player = s:playAt(0, 128, 0, 2.0)  -- play at double speed
+s:playAt(0, 60)          -- play at volume 60
+s:playAt(0, 100, 0, 2.0) -- play at full volume and double speed
 ```
 
 ---
@@ -300,6 +305,38 @@ clip:save("/data/com.myapp/clip.wav")
 
 ---
 
+### Playing sound effects
+
+Load each effect once into a Sample, keep the Sample, and call `play`. Drop what it returns: the sound plays to the end whatever the garbage collector does, and gives its voice back when it ends.
+
+```lua
+local shot = picocalc.sound.sample(APP_DIR .. "/shot.wav")
+local boom = picocalc.sound.sample(APP_DIR .. "/boom.wav")
+
+shot:play()          -- in the game loop, as often as it fires
+boom:playAt(0, 60)   -- at volume 60
+```
+
+The mixer has 8 voices. With all of them taken `play` returns `nil, errstr` and that sound is skipped, which is usually what a game wants. To keep voices for the sounds that matter, or to allocate nothing per shot, hold a pool of SamplePlayers: each keeps its voice for as long as it exists, and `setSample` makes it play anything.
+
+```lua
+local pool, nextVoice = {}, 1
+for i = 1, 4 do pool[i] = picocalc.sound.sampleplayer() end
+
+local function sfx(sample, volume)
+    local p = pool[nextVoice]
+    nextVoice = nextVoice % #pool + 1
+    p:setSample(sample)        -- cuts off whatever this voice was playing
+    p:setVolume(volume or 100)
+    p:play()
+end
+
+sfx(shot)
+sfx(boom, 60)
+```
+
+---
+
 ### SamplePlayer
 
 Plays a `Sample` from memory. Supports looping and volume control.
@@ -307,9 +344,9 @@ Plays a `Sample` from memory. Supports looping and volume control.
 #### `picocalc.sound.sampleplayer([sample_or_path])`
 Creates a SamplePlayer, optionally pre-loading a sample.
 
-A SamplePlayer keeps its Sample alive (you may drop your own reference). `sampleplayer(path)` and `sample:play()` create a Sample of their own. Dropping the player returned by `sample:play()` stops that sound when it is collected.
+A SamplePlayer keeps its Sample alive (you may drop your own reference). `sampleplayer(path)` creates a Sample of its own. Unlike the temporary players of `sample:play()`, a SamplePlayer needs your reference: dropped, it stops when it is collected, playing or not.
 
-At most 8 SamplePlayers exist at once (the mixer's voices): a 9th returns `nil, errstr` until one is collected. Reuse players and call `setSample`, or keep a pool.
+A SamplePlayer holds one of the mixer's 8 voices for as long as it exists, whether it plays or not. With every voice taken, a 9th returns `nil, errstr`, after a collection in case some of them are garbage. Reuse players and call `setSample`, or keep a pool (see [Playing sound effects](#playing-sound-effects)).
 
 - **Parameters:**
   - `sample_or_path` (userdata or string, optional): A `Sample` object or a WAV file path
@@ -336,7 +373,7 @@ Starts playback from the beginning of the play range.
 
 - **Parameters:**
   - `repeat` (number, optional): Number of times to play. `0` loops until stopped. Default `1`.
-- **Returns:** `true` if started, or `nil, errstr` if there is nothing to play (no sample, or an empty one)
+- **Returns:** `true` if started, or `nil, errstr` if there is nothing to play (no sample, or an empty one), or for a finished player from `sample:play()`, which has given its voice back, if no voice is free
 
 ---
 
@@ -363,7 +400,7 @@ Returns the Sample object currently assigned to this player.
 ---
 
 #### `player:setPaused(paused)`
-Pauses or unpauses playback without resetting the playback position.
+Pauses or unpauses playback without resetting the playback position. A player from `sample:play()` gives its voice back while paused (dropped then, it is collected and the sound is gone), so resuming it can find none free: `setPaused(false)` then returns `nil, errstr` and it stays paused.
 
 - **Parameters:**
   - `paused` (boolean): `true` to pause, `false` to resume

@@ -1,0 +1,8 @@
+{
+    "id": "com.test.soundsfx",
+    "name": "Sound SFX",
+    "description": "E2E fixture: fire-and-forget sample:play, play results, callbacks and the audio clock",
+    "version": "1.0",
+    "author": "PicoDeck E2E",
+    "requirements": ["audio"]
+}
