@@ -6,12 +6,18 @@ Game-framework helpers: a 2D camera, a scene manager, and per-app persistent sav
 
 ## picocalc.game.camera
 
-A 2D camera with position, zoom, target following, world bounds, and screen shake.
+A 2D camera with position, zoom, target following, world bounds, and screen shake. It draws nothing and owns nothing on screen: you ask it where a world point lands, with `getOffset` or `worldToScreen`, and draw there yourself. The sprite manager (`picocalc.graphics.sprite`) does not read a camera.
+
+The camera's position is the world point at the **centre** of the screen, so a new camera at (0, 0) shows world (0, 0) at screen (160, 160):
+
+```
+screen = (world - position) * zoom + 160 + shake
+```
 
 ### Functions
 
 #### `picocalc.game.camera.new()`
-Create a new camera, positioned at (0, 0) with zoom 1.0.
+Create a new camera, positioned at (0, 0) with zoom 1.0 and no target, bounds or shake.
 
 - **Parameters:** None
 - **Returns:** (userdata) PicoDeckCamera object
@@ -27,7 +33,7 @@ local camera = picocalc.game.camera.new()
 Objects returned by `picocalc.game.camera.new()`.
 
 #### `camera:setPosition(x, y)`
-Set the camera position in world coordinates.
+Set the camera position: the world point to show at the centre of the screen.
 
 - **Parameters:**
   - `x` (number): World X coordinate
@@ -35,7 +41,7 @@ Set the camera position in world coordinates.
 - **Returns:** None
 
 ```lua
-camera:setPosition(160, 160)
+camera:setPosition(160, 160)  -- world (0, 0) at the screen's top-left corner
 ```
 
 ---
@@ -67,10 +73,10 @@ local x, y = camera:getPosition()
 ---
 
 #### `camera:setZoom(zoom)`
-Set the camera zoom factor. 1.0 is unscaled.
+Set the camera zoom factor. 1.0 is unscaled. It scales what `getOffset` and the conversions return: the drawing, and any scaling of it, is yours.
 
 - **Parameters:**
-  - `zoom` (number): Zoom factor
+  - `zoom` (number): Zoom factor, clamped to 0.1-10
 - **Returns:** None
 
 ```lua
@@ -88,7 +94,7 @@ Get the current zoom factor.
 ---
 
 #### `camera:setTarget(x, y [, lag])`
-Follow a world position: `camera:update(dt)` eases the camera towards it. Call it again each frame to track a moving object.
+Follow a world position: `camera:update(dt)` eases the camera towards it, covering about 63% of the distance every `lag` seconds. Call it again each frame to track a moving object.
 
 - **Parameters:**
   - `x`, `y` (number): World position to follow
@@ -110,7 +116,7 @@ Stop following the current target.
 ---
 
 #### `camera:setBounds(minX, minY, maxX, maxY)`
-Constrain the camera to a world rectangle — the camera will not scroll outside it. The arguments are two corners, not a size.
+Constrain the camera to a world rectangle: `camera:update(dt)` moves it back so that the screen shows nothing outside the rectangle. `setPosition` and `move` are not checked until then, and shake is added after. The arguments are two corners, not a size. A rectangle smaller than the view lines up with its right and bottom edges.
 
 - **Parameters:**
   - `minX` (number): Left edge of the world
@@ -142,7 +148,7 @@ Get the current world bounds.
 ---
 
 #### `camera:shake(amplitude, duration)`
-Shake the camera on both axes.
+Shake the camera on both axes. The shake is a random offset, fading out over `duration`, chosen by each `camera:update(dt)` and included in `getOffset` and the conversions. A new shake replaces the one running.
 
 - **Parameters:**
   - `amplitude` (number): Shake intensity in pixels
@@ -189,7 +195,7 @@ Convert world coordinates to screen coordinates.
 - **Parameters:**
   - `wx` (number): World X coordinate
   - `wy` (number): World Y coordinate
-- **Returns:** (number, number) Screen `sx, sy` coordinates
+- **Returns:** (integer, integer) Screen `sx, sy` coordinates, whole pixels (truncated toward zero)
 
 ```lua
 local sx, sy = camera:worldToScreen(player.x, player.y)
@@ -208,10 +214,10 @@ Convert screen coordinates to world coordinates.
 ---
 
 #### `camera:update(dt)`
-Advance target following and screen shake. Call once per frame.
+Advance target following, apply the bounds and advance screen shake. Call once per frame.
 
 - **Parameters:**
-  - `dt` (number): Seconds since the last update
+  - `dt` (number): Seconds since the last update (required)
 - **Returns:** None
 
 ```lua
@@ -236,15 +242,35 @@ picocalc.display.fillRect(player.x * z + ox, player.y * z + oy, 8, 8, 0xFFFF)
 
 ## picocalc.game.scene
 
-A scene manager. Scenes are table-like objects with `update()`, `draw()`, `enter()`, and `exit()` lifecycle methods.
+A scene manager: a stack of named scenes, of which the top one runs. Nothing drives it for you: your main loop calls `scene.update(dt)` and `scene.draw()`, polls the input and presents the frame.
+
+A scene is a plain table with up to four functions, any of which can be left out: `update(dt)`, `draw()`, `enter()` and `exit()`.
+
+**They are called as plain functions, with no `self`.** Write `function play.update(dt)`, not `function play:update(dt)`: with the colon, `self` receives `dt` and `dt` is nil. Keep a scene's state in local variables, or reach its table by name.
+
+```lua
+local play = {}
+function play.enter() play.t = 0 end
+function play.update(dt) play.t = play.t + dt end
+function play.draw()
+    picocalc.display.clear(0)
+    picocalc.display.drawText(4, 4, string.format("%.1f s", play.t), 0xFFFF)
+end
+picocalc.game.scene.add("play", play)
+picocalc.game.scene.switch("play")
+```
+
+**Nothing runs when the player exits.** Exit App in the system menu stops the app on the spot: no scene's `exit()`, no code after your main loop and no `<close>` handler runs. `exit()` runs only when `switch` or `pop` leaves a scene. So save when the data changes, not on the way out.
+
+Limits: 16 registered scenes, a stack 4 deep and names of up to 63 bytes. Going past any of them raises an error.
 
 ### Functions
 
 #### `picocalc.game.scene.new()`
-Create a new (empty) scene object.
+Create a new, empty scene: the same as writing `{}`.
 
 - **Parameters:** None
-- **Returns:** (userdata) PicoDeckScene object
+- **Returns:** (table) An empty table to put the scene's functions in
 
 ---
 
@@ -281,7 +307,7 @@ Check whether a scene is registered.
 ---
 
 #### `picocalc.game.scene.switch(name)`
-Switch to another scene. Calls `exit()` on the current scene, then `enter()` on the next.
+Switch to another scene. Calls `exit()` on the current scene, empties the stack (a scene below the top gets no `exit()`), then calls `enter()` on the next. An unknown name raises an error. Start your app with this: until the first `switch` no scene is current.
 
 - **Parameters:**
   - `name` (string): Scene name
@@ -294,7 +320,7 @@ picocalc.game.scene.switch("play")
 ---
 
 #### `picocalc.game.scene.push(name)`
-Overlay a scene on top of the current one without exiting it.
+Put a scene on top of the stack and call its `enter()`. The scene below gets no `exit()` and stays on the stack, but it stops running: only the top scene updates and draws. For a pause menu over the game, call the game's own draw function from the menu's `draw`, as the [example](#example) does.
 
 - **Parameters:**
   - `name` (string): Scene name
@@ -307,7 +333,7 @@ picocalc.game.scene.push("pause")
 ---
 
 #### `picocalc.game.scene.pop()`
-Pop the overlaid scene and return to the previous one.
+Leave the top scene and return to the one below. Calls `exit()` on the top scene, then `enter()` on the revealed one **again**, so an `enter()` that resets a game also resets it on the way back from a pause menu: put first-time setup somewhere else. Popping the last scene raises an error.
 
 - **Parameters:** None
 - **Returns:** None
@@ -315,23 +341,24 @@ Pop the overlaid scene and return to the previous one.
 ---
 
 #### `picocalc.game.scene.getCurrent()`
-Get the currently active scene.
+Get the name of the current scene, the top of the stack.
 
 - **Parameters:** None
-- **Returns:** (table or nil) Current PicoDeckScene, or `nil` if no scene is active
+- **Returns:** (string or nil) The name it was added under, as `switch` takes it, or `nil` if no scene is current
 
 ---
 
-#### `picocalc.game.scene.update()`
-Call `update()` on the current scene. Call once per frame.
+#### `picocalc.game.scene.update([dt])`
+Call `update(dt)` on the current scene. Call once per frame. With no scene current, or none with an `update`, it does nothing.
 
-- **Parameters:** None
+- **Parameters:**
+  - `dt` (number, optional): Passed on to the scene, normally the seconds since the last frame (default 0.016)
 - **Returns:** None
 
 ---
 
 #### `picocalc.game.scene.draw()`
-Call `draw()` on the current scene. Call once per frame.
+Call `draw()` on the current scene. Call once per frame. Presenting the frame is still up to you, here or in the scene.
 
 - **Parameters:** None
 - **Returns:** None
@@ -425,8 +452,11 @@ Per-app save slots, one JSON file each at `/data/<app id>/saves/<key>.json`.
   with `.`. Any other key is refused: `set` returns `false, "invalid save name"`,
   `get` returns nil, `exists`/`delete` return false.
 - The value passed to `set` must be a **table** (nested tables, strings,
-  numbers, booleans). Integer-keyed tables come back with string keys; whole
-  floats keep `.0` so `math.type` survives.
+  numbers, booleans). An array stays an array. A table with holes in its integer
+  keys, or with string keys as well, comes back with all its keys as strings
+  (`[1]` becomes `["1"]`). Whole floats keep `.0` so `math.type` survives.
+- Writes happen when `set` is called, and nothing runs when the player picks
+  Exit App, so call `set` when the data changes rather than on the way out.
 - Saves used to live in a shared `/saves/<key>.json`. The first time an app
   reads a key (`get`/`exists`) that it has no slot for and the old file
   exists, the file is **copied** into the app's slot; the old file is never
@@ -441,7 +471,7 @@ Save a value under a key.
 - **Parameters:**
   - `key` (string): Key name
   - `value` (table): Value to save
-- **Returns:** `true`, or `false, err`
+- **Returns:** `true`, or `false, err` for an invalid key or a failed write. A value that is not a table, or that holds a function or other value JSON cannot encode, raises an error.
 
 ```lua
 picocalc.game.save.set("highscore", { score = 12500 })
@@ -496,7 +526,7 @@ end
 
 ## Example
 
-A play scene that follows a player sprite with the camera and saves the high score on exit.
+A play scene that follows a player with the camera, and a pause scene pushed over it. The high score is saved as soon as it is beaten, because nothing runs when the player exits. Esc quits and Enter pauses.
 
 The scene reads `picocalc.gamepad` (see [API Gamepad](API-Gamepad.md)), which needs firmware with API version 9. To also run on older firmware, check for it once and fall back to `picocalc.input`:
 
@@ -509,57 +539,92 @@ local RIGHT = pad and pad.PAD_RIGHT or input.BTN_RIGHT
 ```
 
 ```lua
-local camera = picocalc.game.camera.new()
+local scene = picocalc.game.scene
+local save = picocalc.game.save
+local display = picocalc.display
+local input = picocalc.input
+-- The gamepad is the recommended way to read game input: players can rebind it
+-- in Settings > Controls. Esc and Enter stay on picocalc.input.
+local pad = picocalc.gamepad
 
-local score = 0
+local camera = picocalc.game.camera.new()
+camera:setBounds(0, 0, 1024, 1024)
+
 local player = { x = 160, y = 160 }
-function player:getPosition()
-    return self.x, self.y
-end
+local coin = { x = 260, y = 160 }
+local score = 0
+local best = (save.get("highscore") or {}).score or 0
+local quit = false
 
 local play = {}
 
-function play:enter()
-    score = 0
+-- Runs again each time the pause scene pops, so it must not reset the game.
+function play.enter()
     camera:setTarget(player.x, player.y)
-    camera:setBounds(0, 0, 1024, 1024)
 end
 
-function play:update(dt)
-    picocalc.input.update()
-    -- The gamepad is the recommended way to read game input: players can
-    -- rebind it in Settings > Controls. Esc stays on picocalc.input.
-    local pad = picocalc.gamepad
+function play.update(dt)
+    input.update()
+    local pressed = input.getButtonsPressed()
+    if pressed & input.BTN_ESC ~= 0 then
+        quit = true
+    elseif pressed & input.BTN_ENTER ~= 0 then
+        scene.push("pause")
+        return
+    end
+
     local buttons = pad.getButtons()
     if buttons & pad.PAD_RIGHT ~= 0 then player.x = player.x + 2 end
     if buttons & pad.PAD_LEFT  ~= 0 then player.x = player.x - 2 end
     if buttons & pad.PAD_DOWN  ~= 0 then player.y = player.y + 2 end
     if buttons & pad.PAD_UP    ~= 0 then player.y = player.y - 2 end
-    score = score + 1
+
+    if math.abs(player.x - coin.x) < 8 and math.abs(player.y - coin.y) < 8 then
+        score = score + 1
+        coin.x = math.random(16, 1008)
+        coin.y = math.random(16, 1008)
+        if score > best then
+            best = score
+            save.set("highscore", { score = best })
+        end
+    end
+
     camera:setTarget(player.x, player.y)
     camera:update(dt)
 end
 
-function play:draw()
-    picocalc.display.clear(0x0000)
+function play.draw()
+    display.clear(display.BLACK)
     local ox, oy = camera:getOffset()
-    picocalc.display.fillRect(player.x - 4 + ox, player.y - 4 + oy, 8, 8, 0xF800)
-    picocalc.display.drawText(4, 4, "SCORE " .. score, 0xFFFF)
-    picocalc.display.flush()
+    display.fillRect(coin.x - 4 + ox, coin.y - 4 + oy, 8, 8, display.YELLOW)
+    display.fillRect(player.x - 4 + ox, player.y - 4 + oy, 8, 8, display.RED)
+    display.drawText(4, 4, "SCORE " .. score .. "  BEST " .. best, display.WHITE)
 end
 
-function play:exit()
-    local best = (picocalc.game.save.get("highscore") or {}).score or 0
-    if score > best then
-        picocalc.game.save.set("highscore", { score = score })
+local pause = {}
+
+function pause.update(dt)
+    input.update()
+    if input.getButtonsPressed() & input.BTN_ENTER ~= 0 then
+        scene.pop()
     end
 end
 
-picocalc.game.scene.add("play", play)
-picocalc.game.scene.switch("play")
+function pause.draw()
+    play.draw()    -- only the top scene runs, so draw the game behind the menu
+    display.drawText(142, 156, "PAUSED", display.WHITE)
+end
 
-while true do
-    picocalc.game.scene.update()
-    picocalc.game.scene.draw()  -- play:draw() flushes, which paces the loop
+scene.add("play", play)
+scene.add("pause", pause)
+scene.switch("play")
+
+local last = picocalc.sys.getTimeMs()
+while not quit do
+    local now = picocalc.sys.getTimeMs()
+    scene.update((now - last) / 1000)
+    last = now
+    scene.draw()
+    display.flush()  -- also paces the loop
 end
 ```

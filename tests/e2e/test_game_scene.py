@@ -230,3 +230,156 @@ log("BAD " .. tostring(okp) .. " " .. tostring(err))
 # ── A scene's error is the app's error ───────────────────────────────────────
 
 # ── What the page says about leaving ─────────────────────────────────────────
+
+@pytest.mark.sd(fixtures=[])
+def test_nothing_runs_at_exit_app(simulator, test_sd_card):
+    """The page tells developers to save when data changes. This is why."""
+    code = r"""
+local save = picocalc.game.save
+scene.add("s", { exit = function() save.set("from_exit", { a = 1 }) end })
+scene.switch("s")
+local guard <close> = setmetatable({}, { __close = function() save.set("from_close", { a = 1 }) end })
+log("RUNNING")
+while true do picocalc.input.update(); picocalc.sys.sleep(5) end
+"""
+    stage_lua_app(test_sd_card, "scene_exit", SCENE + code)
+    simulator.launch_app("scene_exit")
+    simulator.wait_for_log("RUNNING", timeout=10)
+    simulator.exit_app()
+    out = simulator.wait_for_exit(timeout=10)
+    assert out.get("result") == "exit_sentinel", out
+    saves = test_sd_card / "data" / "com.test.scene_exit" / "saves"
+    assert not (saves / "from_exit.json").exists()
+    assert not (saves / "from_close.json").exists()
+
+
+def doc_example():
+    """The last ```lua block of the page, which is the complete app."""
+    text = (PROJECT_ROOT / "docs" / "API-Game.md").read_text()
+    section = text.split("## Example\n", 1)[1]
+    return section.split("```lua\n")[2].split("```", 1)[0]
+
+
+def doc_snippet_after(heading):
+    text = (PROJECT_ROOT / "docs" / "API-Game.md").read_text()
+    return text.split(heading, 1)[1].split("```lua\n", 1)[1].split("```", 1)[0]
+
+
+@pytest.mark.sd(fixtures=[])
+def test_doc_example_verbatim(simulator, test_sd_card):
+    """The page's complete example: the camera follows, the score saves as soon
+    as it is beaten, pause does not reset the game, Esc quits."""
+    stage_lua_app(test_sd_card, "scene_doc", doc_example())
+    simulator.launch_app("scene_doc")
+    simulator.wait_frames(3)
+    start = simulator.screenshot_pil().convert("RGB")
+
+    highscore = test_sd_card / "data" / "com.test.scene_doc" / "saves" / "highscore.json"
+    assert not highscore.exists()
+    simulator.pad("right")
+    deadline = time.time() + 20
+    while time.time() < deadline and not highscore.exists():
+        time.sleep(0.05)
+    simulator.pad("none")
+    assert highscore.exists(), "the coin at x=260 never saved"
+    assert '"score"' in highscore.read_text() and "1" in highscore.read_text()
+
+    # The camera kept the player near the screen's centre (it started at 160).
+    time.sleep(0.5)
+    img = simulator.screenshot_pil().convert("RGB")
+    assert img != start
+    red = [(x, y) for y in range(320) for x in range(320) if img.getpixel((x, y))[0] > 200
+           and img.getpixel((x, y))[1] < 60 and img.getpixel((x, y))[2] < 60]
+    assert red and 140 < red[0][0] < 180, red[:3]
+
+    # Pause: pop runs play.enter again, and the score must survive it.
+    before = highscore.read_text()
+    seq = simulator.keypress("enter")["input_seq"]
+    simulator.wait_input_consumed(seq)
+    time.sleep(0.2)
+    paused = simulator.screenshot_pil().convert("RGB")
+    seq = simulator.keypress("enter")["input_seq"]
+    simulator.wait_input_consumed(seq)
+    time.sleep(0.2)
+    resumed = simulator.screenshot_pil().convert("RGB")
+    assert paused != resumed
+    assert resumed.crop((0, 0, 320, 12)) == img.crop((0, 0, 320, 12)), "the score was reset"
+    assert highscore.read_text() == before
+
+    simulator.keypress("esc")
+    out = simulator.wait_for_exit(timeout=10)
+    assert out.get("result") == "returned", out
+
+
+@pytest.mark.sd(fixtures=[])
+def test_doc_intro_snippet_runs(simulator, test_sd_card):
+    """The scene page's first snippet, in a loop of ours."""
+    code = doc_snippet_after("**They are called as plain functions") + r"""
+local scene = picocalc.game.scene
+for i = 1, 10 do
+    scene.update(0.5)
+    scene.draw()
+    picocalc.display.flush()
+end
+picocalc.sys.log("T " .. tostring(play.t))
+"""
+    stage_lua_app(test_sd_card, "scene_intro", code)
+    simulator.launch_app("scene_intro")
+    out = simulator.wait_for_exit(timeout=10)
+    assert out.get("result") == "returned", out
+    assert any("T 5.0" in e["text"] for e in simulator.get_log_lines(0))
+
+
+@pytest.mark.sd(fixtures=[])
+def test_camera_model(simulator, test_sd_card):
+    """Position is the world point at the screen's centre; bounds apply in update."""
+    lines = ok(simulator, test_sd_card, r"""
+local c = picocalc.game.camera.new()
+log("OFF0 " .. table.concat({c:getOffset()}, " "))
+c:setPosition(100, 50)
+log("OFF1 " .. table.concat({c:getOffset()}, " "))
+log("W2S " .. table.concat({c:worldToScreen(100, 50)}, " "))
+c:setZoom(100); log("Z1 " .. c:getZoom())
+c:setZoom(0); log("Z2 " .. c:getZoom())
+c:setZoom(1)
+c:setPosition(-500, -500); c:setBounds(0, 0, 1024, 1024)
+log("B0 " .. table.concat({c:getPosition()}, " "))
+c:update(0.016)
+log("B1 " .. table.concat({c:getPosition()}, " "))
+c:setBounds(0, 0, 100, 100); c:update(0.016)
+log("B2 " .. table.concat({c:getPosition()}, " "))
+c:clearBounds()
+c:setPosition(0, 0); c:setTarget(100, 0, 0.5); c:update(0.5)
+log("LAG " .. math.floor((c:getPosition())))
+""")
+    assert value(lines, "OFF0") == "160 160"
+    assert value(lines, "OFF1") == "60 110"
+    assert value(lines, "W2S") == "160 160"
+    assert value(lines, "Z1") == "10.0" and value(lines, "Z2").startswith("0.1")
+    assert value(lines, "B0") == "-500.0 -500.0"
+    assert value(lines, "B1") == "160.0 160.0"
+    assert value(lines, "B2") == "-60.0 -60.0"
+    assert value(lines, "LAG") == "63"
+
+
+@pytest.mark.sd(fixtures=[])
+def test_save_slot_key_shapes(simulator, test_sd_card):
+    lines = ok(simulator, test_sd_card, r"""
+local sv = picocalc.game.save
+sv.set("arr", {1, 2, 3}); local a = sv.get("arr")
+log("ARR " .. math.type(next(a)) .. " " .. #a)
+sv.set("sparse", {[5] = 1}); log("SPARSE " .. type((next(sv.get("sparse")))))
+sv.set("mixed", {1, a = 2}); local m = sv.get("mixed")
+log("MIXED " .. tostring(m[1]) .. " " .. tostring(m["1"]))
+log("NUM " .. tostring((pcall(sv.set, "n", 5))))
+log("FN " .. tostring((pcall(sv.set, "f", {f = print}))))
+local x, y = sv.set("../x", {}); log("BAD " .. tostring(x) .. " " .. tostring(y))
+log("OK " .. tostring(sv.set("fine", {})))
+""")
+    assert value(lines, "ARR") == "integer 3"
+    assert value(lines, "SPARSE") == "string"
+    assert value(lines, "MIXED") == "nil 1"
+    assert value(lines, "NUM") == "false"
+    assert value(lines, "FN") == "false"
+    assert value(lines, "BAD") == "false invalid save name"
+    assert value(lines, "OK") == "true"

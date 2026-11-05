@@ -2881,8 +2881,8 @@ function PicoDeckCamera:setPosition(x, y) end
 ---@param dy integer
 function PicoDeckCamera:move(dx, dy) end
 
----@return integer x
----@return integer y
+---@return number x
+---@return number y
 function PicoDeckCamera:getPosition() end
 
 ---@param zoom number
@@ -2946,10 +2946,10 @@ function PicoDeckCamera:stopShake() end
 function PicoDeckCamera:worldToScreen(wx, wy) end
 
 ---Convert screen-space coordinates to world-space.
----@param sx integer
----@param sy integer
----@return integer wx
----@return integer wy
+---@param sx number
+---@param sy number
+---@return number wx
+---@return number wy
 function PicoDeckCamera:screenToWorld(sx, sy) end
 
 ---Update camera position (advances follow target, shake, etc.).
@@ -2967,15 +2967,21 @@ function PicoDeckCamera:getOffset() end
 ---@class picocalc.game.scene
 picocalc.game.scene = {}
 
----@class PicoDeckScene : userdata
-local PicoDeckScene = {}
+---A plain table with up to four functions. They are called with no `self`:
+---write `function play.update(dt)`, not `function play:update(dt)`. Nothing runs
+---at Exit App, so save when data changes rather than in `exit()`.
+---@class PicoDeckScene
+---@field update? fun(dt: number)
+---@field draw? fun()
+---@field enter? fun() Runs again when a `pop` reveals the scene
+---@field exit? fun() Runs when `switch` or `pop` leaves the scene
 
----Create a new Scene. A scene is a table-like object with `update()`, `draw()`,
----`enter()`, and `exit()` lifecycle methods.
+---Create a new, empty scene: the same as `{}`.
 ---@return PicoDeckScene
 function picocalc.game.scene.new() end
 
----Add a scene to the manager (does not make it active).
+---Add a scene to the manager (does not make it active). At most 16 scenes, and
+---names of up to 63 bytes. An existing name is replaced, on the stack too.
 ---@param name string
 ---@param scene PicoDeckScene
 function picocalc.game.scene.add(name, scene) end
@@ -2993,15 +2999,17 @@ function picocalc.game.scene.has(name) end
 ---@param name string
 function picocalc.game.scene.switch(name) end
 
----Push a scene on the stack without exiting the current one.
+---Push a scene on the stack (at most 4 deep) and call its `enter()`. The scene
+---below gets no `exit()` and stops running: only the top scene updates and draws.
 ---@param name string
 function picocalc.game.scene.push(name) end
 
----Pop the top scene off the stack and return to the previous scene.
+---Pop the top scene (`exit()`) and return to the previous one, whose `enter()`
+---runs again. Popping the last scene raises an error.
 function picocalc.game.scene.pop() end
 
----Return the current scene.
----@return PicoDeckScene?
+---Return the current scene's name, as `switch` takes it.
+---@return string?
 function picocalc.game.scene.getCurrent() end
 
 ---Call `update(dt)` on the current scene.
