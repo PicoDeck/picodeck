@@ -40,9 +40,9 @@ static void test_pinned_entries(void) {
     uint16_t rgb565;
   } k_pins[] = {
       {0, 0x0000},    // black
-      {1, 0x8000},    // red, 128,0,0
-      {7, 0xC618},    // white, 192,192,192
-      {9, 0xF800},    // bright red, 255,0,0
+      {1, 0xA800},    // red, 170,0,0
+      {7, 0xAD55},    // white, 170,170,170
+      {9, 0xFAAA},    // bright red, 255,85,85
       {16, 0x0000},   // cube (0,0,0)
       {231, 0xFFFF},  // cube (5,5,5)
       {232, 0x0841},  // grey 8

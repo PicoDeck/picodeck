@@ -12,22 +12,22 @@
       CUBE_ROW(r, 255)
 
 const uint16_t color256_palette[256] = {
-    // 0-15: the ANSI colours (30-37/40-47, then 90-97/100-107).
+    // 0-15: the ANSI colours (30-37/40-47, then 90-97/100-107), VGA's values.
     RGB565(0, 0, 0),        // 0 black
-    RGB565(128, 0, 0),      // 1 red
-    RGB565(0, 128, 0),      // 2 green
-    RGB565(128, 128, 0),    // 3 yellow
-    RGB565(0, 0, 128),      // 4 blue
-    RGB565(128, 0, 128),    // 5 magenta
-    RGB565(0, 128, 128),    // 6 cyan
-    RGB565(192, 192, 192),  // 7 white
-    RGB565(128, 128, 128),  // 8 grey
-    RGB565(255, 0, 0),      // 9 bright red
-    RGB565(0, 255, 0),      // 10 bright green
-    RGB565(255, 255, 0),    // 11 bright yellow
-    RGB565(0, 0, 255),      // 12 bright blue
-    RGB565(255, 0, 255),    // 13 bright magenta
-    RGB565(0, 255, 255),    // 14 bright cyan
+    RGB565(170, 0, 0),      // 1 red
+    RGB565(0, 170, 0),      // 2 green
+    RGB565(170, 85, 0),     // 3 yellow
+    RGB565(0, 0, 170),      // 4 blue
+    RGB565(170, 0, 170),    // 5 magenta
+    RGB565(0, 170, 170),    // 6 cyan
+    RGB565(170, 170, 170),  // 7 white
+    RGB565(85, 85, 85),     // 8 grey
+    RGB565(255, 85, 85),    // 9 bright red
+    RGB565(85, 255, 85),    // 10 bright green
+    RGB565(255, 255, 85),   // 11 bright yellow
+    RGB565(85, 85, 255),    // 12 bright blue
+    RGB565(255, 85, 255),   // 13 bright magenta
+    RGB565(85, 255, 255),   // 14 bright cyan
     RGB565(255, 255, 255),  // 15 bright white
     // 16-231: the 6x6x6 cube, 16 + 36r + 6g + b.
     CUBE_RED(0), CUBE_RED(95), CUBE_RED(135), CUBE_RED(175), CUBE_RED(215), CUBE_RED(255),

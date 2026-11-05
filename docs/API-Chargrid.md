@@ -31,23 +31,25 @@ A grid shows at most 256 different glyphs; it is not general Unicode (no CJK or 
 
 ### Colours 0-15
 
+The VGA colours. Colours 16-255 follow xterm's 256-colour layout; these 16 do not.
+
 | Index | Colour | RGB | RGB565 |
 |---|---|---|---|
 | 0 | Black | 0, 0, 0 | `0x0000` |
-| 1 | Red | 128, 0, 0 | `0x8000` |
-| 2 | Green | 0, 128, 0 | `0x0400` |
-| 3 | Yellow | 128, 128, 0 | `0x8400` |
-| 4 | Blue | 0, 0, 128 | `0x0010` |
-| 5 | Magenta | 128, 0, 128 | `0x8010` |
-| 6 | Cyan | 0, 128, 128 | `0x0410` |
-| 7 | White | 192, 192, 192 | `0xC618` |
-| 8 | Grey | 128, 128, 128 | `0x8410` |
-| 9 | Bright red | 255, 0, 0 | `0xF800` |
-| 10 | Bright green | 0, 255, 0 | `0x07E0` |
-| 11 | Bright yellow | 255, 255, 0 | `0xFFE0` |
-| 12 | Bright blue | 0, 0, 255 | `0x001F` |
-| 13 | Bright magenta | 255, 0, 255 | `0xF81F` |
-| 14 | Bright cyan | 0, 255, 255 | `0x07FF` |
+| 1 | Red | 170, 0, 0 | `0xA800` |
+| 2 | Green | 0, 170, 0 | `0x0540` |
+| 3 | Yellow | 170, 85, 0 | `0xAAA0` |
+| 4 | Blue | 0, 0, 170 | `0x0015` |
+| 5 | Magenta | 170, 0, 170 | `0xA815` |
+| 6 | Cyan | 0, 170, 170 | `0x0555` |
+| 7 | White | 170, 170, 170 | `0xAD55` |
+| 8 | Grey | 85, 85, 85 | `0x52AA` |
+| 9 | Bright red | 255, 85, 85 | `0xFAAA` |
+| 10 | Bright green | 85, 255, 85 | `0x57EA` |
+| 11 | Bright yellow | 255, 255, 85 | `0xFFEA` |
+| 12 | Bright blue | 85, 85, 255 | `0x52BF` |
+| 13 | Bright magenta | 255, 85, 255 | `0xFABF` |
+| 14 | Bright cyan | 85, 255, 255 | `0x57FF` |
 | 15 | Bright white | 255, 255, 255 | `0xFFFF` |
 
 ### Text

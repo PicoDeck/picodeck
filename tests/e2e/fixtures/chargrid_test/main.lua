@@ -102,7 +102,7 @@ end)
 
 T.case("palette", function()
     local g = CG.new(1, 1, 0)
-    T.eq(g:getColor(1), 0x8000); T.eq(g:getColor(15), 0xFFFF); T.eq(g:getColor(196), 0xF800)
+    T.eq(g:getColor(1), 0xA800); T.eq(g:getColor(15), 0xFFFF); T.eq(g:getColor(196), 0xF800)
     g:setColor(3, 0x1234); T.eq(g:getColor(3), 0x1234)
     g:setPalette({ 1, 2 }, 254); T.eq(g:getColor(254), 1); T.eq(g:getColor(255), 2)
     T.raises(function() g:setPalette({ 1, 2, 3 }, 254) end, "256")

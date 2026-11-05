@@ -78,28 +78,28 @@ Return the current default foreground and background colours.
 | `\27[38;2;R;G;Bm`, `\27[48;2;R;G;Bm` | Foreground, background: any colour, reduced to RGB565 |
 | `\27[39m`, `\27[49m` | Foreground, background: back to white, black |
 
-Colours 0-15:
+Colours 0-15 are the VGA colours:
 
 | N | Colour | Codes | RGB | RGB565 |
 |---|---|---|---|---|
 | 0 | Black | 30, 40 | 0, 0, 0 | `0x0000` |
-| 1 | Red | 31, 41 | 128, 0, 0 | `0x8000` |
-| 2 | Green | 32, 42 | 0, 128, 0 | `0x0400` |
-| 3 | Yellow | 33, 43 | 128, 128, 0 | `0x8400` |
-| 4 | Blue | 34, 44 | 0, 0, 128 | `0x0010` |
-| 5 | Magenta | 35, 45 | 128, 0, 128 | `0x8010` |
-| 6 | Cyan | 36, 46 | 0, 128, 128 | `0x0410` |
-| 7 | White | 37, 47 | 192, 192, 192 | `0xC618` |
-| 8 | Grey | 90, 100 | 128, 128, 128 | `0x8410` |
-| 9 | Bright red | 91, 101 | 255, 0, 0 | `0xF800` |
-| 10 | Bright green | 92, 102 | 0, 255, 0 | `0x07E0` |
-| 11 | Bright yellow | 93, 103 | 255, 255, 0 | `0xFFE0` |
-| 12 | Bright blue | 94, 104 | 0, 0, 255 | `0x001F` |
-| 13 | Bright magenta | 95, 105 | 255, 0, 255 | `0xF81F` |
-| 14 | Bright cyan | 96, 106 | 0, 255, 255 | `0x07FF` |
+| 1 | Red | 31, 41 | 170, 0, 0 | `0xA800` |
+| 2 | Green | 32, 42 | 0, 170, 0 | `0x0540` |
+| 3 | Yellow | 33, 43 | 170, 85, 0 | `0xAAA0` |
+| 4 | Blue | 34, 44 | 0, 0, 170 | `0x0015` |
+| 5 | Magenta | 35, 45 | 170, 0, 170 | `0xA815` |
+| 6 | Cyan | 36, 46 | 0, 170, 170 | `0x0555` |
+| 7 | White | 37, 47 | 170, 170, 170 | `0xAD55` |
+| 8 | Grey | 90, 100 | 85, 85, 85 | `0x52AA` |
+| 9 | Bright red | 91, 101 | 255, 85, 85 | `0xFAAA` |
+| 10 | Bright green | 92, 102 | 85, 255, 85 | `0x57EA` |
+| 11 | Bright yellow | 93, 103 | 255, 255, 85 | `0xFFEA` |
+| 12 | Bright blue | 94, 104 | 85, 85, 255 | `0x52BF` |
+| 13 | Bright magenta | 95, 105 | 255, 85, 255 | `0xFABF` |
+| 14 | Bright cyan | 96, 106 | 85, 255, 255 | `0x57FF` |
 | 15 | Bright white | 97, 107 | 255, 255, 255 | `0xFFFF` |
 
-Colours 16-231 are a 6×6×6 cube (`16 + 36r + 6g + b`, where 0-5 stand for the levels 0, 95, 135, 175, 215, 255), and 232-255 are greys (8, 18, ... 238).
+Colours 16-231 are a 6×6×6 cube (`16 + 36r + 6g + b`, where 0-5 stand for the levels 0, 95, 135, 175, 215, 255), and 232-255 are greys (8, 18, ... 238). These 240 follow xterm's 256-colour layout; 0-15 do not.
 
 ---
 
