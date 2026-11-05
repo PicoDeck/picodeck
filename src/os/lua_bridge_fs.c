@@ -337,12 +337,16 @@ static void listdir_cb(const sdcard_entry_t *e, void *user) {
   lua_rawseti(L, ctx->tidx, ++ctx->n);
 }
 
-// Returns an array of {name, is_dir, size} tables, or an empty table on error.
+// Returns an array of {name, is_dir, size, ...} tables, or an empty table on
+// error. Refused by the sandbox: the empty table and "permission denied", so
+// `for _, e in ipairs(fs.listDir(p))` still works.
 static int l_fs_listDir(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
   lua_newtable(L);
-  if (!fs_sandbox_check(L, path, false))
-    return 1; // return empty table
+  if (!fs_sandbox_check(L, path, false)) {
+    lua_pushliteral(L, "permission denied");
+    return 2;
+  }
   listdir_ctx_t ctx = {L, lua_gettop(L), 0};
   sdcard_list_dir(path, listdir_cb, &ctx);
   return 1;
@@ -616,7 +620,10 @@ static int l_fs_glob(lua_State *L) {
   const char *path    = luaL_checkstring(L, 1);
   const char *pattern = luaL_checkstring(L, 2);
   lua_newtable(L);
-  if (!fs_sandbox_check(L, path, false)) return 1;
+  if (!fs_sandbox_check(L, path, false)) {  // as listDir
+    lua_pushliteral(L, "permission denied");
+    return 2;
+  }
   glob_ctx_t ctx = {L, lua_gettop(L), 0, pattern};
   sdcard_list_dir(path, glob_cb, &ctx);
   return 1;

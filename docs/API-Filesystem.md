@@ -154,8 +154,8 @@ Lists the contents of a directory.
 
 - **Parameters:**
   - `path` (string): Absolute directory path
-- **Returns:** (table) Array of entries, where each entry is a table with:
-  - `name` (string): File or directory name
+- **Returns:** (table) Array of entries, in the order they sit in the directory. An empty table when the directory cannot be read, plus `"permission denied"` as a second value when the sandbox refused it. Each entry is a table with:
+  - `name` (string): File or directory name, not the full path
   - `is_dir` (boolean): `true` if directory, `false` if file
   - `size` (number): File size in bytes (0 for directories)
 
@@ -358,7 +358,7 @@ end
 ---
 
 #### `picocalc.fs.glob(path, pattern)`
-List files in a directory matching a glob pattern. Subject to sandbox.
+List the entries of a directory whose names match a glob pattern. `*` matches any sequence and `?` any one character, ignoring case. Subdirectories match too; test `is_dir` if you want only files. It does not look inside them.
 
 - **Parameters:**
   - `path` (string): Directory to search
