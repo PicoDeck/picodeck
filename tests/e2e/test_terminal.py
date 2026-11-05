@@ -243,4 +243,90 @@ picocalc.sys.log("COLS " .. column_cells())
 
 # ── The doc's complete example, verbatim ─────────────────────────────────────
 
+def doc_block(page, heading):
+    """The first ```lua block under `heading` in docs/<page>."""
+    text = (PROJECT_ROOT / "docs" / page).read_text()
+    section = text.split(heading, 1)[1]
+    return section.split("```lua\n", 1)[1].split("```", 1)[0]
+
+
 # ── renderDirty and the two framebuffers ─────────────────────────────────────
+
+def lit(img, y0, y1):
+    return sum(1 for y in range(y0, y1) for x in range(320) if img.getpixel((x, y)) != (0, 0, 0))
+
+
+@pytest.mark.sd(fixtures=[])
+def test_render_dirty_with_flush_shows_a_whole_frame(simulator, test_sd_card):
+    """flush() swaps the buffers without copying, so rows drawn before the swap
+    are not in the new back buffer: a renderDirty + flush loop (apps/ssh) showed
+    two incomplete frames in turn."""
+    code = r"""
+local d, sys = picocalc.display, picocalc.sys
+d.clear(0); d.flush(); d.clear(0); d.flush()
+local t = picocalc.terminal.new(20, 5, 10)
+t:setCursorVisible(false)
+t:write("first\n"); t:render(); d.flush()
+t:write("second\n"); t:renderDirty(); d.flush()
+sys.log("FRAME 0"); sys.sleep(250)
+t:renderDirty(); d.flush()
+sys.log("FRAME 1"); sys.sleep(250)
+t:renderDirty(); d.flush()
+sys.log("FRAME 2"); sys.sleep(250)
+"""
+    stage_lua_app(test_sd_card, "term_swap", code)
+    simulator.launch_app("term_swap")
+    for frame in ("FRAME 0", "FRAME 1", "FRAME 2"):
+        simulator.wait_for_log(frame, timeout=5)
+        time.sleep(0.1)
+        img = simulator.screenshot_pil().convert("RGB")
+        # 5 rows from y 28, 12 px each.
+        assert lit(img, 28, 40) > 0 and lit(img, 40, 52) > 0, frame
+    simulator.wait_for_exit(timeout=5)
+
+
+@pytest.mark.sd(fixtures=[])
+def test_render_dirty_stays_partial_without_a_swap(simulator, test_sd_card):
+    """With flushRows, which does not swap, only the dirty rows are redrawn, as
+    the page says: a marker drawn over a clean row survives."""
+    code = r"""
+local d = picocalc.display
+d.clear(0)
+local t = picocalc.terminal.new(20, 5, 10)
+t:setRenderBounds(0, 60)
+t:setCursorVisible(false)
+t:write("a\nb\nc")
+t:render()
+d.fillRect(100, 2, 4, 4, 0xF800)    -- row 0, past its text
+t:setCell(0, 3, "#")
+local first, last = t:getDirtyRange()
+t:renderDirty()
+local new = 0
+for y = 36, 47 do for x = 4, 9 do
+    if d.getPixel(x, y) ~= 0 then new = new + 1 end
+end end
+picocalc.sys.log(string.format("DIRTY %d %d MARK %d NEW %d", first, last,
+                 d.getPixel(101, 3), new))
+"""
+    stage_lua_app(test_sd_card, "term_partial", code)
+    simulator.launch_app("term_partial")
+    simulator.wait_for_exit(timeout=5)
+    line = next(e["text"] for e in simulator.get_log_lines(0) if "DIRTY " in e["text"])
+    assert "DIRTY 3 3" in line and "MARK 63488" in line and "NEW 0" not in line, line
+
+
+def test_doc_partial_redraw_example(simulator):
+    """The page's renderDirty + flushRows loop, verbatim: the frame stays whole
+    across many partial presents."""
+    block = doc_block("API-Terminal.md", "#### `term:renderDirty()`")
+    sd = simulator.sd_card_path
+    code = block + "\n"
+    stage_lua_app(sd, "term_rows", code)
+    simulator.launch_app("term_rows")
+    out = simulator.wait_for_exit(timeout=10)
+    assert out.get("result") == "returned", out
+    time.sleep(0.05)
+    img = simulator.screenshot_pil().convert("RGB")
+    # Header row and the last line both on the panel.
+    assert lit(img, 0, 12) > 0
+    assert lit(img, 12 * 9, 12 * 10) > 0

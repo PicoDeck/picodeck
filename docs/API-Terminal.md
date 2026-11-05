@@ -125,13 +125,34 @@ Jump the viewport to a specific scrollback position.
 
 ## Rendering
 
-Call one of these once per frame after writing content.
+Call one of these once per frame after writing content. They draw into the back buffer, so a present shows the result.
 
 #### `term:render()`
-Redraw every cell to the framebuffer. Use when the whole screen may be stale (e.g. first frame, font change).
+Redraw every cell to the framebuffer. Use when the whole screen may be stale (e.g. first frame, font change), or simply every frame, followed by `picocalc.display.flush()`.
 
 #### `term:renderDirty()`
-Redraw only rows marked dirty since the last render. Faster than `render()` for incremental updates.
+Redraw only rows marked dirty since the last render, and the cursor. If a `flush()` has swapped the framebuffers since the last render, the back buffer holds an older frame, so it redraws everything instead: with `flush()` it costs what `render()` costs. To save the work, present with `picocalc.display.flushRows()`, which does not swap, and send only the rows that changed:
+
+```lua
+local D = picocalc.display
+local term = picocalc.terminal.new(53, 10)
+term:setRenderBounds(0, 120)     -- so a row's y is row * 12
+term:write("Status:\n")
+term:render()
+D.flushRows(0, 119)
+
+for i = 1, 8 do
+    term:write("step " .. i .. "\n")
+    local first, last = term:getDirtyRange()
+    term:renderDirty()
+    if first >= 0 then
+        D.flushRows(first * 12, last * 12 + 11)
+    end
+    picocalc.sys.sleep(50)
+end
+```
+
+With no dirty rows and no swap it draws nothing at all, the cursor included, so a blinking cursor needs `render()`.
 
 #### `term:markAllDirty()`
 Mark every row as dirty so the next `renderDirty()` redraws everything.

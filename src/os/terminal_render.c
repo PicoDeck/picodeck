@@ -401,6 +401,8 @@ void terminal_render(terminal_t* term) {
         return;
     }
 
+    term->last_render_fb = display_get_back_buffer();
+
     // Calculate content area (accounts for line numbers and scrollbar)
     int content_offset_cols = 0;
     if (term->line_numbers_enabled) {
@@ -628,6 +630,13 @@ void terminal_renderDirty(terminal_t* term) {
     if (term->scrollback_offset > 0) {
         terminal_renderScrollback(term);
         return;
+    }
+
+    // A flush() since the last render swapped the buffers: this one holds an
+    // older frame, not the rows already drawn. Draw it whole. Partial redraws
+    // are for a loop that presents with flushRows, which does not swap.
+    if (display_get_back_buffer() != term->last_render_fb) {
+        terminal_markAllDirty(term);
     }
 
     int first_dirty, last_dirty;

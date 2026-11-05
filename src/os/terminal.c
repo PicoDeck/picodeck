@@ -69,6 +69,7 @@ terminal_t* terminal_new(int cols, int rows, int scrollback_lines) {
     term->render_y_start = 28;
     term->render_y_end = 302;
     term->render_x_start = 4;
+    term->last_render_fb = NULL;
 
     size_t cell_count = (size_t)cols * rows;
     size_t sb_count = (size_t)scrollback_lines * cols;

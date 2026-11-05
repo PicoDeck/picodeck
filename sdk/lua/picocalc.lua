@@ -3118,7 +3118,8 @@ function PicoDeckTerminal:scroll(lines) end
 ---Render the full terminal to the display.
 function PicoDeckTerminal:render() end
 
----Render only dirty (changed) cells to the display.
+---Render only dirty rows to the display, or everything if a `flush()` has swapped
+---the framebuffers since the last render. Partial with `display.flushRows`.
 function PicoDeckTerminal:renderDirty() end
 
 ---@return integer
