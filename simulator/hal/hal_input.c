@@ -37,6 +37,9 @@ static uint32_t g_injected_latched = 0;  // held injections, released only by ha
 // one-shots. A click injected since the last read is the device's "pending"
 // one, which kbd_clear_state leaves to be published with its edge.
 static uint32_t g_injected_click_read = 0;
+// A host key went down since the last poll (the idle dim's activity: a typed
+// letter sets no button edge, and an injected char must not count).
+static bool g_host_key_down = false;
 static char g_char_buffer[256];
 static int g_char_head = 0;
 static int g_char_tail = 0;
@@ -180,7 +183,10 @@ void hal_input_handle_event(const SDL_Event* event) {
         SDL_Keycode key = event->key.keysym.sym;
         
         pthread_mutex_lock(&s_input_mutex);
-        
+
+        if (pressed)
+            g_host_key_down = true;
+
         // SDL auto-repeat is the desktop's HOLD: flagged, not a new press.
         uint8_t rep = event->key.repeat ? KBD_EVF_REPEAT : 0;
 
@@ -433,6 +439,14 @@ void hal_input_discard_pending(void) {
     g_btn_unread_seq = 0;
     g_btn_pending_seq = 0;
     pthread_mutex_unlock(&s_input_mutex);
+}
+
+bool hal_input_take_host_key(void) {
+    pthread_mutex_lock(&s_input_mutex);
+    bool was = g_host_key_down;
+    g_host_key_down = false;
+    pthread_mutex_unlock(&s_input_mutex);
+    return was;
 }
 
 uint32_t hal_input_injected_down(void) {

@@ -86,6 +86,11 @@ bool hal_input_pop_event(struct kbd_event_s *out);
 // counterpart of keyboard.c's kbd_discard_pending FIFO drain).
 void hal_input_discard_pending(void);
 
+// Test-and-clear: a host key went down since the last call. For the keyboard
+// stub's idle dim: injected chars do not set it (on the device they are not
+// activity either), and buttons, host or injected, show as press edges.
+bool hal_input_take_host_key(void);
+
 // Injected buttons down right now: one-shot clicks a poll has already read
 // (the device's active ones) and keydown latches. kbd_clear_state keeps their
 // gamepad buttons held without an edge, as keyboard.c's

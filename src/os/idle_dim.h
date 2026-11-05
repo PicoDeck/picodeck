@@ -6,7 +6,8 @@
 // Idle screen dimming — drops the backlight to a very low level after a
 // period with no input activity, to prevent burn-in on the IPS panel.
 // Any input restores the user's brightness (the waking press is swallowed
-// by the keyboard driver so it never reaches the running app).
+// by the keyboard driver so it never reaches the running app). So does an app
+// launch (launcher.c), or the app's first key would be spent waking the screen.
 
 // timeout_s: seconds of no input before dimming (0 disables dimming).
 void idle_dim_init(uint8_t user_brightness, uint32_t timeout_s);
