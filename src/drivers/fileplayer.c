@@ -2,6 +2,7 @@
 #include "audio.h"
 #include "sdcard.h"
 #include "pico/mutex.h"
+#include "pico/platform.h"
 #include "umm_malloc.h"
 #include "wav.h"
 
@@ -784,6 +785,12 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
         return p->pass_pushed && plays_again(p) ? wrap_locked(p)
                                                 : finish_locked(p);
     return cb;
+}
+
+// Core 1's tick gate. A player in PSRAM is not read for this: a stopped one is
+// no longer active, and a paused one costs the walk it always did.
+bool __time_critical_func(fileplayer_core1_idle)(void) {
+    return s_active_player == NULL;
 }
 
 // Called from Core 1 every tick: tops the stream ring up from the active

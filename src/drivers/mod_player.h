@@ -23,3 +23,4 @@ void mod_player_set_loop(mod_player_t *player, bool loop);
 
 // Called from Core 1 every 5ms alongside mp3_player_update()
 void mod_player_update(void);
+bool mod_player_core1_idle(void);  // false once a player exists (runs from RAM)

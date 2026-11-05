@@ -1623,8 +1623,9 @@ _Atomic bool g_core1_paused = false; // acknowledgment flag for Core 1 pause han
 // to Core 1.  Set by the app at startup, cleared on exit.
 _Atomic(void (*)(void)) g_native_audio_callback = NULL;
 
-static repeating_timer_t s_core1_timer;
 static volatile bool s_core1_tick_pending = false;
+// Set with the doorbell: Core 0 posted work, so the next tick is a full one.
+static volatile bool s_core1_doorbell = false;
 
 // core1_stats.h. Core 1 writes these (Core 0 only asks for a reset, which
 // Core 1 carries out at its next tick); Core 0 reads them unlocked.
@@ -1632,12 +1633,43 @@ static volatile uint32_t s_tick_count, s_tick_over, s_tick_missed, s_tick_max_us
 static volatile uint64_t s_tick_window_t0_us;
 static volatile bool s_tick_reset_req;
 
-static bool core1_timer_callback(repeating_timer_t *rt) {
-  (void)rt;
+// The 1 ms tick: TIMER0 alarm 2 and this handler, both Core 1's alone, not an
+// alarm pool. The pool's interrupt walked ~1 KB of flash a millisecond (its
+// handler, its heap, the alarm re-arm, the repeating timer's callback) with
+// nothing to show for it, and every line it fetched evicted one of Core 0's.
+#define CORE1_TICK_ALARM 2u
+#define CORE1_TICK_US 1000u
+static uint32_t s_core1_tick_target;
+
+static void __not_in_flash_func(core1_tick_isr)(void) {
+  timer0_hw->intr = 1u << CORE1_TICK_ALARM;
   if (s_core1_tick_pending)
     s_tick_missed++;  // the previous tick has not started: this one merges into it
   s_core1_tick_pending = true;
-  return true;
+  // Fixed rate. The alarm fires when the counter EQUALS the target, so one
+  // armed after its target has gone by would not fire for 71 minutes: the
+  // counter is read after the write, and a target that has passed by then is
+  // skipped (as a missed tick) for the next. A late alarm that did fire as
+  // well only makes one tick early.
+  uint32_t target = s_core1_tick_target;
+  for (;;) {
+    target += CORE1_TICK_US;
+    timer0_hw->alarm[CORE1_TICK_ALARM] = target;
+    if ((int32_t)(timer0_hw->timerawl - target) < 0)
+      break;
+    s_tick_missed++;
+  }
+  s_core1_tick_target = target;
+}
+
+static void core1_tick_start(void) {
+  hardware_alarm_claim(CORE1_TICK_ALARM);
+  unsigned irq = timer_hardware_alarm_get_irq_num(timer0_hw, CORE1_TICK_ALARM);
+  irq_set_exclusive_handler(irq, core1_tick_isr);
+  hw_set_bits(&timer0_hw->inte, 1u << CORE1_TICK_ALARM);
+  irq_set_enabled(irq, true);
+  s_core1_tick_target = timer0_hw->timerawl + CORE1_TICK_US;
+  timer0_hw->alarm[CORE1_TICK_ALARM] = s_core1_tick_target;
 }
 
 void core1_get_tick_stats(core1_tick_stats_t *out) {
@@ -1657,6 +1689,7 @@ void core1_reset_tick_stats(void) {
 // instead of waiting for the next 1 ms tick.
 static void core1_doorbell_isr(void) {
   multicore_doorbell_clear_current_core(WIFI_IPC_DOORBELL);
+  s_core1_doorbell = true;
   s_core1_tick_pending = true;
 }
 
@@ -1679,6 +1712,196 @@ static void boot_crypto_init(void *arg) {
   (void)wifi_tls_init();
 }
 
+// One full tick, every poller in turn. In flash: when one has work its cost
+// dwarfs the walk, and when none has, core1_tick_idle() keeps Core 1 out of here.
+static void __noinline core1_full_tick(void) {
+  if (s_tick_reset_req) {
+    s_tick_count = s_tick_over = s_tick_missed = s_tick_max_us = 0;
+    s_tick_window_t0_us = time_us_64();
+    s_tick_reset_req = false;
+  }
+  uint32_t tick_t0 = time_us_32();
+
+  core1_relay_watchdog();
+
+  wifi_poll();
+  http_fire_c_pending();
+
+  audio_stream_poll();
+  mp3_player_update();
+  fileplayer_update();
+  sound_pump_callbacks();
+  mod_player_update();
+  void (*audio_cb)(void) = atomic_load(&g_native_audio_callback);
+  if (audio_cb)
+    audio_cb();
+
+  image_preload_update();
+  video_prefetch_update();
+  dev_commands_core1_poll();
+
+  // DIAG: code-corruption watcher — scan the native app's read-only
+  // image against the load-time snapshot in rotating 32KB chunks (both
+  // via the uncached PSRAM alias: no XIP-cache pollution).  On a hit,
+  // report onset time, offsets, and old/new/cached-view bytes — the
+  // data pattern fingerprints whoever tramples app code — then repair
+  // the damage so the run continues and repeat events get logged.
+  if (atomic_load(&g_code_watch_active)) {
+    static uint32_t s_watch_pos = 0;
+    static uint32_t s_watch_passes = 0;
+    static int s_watch_reports = 0;
+    const uint8_t *snap = g_code_watch_snap;
+    const uint8_t *live = g_code_watch_live;
+    uint32_t size = g_code_watch_size;
+    if (snap && live && size) {
+      uint32_t chunk = 32u * 1024;
+      if (s_watch_pos >= size) {
+        s_watch_pos = 0;
+        if ((++s_watch_passes % 64) == 0)
+          printf("[CODEWATCH] clean pass #%lu\n",
+                 (unsigned long)s_watch_passes);
+      }
+      uint32_t n = size - s_watch_pos;
+      if (n > chunk) n = chunk;
+      const uint8_t *s = snap + s_watch_pos;
+      const uint8_t *l = live + s_watch_pos;
+      if (memcmp(s, l, n) != 0 && s_watch_reports < 40) {
+        uint32_t first = 0, last = 0, count = 0;
+        for (uint32_t i = 0; i < n; i++) {
+          if (s[i] != l[i]) {
+            if (!count) first = i;
+            last = i;
+            count++;
+          }
+        }
+        // Re-read the differing span: uncached PSRAM reads have been
+        // seen to glitch transiently, and a transient misread is itself
+        // a finding (report, but don't "repair" good memory with it).
+        if (memcmp(s + first, l + first, last - first + 1) == 0) {
+          printf("[CODEWATCH] TRANSIENT misread t=%lums off=0x%05lx n=%lu\n",
+                 (unsigned long)(time_us_64() / 1000),
+                 (unsigned long)(s_watch_pos + first),
+                 (unsigned long)count);
+        } else {
+          uint32_t off = s_watch_pos + first;
+          printf("[CODEWATCH] CORRUPT t=%lums off=0x%05lx..0x%05lx n=%lu\n",
+                 (unsigned long)(time_us_64() / 1000),
+                 (unsigned long)off,
+                 (unsigned long)(s_watch_pos + last),
+                 (unsigned long)count);
+          uint32_t d = first & ~15u;
+          printf("[CODEWATCH] was:");
+          for (int i = 0; i < 16; i++) printf(" %02x", s[d + i]);
+          printf("\n[CODEWATCH] psram:");
+          for (int i = 0; i < 16; i++) printf(" %02x", l[d + i]);
+          // Cached view of the same bytes — if it differs from the psram
+          // view, the corruption lives in the XIP cache, not PSRAM.
+          const uint8_t *lc = l + d - 0x04000000u; // uncached -> cached
+          printf("\n[CODEWATCH] cache:");
+          for (int i = 0; i < 16; i++) printf(" %02x", lc[i]);
+          printf("\n");
+          // Repair: restore PSRAM from the snapshot, then invalidate the
+          // XIP range so the CPU refetches the clean bytes.
+          memcpy((void *)(uintptr_t)(l + first), s + first,
+                 last - first + 1);
+          uintptr_t inv_start =
+              ((uintptr_t)(l + first) - 0x04000000u - XIP_BASE) & ~7u;
+          uintptr_t inv_end =
+              (((uintptr_t)(l + last) - 0x04000000u - XIP_BASE) + 8u) & ~7u;
+          __asm volatile ("dsb sy");
+          xip_cache_invalidate_range(inv_start, inv_end - inv_start);
+          __asm volatile ("isb sy");
+        }
+        s_watch_reports++;
+      }
+      s_watch_pos += n;
+    }
+  }
+
+  // PHASE-0 AUDIO DIAGNOSTICS: log stream stats every ~2s when something
+  // is driving the audio callback.  Helps classify Doom-audio symptoms —
+  // zero ISR ⇒ DMA never started; spiking underruns ⇒ Core 1 starvation;
+  // steady ISR + zero underruns ⇒ producer issue in the app itself.
+  if (audio_cb) {
+    static uint64_t s_last_audio_debug_us = 0;
+    uint64_t now = time_us_64();
+    if (now - s_last_audio_debug_us >= 2000000) {
+      s_last_audio_debug_us = now;
+      uint32_t isr_cnt = 0, underruns = 0, ring_used = 0;
+      audio_stream_debug(&isr_cnt, &underruns, &ring_used);
+      printf("[AUDIO] ISR=%lu underruns=%lu ring_used=%lu\n",
+             (unsigned long)isr_cnt, (unsigned long)underruns,
+             (unsigned long)ring_used);
+    }
+  }
+
+  uint32_t tick_us = time_us_32() - tick_t0;
+  s_tick_count++;
+  if (tick_us > 1000)
+    s_tick_over++;
+  if (tick_us > s_tick_max_us)
+    s_tick_max_us = tick_us;
+}
+
+// Nothing for the pollers this tick? Reads only SRAM, from SRAM: with no audio
+// and no network (most games) the full tick did nothing a thousand times a
+// second but walk flash through the XIP cache Core 0 depends on. Each module
+// answers for its own state (*_core1_idle), and only ever says idle when its
+// poller would do nothing. Anything not asked here (the watchdog relay, HTTP/TCP
+// timeouts of a slot with the link down, the RNG pool, a sound callback left
+// pending as the output stopped) waits for the next full tick, at most
+// CORE1_FULL_TICK_EVERY ms away.
+#define CORE1_FULL_TICK_EVERY 16u
+
+static bool __no_inline_not_in_flash_func(core1_tick_idle)(void) {
+  return !s_core1_doorbell && !s_tick_reset_req &&
+         atomic_load_explicit(&g_native_audio_callback, memory_order_relaxed) == NULL &&
+         !atomic_load_explicit(&g_code_watch_active, memory_order_relaxed) &&
+         audio_core1_idle() && mp3_player_core1_idle() &&
+         fileplayer_core1_idle() && mod_player_core1_idle() &&
+         video_prefetch_core1_idle() && wifi_core1_idle() &&
+         dev_commands_core1_idle();
+}
+
+static void core1_pause_wait(void) {
+  atomic_store(&g_core1_paused, true);
+  __dmb(); // ensure paused flag visible to Core 0 before we spin
+  while (atomic_load(&g_core1_pause)) {
+    core1_relay_watchdog();
+    sleep_ms(1);
+  }
+  atomic_store(&g_core1_paused, false);
+  __dmb(); // ensure resumed state visible to Core 0
+}
+
+static void __no_inline_not_in_flash_func(core1_loop)(void) {
+  uint32_t quiet = 0;
+  for (;;) {
+    if (atomic_load(&g_core1_pause)) {
+      core1_pause_wait();
+      continue;
+    }
+    if (s_core1_tick_pending) {
+      s_core1_tick_pending = false;
+      if (++quiet < CORE1_FULL_TICK_EVERY && core1_tick_idle()) {
+        s_tick_count++;
+      } else {
+        quiet = 0;
+        s_core1_doorbell = false;
+        core1_full_tick();
+      }
+    }
+    // Interrupts masked across the check: a tick that came due during the one
+    // just run (any tick over 1 ms), or between the check and the WFI, would
+    // otherwise sleep until the next timer interrupt and be counted as missed.
+    // WFI still wakes on a pending interrupt with PRIMASK set.
+    uint32_t save = save_and_disable_interrupts();
+    if (!s_core1_tick_pending && !atomic_load(&g_core1_pause))
+      __wfi();
+    restore_interrupts(save);
+  }
+}
+
 static void core1_entry(void) {
   volatile uint32_t *scb_ccr = (volatile uint32_t *)(0xE000ED14);
   *scb_ccr &= ~(1u << 3);
@@ -1694,8 +1917,6 @@ static void core1_entry(void) {
   // mg_mgr_poll (see rng.h).  On failure TLS is refused, not weakened.
   (void)rng_init_this_core();
 
-  audio_core1_init();
-
   // Register doorbell ISR for instant IPC wake-up from Core 0
   uint doorbell_irq = multicore_doorbell_irq_num(WIFI_IPC_DOORBELL);
   irq_set_exclusive_handler(doorbell_irq, core1_doorbell_isr);
@@ -1706,155 +1927,10 @@ static void core1_entry(void) {
   // tick, so a 5 ms tick leaves only 16% headroom, and under WiFi load the
   // real tick rate has been measured at ~260/s even at 1 ms nominal. MP3
   // staging (8 KB, ~46 ms) likewise relies on frequent refills between
-  // decode bursts. Negative period = fixed rate from the previous start.
-  alarm_pool_t *pool = audio_get_core1_alarm_pool();
-  alarm_pool_add_repeating_timer_ms(pool, -1, core1_timer_callback, NULL, &s_core1_timer);
+  // decode bursts.
+  core1_tick_start();
 
-  while (true) {
-    if (atomic_load(&g_core1_pause)) {
-      atomic_store(&g_core1_paused, true);
-      __dmb(); // ensure paused flag visible to Core 0 before we spin
-      while (atomic_load(&g_core1_pause)) {
-        core1_relay_watchdog();
-        sleep_ms(1);
-      }
-      atomic_store(&g_core1_paused, false);
-      __dmb(); // ensure resumed state visible to Core 0
-      continue;
-    }
-
-    if (s_core1_tick_pending) {
-      s_core1_tick_pending = false;
-      if (s_tick_reset_req) {
-        s_tick_count = s_tick_over = s_tick_missed = s_tick_max_us = 0;
-        s_tick_window_t0_us = time_us_64();
-        s_tick_reset_req = false;
-      }
-      uint32_t tick_t0 = time_us_32();
-
-      core1_relay_watchdog();
-
-      wifi_poll();
-      http_fire_c_pending();
-
-      audio_stream_poll();
-      mp3_player_update();
-      fileplayer_update();
-      sound_pump_callbacks();
-      mod_player_update();
-      void (*audio_cb)(void) = atomic_load(&g_native_audio_callback);
-      if (audio_cb)
-        audio_cb();
-
-      image_preload_update();
-      video_prefetch_update();
-      dev_commands_core1_poll();
-
-      // DIAG: code-corruption watcher — scan the native app's read-only
-      // image against the load-time snapshot in rotating 32KB chunks (both
-      // via the uncached PSRAM alias: no XIP-cache pollution).  On a hit,
-      // report onset time, offsets, and old/new/cached-view bytes — the
-      // data pattern fingerprints whoever tramples app code — then repair
-      // the damage so the run continues and repeat events get logged.
-      if (atomic_load(&g_code_watch_active)) {
-        static uint32_t s_watch_pos = 0;
-        static uint32_t s_watch_passes = 0;
-        static int s_watch_reports = 0;
-        const uint8_t *snap = g_code_watch_snap;
-        const uint8_t *live = g_code_watch_live;
-        uint32_t size = g_code_watch_size;
-        if (snap && live && size) {
-          uint32_t chunk = 32u * 1024;
-          if (s_watch_pos >= size) {
-            s_watch_pos = 0;
-            if ((++s_watch_passes % 64) == 0)
-              printf("[CODEWATCH] clean pass #%lu\n",
-                     (unsigned long)s_watch_passes);
-          }
-          uint32_t n = size - s_watch_pos;
-          if (n > chunk) n = chunk;
-          const uint8_t *s = snap + s_watch_pos;
-          const uint8_t *l = live + s_watch_pos;
-          if (memcmp(s, l, n) != 0 && s_watch_reports < 40) {
-            uint32_t first = 0, last = 0, count = 0;
-            for (uint32_t i = 0; i < n; i++) {
-              if (s[i] != l[i]) {
-                if (!count) first = i;
-                last = i;
-                count++;
-              }
-            }
-            // Re-read the differing span: uncached PSRAM reads have been
-            // seen to glitch transiently, and a transient misread is itself
-            // a finding (report, but don't "repair" good memory with it).
-            if (memcmp(s + first, l + first, last - first + 1) == 0) {
-              printf("[CODEWATCH] TRANSIENT misread t=%lums off=0x%05lx n=%lu\n",
-                     (unsigned long)(time_us_64() / 1000),
-                     (unsigned long)(s_watch_pos + first),
-                     (unsigned long)count);
-            } else {
-              uint32_t off = s_watch_pos + first;
-              printf("[CODEWATCH] CORRUPT t=%lums off=0x%05lx..0x%05lx n=%lu\n",
-                     (unsigned long)(time_us_64() / 1000),
-                     (unsigned long)off,
-                     (unsigned long)(s_watch_pos + last),
-                     (unsigned long)count);
-              uint32_t d = first & ~15u;
-              printf("[CODEWATCH] was:");
-              for (int i = 0; i < 16; i++) printf(" %02x", s[d + i]);
-              printf("\n[CODEWATCH] psram:");
-              for (int i = 0; i < 16; i++) printf(" %02x", l[d + i]);
-              // Cached view of the same bytes — if it differs from the psram
-              // view, the corruption lives in the XIP cache, not PSRAM.
-              const uint8_t *lc = l + d - 0x04000000u; // uncached -> cached
-              printf("\n[CODEWATCH] cache:");
-              for (int i = 0; i < 16; i++) printf(" %02x", lc[i]);
-              printf("\n");
-              // Repair: restore PSRAM from the snapshot, then invalidate the
-              // XIP range so the CPU refetches the clean bytes.
-              memcpy((void *)(uintptr_t)(l + first), s + first,
-                     last - first + 1);
-              uintptr_t inv_start =
-                  ((uintptr_t)(l + first) - 0x04000000u - XIP_BASE) & ~7u;
-              uintptr_t inv_end =
-                  (((uintptr_t)(l + last) - 0x04000000u - XIP_BASE) + 8u) & ~7u;
-              __asm volatile ("dsb sy");
-              xip_cache_invalidate_range(inv_start, inv_end - inv_start);
-              __asm volatile ("isb sy");
-            }
-            s_watch_reports++;
-          }
-          s_watch_pos += n;
-        }
-      }
-
-      // PHASE-0 AUDIO DIAGNOSTICS: log stream stats every ~2s when something
-      // is driving the audio callback.  Helps classify Doom-audio symptoms —
-      // zero ISR ⇒ DMA never started; spiking underruns ⇒ Core 1 starvation;
-      // steady ISR + zero underruns ⇒ producer issue in the app itself.
-      if (audio_cb) {
-        static uint64_t s_last_audio_debug_us = 0;
-        uint64_t now = time_us_64();
-        if (now - s_last_audio_debug_us >= 2000000) {
-          s_last_audio_debug_us = now;
-          uint32_t isr_cnt = 0, underruns = 0, ring_used = 0;
-          audio_stream_debug(&isr_cnt, &underruns, &ring_used);
-          printf("[AUDIO] ISR=%lu underruns=%lu ring_used=%lu\n",
-                 (unsigned long)isr_cnt, (unsigned long)underruns,
-                 (unsigned long)ring_used);
-        }
-      }
-
-      uint32_t tick_us = time_us_32() - tick_t0;
-      s_tick_count++;
-      if (tick_us > 1000)
-        s_tick_over++;
-      if (tick_us > s_tick_max_us)
-        s_tick_max_us = tick_us;
-    }
-
-    __wfi();
-  }
+  core1_loop();
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────

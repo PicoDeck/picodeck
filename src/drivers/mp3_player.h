@@ -36,6 +36,7 @@ uint8_t mp3_player_get_volume(const mp3_player_t *player);
 void mp3_player_set_loop(mp3_player_t *player, bool loop);
 uint32_t mp3_player_get_sample_rate(const mp3_player_t *player);
 void mp3_player_update(void);
+bool mp3_player_core1_idle(void);  // false while the update has work (runs from RAM)
 
 // Diagnostics: output frames the mixer found no MP3 data for (heard as dropouts).
 uint32_t mp3_player_staging_underruns(void);

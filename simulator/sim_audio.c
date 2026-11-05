@@ -47,11 +47,7 @@ void audio_init(void) {
     audio_mix_init();
 }
 
-void audio_core1_init(void) {}
-
-alarm_pool_t *audio_get_core1_alarm_pool(void) {
-    return NULL;
-}
+bool audio_core1_idle(void) { return true; }
 
 void audio_stream_poll(void) {}
 

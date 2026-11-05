@@ -1,4 +1,5 @@
 #include "wifi.h"
+#include "pico/platform.h"
 #include "wifi_rejoin.h"
 #include "tcp.h"
 #include "../dev_commands.h"
@@ -905,6 +906,25 @@ const char *wifi_get_ssid(void) {
 
 void wifi_set_http_required(bool required) { s_http_required = required; }
 bool wifi_get_http_required(void) { return s_http_required; }
+
+// Core 1's tick gate: no request queued and wifi_poll would not poll the link
+// (the same test, with wifi_get_status() spelled out: it is in flash). What
+// wifi_poll still does then, the timeouts of a slot queued with the link down
+// and the RNG pool's top-up, waits for the next full tick.
+bool __time_critical_func(wifi_core1_idle)(void) {
+  if (!s_available)
+    return true;
+  if (atomic_load_explicit(&s_req_head, memory_order_relaxed) !=
+      atomic_load_explicit(&s_req_tail, memory_order_relaxed))
+    return false;
+  if (s_radio_quiet)
+    return true;
+  if (atomic_load_explicit(&s_link_ready, memory_order_relaxed))
+    return false;
+  wifi_status_t st = s_status;
+  return st != WIFI_STATUS_CONNECTED && st != WIFI_STATUS_CONNECTING &&
+         st != WIFI_STATUS_ONLINE;
+}
 
 void wifi_poll(void) {
   if (!s_available)

@@ -1474,6 +1474,12 @@ bool mp3_player_is_fed_mode(void) {
     return s_fed_mode;
 }
 
+// Core 1's tick gate: exactly the condition under which the update does work.
+// Skipped updates are not counted in mp3stats' `updates`.
+bool __time_critical_func(mp3_player_core1_idle)(void) {
+    return !s_player.playing || s_player.paused;
+}
+
 void mp3_player_update(void) {
     if (!s_initialized) return;
     if (!mutex_try_enter(&s_mp3_mutex, NULL)) { s_diag_skip_mutex++; return; }
