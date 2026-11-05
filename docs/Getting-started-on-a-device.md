@@ -20,7 +20,7 @@ Download `picodeck.uf2` from the [latest release](https://github.com/PicoDeck/pi
 3. A USB drive named `RP2350` appears. Copy `picodeck.uf2` onto it.
 4. The drive disappears and the board restarts by itself.
 
-Without a card in the slot, the screen then says `SD card not found! Insert a FAT32 SD card and press Enter to retry.`
+USB powers only the Pico board. The screen and keyboard run from the PicoCalc's own batteries and power switch, so switch it on to see anything. With no card in the slot, the screen then says `SD card not found! Insert a FAT32 SD card and press Enter to retry.`
 
 ## 2. Put apps on the card
 
@@ -47,7 +47,7 @@ SD:/
     └── lib/            download.lua, panels.lua, widgets.lua, fonts/
 ```
 
-The whole `apps/` folder is optional beyond what you want: only `store/` is needed to reach the App Store. The launcher lists at most 64 apps. `apps/gbc` has no program until you build it, so it does not appear.
+You can copy less: `store/` alone gets you the App Store. The launcher lists at most 64 apps. `apps/gbc` has no program until you build it, so it does not appear.
 
 ## 3. First boot
 
@@ -94,6 +94,7 @@ To flash by hand again without reaching for BOOTSEL, turn on **Settings > Develo
 
 | What you see | What it means |
 |---|---|
+| A black screen, though the computer sees the board | The PicoCalc is switched off and USB is powering only the Pico. Switch it on and reboot. |
 | `SD card not found!` | No card, or it is not FAT32. Press Enter to retry once it is in. |
 | `No apps in this category.` | Nothing usable in that tab. On every tab: the card is blank, or the apps are not at `/apps/<name>/`. A folder needs a `main.lua` or `main.elf` to be listed. |
 | A new app is not listed | The launcher reads `/apps` at boot, when an app exits, and after USB Disk Mode. Reboot from the system menu. |

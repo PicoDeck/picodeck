@@ -163,7 +163,7 @@ Returns a snapshot of heap memory usage.
   - `psram_free` (number): Free bytes in the Lua PSRAM heap
   - `psram_used` (number): Used bytes in the Lua PSRAM heap
   - `psram_total` (number): Total bytes in the Lua PSRAM heap
-  - `psram_largest_block` (number): Largest single free block — what one big allocation can get (compare `min_psram_kb` in app.json)
+  - `psram_largest_block` (number): Largest single free block — what one big allocation can get (compare [`min_psram_kb`](App-Json-Reference.md#min_psram_kb) in app.json)
   - `psram_fragmentation` (number): 0-100
   - `small_pool_slabs`, `small_pool_bytes` (number): Lua small-object pool slabs (4 KB each, carved from the PSRAM heap) and their bytes
   - `small_pool_objects`, `small_pool_object_bytes` (number): live objects of up to 128 B in those pools and their bytes
@@ -406,7 +406,7 @@ The libraries in the repo's `system/lib/` are the ones that exist. Each is a pla
 | `"panels"` | `panels.lua` | [Library-Panels](Library-Panels.md) |
 | `"widgets"` | `widgets.lua` | none (a widget toolkit; read the file header) |
 
-`require` (see [Standard-Lua-Libraries](Standard-Lua-Libraries.md)) also searches `/system/lib`.
+`require` (see [Standard-Lua-Libraries](Standard-Lua-Libraries.md)) also searches `/system/lib`, after your app's folder. Since nothing installs these files on a user's card, [a published app should bundle what it uses](Publishing-Apps.md#bundle-the-libraries-you-use).
 
 ---
 

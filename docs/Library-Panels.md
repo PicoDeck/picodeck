@@ -4,11 +4,13 @@ title: "Library Panels"
 
 A declarative interactive-comics framework, modelled on the Playdate [Panels](https://github.com/cadin/panels) library. A comic is a plain Lua data table — **sequences** of **panels** of **layers** — and the library owns scrolling, parallax, keyframed animation, audio cues, transitions, branching choices, and progress save/resume.
 
-The library's source is `system/lib/panels.lua` in the repo; it must be on the SD card at `/system/lib/panels.lua`. Load it with:
+The library's source is [`system/lib/panels.lua`](https://github.com/PicoDeck/picodeck/blob/master/system/lib/panels.lua) in the repo; it must be on the SD card at `/system/lib/panels.lua`. Load it with:
 
 ```lua
 local Panels = picocalc.sys.loadlib("panels")
 ```
+
+An app you publish should not rely on that: [bundle your own copy](Publishing-Apps.md#bundle-the-libraries-you-use) and `require` it.
 
 Comic content must be **pure data**: the library never `load()`s strings from the comic table, and every asset filename is resolved through a *source* object that rejects path escapes (`..`, leading `/`, backslashes).
 
