@@ -69,13 +69,13 @@ end
 
 ### Dialogs
 
-> Dialogs are system UI and draw in the built-in 6x8 font. The `draw*` helpers above and below (`drawFooter`, `drawTabs`, `drawPanel`, `splash`, and the other app-positioned widgets) and the `drawHeader` title draw in the app's current font instead.
+> Dialogs are system UI: they draw in the built-in 6x8 font and across the whole screen, whatever font and clip rect your app has set, and give both back when they return. They leave their last frame in your framebuffers, so redraw your whole screen after one. The `draw*` helpers above and below (`drawFooter`, `drawTabs`, `drawPanel`, `splash`, and the other app-positioned widgets) and the `drawHeader` title draw in the app's current font instead.
 
 #### `picocalc.ui.confirm(message)`
-Show a yes/no confirmation dialog. Blocks until user responds. The dialog is system UI: it draws in the built-in 6x8 font whatever font your app has selected, and your font is selected again when it returns. The system menu key is ignored while it is up (the dialog stays), so it never answers No for you.
+Show a yes/no confirmation dialog. Blocks until user responds: Enter or `y` for yes, Esc or `n` for no. Input in the first 400 ms is ignored, so a key your app was already reading cannot answer it. The system menu key is ignored while it is up (the dialog stays), so it never answers No for you.
 
 - **Parameters:**
-  - `message` (string): Question text
+  - `message` (string): Question text. It wraps at 43 characters, at spaces and `/` where it can, and `\n` starts a new line; the box grows to fit, up to 20 lines, and anything past those is not shown.
 - **Returns:** (boolean) true if confirmed, false if cancelled
 
 ```lua
@@ -87,14 +87,14 @@ end
 ---
 
 #### `picocalc.ui.textInput([prompt], [default])`
-Show a modal text input dialog. Blocks until user submits or cancels (Esc, or the system menu key). The dialog is system UI: it draws in the built-in 6x8 font whatever font your app has selected, and your font is selected again when it returns.
+Show a modal text input dialog. Blocks until user submits (Enter) or cancels (Esc, or the system menu key).
 
 - **Parameters:**
-  - `prompt` (string, optional): Prompt text
+  - `prompt` (string, optional): Prompt text, on one line (43 characters fit in the box)
   - `default` (string, optional): Pre-filled text
 - **Returns:** (string) entered text, or nil if cancelled
 
-> **Note:** Maximum 128 characters.
+> **Note:** At most 127 characters: a longer `default` is cut, and typing stops there.
 
 ```lua
 local name = picocalc.ui.textInput("Enter name:", "Player 1")

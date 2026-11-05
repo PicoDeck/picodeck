@@ -175,4 +175,129 @@ def test_wraptext_keeps_every_row_and_breaks_at_newlines(simulator, test_sd_card
 
 # Blue under a clip rect in the top-left corner: everything else is black, so a
 # dialog outside the clip shows only if the OS lifted the clip.
+CLIP_MODAL = r"""
+d.clear(0)
+d.setClipRect(0, 0, 40, 40)
+d.fillRect(0, 0, 320, 320, 0x001F)
+d.flush()
+picocalc.sys.log("MODAL:CALL")
+local r = ui.{call}
+local x, y, w, h = d.getClipRect()
+picocalc.sys.log(string.format("MODAL:RET %s clip=%d,%d,%d,%d", tostring(r), x, y, w, h))
+"""
+
+
+def dialog_visible(sim, x=160, y=160, timeout=3.0):
+    """Whether the dialog's box colour comes up at the screen's centre."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if sim.screenshot_pil().convert("RGB").getpixel((x, y)) != (0, 0, 0):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.sd(fixtures=[])
+def test_text_input_ignores_the_apps_clip_rect(simulator, test_sd_card):
+    """ui.confirm lifts the clip rect and puts it back; ui.textInput did not, so
+    the dialog was invisible while the app blocked on it."""
+    stage_lua_app(test_sd_card, "ui_clip",
+                  UI + CLIP_MODAL.replace("{call}", 'textInput("Name:", "abc")'))
+    simulator.launch_app("ui_clip")
+    simulator.wait_for_log("MODAL:CALL", timeout=10)
+    assert dialog_visible(simulator), "text input drew nothing outside the clip"
+    seq = simulator.keypress("esc")["input_seq"]
+    simulator.wait_input_consumed(seq)
+    simulator.wait_for_log("MODAL:RET", timeout=10)
+    out = simulator.wait_for_exit(timeout=10)
+    assert out.get("result") == "returned", out
+    assert any("clip=0,0,40,40" in t for t in log_lines(simulator)), log_lines(simulator)
+
+
+@pytest.mark.sd(fixtures=[])
+def test_text_input_keeps_127_characters(simulator, test_sd_card):
+    stage_lua_app(test_sd_card, "ui_len",
+                  UI + 'picocalc.sys.log("LEN " .. #ui.textInput("p", string.rep("x", 400)))\n')
+    simulator.launch_app("ui_len")
+    assert dialog_visible(simulator)
+    simulator.keypress("\n")
+    out = simulator.wait_for_exit(timeout=10)
+    assert out.get("result") == "returned", out
+    assert any("LEN 127" in t for t in log_lines(simulator)), log_lines(simulator)
+
+
+LONG = "Really delete it? " * 20   # 360 chars: more than the box's two lines
+
+
+def text_rows(img, x0, x1, fg=(255, 255, 255)):
+    """Rows holding at least one pixel of colour `fg`, between columns x0..x1."""
+    px = img.load()
+    return [y for y in range(320) if any(px[x, y] == fg for x in range(x0, x1))]
+
+
+@pytest.mark.sd(fixtures=[])
+def test_confirm_box_fits_a_long_message(simulator, test_sd_card):
+    """The box was sized for at most two lines, so a longer message ran past its
+    bottom edge and over the Enter/Esc hint."""
+    code = f'd.clear(0x07E0)\nd.flush()\nlocal r = ui.confirm("{LONG}")\npicocalc.sys.log("OK")\n'
+    stage_lua_app(test_sd_card, "ui_confirm", UI + code)
+    simulator.launch_app("ui_confirm")
+    assert dialog_visible(simulator)
+    img = simulator.screenshot_pil().convert("RGB")
+    # DLG_X = 20, DLG_W = 280: the white text sits inside the box's columns.
+    rows = text_rows(img, 20, 300)
+    assert rows, "no message text"
+    # The box: the dialog colour, down a column inside its left edge.
+    px = img.load()
+    box = [y for y in range(320) if px[24, y] == px[24, 160]]
+    assert rows[0] > box[0] and rows[-1] < box[-1], (rows[0], rows[-1], box[0], box[-1])
+    # The hint's own rows are not white, and the last message line stays above them.
+    hint_top = box[-1] - 12
+    assert rows[-1] < hint_top, (rows[-1], hint_top)
+    # Seven lines of text at least: it is not cut off at two.
+    assert rows[-1] - rows[0] > 6 * 12, (rows[0], rows[-1])
+    simulator.keypress("esc")
+
+
+@pytest.mark.sd(fixtures=[])
+def test_confirm_short_message_keeps_its_box(simulator, test_sd_card):
+    """One- and two-line dialogs are the size they always were."""
+    code = 'd.clear(0x07E0)\nd.flush()\nui.confirm("Delete this file?")\n'
+    stage_lua_app(test_sd_card, "ui_confirm", UI + code)
+    simulator.launch_app("ui_confirm")
+    assert dialog_visible(simulator)
+    img = simulator.screenshot_pil().convert("RGB")
+    px = img.load()
+    box = [y for y in range(320) if px[24, y] == px[24, 160]]
+    assert box[-1] - box[0] + 1 == 44 + 12 + 18 - 2, (box[0], box[-1])
+    simulator.keypress("esc")
+
+
+@pytest.mark.sd(fixtures=[])
+def test_confirm_breaks_at_newlines(simulator, test_sd_card):
+    code = 'd.clear(0x07E0)\nd.flush()\nui.confirm("one\\ntwo")\n'
+    stage_lua_app(test_sd_card, "ui_confirm", UI + code)
+    simulator.launch_app("ui_confirm")
+    assert dialog_visible(simulator)
+    img = simulator.screenshot_pil().convert("RGB")
+    px = img.load()
+    box = [y for y in range(320) if px[24, y] == px[24, 160]]
+    assert box[-1] - box[0] + 1 == 44 + 2 * 12 + 18 - 2, (box[0], box[-1])
+    simulator.keypress("esc")
+
+
+@pytest.mark.sd(fixtures=[])
+def test_confirm_message_stops_at_twenty_lines(simulator, test_sd_card):
+    """The tallest box still fits on the panel."""
+    code = 'd.clear(0x07E0)\nd.flush()\nui.confirm(string.rep("x\\n", 200))\n'
+    stage_lua_app(test_sd_card, "ui_confirm", UI + code)
+    simulator.launch_app("ui_confirm")
+    assert dialog_visible(simulator)
+    img = simulator.screenshot_pil().convert("RGB")
+    px = img.load()
+    box = [y for y in range(320) if px[24, y] == px[24, 160]]
+    assert box[-1] - box[0] + 1 == 44 + 20 * 12 + 18 - 2, (box[0], box[-1])
+    simulator.keypress("esc")
+
+
 # ── Toasts ────────────────────────────────────────────────────────────────────
