@@ -45,8 +45,6 @@ static counters_t s_c[PH_COUNT];
 static int s_phase;
 
 static double cycles_of(const counters_t *c) {
-  const double *unused = NULL;
-  (void)unused;
   return (double)c->instr * s_param[P_INSTR].v + (double)c->loads * s_param[P_LOAD].v +
          (double)c->stores * s_param[P_STORE].v + (double)c->taken * s_param[P_BRANCH].v +
          (double)c->fdiv * (s_param[P_FDIV].v - s_param[P_INSTR].v) +
@@ -156,9 +154,8 @@ static void hook_code(uc_engine *uc, uint64_t addr, uint32_t size, void *ud) {
   if (pc != s_next_pc) c->taken++;
   s_next_pc = pc + size;
   if (IS_CACHED(pc)) {
-    // One access per distinct line in sequence: the fast path also keeps
-    // straight-line code from reordering a set's recency, which fetching
-    // words through a prefetch buffer would not either.
+    // One access each time the fetch moves to another line. Repeats within a
+    // line could not change the result: its way is already the most recent.
     const uint32_t line = pc & ~7u;
     if (line != s_last_line) {
       s_last_line = line;
@@ -360,6 +357,23 @@ static void report(const char *label, bool show_device) {
   printf("  pixels: FNV-1a of every frame's 320x320 buffer %016" PRIx64 "\n", s_fnv);
 }
 
+// `--per N`: phase 1 as a cost per unit of work (the Lua loop's iterations).
+static void report_per(const char *label, uint64_t n) {
+  const counters_t *c = &s_c[PH_GEOM];
+  const double d = (double)n, cy = cycles_of(c) / d;
+  printf("perf_rig: %s, per iteration of %" PRIu64 " (ESTIMATE, not a measurement)\n", label, n);
+  printf("  %-24s %10.2f\n", "instructions", (double)c->instr / d);
+  printf("  %-24s %10.2f\n", "words loaded", (double)c->loads / d);
+  printf("  %-24s %10.2f\n", "words stored", (double)c->stores / d);
+  printf("  %-24s %10.2f\n", "taken branches", (double)c->taken / d);
+  printf("  %-24s %10.4f\n", "fetch misses", (double)(c->fmiss_flash + c->fmiss_psram) / d);
+  printf("  %-24s %10.4f\n", "data misses", (double)(c->dmiss_flash + c->dmiss_psram) / d);
+  printf("  %-24s %10.4f\n", "write-backs", (double)c->wb / d);
+  printf("  %-24s %10.2f\n", "cycles (estimate)", cy);
+  printf("  %-24s %10.1f\n", "ns at clock", cy * 1000.0 / s_param[P_MHZ].v);
+  printf("  %-24s %10.1f   (36 cycles)\n", "device, 200 MHz (ns)", 180.0);
+}
+
 // The self-test guest (guest/selftest.c) ran a known instruction sequence in the
 // geometry phase, a known cache pattern in the raster phase, and counted its own
 // wrong results (VFP, DSP) in stat 0.
@@ -401,7 +415,7 @@ int main(int argc, char **argv) {
   if (argc < 2) usage();
   const char *elf = argv[1], *label = argv[1];
   bool show_device = true, selftest = false;
-  uint64_t max_instr = 0;
+  uint64_t max_instr = 0, per = 0;
   for (int i = 2; i < argc; i++) {
     const char *a = argv[i];
     if (!strcmp(a, "--selftest")) {
@@ -414,6 +428,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(a, "--no-device")) show_device = false;
     else if (!strcmp(a, "--dirty-frac")) s_dirty_frac = atof(argv[++i]);
     else if (!strcmp(a, "--max-instr")) max_instr = strtoull(argv[++i], NULL, 0);
+    else if (!strcmp(a, "--per")) per = strtoull(argv[++i], NULL, 0);
     else if (!strcmp(a, "--policy")) {
       const char *p = argv[++i];
       s_policy = !strcmp(p, "lru") ? POLICY_LRU : !strcmp(p, "fifo") ? POLICY_FIFO : POLICY_RANDOM;
@@ -466,6 +481,15 @@ int main(int argc, char **argv) {
     return 1;
   }
   if (selftest) return selftest_report();
+  if (per) {
+    if (s_stat[0]) {
+      fprintf(stderr, "rig: the guest reported error %u\n", s_stat[0]);
+      return 1;
+    }
+    report_per(label, per);
+    uc_close(uc);
+    return 0;
+  }
   report(label, show_device);
   uc_close(uc);
   return 0;

@@ -12,6 +12,7 @@ make -C tools/perf_rig run GFX3D_SRC=/path/to/worktree     # that tree's src/os/
 make -C tools/perf_rig compare GFX3D_SRC=/path/to/worktree # this tree's, then that one's
 make -C tools/perf_rig run MAP=text-sram                   # the same code placed elsewhere (below)
 make -C tools/perf_rig run RIG_ARGS="--psram-line 90"      # any option of the host tool
+make -C tools/perf_rig run-lua                             # the real Lua core, an empty for-loop
 make -C tools/perf_rig sweep                               # how far the estimate moves with each assumption
 make -C tools/perf_rig check                               # checks the emulator
 make -C tools/perf_rig help                                # every option and default
@@ -21,11 +22,14 @@ Needs `arm-none-eabi-gcc`, host `lua` 5.4, a simulator build for its static Unic
 
 The table's last line hashes every frame's pixels: an optimisation that must not change the picture keeps that hash.
 
+The table's device row is the unmodified code's. For changed code or another map, compare the estimate with the unmodified code's estimate, not with that row.
+
 ## What runs
 
 - **Code.** `src/os/gfx3d.c` is its own translation unit, built with the firmware's compiler and flags (`-mcpu=cortex-m33 -mthumb -march=armv8-m.main+fp+dsp -mfloat-abi=softfp -mcmse`, `-Os` then its per-file `-O2 -ffp-contract=off`). In `MAP=flash`, its symbols land at the same addresses as in `build/picodeck.elf` (checked by diffing `nm` at the time of writing: identical), so its lines fall in the same cache sets. A changed `gfx3d.c` moves as it would in the firmware, up to what follows it. `.time_critical*` goes to SRAM, as does newlib's `sqrtf` (where the firmware has it); `memset` and `memcpy` stay near their firmware addresses.
 - **Scene.** `scene/dump_scene.lua` runs the game's real `render.lua`, `trackgen`, `trackmesh`, `models` and `camera` under host Lua with `picocalc.gfx3d` stubbed, and records every call. It totals 2353 triangles, the device's `tris_in` max. Only the motion is approximate: the player runs the lap at constant speed, and the rivals hold fixed offsets, with no AI or physics.
 - **Phases.** `guest/gfx3d_main.c` replays the calls in the bridge's order. Geometry and raster bracket the same calls as the bridge's `us_geom` and `us_raster` timers. Meshes, the context, records and scratch come from a bump allocator in PSRAM at 200-byte granularity; the stack is in PSRAM; the 320x320 target is in SRAM with `swap` on, the viewport 320x240.
+- **Lua (`run-lua`).** The real core from `third_party/lua-5.4` with the device's defines and `-O2`, and `for i = 1, 1000000 do end`, which is one FORLOOP bytecode per iteration. `luaV_execute` has the firmware's address and size (checked with `nm`); the rest of Lua follows it at other addresses, which an empty loop never reaches once running. The heap is a bump allocator in PSRAM.
 
 ## The cost model
 
@@ -76,6 +80,8 @@ The scene's own numbers: `drawn` avg 349 (device 358), max 544 (device 587), `tr
 
 - **Raster** is only 13% cache stalls, so its error is in the core figures, not the cache model. Each of these alone takes it to about 5.0-5.2 ms: a taken branch at +1, a store at +0, or 0.8 cycles an instruction. All three are plausible on the M33 and none was applied, because the brief says not to tune them.
 - **Geometry** is 62% cache stalls. It reads low, as expected from what is left out, all of which adds time on the device: prefetch misses, the interrupts inside its timers, dirty lines left by Lua (`--dirty-frac 1` gives 5.72 ms).
+
+**Lua's empty for-loop checks the core figures alone**, since it has no misses once running. The estimate is 40.0 cycles an iteration (200 ns): 25 instructions, 7 words loaded, 4 stored, 2 taken branches. The device's is ~180 ns (36 cycles), so the estimate is 11% high. That agrees in direction with raster: the core figures run somewhat high on the M33. One short loop cannot fix them, so they stay as they are.
 
 ## How far to trust it
 

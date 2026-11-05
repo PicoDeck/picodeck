@@ -6,6 +6,7 @@
 #   make compare GFX3D_SRC=/path/to/worktree this tree's, then that one's
 #   make run MAP=text-sram                   the same code moved (see "Maps" below)
 #   make run RIG_ARGS="--policy random"      any option of the host tool (make help)
+#   make run-lua                             the real Lua core, an empty for-loop
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 HERE := $(ROOT)/tools/perf_rig
 GFX3D_SRC ?= $(ROOT)
@@ -14,9 +15,6 @@ FRAMES ?= 60
 LAP_S ?= 71
 MAP ?= flash
 RIG_ARGS ?=
-# Build directory: one per source tree and map, so `compare` keeps both.
-TAG := $(shell printf '%s' '$(abspath $(GFX3D_SRC))' | cksum | cut -d' ' -f1)
-O ?= $(HERE)/build/$(TAG)-$(MAP)
 
 # ── Unicorn: the simulator's static build, here or in the main checkout ──────
 MAIN_CHECKOUT := $(abspath $(dir $(shell git -C $(ROOT) rev-parse --path-format=absolute --git-common-dir)))
@@ -55,6 +53,10 @@ ifeq ($(MAP),scratch-sram)     # stack and every gfx3d allocation in SRAM: no PS
 STACK_TOP := 0x20080000
 HEAP_BASE := 0x20080000
 endif
+# Build directory: one per source tree, scene and placement, so `compare` keeps
+# both trees and changing FRAMES or a base can never run a stale guest.
+TAG := $(shell printf '%s' '$(abspath $(GFX3D_SRC)) $(TEXT_BASE) $(RAMTEXT_BASE) $(LIB_BASE) $(RODATA_BASE) $(DATA_BASE) $(STACK_TOP) $(HEAP_BASE) $(FB_BASE)' | cksum | cut -d' ' -f1)
+O ?= $(HERE)/build/$(TAG)-$(MAP)-$(FRAMES)-$(LAP_S)
 LDFLAGS := -nostartfiles --specs=nano.specs --specs=nosys.specs -Wl,--gc-sections -Wl,-T,$(HERE)/guest/guest.ld \
 	-Wl,--defsym=TEXT_BASE=$(TEXT_BASE) -Wl,--defsym=RAMTEXT_BASE=$(RAMTEXT_BASE) \
 	-Wl,--defsym=LIB_BASE=$(LIB_BASE) -Wl,--defsym=RODATA_BASE=$(RODATA_BASE) \
@@ -66,7 +68,7 @@ RIG := $(HERE)/build/perf_rig
 SCENE := $(HERE)/build/scene-$(FRAMES)-$(LAP_S).bin
 GUEST := $(O)/gfx3d.elf
 
-.PHONY: all run sweep compare check help clean
+.PHONY: all run run-lua sweep compare check help clean
 all: $(RIG) $(GUEST)
 
 # Checks the emulator: the self-test of VFP, DSP, hook counts and the cache model,
@@ -87,6 +89,36 @@ run: all
 
 sweep: all
 	@bash $(HERE)/sweep.sh $(RIG) $(GUEST)
+
+# The real Lua core, the device's defines and -O2 (cmake/picodeck_lua.cmake,
+# CMakeLists.txt), and one empty for-loop.
+LUA_SRC ?= $(ROOT)/third_party/lua-5.4/src
+LUA_DEFS := -DLUA_32BITS=1 -DLUA_USE_LONGJMP=1 -DLUAI_MAXSTACK=1000 -DLUAI_MAXCCALLS=60 -DLUA_IDSIZE=60 -DPICODECK_LUA_SPRINTF=1
+LUA_ITERS ?= 1000000
+LUAV_BASE ?= 0x100a8ef8
+LUA_CORE := lapi lcode lctype ldebug ldo ldump lfunc lgc llex lmem lobject lopcodes lparser lstate lstring ltable ltm lundump lvm lzio lauxlib
+LUA_OBJS := $(LUA_CORE:%=$(HERE)/build/lua/%.o)
+
+run-lua: $(RIG) $(HERE)/build/lua/lua.elf
+	@$(RIG) $(HERE)/build/lua/lua.elf --label "Lua core, empty for-loop" --per $(LUA_ITERS) $(RIG_ARGS)
+
+$(HERE)/build/lua/%.o: $(LUA_SRC)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ARCH) -g -DNDEBUG -std=gnu11 -Os -ffunction-sections -fdata-sections -O2 $(LUA_DEFS) -I$(LUA_SRC) -c -o $@ $<
+
+$(HERE)/build/lua/lua_main.o: $(HERE)/guest/lua_main.c $(HERE)/guest/rig.h
+	@mkdir -p $(dir $@)
+	$(CC) $(ARCH) -g -DNDEBUG -std=gnu11 -O2 $(LUA_DEFS) -DRIG_LUA_ITERS=\"$(LUA_ITERS)\" -I$(LUA_SRC) -I$(HERE)/guest -c -o $@ $<
+
+$(HERE)/build/lua/start.o: $(HERE)/guest/start.S $(SCENE)
+	@mkdir -p $(dir $@)
+	$(CC) $(ARCH) -DSCENE_BIN=\"$(SCENE)\" -c -o $@ $<
+
+$(HERE)/build/lua/lua.elf: $(LUA_OBJS) $(HERE)/build/lua/lua_main.o $(HERE)/build/lua/start.o $(HERE)/guest/lua.ld
+	$(CC) $(ARCH) -nostartfiles --specs=nano.specs --specs=nosys.specs -Wl,--gc-sections -Wl,-T,$(HERE)/guest/lua.ld \
+		-Wl,--defsym=LUAV_BASE=$(LUAV_BASE) -Wl,--defsym=DATA_BASE=$(DATA_BASE) \
+		-Wl,--defsym=STACK_TOP=$(STACK_TOP) -Wl,--defsym=HEAP_BASE=$(HEAP_BASE) \
+		-Wl,--no-warn-rwx-segments -Wl,--no-warnings -o $@ $(LUA_OBJS) $(HERE)/build/lua/lua_main.o $(HERE)/build/lua/start.o -lm -lc -lgcc
 
 compare:
 	@$(MAKE) --no-print-directory run GFX3D_SRC=$(ROOT)
