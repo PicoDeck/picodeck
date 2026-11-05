@@ -3111,7 +3111,9 @@ function PicoDeckTerminal:setColors(fg, bg) end
 ---@return integer bg
 function PicoDeckTerminal:getColors() end
 
----Scroll the terminal by `lines` lines (positive = down).
+---Shift the grid's contents, destructively: positive moves them up, the top rows
+---going into the scrollback; negative moves them down, the bottom rows being lost.
+---To look back without changing anything, use `setScrollbackOffset`.
 ---@param lines integer
 function PicoDeckTerminal:scroll(lines) end
 
@@ -3135,10 +3137,10 @@ function PicoDeckTerminal:setCursorVisible(visible) end
 function PicoDeckTerminal:setCursorBlink(blink) end
 
 ---Select the font for this terminal.
----@param font_id integer One of the FONT_* constants
-function PicoDeckTerminal:setFont(font_id) end
+---@param name string `"scientifica"` or `"scientifica_bold"`
+function PicoDeckTerminal:setFont(name) end
 
----@return integer
+---@return string name
 function PicoDeckTerminal:getFont() end
 
 ---Mark all cells as dirty (forces a full re-render on next `renderDirty`).
@@ -3166,7 +3168,7 @@ function PicoDeckTerminal:getScrollbackLine(line) end
 ---@return integer
 function PicoDeckTerminal:getScrollbackOffset() end
 
----Set the scrollback display offset.
+---View the text `offset` lines back from the live grid (0 = live).
 ---@param offset integer
 function PicoDeckTerminal:setScrollbackOffset(offset) end
 
@@ -3178,11 +3180,11 @@ function PicoDeckTerminal:waitForAnyKey() end
 ---@return integer button_mask
 function PicoDeckTerminal:waitForKey(key) end
 
----Return the next key event without blocking, or `nil` if no key is pending.
+---The buttons that went down at the last `input.update()`, or `nil`. Does not poll.
 ---@return integer?
 function PicoDeckTerminal:readKey() end
 
----Return the next ASCII character without blocking, or `nil`.
+---The character of the last `input.update()`, or `nil`. Does not poll.
 ---@return string?
 function PicoDeckTerminal:readChar() end
 

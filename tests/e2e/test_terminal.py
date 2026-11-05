@@ -250,6 +250,32 @@ def doc_block(page, heading):
     return section.split("```lua\n", 1)[1].split("```", 1)[0]
 
 
+@pytest.mark.sd(fixtures=[])
+def test_doc_complete_example_scrolls_and_exits(simulator, test_sd_card):
+    stage_lua_app(test_sd_card, "term_doc", doc_block("API-Terminal.md", "## Complete example"))
+    simulator.launch_app("term_doc")
+    simulator.wait_frames(1)
+    time.sleep(0.2)
+    live = simulator.screenshot_pil().convert("RGB").tobytes()
+
+    def press(key):
+        seq = simulator.keypress(key)["input_seq"]
+        simulator.wait_input_consumed(seq)
+        time.sleep(0.15)
+        return simulator.screenshot_pil().convert("RGB").tobytes()
+
+    up1 = press("up")
+    assert up1 != live, "Up did not scroll back"
+    up2 = press("up")
+    assert up2 != up1
+    assert press("down") == up1, "Down did not come back a line"
+    assert press("down") == live, "Down did not return to the live view"
+    assert press("down") == live, "Down went past the live view"
+    simulator.keypress("esc")
+    out = simulator.wait_for_exit(timeout=10)
+    assert out.get("result") == "returned", out
+
+
 # ── renderDirty and the two framebuffers ─────────────────────────────────────
 
 def lit(img, y0, y1):
