@@ -411,6 +411,25 @@ T.case("many_finished_players_with_callbacks", function()
     collectgarbage("restart")
 end)
 
+-- Every play reaps, and the pump hands callbacks over on the other core meanwhile:
+-- a park landing in the middle of that lost the callback.
+T.case("no_callback_is_lost_to_a_reap", function()
+    local s = T.ok(sound.sample(SHORT), "sample")
+    local fired, played = 0, 0
+    local t0 = sys.getTimeMs()
+    while played < 240 and sys.getTimeMs() - t0 < 20000 do
+        local p = s:play()
+        if p then
+            played = played + 1
+            p:setFinishCallback(function() fired = fired + 1 end)
+        end
+        sys.sleep(1)
+    end
+    wait_until(function() return fired == played end, 5000,
+               "fired " .. fired .. " of " .. played)
+    T.ok(played > 0, "played")
+end)
+
 T.case("callback_survives_a_replay", function()
     local s = T.ok(sound.sample(SHORT), "sample")
     local p = T.ok(s:play(), "play")
