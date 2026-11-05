@@ -342,8 +342,28 @@ static void run_end(gfx3d_t *g, const gfx3d_target_t *t) {
   leaf_end_t a = {g, t};
   leaf_stack_call(leaf_end, &a);
 }
+
+typedef struct {
+  gfx3d_t *g;
+  const gfx3d_mesh_t *m;
+  const gfx3d_xform_t *xf;
+  float bias;
+  bool one;
+} leaf_draw_xf_t;
+
+static void leaf_draw_xf(void *p) {
+  const leaf_draw_xf_t *a = (const leaf_draw_xf_t *)p;
+  gfx3d_draw_xf(a->g, a->m, a->xf, a->bias, a->one);
+}
+
+static void run_draw_xf(gfx3d_t *g, const gfx3d_mesh_t *m, const gfx3d_xform_t *xf,
+                        float bias, bool one) {
+  leaf_draw_xf_t a = {g, m, xf, bias, one};
+  leaf_stack_call(leaf_draw_xf, &a);
+}
 #else
 #define run_draw gfx3d_draw
+#define run_draw_xf gfx3d_draw_xf
 #define run_end gfx3d_end
 #endif
 
@@ -398,21 +418,21 @@ static int l_gfx3d_drawList(lua_State *L) {
   if (start < 1 || start > n) return luaL_argerror(L, 3, "start must be in 1..#list");
   static const float ident[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
   static const float origin[3] = {0, 0, 0};
-  uint32_t geom = 0;
+  const uint32_t t0 = now_us();
+  gfx3d_xform_t xf;
+  gfx3d_xform(s_g, ident, origin, 1.0f, &xf);
   for (lua_Integer k = 0; k < n; k++) {
     const lua_Integer i = (start - 1 + k) % n + 1;
     lua_rawgeti(L, 1, i);
     mesh_ud_t *u = (mesh_ud_t *)lb_testudata(L, -1, MESH_MT);
     if (!u || !u->m) {
-      s_us_geom += geom;
+      s_us_geom += now_us() - t0;
       return luaL_error(L, "gfx3d.drawList: list[%d] is not a live mesh", (int)i);
     }
-    const uint32_t t0 = now_us();
-    run_draw(s_g, u->m, ident, origin, 1.0f, bias, false);
-    geom += now_us() - t0;
+    run_draw_xf(s_g, u->m, &xf, bias, false);
     lua_pop(L, 1);
   }
-  s_us_geom += geom;
+  s_us_geom += now_us() - t0;
   return 0;
 }
 

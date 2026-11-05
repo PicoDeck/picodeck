@@ -82,7 +82,8 @@ typedef uint32_t __attribute__((may_alias)) disp_u32a_t;
 // for an odd last pixel. On the device the plain -Os loops this replaced cost
 // a compare and a branch per store: ~5 cycles a word for display_clear, ~10
 // for a full-width fillRect, one 16-bit store per pixel for any other rect.
-DISP_HOT static inline void disp_fill_px(uint16_t *p, size_t n, uint16_t v) {
+__attribute__((always_inline)) static inline void disp_fill_px_inl(uint16_t *p, size_t n,
+                                                                   uint16_t v) {
   if (n && ((uintptr_t)p & 2)) { *p++ = v; n--; }
   disp_u32a_t *q = (disp_u32a_t *)(void *)p;
   const uint32_t v2 = ((uint32_t)v << 16) | v;
@@ -93,6 +94,10 @@ DISP_HOT static inline void disp_fill_px(uint16_t *p, size_t n, uint16_t v) {
   }
   while (words--) *q++ = v2;
   if (n & 1) *(uint16_t *)(void *)q = v;
+}
+
+DISP_HOT static inline void disp_fill_px(uint16_t *p, size_t n, uint16_t v) {
+  disp_fill_px_inl(p, n, v);
 }
 
 // Fill a clipped rect with an already-converted pixel value.
@@ -343,20 +348,11 @@ static inline void disp_fill_triangle(uint16_t *fb, int stride,
 
 // ── Span fill and the float-vertex triangle (gfx3d) ─────────────────────────
 
-// Fill row[x0..x1] (inclusive, already clipped) with v; 32-bit stores for the
-// aligned middle.
+// Fill row[x0..x1] (inclusive, already clipped) with v, through disp_fill_px's
+// eight-at-a-time stores: gfx3d's sky alone is ~38 K word stores a frame.
 static inline void disp_span16(uint16_t *row, int x0, int x1, uint16_t v) {
   if (x1 < x0) return;
-  uint16_t *p = row + x0;
-  int n = x1 - x0 + 1;
-  if ((uintptr_t)p & 2u) {
-    *p++ = v;
-    n--;
-  }
-  uint32_t v2 = ((uint32_t)v << 16) | v;
-  disp_u32a_t *q = (disp_u32a_t *)(void *)p;  // may_alias: see disp_u32a_t
-  for (; n >= 2; n -= 2) *q++ = v2;
-  if (n) *(uint16_t *)(void *)q = v;
+  disp_fill_px(row + x0, (size_t)(x1 - x0 + 1), v);
 }
 
 // Smallest integer >= v, clamped to [lo, hi] (NaN gives lo).
@@ -366,10 +362,84 @@ static inline int disp_ceil_px(float v, int lo, int hi) {
   return (int)ceilf(v);
 }
 
-// x of the edge from its upper end (xt, yt) to (xb, yb) at height yc.
-static inline float disp_edge_x(float xt, float yt, float xb, float yb,
-                                float yc) {
-  return xt + (yc - yt) * ((xb - xt) / (yb - yt));
+// One row of a float-vertex triangle, its two edge x values given in either
+// order. flo/fhi are (float)cx0 and (float)(cx1 + 1), the clip's x range.
+__attribute__((always_inline)) static inline void disp_tri_row(
+    uint16_t *row, float xl, float xr, int cx0, int cxe, float flo, float fhi,
+    uint16_t v) {
+  // A sub-triangle with zero height on this side (e.g. x1==x2 with y1==y2,
+  // dividing 0/0 for its slope) yields NaN: nothing to fill.
+  if (xl != xl || xr != xr) return;
+  if (xr < xl) {
+    const float t = xl;
+    xl = xr;
+    xr = t;
+  }
+  xl -= 0.5f;
+  xr -= 0.5f;
+  // disp_ceil_px(xl, cx0, cxe), disp_ceil_px(xr, cx0, cxe)
+  const int xa = !(xl > flo) ? cx0 : xl >= fhi ? cxe : (int)ceilf(xl);
+  const int xe = !(xr > flo) ? cx0 : xr >= fhi ? cxe : (int)ceilf(xr);  // exclusive
+  if (xe > xa) disp_fill_px_inl(row + xa, (size_t)(xe - xa), v);
+}
+
+// The first half of disp_fill_tri_f: false for a non-finite vertex, else sorts
+// the vertices by (y, x), the order disp_fill_tri_sorted wants.
+__attribute__((always_inline)) static inline bool disp_tri_sort(
+    float *x0, float *y0, float *x1, float *y1, float *x2, float *y2) {
+  // x - x is 0 when x is finite, else NaN, and NaN stays through the sum.
+  const float fin = (*x0 - *x0) + (*y0 - *y0) + (*x1 - *x1) + (*y1 - *y1) +
+                    (*x2 - *x2) + (*y2 - *y2);
+  if (fin != fin) return false;
+  float t;
+#define DISP_TRI_SWAPF(xa, ya, xb, yb) \
+  do { t = *xa; *xa = *xb; *xb = t; t = *ya; *ya = *yb; *yb = t; } while (0)
+  if (*y1 < *y0 || (*y1 == *y0 && *x1 < *x0)) DISP_TRI_SWAPF(x0, y0, x1, y1);
+  if (*y2 < *y0 || (*y2 == *y0 && *x2 < *x0)) DISP_TRI_SWAPF(x0, y0, x2, y2);
+  if (*y2 < *y1 || (*y2 == *y1 && *x2 < *x1)) DISP_TRI_SWAPF(x1, y1, x2, y2);
+#undef DISP_TRI_SWAPF
+  return true;
+}
+
+// The second half: vertices from disp_tri_sort, the clip rect (not empty) by
+// value, so a caller drawing many triangles keeps it in registers: a span store
+// (disp_u32a_t, may_alias) could change anything a pointer reaches, and a clip
+// behind one is read again for every row. Always inlined, so a caller placed in
+// RAM stays there.
+__attribute__((always_inline)) static inline void disp_fill_tri_sorted(
+    uint16_t *fb, int stride, int cx0, int cy0, int cx1, int cy1, float x0,
+    float y0, float x1, float y1, float x2, float y2, uint16_t v) {
+  if (!(y2 > y0)) return;  // zero height
+  const int ya = disp_ceil_px(y0 - 0.5f, cy0, cy1 + 1);
+  const int yb = disp_ceil_px(y2 - 0.5f, cy0, cy1 + 1);  // exclusive
+  if (ya >= yb) return;
+  // An edge's x at height yc is xt + (yc - yt) * slope, from its upper end, on
+  // every row and in every triangle that shares it. Each slope is one division
+  // per triangle, done only if a row needs it. (xs, ys, ss) is the short side's
+  // edge on this row: from the top vertex, then from the middle one. One row
+  // loop, not one per side: this code is in SRAM on the device.
+  const int cxe = cx1 + 1;
+  const float flo = (float)cx0, fhi = (float)cxe;
+  const float s02 = (x2 - x0) / (y2 - y0);
+  uint16_t *row = fb + (size_t)ya * stride;
+  int py = ya;
+  float yc = (float)py + 0.5f;
+  bool lower = !(yc < y1);
+  float xs = lower ? x1 : x0, ys = lower ? y1 : y0;
+  float ss = lower ? (x2 - x1) / (y2 - y1) : (x1 - x0) / (y1 - y0);
+  for (;;) {
+    disp_tri_row(row, x0 + (yc - y0) * s02, xs + (yc - ys) * ss, cx0, cxe, flo,
+                 fhi, v);
+    if (++py >= yb) break;
+    row += stride;
+    yc = (float)py + 0.5f;
+    if (!lower && !(yc < y1)) {
+      lower = true;
+      xs = x1;
+      ys = y1;
+      ss = (x2 - x1) / (y2 - y1);
+    }
+  }
 }
 
 // Flat triangle with float vertices. A pixel is filled when its centre
@@ -383,37 +453,10 @@ static inline void disp_fill_tri_f(uint16_t *fb, int stride,
                                    const disp_clip_t *c, float x0, float y0,
                                    float x1, float y1, float x2, float y2,
                                    uint16_t v) {
-  if (!isfinite(x0) || !isfinite(y0) || !isfinite(x1) || !isfinite(y1) ||
-      !isfinite(x2) || !isfinite(y2))
-    return;
   if (c->x1 < c->x0 || c->y1 < c->y0) return;
-  float t;
-#define DISP_TRI_SWAPF(xa, ya, xb, yb) \
-  do { t = xa; xa = xb; xb = t; t = ya; ya = yb; yb = t; } while (0)
-  if (y1 < y0 || (y1 == y0 && x1 < x0)) DISP_TRI_SWAPF(x0, y0, x1, y1);
-  if (y2 < y0 || (y2 == y0 && x2 < x0)) DISP_TRI_SWAPF(x0, y0, x2, y2);
-  if (y2 < y1 || (y2 == y1 && x2 < x1)) DISP_TRI_SWAPF(x1, y1, x2, y2);
-#undef DISP_TRI_SWAPF
-  if (!(y2 > y0)) return;  // zero height
-  const int ya = disp_ceil_px(y0 - 0.5f, c->y0, c->y1 + 1);
-  const int yb = disp_ceil_px(y2 - 0.5f, c->y0, c->y1 + 1);  // exclusive
-  for (int py = ya; py < yb; py++) {
-    const float yc = (float)py + 0.5f;
-    float xl = disp_edge_x(x0, y0, x2, y2, yc);
-    float xr = yc < y1 ? disp_edge_x(x0, y0, x1, y1, yc)
-                       : disp_edge_x(x1, y1, x2, y2, yc);
-    // A sub-triangle with zero height on this side (e.g. x1==x2 with
-    // y1==y2, dividing 0/0 in disp_edge_x) yields NaN: nothing to fill.
-    if (xl != xl || xr != xr) continue;
-    if (xr < xl) {
-      t = xl;
-      xl = xr;
-      xr = t;
-    }
-    const int xa = disp_ceil_px(xl - 0.5f, c->x0, c->x1 + 1);
-    const int xe = disp_ceil_px(xr - 0.5f, c->x0, c->x1 + 1);  // exclusive
-    if (xe > xa) disp_span16(fb + (size_t)py * stride, xa, xe - 1, v);
-  }
+  if (!disp_tri_sort(&x0, &y0, &x1, &y1, &x2, &y2)) return;
+  disp_fill_tri_sorted(fb, stride, c->x0, c->y0, c->x1, c->y1, x0, y0, x1, y1, x2,
+                       y2, v);
 }
 
 // ── Blitters ────────────────────────────────────────────────────────────────

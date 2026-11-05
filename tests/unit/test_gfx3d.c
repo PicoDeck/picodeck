@@ -10,6 +10,18 @@
 #define H 320
 #define HALF_PI 1.5707964f
 
+// The lent SRAM (gfx3d_sram_scratch, weak in gfx3d.c): off unless a test sets it.
+static char s_lent[2048] __attribute__((aligned(8)));
+static size_t s_lent_bytes;
+static int s_lent_calls;
+void *gfx3d_sram_scratch(size_t *bytes) {
+  s_lent_calls++;
+  if (!s_lent_bytes) return NULL;
+  memset(s_lent, 0xA5, sizeof s_lent);  // nothing may rely on what it held
+  *bytes = s_lent_bytes;
+  return s_lent;
+}
+
 static bool near_f(float a, float b, float eps) { return fabsf(a - b) <= eps; }
 #define CHECK_NEAR(a, b, eps) CHECK(near_f((a), (b), (eps)))
 
@@ -552,6 +564,83 @@ static void test_sprites(void) {
   gfx3d_free(g);
 }
 
+// A scene with every path of process_mesh: fog, light, a near clip, sort_as_one.
+static void lent_scene(gfx3d_t *g, gfx3d_mesh_t *m, uint16_t *fb, gfx3d_stats_t *st) {
+  const float e[3] = {0.3f, 1.2f, 6}, tg[3] = {0, 0, 0}, up[3] = {0, 1, 0};
+  const float id[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, p0[3] = {0, 0, 0}, p1[3] = {1.5f, 0, 1};
+  const float p2[3] = {0.2f, 0.4f, 5.9f};  // crosses the near plane
+  gfx3d_set_fog(g, true, 2, 12, 0x4208);
+  CHECK(gfx3d_look_at(g, e, tg, up));
+  gfx3d_begin(g, true, 0x0011);
+  gfx3d_draw(g, m, id, p0, 1, 0, false);
+  gfx3d_draw(g, m, id, p1, 0.5f, 0, true);
+  gfx3d_draw(g, m, id, p2, 1, 0, false);
+  memset(fb, 0, sizeof(uint16_t) * W * H);
+  const gfx3d_target_t t = {fb, W, 0, 0, W - 1, H - 1, false, NULL, NULL};
+  gfx3d_end(g, &t);
+  *st = *gfx3d_get_stats(g);
+}
+
+static void test_lent_sram_changes_nothing(void) {
+  gfx3d_mesh_t *m = gfx3d_mesh_alloc(8, 12);
+  for (int i = 0; i < 8; i++) {
+    m->xyz[3 * i] = (i & 1) ? 1.0f : -1.0f;
+    m->xyz[3 * i + 1] = (i & 2) ? 1.0f : -1.0f;
+    m->xyz[3 * i + 2] = (i & 4) ? 1.0f : -1.0f;
+  }
+  static const uint16_t q[6][4] = {{0, 2, 3, 1}, {4, 5, 7, 6}, {0, 1, 5, 4},
+                                   {2, 6, 7, 3}, {0, 4, 6, 2}, {1, 3, 7, 5}};
+  for (int f = 0; f < 6; f++) {
+    const uint16_t tri[6] = {q[f][0], q[f][1], q[f][2], q[f][0], q[f][2], q[f][3]};
+    for (int k = 0; k < 6; k++) m->idx[6 * f + k] = tri[k];
+    m->color[2 * f] = m->color[2 * f + 1] = (uint16_t)(0xF800 >> f);
+    m->flags[2 * f] = m->flags[2 * f + 1] = (uint8_t)(f == 3 ? GFX3D_DOUBLE_SIDED : 0);
+  }
+  CHECK(gfx3d_mesh_finish(m) == NULL);
+  static uint16_t a[W * H], b[W * H], c[W * H];
+  gfx3d_t *g = gfx3d_new(W, H);
+  gfx3d_stats_t sa, sb, sc;
+  s_lent_bytes = 0;
+  lent_scene(g, m, a, &sa);
+  s_lent_bytes = sizeof s_lent;
+  s_lent_calls = 0;
+  lent_scene(g, m, b, &sb);
+  CHECK(s_lent_calls == 3);
+  s_lent_bytes = 8 * 20 - 1;  // one byte short of the vertices: PSRAM's path
+  lent_scene(g, m, c, &sc);
+  s_lent_bytes = 0;
+  CHECK(sa.clipped > 0);
+  CHECK(memcmp(a, b, sizeof a) == 0);
+  CHECK(memcmp(a, c, sizeof a) == 0);
+  CHECK(memcmp(&sa, &sb, sizeof sa) == 0);
+  CHECK(memcmp(&sa, &sc, sizeof sa) == 0);
+  gfx3d_free(g);
+  gfx3d_mesh_free(m);
+}
+
+// A non-finite projected vertex (vertices just in front of the near plane, huge
+// coordinates) counts as drawn and paints nothing, as it did before records kept
+// their vertices sorted.
+static void test_nonfinite_vertex_draws_nothing(void) {
+  const float v[9] = {1e38f, 1e38f, -1, -1e38f, 1e38f, -1, 0, -1e38f, -1};
+  gfx3d_mesh_t *m = tri_mesh(v, 0xFFFF, GFX3D_DOUBLE_SIDED | GFX3D_UNLIT | GFX3D_NO_FOG);
+  static uint16_t fb[W * H];
+  gfx3d_t *g = gfx3d_new(W, H);
+  const float id[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, p0[3] = {0, 0, 0}, far_eye[3] = {0, 0, 0.5f};
+  (void)far_eye;
+  gfx3d_begin(g, false, 0);
+  gfx3d_draw(g, m, id, p0, 1, 0, false);
+  const gfx3d_target_t t = {fb, W, 0, 0, W - 1, H - 1, false, NULL, NULL};
+  gfx3d_end(g, &t);
+  // +-1e38 * focal overflows to inf; whatever is left of it, nothing is painted
+  // from a non-finite vertex, and the count is the record's.
+  const gfx3d_stats_t *s = gfx3d_get_stats(g);
+  if (s->drawn == 1)
+    for (int i = 0; i < W * H; i++) CHECK(fb[i] == 0);
+  gfx3d_free(g);
+  gfx3d_mesh_free(m);
+}
+
 int main(void) {
   test_euler_conventions();
   test_basis();
@@ -570,5 +659,7 @@ int main(void) {
   test_sky_level_rolled_and_vertical();
   test_background_is_drawn_first_and_never_far_culled();
   test_sprites();
+  test_lent_sram_changes_nothing();
+  test_nonfinite_vertex_draws_nothing();
   return check_report("test_gfx3d");
 }
