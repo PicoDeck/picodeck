@@ -2906,21 +2906,31 @@ Builds a `.pfn` from a BDF font, a TTF/OTF font, or a fixed-grid PNG sheet:
 
 ```
 python3 tools/mkfont.py SRC OUT.pfn [--size N] [--cell WxH] [--range FIRST-LAST]
-                                     [--proportional] [--spacing N] [--dump]
+                                     [--proportional] [--spacing N] [--tight] [--dump]
 ```
 
-- `SRC` ending `.bdf`: parsed by a built-in BDF reader; each glyph's `DWIDTH` gives its advance, and `--proportional` is implied automatically when advances vary.
-- `SRC` ending `.ttf` / `.otf`: rasterised with Pillow's `ImageFont` at `--size` pixels, thresholded at 50%; advance comes from the font's own metrics. (Requires Pillow; BDF and PNG sources need only the standard library.)
+- `SRC` ending `.bdf`: parsed by a built-in BDF reader; each glyph's `DWIDTH` gives its advance. The font is *fixed-cell* when all its glyphs in `--range` share one advance and *proportional* otherwise, with no flag needed.
+- `SRC` ending `.ttf` / `.otf`: rasterised with Pillow's `ImageFont` at `--size` pixels, using FreeType's hinted 1-bit output; advance comes from the font's own metrics. (Requires Pillow; BDF and PNG sources need only the standard library.)
 - `SRC` ending `.png`: a fixed grid sheet, cell size given by `--cell WxH`, glyphs read left to right then top to bottom starting at `first`; a pixel is set when its luminance is above 50%.
-- `--proportional` on a monospace source trims each glyph's advance down to its ink extent plus `--spacing` (default 1) and packs it to the left of its cell. Space keeps half the cell width, minimum 2 px.
+- `--proportional` is for PNG sheets and fixed-cell BDFs: it trims each glyph's advance down to its ink extent plus `--spacing` (default 1) and packs it to the left of its cell. Space keeps half the cell width, minimum 2 px. A proportional BDF keeps its designed advances and side bearings: the flag is ignored for one, with a warning. TTF and OTF sources ignore it too.
 - `--range` selects the codepoint range to emit, default `0x20-0x7E`.
+- `--tight` applies the proportional height rule below to a fixed-cell BDF, for a monospace font whose `FONTBOUNDINGBOX` is sized for glyphs outside the range (CJK, for example).
 - `--dump` prints every glyph as ASCII art with its advance, for eyeballing before shipping the file.
 
 The tool and the on-device renderer both support glyphs up to 64 px wide and 64 px tall (`stride = ceil(max_width / 8)` bytes per row).
 
+**BDF height.** A proportional BDF is as tall as the `BBX`es of its inked glyphs in `--range`, not its `FONTBOUNDINGBOX`, which also covers the glyphs outside the range. Lines of such a font have no gap between them, so add your own line spacing. A fixed-cell BDF keeps `FONTBOUNDINGBOX` as its cell (`--tight` changes that).
+
+**Ink outside the advance.** The renderer draws exactly a glyph's advance in columns and the format has no per-glyph x offset, so ink has to lie inside the advance. Glyphs start at the `FONTBOUNDINGBOX` x offset when that keeps all ink inside, and at their own pen origin otherwise. Ink still outside gets a warning per glyph (on stderr), and:
+
+- in a proportional font, that glyph's advance is widened to cover the ink, and ink left of the origin moves the glyph right by as much. This costs a pixel or so of looser spacing on those letters; it is always on, because the alternative is cut letters.
+- in a fixed-cell font, the glyph moves inside its cell, so that columns stay aligned. A glyph wider than the cell widens the cell of every glyph.
+
+TTF and OTF sources follow the same two rules, by whether their advances are all equal.
+
 ```lua
 -- Loaded on the app's SD card at fonts/custom.pfn, built with:
---   python3 tools/mkfont.py fonts/custom.bdf apps/myapp/fonts/custom.pfn --proportional
+--   python3 tools/mkfont.py fonts/custom.bdf apps/myapp/fonts/custom.pfn
 local font = picocalc.graphics.font.new(APP_DIR .. "/fonts/custom.pfn")
 font:drawText(10, 10, "Loaded from SD!", picocalc.display.WHITE)
 ```
