@@ -139,7 +139,7 @@ for line in call("get_log_buffer", tail=20)["lines"]:
 | `dev_command {cmd}` | Runs a [dev command](#dev-commands) |
 | `get_heap_info`, `get_audio_state`, `get_mp3_stats`, `get_crash_log` | Read state; none takes a parameter |
 | `get_terminal_buffer` | `{cols, rows, cursor_x, cursor_y, lines}` of the newest `picocalc.terminal`, or an error if the app has none |
-| `set_wifi_state {status, error_code, error_str}` | `connecting` or `failed` pin what `wifi.getStatus()` reports, with the network still working. `disconnected` or `not_available` take the network away, and `connected` or `online` give it back. `error` fails requests and connects, with `error_str` as the message. Anything else is refused |
+| `set_wifi_state {status, error_code, error_str}` | `connecting` or `failed` pin what `wifi.getStatus()` reports, with the network still working. `disconnected` or `not_available` take the network away, and `connected` or `online` give it back. `error` fails requests and connects, with `error_str` in the message. Anything else is refused |
 | `get_wifi_state` | `{status, ssid, ip}` |
 | `set_battery {percent, charging}` | What the battery calls report. A value you leave out goes back to its default, 100 and false |
 | `get_backlight` | `{level, dimmed}` |
@@ -153,7 +153,7 @@ for line in call("get_log_buffer", tail=20)["lines"]:
 
 A method ignores a parameter it does not know, so a misspelt one usually shows up as the default being used. An error reply has `code` and `message`: the script above returns it in place of the result, so look for `message`.
 
-**Typing, from a script.** `inject_button enter` is a key press with no character, as it is for an app that reads buttons, so it does not finish a `ui.textInput`, which reads characters. Type it instead, and the same goes for Backspace:
+**Typing, from a script.** `inject_button enter` is a key press with no character, so it does not finish a `ui.textInput`, which reads characters. Type it instead, and Backspace too, as `"\b"`:
 
 ```python
 call("inject_char", char="a")
