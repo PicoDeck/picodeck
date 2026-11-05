@@ -4,6 +4,36 @@ title: "API Filesystem"
 
 Filesystem access to the SD card (FAT32).
 
+## Where an app can read and write
+
+Every path is checked against the app's sandbox. By default (the `"filesystem"` requirement, which is what you get without declaring anything):
+
+| Path | Access |
+|---|---|
+| `/data/<APP_ID>` and everything under it | Read and write. It exists when your app starts. `picocalc.fs.appPath(name)` builds a path inside it. |
+| `/apps/<dir>` and everything under it, your own app's directory (`APP_DIR`) | Read only |
+| Files under `/system/lib/` | Read only |
+| Anything else | Refused |
+
+A path must be absolute, and any path containing `..` is refused, for every app. Names are not case-sensitive, in the sandbox check and on the card. The `"root-filesystem"` requirement opens the whole card (`..` and relative paths are still refused).
+
+Nothing raises when a path is refused. Each call answers in its own way, so check the result:
+
+| Call | When the sandbox refuses the path |
+|---|---|
+| `open`, `stat` | `nil, "permission denied"` |
+| `delete`, `deleteRecursive` | `false, "permission denied"` |
+| `rename`, `copy` | `false, "permission denied (source)"` or `"permission denied (destination)"` |
+| `listDir`, `glob` | An empty table and `"permission denied"`, so `ipairs(fs.listDir(p))` still works |
+| `exists`, `isDir`, `mkdir` | `false` |
+| `readFile` | `nil` |
+| `size` | `-1` |
+| `browse` | Starts in `/data/<APP_ID>` instead |
+
+`open` asks for write access when the mode contains `w`, `a` or `+`, so `"r+"` is refused on a file in `/apps/<dir>` even though it only reads.
+
+The examples on this page use `picocalc.fs.appPath`, which gives a path every app can write. `APP_DIR .. "/file"` reads from your own app's directory.
+
 ## picocalc.fs
 
 ### Functions
@@ -35,10 +65,12 @@ use a closed file"; `close` is idempotent. At most 16 files can be open at
 once (FatFS), and files still open when the app exits are closed by the OS.
 
 ```lua
-local f = picocalc.fs.open("/data/save.txt", "w")
+local f, err = picocalc.fs.open(picocalc.fs.appPath("save.txt"), "w")
 if f then
     picocalc.fs.write(f, "Hello")
     picocalc.fs.close(f)
+else
+    picocalc.sys.log("cannot save: " .. err)
 end
 ```
 
@@ -71,7 +103,11 @@ Writes data to an open file.
 A full card is not an error: the call returns a smaller count. Compare it with the length of your data whenever losing the end of a file matters. See [Saving a file safely](#saving-a-file-safely).
 
 ```lua
-local n = picocalc.fs.write(f, "content")
+local text = "content"
+local n = picocalc.fs.write(f, text)
+if n ~= #text then
+    picocalc.sys.log("short write: card full?")
+end
 ```
 
 ---
@@ -95,7 +131,7 @@ Checks if a file or directory exists.
 - **Returns:** (boolean) `true` if exists, `false` otherwise
 
 ```lua
-if picocalc.fs.exists("/data/save.txt") then
+if picocalc.fs.exists(picocalc.fs.appPath("save.txt")) then
     -- Load saved data
 end
 ```
@@ -110,7 +146,7 @@ Reads an entire file into memory in one call.
 - **Returns:** (string or nil) File contents, or `nil` when the path is denied, missing or unreadable. A file larger than free memory **raises** a memory error instead of returning `nil`; wrap it in `pcall` when the size is not known to fit.
 
 ```lua
-local content = picocalc.fs.readFile("/apps/hello/config.txt")
+local content = picocalc.fs.readFile(APP_DIR .. "/config.txt")
 ```
 
 ---
@@ -120,10 +156,10 @@ Returns the size of a file in bytes.
 
 - **Parameters:**
   - `path` (string): Absolute file path
-- **Returns:** (number) File size in bytes, or `-1` on error (file not found or sandbox violation)
+- **Returns:** (number) File size in bytes (`0` for a directory), or `-1` on error (not found, or refused by the sandbox)
 
 ```lua
-local bytes = picocalc.fs.size("/data/save.txt")
+local bytes = picocalc.fs.size(picocalc.fs.appPath("save.txt"))
 if bytes >= 0 then
     print("File is " .. bytes .. " bytes")
 end
@@ -140,8 +176,9 @@ Whether a path exists and is a directory.
 - **Errors:** none
 
 ```lua
-if picocalc.fs.isDir("/apps/mygame/assets") then
-    for _, entry in ipairs(picocalc.fs.listDir("/apps/mygame/assets")) do
+local assets = APP_DIR .. "/assets"
+if picocalc.fs.isDir(assets) then
+    for _, entry in ipairs(picocalc.fs.listDir(assets)) do
         print(entry.name, entry.size)
     end
 end
@@ -158,9 +195,11 @@ Lists the contents of a directory.
   - `name` (string): File or directory name, not the full path
   - `is_dir` (boolean): `true` if directory, `false` if file
   - `size` (number): File size in bytes (0 for directories)
+  - `year`, `month`, `day`, `hour`, `min`, `sec` (numbers): Last modification time, absent when the entry has none. FAT keeps seconds in steps of 2.
 
 ```lua
-local entries = picocalc.fs.listDir("/apps")
+local entries, err = picocalc.fs.listDir(APP_DIR)
+if err then print(err) end
 for _, e in ipairs(entries) do
     print(e.name, e.is_dir, e.size)
 end
@@ -173,13 +212,13 @@ Creates one directory. Its parent must exist; to make a chain, create each level
 
 - **Parameters:**
   - `path` (string): Absolute directory path to create
-- **Returns:** (boolean) `true` if successful or directory already exists, `false` on error
+- **Returns:** (boolean) `true` if the directory was created or already exists. `false` on an error, including a missing parent and a file of that name.
 
 ```lua
--- Create app data directory
-local data_dir = "/data/" .. APP_ID
-if picocalc.fs.mkdir(data_dir) then
-    print("Data directory ready")
+-- /data/<APP_ID> exists already: make a directory inside it
+local levels = picocalc.fs.appPath("levels")
+if picocalc.fs.mkdir(levels) then
+    print("Levels directory ready")
 end
 ```
 
@@ -239,7 +278,7 @@ Returns the path `/data/<APP_ID>/<name>`. This is the recommended way to access 
 
 - **Parameters:**
   - `name` (string): Filename within the app's data directory
-- **Returns:** (string) Full path (e.g., `"/data/myapp/save.json"`)
+- **Returns:** (string) Full path (e.g., `"/data/com.example.mygame/save.json"`)
 
 ```lua
 local save_path = picocalc.fs.appPath("save.json")
@@ -254,13 +293,13 @@ picocalc.fs.close(f)
 Opens a file-browser overlay panel. The user can navigate directories and select a file; Esc goes up a directory and cancels at the top, and the system menu key cancels from any directory. It is system UI: it draws in the built-in 6x8 font and your font is restored.
 
 - **Parameters:**
-  - `startDir` (string, optional): Starting directory. Defaults to the app's `/data/<appname>/` directory.
+  - `startDir` (string, optional): Starting directory. Defaults to the app's `/data/<APP_ID>` directory, which also opens instead of a directory the sandbox refuses.
 - **Returns:** (string or nil) Selected file path, or `nil` if cancelled
 
 The top is `/data/<APP_ID>` for a start inside it; any other start directory is its own top, so the user cannot walk above where you put them. An app with `"root-filesystem"` can pass `"/"` to offer the whole card.
 
 ```lua
-local selected = picocalc.fs.browse("/apps")
+local selected = picocalc.fs.browse(APP_DIR)
 if selected then
     print("Selected: " .. selected)
 end
@@ -268,8 +307,8 @@ end
 
 ---
 
-#### `picocalc.fs.copy(src, dst)`
-Copy a file. Subject to filesystem sandbox.
+#### `picocalc.fs.copy(src, dst [, progress_fn])`
+Copy a file, replacing `dst` if it exists. On a failure `dst` is removed.
 
 - **Parameters:**
   - `src` (string): Source path (needs read access)
@@ -277,22 +316,28 @@ Copy a file. Subject to filesystem sandbox.
   - `progress_fn` (function, optional): `function(done, total)`, called after each 4 KB copied. Errors raised inside it are ignored. An exit requested from it (or from the system menu it lets the user open) stops the copy.
 - **Returns:** (boolean) `true` on success; `(false, string)` on failure
 
+Without a `progress_fn` the app does not run during the copy, so the system menu and Exit App wait until it ends. Pass one for a large file.
+
 ```lua
-local ok, err = picocalc.fs.copy("/data/myapp/save.json", "/data/myapp/save_backup.json")
+local save = picocalc.fs.appPath("save.json")
+local ok, err = picocalc.fs.copy(save, picocalc.fs.appPath("save_backup.json"),
+    function(done, total)
+        picocalc.sys.log("copied " .. done .. " of " .. total)
+    end)
 if not ok then print("Copy failed: " .. err) end
 ```
 
 ---
 
 #### `picocalc.fs.delete(path)`
-Delete a file. Subject to filesystem sandbox.
+Delete a file or an empty directory.
 
 - **Parameters:**
   - `path` (string): Path to delete
 - **Returns:** (boolean) `true` on success; `(false, string)` on failure (`"permission denied"`, `"delete failed"`: missing, a directory with files in it, or a file still open; `"cannot delete the volume root"`)
 
 ```lua
-local ok, err = picocalc.fs.delete("/data/myapp/old_save.json")
+local ok, err = picocalc.fs.delete(picocalc.fs.appPath("old_save.json"))
 if not ok then print("Delete failed: " .. err) end
 ```
 
@@ -302,11 +347,11 @@ if not ok then print("Delete failed: " .. err) end
 Delete a directory and all its contents, or a single file. The volume root is refused, for every app.
 
 - **Parameters:**
-  - `path` (string): Directory path to delete
+  - `path` (string): Path to delete
 - **Returns:** (boolean) `true` on success; `(false, string)` on failure
 
 ```lua
-local ok, err = picocalc.fs.deleteRecursive("/data/myapp/cache")
+local ok, err = picocalc.fs.deleteRecursive(picocalc.fs.appPath("cache"))
 if not ok then print("Delete failed: " .. err) end
 ```
 
@@ -323,23 +368,27 @@ Rename or move a file or directory. The parent of `dst` must exist.
 - **Returns:** (boolean) `true` on success; `(false, string)` on failure
 
 ```lua
-local ok, err = picocalc.fs.rename("/data/myapp/temp.txt", "/data/myapp/final.txt")
+local ok, err = picocalc.fs.rename(picocalc.fs.appPath("temp.txt"),
+                                   picocalc.fs.appPath("final.txt"))
 if not ok then print("Rename failed: " .. err) end
 ```
 
 ---
 
 #### `picocalc.fs.stat(path)`
-Get file or directory information. Subject to sandbox.
+Get file or directory information.
 
 - **Parameters:**
   - `path` (string): File or directory path
-- **Returns:** (table) `{size = number, is_dir = boolean}`, or `(nil, string)` on failure
+- **Returns:** (table) `{size, is_dir, year, month, day, hour, min, sec}`, or `(nil, string)` on failure (`"permission denied"`, `"not found"`). `size` is 0 for a directory. The time fields are the last modification time, as in `listDir`, and are absent when the entry has none.
 
 ```lua
-local info, err = picocalc.fs.stat("/data/myapp/save.json")
+local info, err = picocalc.fs.stat(picocalc.fs.appPath("save.json"))
 if info then
     print("Size: " .. info.size .. ", is_dir: " .. tostring(info.is_dir))
+    if info.year then
+        print(string.format("Saved %04d-%02d-%02d", info.year, info.month, info.day))
+    end
 end
 ```
 
@@ -366,19 +415,19 @@ List the entries of a directory whose names match a glob pattern. `*` matches an
 - **Parameters:**
   - `path` (string): Directory to search
   - `pattern` (string): Glob pattern (e.g. `"*.lua"`)
-- **Returns:** (table) Array of matching filenames
+- **Returns:** (table) Array of entries, each a table like [`listDir`](#picocalcfslistdirpath)'s (`name`, `is_dir`, `size` and the time fields). An empty table plus `"permission denied"` when the sandbox refused the path.
 
 ```lua
-local lua_files = picocalc.fs.glob("/apps/myapp", "*.lua")
-for _, name in ipairs(lua_files) do
-    print(name)
+local lua_files = picocalc.fs.glob(APP_DIR, "*.lua")
+for _, e in ipairs(lua_files) do
+    print(e.name, e.size)
 end
 ```
 
 ---
 
 #### `picocalc.fs.ensureReady()`
-Ensure the SD card is mounted and ready.
+Check that the SD card answers, remounting it if it does not. Worth calling before a run of writes after long network activity.
 
 - **Parameters:** None
 - **Returns:** (boolean) `true` if SD card is ready
@@ -399,7 +448,9 @@ Drop the SD bus to 1 MHz, or restore its normal speed. WiFi radio noise can corr
 - **Returns:** None
 
 ```lua
-picocalc.fs.setSlowMode(true)  -- Use slower SPI clock for compatibility
+picocalc.fs.setSlowMode(true)   -- the radio is busy: write safely
+-- ... write what the network delivers ...
+picocalc.fs.setSlowMode(false)
 ```
 
 ---
