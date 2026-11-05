@@ -223,13 +223,17 @@ Return the total number of rows in the terminal grid.
 ## Render bounds
 
 #### `term:setRenderBounds(y_start, y_end)`
-Restrict rendering to rows between `y_start` and `y_end` (inclusive). Useful for embedding a terminal in a portion of the screen alongside other UI elements.
+Place the terminal between two pixel rows of the screen. Useful for embedding a terminal in a portion of the screen alongside other UI elements.
 
-- `y_start` (number): First row to render (0-based pixel row)
-- `y_end` (number): Last row to render
+Row 0 of the grid is drawn at `y_start`. A row that does not fully fit above `y_end` is not drawn, by any call: text, gutter, cursor and scrollback view alike. So size the grid to fit, `(y_end - y_start) / 12` rows: the rows below the end still exist, and a cursor there does not show. Text that scrolls still scrolls at the grid's last row, not the last one showing.
+
+- `y_start` (number): First pixel row to draw on (0-based; below 0 reads as 0)
+- `y_end` (number): The pixel row below the last one to draw on (above 320 reads as 320). If it is not below `y_start`, the call changes nothing.
 
 ```lua
-term:setRenderBounds(16, 300)  -- leave room for a header
+-- Under ui.drawHeader's 21 rows, above ui.drawFooter's 18: 23 text rows.
+local term = picocalc.terminal.new(53, 23)
+term:setRenderBounds(21, 302)
 ```
 
 ---

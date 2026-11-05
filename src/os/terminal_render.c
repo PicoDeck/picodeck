@@ -40,6 +40,12 @@ static inline uint16_t byte_swap(uint16_t val) {
     return (val >> 8) | ((val & 0xFF) << 8);
 }
 
+// Whether a text row starting at pixel y lies inside the render bounds: every
+// draw path drops a row that does not fully fit.
+static inline bool row_fits(const terminal_t* term, int y) {
+    return y + FONT_SCI_HEIGHT <= term->render_y_end;
+}
+
 void terminal_render_init(void) {
     s_last_blink_time = 0;
     s_blink_state = false;
@@ -168,6 +174,7 @@ static void terminal_renderLineNumbers(terminal_t* term) {
 
     for (int row = 0; row < term->rows; row++) {
         int y = term->render_y_start + row * FONT_H;
+        if (!row_fits(term, y)) break;
         int x = term->render_x_start;
         bool is_continuation = false;
         int logical_line_idx = 0;
@@ -308,6 +315,7 @@ void terminal_renderScrollback(terminal_t* term) {
     }
 
     for (int row = 0; row < visible_rows; row++) {
+        if (!row_fits(term, term->render_y_start + row * FONT_H)) break;
         int vline = top_virtual + row;
 
         if (vline < 0) {
@@ -423,7 +431,7 @@ void terminal_render(terminal_t* term) {
     // Render each display row
     for (int row = 0; row < term->rows; row++) {
         int y = term->render_y_start + row * FONT_H;
-        if (y + FONT_H > term->render_y_end) break;
+        if (!row_fits(term, y)) break;
 
         if (term->word_wrap_enabled) {
 
@@ -582,9 +590,9 @@ void terminal_render(terminal_t* term) {
                 draw_cursor = !s_blink_state;
             }
 
-            if (draw_cursor) {
+            int cy = term->render_y_start + cursor_vis_y * FONT_H;
+            if (draw_cursor && row_fits(term, cy)) {
                 int cx = x_offset + cursor_vis_x * FONT_W;
-                int cy = term->render_y_start + cursor_vis_y * FONT_H;
 
                 int cursor_idx = term->cursor_y * term->cols + term->cursor_x;
                 uint16_t cell = term->cells[cursor_idx];
@@ -654,6 +662,10 @@ void terminal_renderDirty(terminal_t* term) {
         if (!terminal_isRowDirty(term, row)) continue;
 
         int y = term->render_y_start + row * FONT_H;
+        if (!row_fits(term, y)) {
+            terminal_clearRowDirty(term, row);
+            continue;
+        }
 
         for (int col = 0; col < content_cols; col++) {
             int x = x_offset + col * FONT_W;
@@ -693,9 +705,9 @@ void terminal_renderDirty(terminal_t* term) {
             draw_cursor = !s_blink_state;
         }
 
-        if (draw_cursor) {
+        int cy = term->render_y_start + term->cursor_y * FONT_H;
+        if (draw_cursor && row_fits(term, cy)) {
             int cx = x_offset + term->cursor_x * FONT_W;
-            int cy = term->render_y_start + term->cursor_y * FONT_H;
 
             int cursor_idx = term->cursor_y * term->cols + term->cursor_x;
             uint16_t cell = term->cells[cursor_idx];
@@ -723,6 +735,10 @@ void terminal_renderRow(terminal_t* term, int row) {
     if (!term || row < 0 || row >= term->rows) return;
 
     int y = term->render_y_start + row * FONT_H;
+    if (!row_fits(term, y)) {
+        terminal_clearRowDirty(term, row);
+        return;
+    }
 
     for (int col = 0; col < term->cols; col++) {
         int x = term->render_x_start + col * FONT_W;
