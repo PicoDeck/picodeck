@@ -281,3 +281,26 @@ class TestPowerStatus:
             simulator.wait_for_exit(timeout=10)
             simulator.wait_for_log(rf"^POWER {str(charging).lower()} {percent}$",
                                    timeout=5, since_seq=seq)
+
+
+class TestAppIds:
+    """The doc's rule: 1-79 characters, and the launcher refuses anything else.
+    An 80-character id used to be cut to the 79-character one's /data/<id>."""
+
+    def test_id_lengths(self, simulator):
+        sd = Path(simulator.sd_card_path)
+        code = 'picocalc.sys.log("ID_RAN " .. APP_ID)'
+        stage_lua_app(sd, "id79", code, id="a" * 79)
+        seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+        simulator.launch_app("id79")
+        simulator.wait_for_exit(timeout=10)
+        simulator.wait_for_log(rf"^ID_RAN {'a' * 79}$", timeout=5, since_seq=seq)
+
+        stage_lua_app(sd, "id80", code, id="a" * 80)
+        seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+        simulator.launch_app("id80")
+        simulator.wait_for_exit(timeout=10)
+        texts = log_texts(simulator.get_log_lines(seq))
+        assert not any(t.startswith("ID_RAN") for t in texts), texts
+        log = (sd / "system" / "error.log").read_text()
+        assert "invalid app id" in log, log

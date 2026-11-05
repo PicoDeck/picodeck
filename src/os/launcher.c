@@ -834,7 +834,7 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   // else's directory.
   if (!app_manifest_id_valid(app->id)) {
     launcher_refuse(app, "Cannot launch app:", "invalid app id in app.json",
-                    app->id, heap, "Use only A-Z a-z 0-9 . _ - in \"id\".");
+                    app->id, heap, "Use 1-79 of A-Z a-z 0-9 . _ - in \"id\".");
     return false;
   }
 

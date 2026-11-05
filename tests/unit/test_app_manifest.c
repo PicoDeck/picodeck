@@ -267,6 +267,46 @@ static void test_id_valid(void) {
   CHECK(!app_manifest_id_valid(longid));
 }
 
+// An id too long for app_entry_t.id must not be cut into a valid shorter id:
+// the cut copy would share /data/<id> with the app that really has that id.
+static void test_overlong_id_is_refused(void) {
+  char json[512], id[300];
+  for (int len = 78; len <= 82; len++) {
+    memset(id, 'a', (size_t)len);
+    id[len] = '\0';
+    snprintf(json, sizeof(json), "{\"id\": \"%s\"}", id);
+    app_entry_t a = parse(json);
+    if (len <= 79) {
+      CHECK(app_manifest_id_valid(a.id));
+      CHECK_STR(a.id, id);
+    } else {
+      CHECK(!app_manifest_id_valid(a.id));
+    }
+  }
+  // With another field after it, and an escape that decodes to fit: the length
+  // that counts is the decoded one, as for the id the app ends up with.
+  memset(id, 'b', 200);
+  id[200] = '\0';
+  snprintf(json, sizeof(json), "{\"id\": \"%s\", \"name\": \"N\"}", id);
+  app_entry_t a = parse(json);
+  CHECK(!app_manifest_id_valid(a.id));
+  CHECK_STR(a.name, "N");
+  memset(id, 'c', 78);
+  id[78] = '\0';
+  snprintf(json, sizeof(json), "{\"id\": \"%s\\u0064\"}", id);  // 79 decoded
+  a = parse(json);
+  CHECK(app_manifest_id_valid(a.id));
+  // A missing id still defaults, cut to fit as before: it names only this app's
+  // directory, and nobody chose it.
+  char dir[120];
+  memset(dir, 'd', sizeof(dir) - 1);
+  dir[sizeof(dir) - 1] = '\0';
+  app_entry_t b;
+  memset(&b, 0x5a, sizeof(b));
+  app_manifest_parse("{}", 2, dir, &b);
+  CHECK(app_manifest_id_valid(b.id));
+}
+
 static void test_hidden_name_valid(void) {
   CHECK(app_hidden_name_valid("probe"));
   CHECK(app_hidden_name_valid("hwp_bench-2.v1"));
@@ -327,6 +367,7 @@ int main(void) {
   test_system_clock_table();
   test_truncation_and_bounds();
   test_id_valid();
+  test_overlong_id_is_refused();
   test_hidden_name_valid();
   test_real_manifests();
   return check_report("test_app_manifest");
