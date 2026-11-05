@@ -106,6 +106,7 @@ Panels.Settings = {
     choiceColor      = disp.rgb(255, 210, 80),
     transitionMs     = 450,
     idleSkip         = true,       -- skip draw+flush on provably static frames
+    idleSleepMs      = 16,         -- Panels.start: sleep this long on such a frame
     useHwScroll      = true,       -- LCD-register scrolling for rigid vertical
                                    -- scroll sequences (see Comic:hwEligible)
     volume           = nil,        -- nil = leave system volume alone
@@ -1157,6 +1158,7 @@ end
 
 function Comic:update()
     local S = Panels.Settings
+    self.idleThisFrame = false
     self.cache:pollPreload()
     self.audio:update()
 
@@ -1284,6 +1286,8 @@ function Comic:update()
         self:hwAudioTriggers()
         self.dirty = false
         self.drewThisFrame = false
+        -- At rest unless a key is scrolling it: this path has no live motion.
+        self.idleThisFrame = input.getButtons() == 0 and not self.scrollAnim
         return
     end
 
@@ -1297,6 +1301,7 @@ function Comic:update()
         self.drewThisFrame = true
     else
         self.drewThisFrame = false
+        self.idleThisFrame = true
     end
 end
 
@@ -1408,6 +1413,9 @@ function Panels.start(comicData, opts)
                 break
             elseif comic.drewThisFrame ~= false then
                 disp.flush()
+            elseif comic.idleThisFrame and Panels.Settings.idleSleepMs > 0 then
+                -- Nothing is moving: don't spin the CPU until a key comes.
+                sys.sleep(Panels.Settings.idleSleepMs)
             end
         end
     end

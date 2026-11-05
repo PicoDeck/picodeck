@@ -92,7 +92,12 @@ def _stage_panels_lib(test_sd_card):
     assert src.exists(), "system/lib/panels.lua missing from the repo"
     dest = test_sd_card / "system" / "lib"
     dest.mkdir(parents=True, exist_ok=True)
-    shutil.copy(src, dest / "panels.lua")
+    # These tests keep the clock paused, where a sleep waits for a step, and
+    # drive frames with keys: the idle sleep is off here, and the one test that
+    # needs it stages the library as it is.
+    text = src.read_text()
+    assert "idleSleepMs      = 16," in text
+    (dest / "panels.lua").write_text(text.replace("idleSleepMs      = 16,", "idleSleepMs      = 0,"))
 
 
 def test_panels_full_lifecycle(sim_factory, test_sd_card):
@@ -368,3 +373,47 @@ Panels.start({ sequences = { sequence, plain, plain, plain, plain } })
     joined = _wait_for(simulator, "PANELS:SEQ 5")
     assert "PANELS:CHOICE 1 -> seq 5" in joined
     assert "PANELS:ERR" not in joined
+
+
+@pytest.mark.parametrize("hw_scroll", ["true", "false"])
+def test_panels_start_sleeps_on_idle_frames(sim_factory, test_sd_card, hw_scroll):
+    """A comic waiting for a key must not spin, on either scroll path:
+    Panels.start sleeps on an idle frame, and a key still gets through."""
+    from helpers import stage_lua_app
+    dest = test_sd_card / "system" / "lib"
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO_ROOT / "system" / "lib" / "panels.lua", dest / "panels.lua")
+    stage_lua_app(test_sd_card, "panels_idle", r"""
+local sys = picocalc.sys
+local Panels = sys.loadlib("panels")
+Panels.Settings.useHwScroll = """ + hw_scroll + r"""
+local real_sleep, sleeps, updates = sys.sleep, 0, 0
+sys.sleep = function(ms) sleeps = sleeps + 1; real_sleep(ms) end
+local started = sys.getTimeMs()
+local comic = { sequences = { { panels = { { frame = { height = 320 } } } } } }
+local real_new = Panels.new
+Panels.new = function(...)
+    local c = real_new(...)
+    local real_update = c.update
+    c.update = function(self)
+        updates = updates + 1
+        if updates % 10 == 0 and sys.getTimeMs() - started > 1500 then
+            sys.log(string.format("IDLE sleeps=%d updates=%d", sleeps, updates))
+            started = sys.getTimeMs() + 100000
+        end
+        return real_update(self)
+    end
+    return c
+end
+print(Panels.start(comic))
+""")
+    simulator = sim_factory(test_sd_card)
+    simulator.launch_app("panels_idle")
+    joined = _wait_for(simulator, "IDLE sleeps=")
+    m = re.search(r"IDLE sleeps=(\d+) updates=(\d+)", joined)
+    sleeps, updates = int(m.group(1)), int(m.group(2))
+    assert sleeps >= updates / 2, joined
+    assert updates < 400, joined   # flat out it runs thousands of frames in 1.5 s
+    _tap(simulator, "esc")
+    _wait_for(simulator, "PANELS:EXIT quit")
+    simulator.wait_for_exit(timeout=10)

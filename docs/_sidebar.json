@@ -29,6 +29,10 @@
       {
         "label": "Lua SDK Reference",
         "page": "Lua-SDK-Reference.md"
+      },
+      {
+        "label": "Writing Fast Apps",
+        "page": "Writing-Fast-Apps.md"
       }
     ]
   },

@@ -138,21 +138,25 @@ static int build_logical_lines(terminal_t* term, int* logical_starts, int max_li
     return count;
 }
 
+// Every terminal cell comes through here (1,590 of them for a full 53x30 render),
+// so it clips once and walks the framebuffer by pointer instead of testing and
+// multiplying per pixel.
 static void terminal_render_glyph(int x, int y, uint16_t fg, uint16_t bg,
                                    const uint8_t *glyph, int font_w, int font_h) {
-    uint16_t* fb = display_get_back_buffer();
+    int row0 = y < 0 ? -y : 0;
+    int row1 = y + font_h > 320 ? 320 - y : font_h;
+    int col0 = x < 0 ? -x : 0;
+    int col1 = x + font_w > 320 ? 320 - x : font_w;
+    if (col0 >= col1) return;
+
     uint16_t fg_be = byte_swap(fg);
     uint16_t bg_be = byte_swap(bg);
+    uint16_t* line = display_get_back_buffer() + (y + row0) * 320 + x;
 
-    for (int row = 0; row < font_h; row++) {
-        uint8_t rowdata = glyph[row];
-        int py = y + row;
-        if (py < 0 || py >= 320) continue;
-        for (int col = 0; col < font_w; col++) {
-            int px = x + col;
-            if (px >= 0 && px < 320) {
-                fb[py * 320 + px] = (rowdata & (0x80 >> col)) ? fg_be : bg_be;
-            }
+    for (int row = row0; row < row1; row++, line += 320) {
+        uint32_t bits = (uint32_t)glyph[row] << col0;  // bit 7: this pixel
+        for (int col = col0; col < col1; col++, bits <<= 1) {
+            line[col] = (bits & 0x80) ? fg_be : bg_be;
         }
     }
 }
