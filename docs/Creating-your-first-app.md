@@ -113,6 +113,10 @@ A is F4 until the player rebinds it, and Enter is not bound by default. The buil
 
 See [API Gamepad](API-Gamepad.md) for the buttons, the default keys and `getLabel()`.
 
+### Editor setup
+
+An editor with [lua-language-server](https://luals.github.io/) (the "Lua" extension in VS Code) can complete and check the whole `picocalc` API. Copy [`sdk/lua/picocalc.lua`](https://github.com/PicoDeck/picodeck/blob/master/sdk/lua/picocalc.lua) into your project as `libs/picocalc.lua`, and put the `.luarc.json` from the [SDK README](https://github.com/PicoDeck/picodeck/blob/master/sdk/README.md#editor-setup-for-lua) next to `app.json`. Neither runs on the device, so [leave them out of the zip](Publishing-Apps.md#quick-version) when you publish.
+
 ### Add an icon (optional)
 
 Put an `icon.png` (or `icon.bmp`) next to `app.json`. The launcher draws it at 24×24 pixels beside the app's name. Other sizes are scaled to fit with nearest-neighbour sampling, so draw at 24×24, or at an exact multiple such as 48×48, to keep the pixels crisp. Icons are drawn opaque: transparent PNG pixels come out black, so fill the whole square. The built-in icons use a dark navy background (RGB 12, 16, 48) behind their artwork. Without an icon, the launcher draws a game cartridge in the colour of the app's [category](App-Json-Reference.md#category), with the first letter of the app's name on its label.
