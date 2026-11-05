@@ -75,10 +75,14 @@ static uint8_t spi_byte(uint8_t out) {
   return in;
 }
 
-/* Receive len bytes into buf (sends 0xFF on MOSI). */
+/* Receive len bytes into buf (sends 0xFF on MOSI). Not a memset + full-duplex
+ * transfer over buf: buf is usually in QMI PSRAM (a FIL's sector buffer, a Lua
+ * string), where the memset alone fills ~64 cache lines with the bus idle, and
+ * the same fills during the transfer overlap the wire time, in the RX FIFO's
+ * slack. spi_read_blocking paces itself like spi_write_read_blocking (never
+ * more than the FIFO's depth ahead of RX), so the FIFO still cannot overrun. */
 static void spi_recv_buf(uint8_t *buf, size_t len) {
-  memset(buf, 0xFF, len);
-  spi_write_read_blocking(SD_SPI_PORT, buf, buf, len);
+  spi_read_blocking(SD_SPI_PORT, 0xFF, buf, len);
 }
 
 /* Send len bytes from buf (discard MISO). */

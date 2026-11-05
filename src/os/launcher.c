@@ -191,7 +191,24 @@ static void warn_shared_ids(void) {
   }
 }
 
+// A scan is a listing, app.json and an icon decode per app (~30 sector reads
+// each, plus the PNG): most of a second on a card of 40 apps, after every app's
+// exit. Nothing has changed unless a write named /apps since the last one; a
+// sandboxed game cannot, and the dev file commands and native apps count too.
+// The simulator always scans: the harness stages apps straight in the host's
+// directory, past the SD layer.
+#ifdef PICODECK_SIMULATOR
+#define APPS_CHANGED_SINCE_SCAN() true
+#else
+static uint32_t s_scan_generation;
+#define APPS_CHANGED_SINCE_SCAN() (sdcard_apps_generation() != s_scan_generation)
+#endif
+
 static void scan_apps(void) {
+#ifndef PICODECK_SIMULATOR
+  s_scan_generation = sdcard_apps_generation();  // before the listing: a write
+                                                 // during it scans again
+#endif
   // Free previously loaded icons before rescan
   for (int i = 0; i < s_app_count; i++) {
     if (s_apps[i].icon) {
@@ -1038,8 +1055,10 @@ static void handle_input(uint32_t pressed, bool *dirty) {
 
       run_app(app_idx);
       kbd_clear_state();
-      scan_apps();
-      build_category_indices();
+      if (APPS_CHANGED_SINCE_SCAN()) {
+        scan_apps();
+        build_category_indices();
+      }
 
       s_active_tab = saved_tab;
       s_desc_scroll = 0;
@@ -1158,8 +1177,10 @@ void launcher_run(void) {
                "'%s...' not launched\n", LAUNCH_ARG_MAX, name);
       } else if (launcher_launch_by_name(name)) {
         kbd_clear_state();
-        scan_apps();
-        build_category_indices();
+        if (APPS_CHANGED_SINCE_SCAN()) {
+          scan_apps();
+          build_category_indices();
+        }
         dirty = true;
       }
     }

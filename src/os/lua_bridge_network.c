@@ -496,18 +496,24 @@ static int l_http_read(lua_State *L) {
   if (want > 131072)
     want = 131072;
 
-  uint8_t *tmp = umm_malloc(want);
-  if (!tmp) {
+  // Straight into the result string: a chunk used to be written to a scratch
+  // block and then again to the string, twice the PSRAM lines and two blocks
+  // of the heap at once. No room for it stays a nil, not a Lua error, and the
+  // data stays in the ring.
+  void *probe = umm_malloc(want);
+  if (!probe) {
     lua_pushnil(L);
     return 1;
   }
+  umm_free(probe);
 
-  uint32_t n = (uint32_t)g_api.http->read(ud->conn, tmp, want);
+  picodeck_lua_strbuf_t sb;
+  char *buf = picodeck_lua_strbuf_init(L, &sb, want);
+  uint32_t n = (uint32_t)g_api.http->read(ud->conn, buf, want);
   if (n > 0)
-    lua_pushlstring(L, (char *)tmp, n);
+    picodeck_lua_strbuf_push(L, &sb, n);
   else
     lua_pushnil(L);
-  umm_free(tmp);
   return 1;
 }
 

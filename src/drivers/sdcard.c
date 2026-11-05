@@ -21,6 +21,7 @@
 
 static FATFS s_fs;
 static bool  s_mounted = false;
+static volatile uint32_t s_apps_generation;  // sdcard_apps_generation()
 
 extern void core0_heartbeat(void);  // main.c
 
@@ -233,6 +234,7 @@ void sd_set_slow_mode(bool slow) {
 
 bool sdcard_remount(void) {
     recursive_mutex_enter_blocking(&g_sdcard_mutex);
+    s_apps_generation++;  // a host may have written the card, or it is another
     f_unmount("");
     s_mounted = false;
     sleep_ms(10);  // Brief delay for card to stabilize after unmount
@@ -262,6 +264,24 @@ static BYTE mode_to_fatfs(const char *mode) {
     return m;
 }
 
+// ── Writes that may touch /apps ──────────────────────────────────────────────
+// The launcher rescans only after one of these (sdcard_apps_generation). A path
+// that can reach /apps names it, whatever else it holds ("//apps", "/x/../APPS"),
+// so this errs towards a rescan and is cheap enough for every write's open.
+static void note_write(const char *path) {
+    for (const char *p = path; *p; p++) {
+        if ((p[0] | 0x20) == 'a' && (p[1] | 0x20) == 'p' &&
+            (p[2] | 0x20) == 'p' && (p[3] | 0x20) == 's') {
+            s_apps_generation++;
+            return;
+        }
+    }
+}
+
+uint32_t sdcard_apps_generation(void) {
+    return s_apps_generation;
+}
+
 // ── File I/O ─────────────────────────────────────────────────────────────────
 
 sdfile_t sdcard_fopen(const char *path, const char *mode) {
@@ -271,6 +291,7 @@ sdfile_t sdcard_fopen(const char *path, const char *mode) {
 
     recursive_mutex_enter_blocking(&g_sdcard_mutex);
     BYTE flags = mode_to_fatfs(mode);
+    if (flags & FA_WRITE) note_write(path);
     FRESULT res = f_open(f, path, flags);
 
     /* If the card went unresponsive (e.g., brownout during WiFi activity),
@@ -424,6 +445,7 @@ int sdcard_fsize_handle(sdfile_t f) {
 bool sdcard_mkdir(const char *path) {
     if (!s_mounted) return false;
     recursive_mutex_enter_blocking(&g_sdcard_mutex);
+    note_write(path);
     // f_mkdir returns FR_OK if successful or FR_EXIST if already exists
     FRESULT res = f_mkdir(path);
     if (res == FR_OK)
@@ -539,6 +561,7 @@ int sdcard_list_dir(const char *path,
 bool sdcard_delete(const char *path) {
     if (!s_mounted) return false;
     recursive_mutex_enter_blocking(&g_sdcard_mutex);
+    note_write(path);
     bool ok = f_unlink(path) == FR_OK;
     if (ok)
         disk_ioctl(0, CTRL_SYNC, NULL);  // Flush FAT/directory update to SD
@@ -587,6 +610,8 @@ sdcard_within_t sdcard_path_within(const char *root, const char *path) {
 bool sdcard_rename(const char *src, const char *dst) {
     if (!s_mounted) return false;
     recursive_mutex_enter_blocking(&g_sdcard_mutex);
+    note_write(src);
+    note_write(dst);
     bool ok = f_rename(src, dst) == FR_OK;
     if (ok)
         disk_ioctl(0, CTRL_SYNC, NULL);  // Flush FAT/directory update to SD
@@ -617,6 +642,7 @@ bool sdcard_copy(const char *src, const char *dst,
 
     if (ok) {
         recursive_mutex_enter_blocking(&g_sdcard_mutex);
+        note_write(dst);
         total = (f_stat(src, fi) == FR_OK) ? fi->fsize : 0;
         src_open = f_open(fsrc, src, FA_READ | FA_OPEN_EXISTING) == FR_OK;
         if (src_open)
@@ -701,15 +727,16 @@ bool sdcard_disk_info(uint32_t *out_free_kb, uint32_t *out_total_kb) {
     return true;
 }
 
+// Opens first and takes the size from the handle: a stat before the open walks
+// the path a second time, one sector read per directory sector up to the name
+// (~10 on a card of 40 apps: every app's main.lua, module and app.json paid it).
 char *sdcard_read_file(const char *path, int *out_len) {
-    int size = sdcard_fsize(path);
-    if (size < 0) return NULL;
-
-    char *buf = (char *)umm_malloc(size + 1);
-    if (!buf) return NULL;
-
     sdfile_t f = sdcard_fopen(path, "rb");
-    if (!f) { umm_free(buf); return NULL; }
+    if (!f) return NULL;
+
+    int size = sdcard_fsize_handle(f);
+    char *buf = size < 0 ? NULL : (char *)umm_malloc((size_t)size + 1);
+    if (!buf) { sdcard_fclose(f); return NULL; }
 
     int n = sdcard_fread(f, buf, size);
     sdcard_fclose(f);

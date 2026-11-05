@@ -56,6 +56,11 @@ void     sdcard_fclose(sdfile_t f);
 bool     sdcard_fexists(const char *path);
 int      sdcard_fsize(const char *path);   // Returns -1 on error
 int      sdcard_fsize_handle(sdfile_t f);  // Returns -1 on error
+
+// Moves whenever something asks to write a path that may lie under /apps, through
+// any sdcard_* call, and at every sdcard_remount (USB mass storage writes sectors
+// past this layer and remounts when the host lets go).
+uint32_t sdcard_apps_generation(void);
 bool     sdcard_fseek(sdfile_t f, uint32_t offset);
 uint32_t sdcard_ftell(sdfile_t f);
 

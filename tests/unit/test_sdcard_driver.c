@@ -8,6 +8,7 @@
 #include "ff.h"
 #include "diskio.h"
 #include "hardware.h"
+#include "umm_malloc.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -28,12 +29,14 @@ uint64_t hal_get_time_us(void) { return 0; }
 #define NSECT 16384  // 8 MB
 static uint8_t *s_disk;
 static bool s_read_error;
+static int s_disk_reads;  // read commands, the cost of a path walk on the card
 
 DSTATUS disk_initialize(BYTE p) { (void)p; return 0; }
 DSTATUS disk_status(BYTE p) { (void)p; return 0; }
 DRESULT disk_read(BYTE p, BYTE *b, LBA_t s, UINT c) {
   (void)p;
   if (s_read_error) return RES_ERROR;
+  s_disk_reads++;
   memcpy(b, s_disk + (size_t)s * 512, (size_t)c * 512);
   return RES_OK;
 }
@@ -106,6 +109,105 @@ static void test_small_transfers_do_not_feed(void) {
   CHECK_EQ_INT(sdcard_fread(f, buf, 4096), 4096);
   sdcard_fclose(f);
   CHECK_EQ_INT(g_watchdog_feeds, 0);  // an app's own loop decides there
+}
+
+// A path walk is one read per directory sector up to the name, ~10 on a card of
+// 40 apps, and an app loads each of its modules through sdcard_read_file: it may
+// walk the path only once, as a plain open and read does.
+static void test_read_file_walks_the_path_once(void) {
+  reset();
+  CHECK(sdcard_mkdir("/apps/game"));
+  for (int i = 0; i < 40; i++) {  // puts the file many directory sectors in
+    char name[64];
+    snprintf(name, sizeof name, "/apps/game/a_module_of_many_%02d.lua", i);
+    sdfile_t m = sdcard_fopen(name, "w");
+    CHECK_EQ_INT(sdcard_fwrite(m, "x", 1), 1);
+    sdcard_fclose(m);
+  }
+  sdfile_t f = sdcard_fopen("/apps/game/z.lua", "w");
+  CHECK_EQ_INT(sdcard_fwrite(f, s_big, 3000), 3000);
+  sdcard_fclose(f);
+
+  // The same start for both: FatFS's sector window holds something else.
+  CHECK(sdcard_fexists("/system"));
+  s_disk_reads = 0;
+  FIL fil;
+  UINT got = 0;
+  uint8_t buf[3000];
+  CHECK_EQ_INT(f_open(&fil, "/apps/game/z.lua", FA_READ), FR_OK);
+  CHECK_EQ_INT(f_read(&fil, buf, sizeof buf, &got), FR_OK);
+  f_close(&fil);
+  const int plain = s_disk_reads;
+  CHECK(plain >= 5);  // a real walk, or this shows nothing
+
+  CHECK(sdcard_fexists("/system"));
+  s_disk_reads = 0;
+  int n = 0;
+  char *src = sdcard_read_file("/apps/game/z.lua", &n);
+  CHECK_EQ_INT(s_disk_reads, plain);
+  CHECK(src != NULL);
+  CHECK_EQ_INT(n, 3000);
+  CHECK(memcmp(src, s_big, 3000) == 0);
+  CHECK_EQ_INT(src[3000], 0);
+  umm_free(src);
+
+  // What callers rely on: NULL if it cannot be opened, a terminated empty
+  // buffer for an empty file, and out_len optional.
+  CHECK(sdcard_read_file("/apps/game/none.lua", &n) == NULL);
+  CHECK(sdcard_read_file("/apps/game", &n) == NULL);
+  sdcard_fclose(sdcard_fopen("/apps/game/empty.lua", "w"));
+  n = -1;
+  src = sdcard_read_file("/apps/game/empty.lua", &n);
+  CHECK(src != NULL);
+  CHECK_EQ_INT(n, 0);
+  CHECK_EQ_INT(src[0], 0);
+  umm_free(src);
+  src = sdcard_read_file("/apps/game/z.lua", NULL);
+  CHECK(src != NULL);
+  umm_free(src);
+}
+
+// The launcher skips its rescan unless this moved: every way to change /apps
+// must move it, and a game saving under /data must not, or nothing is saved.
+static void test_apps_generation(void) {
+  reset();
+  CHECK(sdcard_mkdir("/apps/a"));
+  sdfile_t f = sdcard_fopen("/data/save.bin", "w");
+  CHECK(f != NULL);
+  CHECK_EQ_INT(sdcard_fwrite(f, "x", 1), 1);
+  sdcard_fclose(f);
+
+  uint32_t g = sdcard_apps_generation();
+  f = sdcard_fopen("/data/save.bin", "a");
+  sdcard_fclose(f);
+  f = sdcard_fopen("/data/save.bin", "r");
+  sdcard_fclose(f);
+  f = sdcard_fopen("/apps/a/none", "r");
+  CHECK(f == NULL);
+  CHECK(sdcard_mkdir("/data/d"));
+  CHECK(sdcard_copy("/data/save.bin", "/data/copy.bin", NULL, NULL));
+  CHECK(sdcard_rename("/data/copy.bin", "/data/copy2.bin"));
+  CHECK(sdcard_delete("/data/copy2.bin"));
+  CHECK_EQ_INT(sdcard_apps_generation(), g);
+
+#define MOVES(expr) do { uint32_t b = sdcard_apps_generation(); (void)(expr); \
+                         CHECK(sdcard_apps_generation() != b); } while (0)
+  MOVES(sdcard_mkdir("/apps/b"));
+  MOVES(sdcard_mkdir("//APPS/c"));
+  sdfile_t w = NULL;
+  MOVES(w = sdcard_fopen("/apps/b/main.lua", "w"));
+  sdcard_fclose(w);
+  MOVES(w = sdcard_fopen("/data/../apps/b/app.json", "a"));
+  sdcard_fclose(w);
+  MOVES(w = sdcard_fopen("/apps/b/main.lua", "rw"));
+  sdcard_fclose(w);
+  MOVES(sdcard_copy("/data/save.bin", "/apps/b/x", NULL, NULL));
+  MOVES(sdcard_rename("/apps/b/x", "/data/x"));
+  MOVES(sdcard_rename("/data/x", "/apps/b/x"));
+  MOVES(sdcard_delete("/apps/b/x"));
+  MOVES(sdcard_delete_recursive("/apps/b"));
+  MOVES(sdcard_remount());  // USB mass storage: the host wrote past this layer
+#undef MOVES
 }
 
 static void test_read_error_is_minus_one_after_a_partial_read(void) {
@@ -323,6 +425,8 @@ int main(void) {
 
   test_big_write_and_read_feed();
   test_small_transfers_do_not_feed();
+  test_read_file_walks_the_path_once();
+  test_apps_generation();
   test_read_error_is_minus_one_after_a_partial_read();
   test_full_card_is_a_short_count();
   test_copy_feeds_and_can_stop();

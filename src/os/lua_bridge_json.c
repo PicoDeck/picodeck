@@ -468,6 +468,19 @@ static bool dec_string(lua_State *L, json_dec_t *d) {
     return dec_fail(d, "expected string");
   d->pos++;
 
+  // Nearly every key and value has no escape: one copy, into the string, not a
+  // character at a time into a buffer on the PSRAM stack and then the string.
+  // Anything else, an error included, takes the loop below from the start.
+  for (size_t i = d->pos; i < d->len; i++) {
+    unsigned char c = (unsigned char)d->s[i];
+    if (c == '"') {
+      lua_pushlstring(L, d->s + d->pos, i - d->pos);
+      d->pos = i + 1;
+      return true;
+    }
+    if (c == '\\' || c < 0x20) break;
+  }
+
   luaL_Buffer b;
   luaL_buffinit(L, &b);
 

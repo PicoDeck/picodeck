@@ -142,27 +142,31 @@ static int l_tcp_read(lua_State *L) {
     int max_len = (int)luaL_optinteger(L, 2, 4096);
 
     // Data the peer sent before closing stays readable.
-    if (max_len <= 0 || tcp_bytes_available(ud->conn) == 0) {
+    uint32_t avail = max_len > 0 ? tcp_bytes_available(ud->conn) : 0;
+    if (avail == 0) {
         lua_pushnil(L);
         return 1;
     }
-
-    uint8_t *buf = umm_malloc((size_t)max_len + 1);
-    if (!buf) {
+    // What is there, straight into the result string: a scratch block of the
+    // whole max_len (4 KB for every 100-byte message), then a second copy,
+    // cost a heap search and twice the PSRAM lines. No room for it stays a
+    // nil, not a Lua error, and the data stays in the ring.
+    size_t want = avail < (uint32_t)max_len ? avail : (size_t)max_len;
+    void *probe = umm_malloc(want);
+    if (!probe) {
         lua_pushnil(L);
         return 1;
     }
+    umm_free(probe);
 
-    int n = tcp_read(ud->conn, buf, max_len);
+    picodeck_lua_strbuf_t sb;
+    char *buf = picodeck_lua_strbuf_init(L, &sb, want);
+    int n = tcp_read(ud->conn, buf, (int)want);
     if (n <= 0) {
-        umm_free(buf);
         lua_pushnil(L);
         return 1;
     }
-
-    buf[n] = '\0';
-    lua_pushlstring(L, (const char *)buf, (size_t)n);
-    umm_free(buf);
+    picodeck_lua_strbuf_push(L, &sb, (size_t)n);
     return 1;
 }
 
