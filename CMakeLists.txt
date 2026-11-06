@@ -392,6 +392,7 @@ add_executable(picodeck
     src/drivers/ca_bundle.c
     src/drivers/http.c
     src/drivers/tcp.c
+    src/drivers/net_close.c
     src/drivers/mod_player.c
     src/drivers/pio_psram.c
     src/drivers/qmi_psram.c

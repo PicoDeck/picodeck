@@ -62,6 +62,8 @@ struct mg_tcpip_if {
   struct {
     size_t size;
   } recv_queue;                    // set by wifi_init, unused on the host
+  bool enable_tcp_retransmit;      // set by wifi_init; host TCP does its own
+  uint32_t nrtx;                   // always 0 here
   uint8_t state;                   // MG_TCPIP_STATE_*
 };
 

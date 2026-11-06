@@ -1,5 +1,6 @@
 #include "tcp.h"
 #include "wifi.h"
+#include "net_close.h"
 #include "mongoose.h"
 #include "umm_malloc.h"
 #include "pico/stdlib.h"
@@ -194,6 +195,7 @@ bool tcp_connect(tcp_conn_t *c, const char *host, uint16_t port, bool use_ssl) {
     c->spill_len = c->spill_off = 0;
     c->deadline_connect = c->connect_timeout_ms ? now_ms() + c->connect_timeout_ms : 0;
     c->deadline_read = 0;
+    c->tx_backlog = 0;
     st_put(c, TCP_STATE_QUEUED);
     spin_unlock(s_lock, save);
     if (spill) umm_free(spill);
@@ -208,12 +210,31 @@ bool tcp_connect(tcp_conn_t *c, const char *host, uint16_t port, bool use_ssl) {
     return false;
 }
 
+// Both cores. It never goes below 0: a late event of the previous connection
+// can arrive after tcp_connect reset it.
+static void tx_backlog_sub(tcp_conn_t *c, uint32_t n) {
+    uint32_t save = spin_lock_blocking(s_lock);
+    c->tx_backlog -= n < c->tx_backlog ? n : c->tx_backlog;
+    spin_unlock(s_lock, save);
+}
+
 int tcp_write(tcp_conn_t *c, const void *buf, int len) {
     if (!c || !buf || len < 0 || st_get(c) != TCP_STATE_CONNECTED) return -1;
     if (len == 0) return 0;
 
+    // Too much is waiting for the network (see TCP_SEND_BACKLOG). The size of
+    // this write does not count: a single large write stays fine.
+    uint32_t save = spin_lock_blocking(s_lock);
+    bool full = c->tx_backlog >= TCP_SEND_BACKLOG;
+    if (!full) c->tx_backlog += (uint32_t)len;
+    spin_unlock(s_lock, save);
+    if (full) return -1;
+
     void *copy = umm_malloc(len);
-    if (!copy) return -1;
+    if (!copy) {
+        tx_backlog_sub(c, (uint32_t)len);
+        return -1;
+    }
     memcpy(copy, buf, len);
 
     conn_req_t req = {
@@ -225,6 +246,7 @@ int tcp_write(tcp_conn_t *c, const void *buf, int len) {
 
     if (!wifi_req_push(&req)) {
         umm_free(copy);
+        tx_backlog_sub(c, (uint32_t)len);
         return -1;
     }
     return len;
@@ -326,13 +348,12 @@ void tcp_set_read_timeout(tcp_conn_t *c, uint32_t ms) {
 
 // ── Core 1 ───────────────────────────────────────────────────────────────────
 
-// The one place a connection is dropped: clear fn_data so no later event
-// reaches the slot, and let Mongoose close it.
+// The one place a connection is dropped: no later event reaches the slot, and
+// what the app wrote still goes out, then the FIN (net_close.h).
 static void tcp_c1_detach(tcp_conn_t *c) {
     struct mg_connection *nc = (struct mg_connection *)c->pcb;
     if (!nc) return;
-    nc->fn_data = NULL;
-    nc->is_closing = 1;
+    net_close_conn(nc);
     c->pcb = NULL;
 }
 
@@ -374,7 +395,10 @@ void tcp_c1_fail(tcp_conn_t *c, const char *msg) {
 
 void tcp_c1_send(tcp_conn_t *c, const void *data, uint32_t len) {
     struct mg_connection *nc = (struct mg_connection *)c->pcb;
-    if (!nc || st_get(c) != TCP_STATE_CONNECTED) return;  // closed meanwhile
+    // CLOSING: written before the close, and the close request comes after this
+    // one in the ring, so the slot and the connection are still here.
+    tcp_conn_state_t st = st_get(c);
+    if (!nc || (st != TCP_STATE_CONNECTED && st != TCP_STATE_CLOSING)) return;
     if (!mg_send(nc, data, len))
         tcp_c1_fail(c, "send failed (out of memory)");
 }
@@ -486,6 +510,8 @@ void tcp_ev_fn(struct mg_connection *nc, int ev, void *ev_data) {
         tcp_drain(nc, c);
         if (nc->recv.len > TCP_RECV_OVERFLOW)
             tcp_c1_fail(c, "receive overflow (the app is not reading fast enough)");
+    } else if (ev == MG_EV_WRITE) {
+        tx_backlog_sub(c, (uint32_t)*(long *)ev_data);
     } else if (ev == MG_EV_ERROR) {
         char msg[TCP_ERR_MAX];
         if (!wifi_tls_verify_error(nc, msg, sizeof(msg)))

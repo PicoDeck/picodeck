@@ -139,7 +139,7 @@ uint32_t wifi_bus_errors(void);
 
 typedef enum {
     CONN_REQ_HTTP_START,      // new TCP conn (or reuse keep-alive) + send request
-    CONN_REQ_HTTP_CLOSE,      // mark nc->is_closing = 1
+    CONN_REQ_HTTP_CLOSE,      // let the connection go (net_close.h)
     CONN_REQ_TCP_CONNECT,     // new generic TCP conn
     CONN_REQ_TCP_WRITE,       // send data over TCP
     CONN_REQ_TCP_CLOSE,       // close generic TCP
@@ -186,6 +186,17 @@ bool wifi_tls_verify_error(struct mg_connection *nc, char *out, size_t n);
 // NUL) to out and return true; "" and false when there is none or n < 65.
 // Core 1, once the handshake is done (MG_EV_TLS_HS).
 bool wifi_tls_peer_fingerprint(struct mg_connection *nc, char *out, size_t n);
+
+// The network stack's memory and work, for the `netstat` dev command. False if
+// Core 1 did not answer (no WiFi hardware). Core 0; waits up to 100 ms.
+typedef struct {
+  uint32_t pool_free;     // Core 1's Mongoose pool: free bytes in total,
+  uint32_t pool_largest;  // and the largest block
+  uint32_t conns;         // Mongoose connections, the DNS resolver's included
+  uint32_t closing;       // of which let go, still ending (net_close.h)
+  uint32_t resent;        // TCP segments resent since boot
+} wifi_netstat_t;
+bool wifi_netstat(wifi_netstat_t *out);
 
 // Doorbell number used for Core 0 → Core 1 IPC wake-up.
 // Claimed in wifi_init(); Core 1 registers the ISR in core1_entry().

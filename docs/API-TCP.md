@@ -76,7 +76,7 @@ Write data to the connection.
   - `data` (string): Data to send
 - **Returns:** (number) Number of bytes queued (all of them), or -1 if nothing was queued
 
--1 is usually not a failure. Each `write` is one request to the network core, and at most 8 can wait, so a tight loop gets -1 once they are queued, with the connection fine and `conn:error()` still `nil`. Send data in one call where you can (a single large write is fine), and retry the rest while the socket is connected:
+-1 is usually not a failure. Each `write` is one request to the network core, and at most 8 can wait, so a tight loop gets -1 once they are queued, with the connection fine and `conn:error()` still `nil`. You also get -1 while more than 16 KB you wrote is waiting to go out, because the server is not reading or a lost frame is being resent. Send data in one call where you can (a single large write is fine), and retry the rest while the socket is connected:
 
 ```lua
 local function write_all(conn, data)
@@ -91,7 +91,9 @@ end
 local ok, err = write_all(conn, "GET / HTTP/1.0\r\n\r\n")
 ```
 
-**A lost frame stalls the socket.** The device's TCP stack does not resend what it sends, so if WiFi loses a frame, the server receives nothing more from that socket, with no error on either side. HTTP and TLS run over the same stack. Data coming from the server is not affected, because the server resends it. On one home network, about 1 frame in 500 was lost: 200 one-byte writes stalled in 15-28% of runs, and a single 200-byte write never did (0 of 48). So send a message in one write rather than many, and if your protocol can, use a reply timeout and reconnect.
+**A lost frame costs about a second.** If WiFi loses a frame, the device's TCP stack sends it again a second later, then 2, 4 and so on up to 60 seconds apart until it gets through, and the stream carries on with nothing lost and no error. HTTP and TLS run over the same stack. On one home network about 1 frame in 500 was lost, so a long transfer pauses now and then. The stack also sends at most 6000 bytes ahead of what the server has acknowledged, which limits an upload to 6000 bytes per round trip.
+
+If the server stops answering altogether, the socket fails with `Mongoose error: keepalive` about 3 minutes after the last thing it heard. `setReadTimeout` finds out sooner, if your protocol expects replies. A connection request is not resent: if it is lost, the connect fails after 15 seconds and you can try again.
 
 ---
 
@@ -114,6 +116,8 @@ local chunk = conn:read(1024)
 Close the connection.
 
 The object is unusable afterwards (I/O raises). Data already received stays readable until close, including after the peer closes.
+
+What you already wrote is still sent, and then the server sees the connection close. That finishes in the background, for at most 10 seconds if the server is not responding, and the socket can be reused at once. Anything the server sends after your `close()` is dropped. If that last closing message itself is lost, which is not resent, the server finds out the next time it sends.
 
 - **Parameters:** None
 - **Returns:** None

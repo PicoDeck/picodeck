@@ -1,5 +1,6 @@
 #include "http.h"
 #include "wifi.h"
+#include "net_close.h"
 #include "display.h"
 #include "mbedtls/platform.h"
 #include "mongoose.h"
@@ -186,8 +187,7 @@ void http_c1_detach(http_conn_t *c) {
   struct mg_connection *nc = (struct mg_connection *)c->pcb;
   if (!nc)
     return;
-  nc->fn_data = NULL;  // no later event reaches the slot
-  nc->is_closing = 1;
+  net_close_conn(nc);  // no later event reaches the slot; it sends the FIN
   c->pcb = NULL;
 }
 
@@ -509,8 +509,7 @@ static bool c1_feed_body(struct mg_connection *nc, http_conn_t *c,
   return true;
 }
 
-static void c1_complete(struct mg_connection *nc, http_conn_t *c,
-                        bool closing) {
+static void c1_complete(http_conn_t *c, bool closing) {
   uint32_t irq = spin_lock_blocking(s_lock);
   bool done = st_get(c) == HTTP_STATE_BODY;
   if (done) {
@@ -520,7 +519,7 @@ static void c1_complete(struct mg_connection *nc, http_conn_t *c,
   }
   spin_unlock(s_lock, irq);
   if (done && !closing && !c->req_keep_alive)
-    nc->is_closing = 1;
+    http_c1_detach(c);
 }
 
 // Body bytes still in nc->recv when the connection goes away: decode the
@@ -574,7 +573,7 @@ static void c1_process(struct mg_connection *nc, http_conn_t *c,
     if (!c1_spill_rest(nc, c))
       return;
     if (!c->chunked && c->content_length < 0) {
-      c1_complete(nc, c, true);  // close-delimited: the close ends the body
+      c1_complete(c, true);  // close-delimited: the close ends the body
       return;
     }
     if (!body_complete(c)) {
@@ -587,7 +586,7 @@ static void c1_process(struct mg_connection *nc, http_conn_t *c,
     }
   }
   if (body_complete(c)) {
-    c1_complete(nc, c, closing);
+    c1_complete(c, closing);
   } else if (nc->recv.len > HTTP_RECV_OVERFLOW) {
     // The app is not reading and Mongoose keeps buffering: give up rather
     // than exhaust Core 1's pool (and never report this as complete).

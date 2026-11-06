@@ -113,6 +113,19 @@ void core1_free(void *ptr) {
     }
 }
 
+void core1_alloc_stats(size_t *free_total, size_t *largest) {
+    size_t total = 0, big = 0;
+    for (const block_t *b = (const block_t *)s_pool_start; b; b = b->next) {
+        if (!b->used) {
+            size_t n = b->size - HEADER_SIZE;
+            total += n;
+            if (n > big) big = n;
+        }
+    }
+    *free_total = total;
+    *largest = big;
+}
+
 bool core1_owns(const void *ptr) {
     return (const uint8_t *)ptr >= s_pool_start &&
            (const uint8_t *)ptr <  s_pool_end;

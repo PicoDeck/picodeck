@@ -277,6 +277,7 @@ elseif(SIM_FIRMWARE_NET)
         ${PICODECK_ROOT}/src/drivers/wifi.c
         ${PICODECK_ROOT}/src/drivers/http.c
         ${PICODECK_ROOT}/src/drivers/tcp.c
+        ${PICODECK_ROOT}/src/drivers/net_close.c
         ${PICODECK_ROOT}/third_party/mongoose/mongoose.c
         net/sim_net_shim.c
     )

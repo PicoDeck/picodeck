@@ -159,11 +159,15 @@ function transport:read_line(timeout_ms)
 end
 
 function transport:send_raw(data)
-    local n = self.conn:write(data)
-    if n < 0 then
-        local err = self.conn:error()
-        self.error = "write failed" .. (err and (": " .. err) or "")
-        return false
+    -- -1 with the socket connected means the queue to the network is full: wait
+    -- for it (docs/API-TCP.md, conn:write).
+    while self.conn:write(data) < 0 do
+        if not self.conn:isConnected() then
+            local err = self.conn:error()
+            self.error = "write failed" .. (err and (": " .. err) or "")
+            return false
+        end
+        picocalc.sys.sleep(5)
     end
     return true
 end

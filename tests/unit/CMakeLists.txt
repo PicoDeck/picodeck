@@ -385,6 +385,29 @@ target_link_libraries(test_ota_verify PRIVATE picodeck_host_mbedtls)
 picodeck_unit_test(test_ca_bundle SOURCES ${SRC}/drivers/ca_bundle.c
                 INCLUDES ${SRC}/drivers)
 target_link_libraries(test_ca_bundle PRIVATE picodeck_host_mbedtls)
+# Mongoose's built-in TCP (the device's stack; the firmware-net simulator has it
+# on sockets instead): the resend and the close against a scripted peer, and under
+# TLS on the firmware's mbedTLS configuration, with Core 1's allocator.
+set(MG_TEST_DEFINES MG_ENABLE_TCPIP=1 MG_ENABLE_SOCKET=0 MG_ENABLE_CUSTOM_MILLIS=1
+    MG_IO_SIZE=8192)
+picodeck_unit_test(test_mg_tcp_resend SOURCES ${SRC}/drivers/net_close.c
+                INCLUDES ${PICODECK_ROOT}/third_party/mongoose ${SRC}/drivers
+                DEFINES ${MG_TEST_DEFINES} MG_TLS=MG_TLS_NONE)
+# mongoose.c is third-party: not held to -Werror's extra warnings.
+target_compile_options(test_mg_tcp_resend PRIVATE -Wno-error)
+add_library(mg_tls_test_mbedtls STATIC ${_picodeck_mbedtls_srcs})
+target_include_directories(mg_tls_test_mbedtls SYSTEM PUBLIC "${PICODECK_MBEDTLS_DIR}/include")
+target_compile_definitions(mg_tls_test_mbedtls PUBLIC
+    MBEDTLS_CONFIG_FILE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/mbedtls_tls_test_config.h")
+target_compile_options(mg_tls_test_mbedtls PRIVATE -w)
+picodeck_unit_test(test_mg_tls_resend
+                SOURCES ${SRC}/drivers/net_close.c ${SRC}/os/core1_alloc.c
+                INCLUDES ${PICODECK_ROOT}/third_party/mongoose ${SRC}/drivers
+                DEFINES ${MG_TEST_DEFINES} MG_TLS=MG_TLS_MBED
+                        MG_ENABLE_CUSTOM_CALLOC=1)
+target_compile_options(test_mg_tls_resend PRIVATE -Wno-error)
+target_link_libraries(test_mg_tls_resend PRIVATE mg_tls_test_mbedtls)
+
 # The signature verifiers behind picocalc.crypto.rsaVerify / ecdsaP256Verify:
 # crypto.c over the firmware's mbedTLS, with real SSH-format vectors.
 picodeck_unit_test(test_crypto_verify

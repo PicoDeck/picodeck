@@ -3269,6 +3269,7 @@ struct mg_tcpip_if {
   bool enable_req_sntp;                   // DCHP client requests SNTP server
   bool enable_crc32_check;         // Do a CRC check on RX frames and strip it
   bool enable_mac_check;           // Do a MAC check on RX frames
+  bool enable_tcp_retransmit;      // PicoDeck patch: resend unacknowledged data
   bool update_mac_hash_table;      // Signal drivers to update MAC controller
   struct mg_tcpip_driver *driver;  // Low level driver
   void *driver_data;               // Driver-specific data
@@ -3300,6 +3301,7 @@ struct mg_tcpip_if {
   volatile uint32_t nrecv;      // Number of received frames
   volatile uint32_t nsent;      // Number of transmitted frames
   volatile uint32_t nerr;       // Number of driver errors
+  volatile uint32_t nrtx;       // PicoDeck patch: TCP segments resent
   uint8_t state;                // Current link and IPv4 state
 #define MG_TCPIP_STATE_DOWN 0   // Interface is down
 #define MG_TCPIP_STATE_UP 1     // Interface is up

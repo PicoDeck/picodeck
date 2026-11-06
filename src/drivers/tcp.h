@@ -21,15 +21,17 @@
 // * tcp_free() only marks the slot CLOSING and queues CONN_REQ_TCP_CLOSE; it
 //   never frees memory.  If the request ring is full the slot stays CLOSING
 //   and tcp_reap() retries the push.
-// * Core 1's close handler (tcp_c1_release) clears nc->fn_data, marks the
-//   Mongoose connection closing and only then stores RELEASED (release
-//   order, under the pool lock).  From then on no Core 1 code touches the
-//   slot: fn_data is gone, and every Core 1 state change refuses to leave
-//   CLOSING/RELEASED.
+// * Core 1's close handler (tcp_c1_release) lets the Mongoose connection go
+//   (net_close.h: fn_data cleared, it sends what is left and the FIN on its own)
+//   and only then stores RELEASED (release order, under the pool lock).  From
+//   then on no Core 1 code touches the slot: fn_data is gone, and every Core 1
+//   state change refuses to leave CLOSING/RELEASED.
 // * Core 0 frees rx_buf and zeroes the slot only after it observes RELEASED:
 //   tcp_reap(), called from the Lua hook path (tcp_lua_fire_pending), the
 //   native sys->poll, tcp_alloc and tcp_close_all.
 // * Every Core 1 path that drops pcb also clears fn_data (tcp_c1_detach).
+// * So a slot is free at once, though its old connection can outlive it by up
+//   to NET_CLOSE_LIMIT_MS.
 //
 // Locking: ONE spinlock for the whole pool (claimed once in tcp_init) guards
 // state transitions, pending bits, the receive ring and in_use.  `state` is
@@ -45,6 +47,12 @@
 // with its own flow control keeps what it lets the peer send ahead under this
 // plus the ring (apps/ssh's channel window: test_ssh_transport checks it).
 #define TCP_RECV_OVERFLOW     (32u * 1024u)
+// Bytes tcp_write has taken that have not left for the network, past which it
+// returns -1. Sending stops at the peer's window, at what the retransmission
+// queue may hold, and for a second or more after a lost frame, while nothing
+// slows the app down, so without this a writer's data would pile up in Core 1's
+// Mongoose pool until the socket failed with "send failed (out of memory)".
+#define TCP_SEND_BACKLOG      (16u * 1024u)
 #define TCP_ERR_MAX           128
 
 typedef enum {
@@ -79,6 +87,7 @@ typedef struct {
     uint32_t rx_head;  // pool lock
     uint32_t rx_tail;  // pool lock
     uint32_t rx_count; // pool lock
+    uint32_t tx_backlog; // pool lock (TCP_SEND_BACKLOG)
 
     // What Mongoose still held when the connection closed and the ring
     // could not take (umm, through the cached alias: see tcp_ev_fn). Core 1 sets

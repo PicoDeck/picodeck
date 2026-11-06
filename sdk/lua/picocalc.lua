@@ -1627,8 +1627,9 @@ function PicoDeckTcpConn:setInsecure(flag) end
 function PicoDeckTcpConn:peerFingerprint() end
 
 ---Queue data for sending. Returns the bytes queued (all of them), or -1 if
----nothing was queued. -1 is usually transient: at most 8 writes can wait, so
----retry while `isConnected()`.
+---nothing was queued. -1 is usually transient: at most 8 writes can wait, and
+---more than 16 KB waiting to go out holds writes back, so retry while
+---`isConnected()`.
 ---@param data string
 ---@return integer
 function PicoDeckTcpConn:write(data) end

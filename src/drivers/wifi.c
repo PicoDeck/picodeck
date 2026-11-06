@@ -11,7 +11,9 @@
 #include "rng.h"
 #include "display.h"
 #include "http.h"
+#include "net_close.h"
 #include "bt_pad.h"
+#include "../os/core1_alloc.h"
 
 #include "mongoose.h"
 #ifndef PICODECK_SIM_FIRMWARE_NET
@@ -251,6 +253,7 @@ static void tcpip_cb(struct mg_tcpip_if *ifp, int ev, void *ev_data) {
       // wait for its timeout (or forever, before timeouts always ran).
       http_c1_fail_all("network down");
       tcp_c1_fail_all("network down");
+      net_close_drop_all(&s_mgr);
       if (s_status == WIFI_STATUS_CONNECTED) {
         s_status = WIFI_STATUS_DISCONNECTED;
         { uint32_t save = spin_lock_blocking(s_state_lock);
@@ -613,6 +616,7 @@ void wifi_init(void) {
   s_ifp.driver_data = &s_driver_data;
   s_ifp.pfn = tcpip_cb;
   s_ifp.recv_queue.size = 16384;
+  s_ifp.enable_tcp_retransmit = true;
 
   mg_tcpip_init(&s_mgr, &s_ifp);
   s_ifp.pfn = tcpip_cb; // Ensure our callback is set
@@ -926,6 +930,40 @@ bool __time_critical_func(wifi_core1_idle)(void) {
          st != WIFI_STATUS_ONLINE;
 }
 
+// `netstat`: Core 1's pool and connection list are Core 1's alone (core1_alloc.h),
+// so it does the reading.
+static wifi_netstat_t s_netstat;
+static _Atomic bool s_netstat_asked = false;
+
+static void c1_answer_netstat(void) {
+  size_t total, largest;
+  uint32_t conns = 0;
+  core1_alloc_stats(&total, &largest);
+  for (struct mg_connection *c = s_mgr.conns; c != NULL; c = c->next)
+    conns++;
+  s_netstat.pool_free = (uint32_t)total;
+  s_netstat.pool_largest = (uint32_t)largest;
+  s_netstat.conns = conns;
+  s_netstat.closing = net_close_count(&s_mgr);
+  s_netstat.resent = s_ifp.nrtx;
+  atomic_store_explicit(&s_netstat_asked, false, memory_order_release);
+}
+
+bool wifi_netstat(wifi_netstat_t *out) {
+  if (!s_available)
+    return false;
+  atomic_store_explicit(&s_netstat_asked, true, memory_order_release);
+  // An idle Core 1 runs wifi_poll every 16th tick at the least.
+  for (int i = 0; i < 100; i++) {
+    if (!atomic_load_explicit(&s_netstat_asked, memory_order_acquire)) {
+      *out = s_netstat;
+      return true;
+    }
+    sleep_ms(1);
+  }
+  return false;
+}
+
 void wifi_poll(void) {
   if (!s_available)
     return;
@@ -935,6 +973,9 @@ void wifi_poll(void) {
   // since Core 1's core1_entry() drives the stack on its 1 ms tick.
   if (get_core_num() != 1)
     return;
+
+  if (atomic_load_explicit(&s_netstat_asked, memory_order_acquire))
+    c1_answer_netstat();
 
   // Top up the pre-generated random pool while the stack is shallow: TLS
   // draws from it deep inside mg_mgr_poll (rng.h).

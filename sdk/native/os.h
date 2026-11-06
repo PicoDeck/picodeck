@@ -405,7 +405,9 @@ typedef struct {
     // Open a TCP connection to host:port. Non-blocking. NULL when all 4 sockets
     // are in use.
     pctcp_t (*connect)(const char *host, uint16_t port, bool use_ssl);
-    // Write data to the connection. Returns bytes sent or <0 on error.
+    // Queue data for the connection. Returns len, or <0 if nothing was queued:
+    // usually a full queue (more than 16 KB waiting to go out), so try again
+    // while the socket is connected. Data written before close is still sent.
     int     (*write)(pctcp_t c, const void *buf, int len);
     // Read data from the connection. Returns bytes read or 0 if none available.
     int     (*read)(pctcp_t c, void *buf, int len);

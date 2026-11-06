@@ -410,6 +410,59 @@ class TcpEchoServer:
             pass
 
 
+class TcpSinkServer:
+    """Takes one connection and reads nothing for `hold_s`, so what the client
+    sends backs up behind a shut window; then reads to the client's close.
+    `data` is what arrived, `closed_at` when the client's FIN did (monotonic)."""
+
+    def __init__(self, host: str = "127.0.0.1", hold_s: float = 0.0,
+                 rcvbuf: int = 0):
+        self._lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # rcvbuf small, or the kernel soaks up megabytes before the window shuts.
+        if rcvbuf:
+            self._lsock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+        self._lsock.bind((host, 0))
+        self._lsock.listen(1)
+        self.port = self._lsock.getsockname()[1]
+        self.hold_s = hold_s
+        self.data = bytearray()
+        self.closed_at = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    def _run(self):
+        try:
+            conn, _ = self._lsock.accept()
+        except OSError:
+            return
+        time.sleep(self.hold_s)
+        try:
+            while True:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                self.data += chunk
+            self.closed_at = time.monotonic()
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    def wait_closed(self, timeout: float) -> bool:
+        self._thread.join(timeout)
+        return self.closed_at is not None
+
+    def stop(self):
+        try:
+            self._lsock.close()
+        except OSError:
+            pass
+
+
 class BlackholeServer:
     """A port that never completes a TCP handshake: listen(0) and one
     connection parked in the accept queue fill it, so Linux drops further

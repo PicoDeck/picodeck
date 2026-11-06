@@ -173,6 +173,9 @@ void core1_alloc_init(void *pool, size_t pool_size) {
   (void)pool;
   (void)pool_size;
 }
+void core1_alloc_stats(size_t *free_total, size_t *largest) {
+  *free_total = *largest = 0;  // the host heap: nothing to report
+}
 void *core1_malloc(size_t size) { return malloc(size); }
 void *core1_calloc(size_t count, size_t size) { return calloc(count, size); }
 void core1_free(void *ptr) { free(ptr); }

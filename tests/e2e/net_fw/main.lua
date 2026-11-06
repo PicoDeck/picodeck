@@ -5,7 +5,7 @@
 -- wifi.c on Mongoose (specs/test-audit-2026-09-24.md §3.6, R13).
 --
 -- The harness writes /data/<APP_ID>/servers.json before launch:
---   {"http": port, "echo": port, "blackhole": port, "big_sum": n,
+--   {"http": port, "echo": port, "blackhole": port, "sink": port, "big_sum": n,
 --    "case": "<one case name>", "host": "<optional, default 127.0.0.1>"}
 -- and this app runs ONLY that case, so a case that crashes the simulator
 -- (the cross-core races this suite exists to reproduce) cannot take the
@@ -955,6 +955,39 @@ case_fw("tcp_write_retry_pattern", function()
         T.ok(write_all(s, b), "write " .. i)
     end
     T.eq(tcp_read_until(s, 200), table.concat(sent), "echo")
+    s:close()
+end)
+
+-- What the app wrote before close() still goes out, then the FIN.
+-- test_write_then_close_delivers checks what arrived.
+case_fw("tcp_write_then_close", function()
+    local s = tcp_open(cfg.sink)
+    local chunk = {}
+    for i = 1, 6000 do chunk[i] = string.format("%09d\n", i) end
+    local data = table.concat(chunk)
+    T.eq(s:write(data), #data, "one large write")
+    s:close()
+end)
+
+-- A peer not reading: a writer is held back (-1, still connected, no error)
+-- rather than filling Core 1's pool until the socket fails, and nothing is
+-- lost. test_writer_is_held_back checks what arrived.
+case_fw("tcp_writer_is_held_back", function()
+    local s = tcp_open(cfg.sink)
+    local filler = string.rep("x", 8180)
+    local refused = 0
+    for i = 1, 400 do
+        local line = string.format("%011d\n", i) .. filler
+        while true do
+            local n = s:write(line)
+            if n >= 0 then break end
+            T.ok(s:isConnected(), "still connected: " .. tostring(s:error()))
+            T.eq(s:error(), nil, "no error while held back")
+            refused = refused + 1
+            pc.sys.sleep(2)
+        end
+    end
+    T.ok(refused > 0, "the writer was never held back")
     s:close()
 end)
 

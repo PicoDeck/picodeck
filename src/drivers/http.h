@@ -249,7 +249,7 @@ struct mg_connection;  // forward declaration to avoid pulling in mongoose.h
 void http_ev_fn(struct mg_connection *nc, int ev, void *ev_data);
 // QUEUED → `next`; false (do nothing) if the slot left QUEUED meanwhile.
 bool http_c1_begin(http_conn_t *c, http_state_t next);
-// Drop the slot's connection: clear fn_data, mark it closing, pcb = NULL.
+// Drop the slot's connection: net_close_conn (fn_data cleared), pcb = NULL.
 void http_c1_detach(http_conn_t *c);
 // Fail the request (FAILED + FAILED|CLOSED callbacks) and detach.
 void http_c1_fail(http_conn_t *c, const char *msg);

@@ -219,6 +219,8 @@ The default build uses your computer's network through libcurl, not the firmware
 |---|---|---|
 | Missing `"http"` requirement | Works | WiFi may be off, and the connection fails |
 | A reader far behind | The transfer pauses once the ring plus 32 KB is waiting, and nothing is lost | Fails: `receive buffer overflow` (HTTP), `receive overflow` (TCP) |
+| WiFi loses a frame | Never happens | The transfer pauses for about a second |
+| A TCP server not reading | `conn:write` still takes data, more slowly | `conn:write` returns -1 past 16 KB waiting |
 | Certificates and the clock | Your system's, through libcurl; no wait | The bundled CA list; waits for SNTP to set the clock |
 | Connection error text | `curl error: ...`, `connect: Connection refused` | `Mongoose error: socket error`, and others |
 
@@ -299,7 +301,7 @@ In the simulator, send the same words through the [`dev_command`](#driving-it-fr
 | `audiostat [reset]` | Audio timing | yes | yes |
 | `stack` | Stack peaks | yes | no |
 | `psram [full]`, `mp3stats` | PSRAM test; MP3 counts | yes | no (`get_heap_info`, `get_mp3_stats`) |
-| `alarmpool`, `kbdstat`, `xipstat`, `splash`, `lognoise`, `mp3bench`, `prof` | Firmware diagnostics | yes | no |
+| `alarmpool`, `kbdstat`, `netstat`, `xipstat`, `splash`, `lognoise`, `mp3bench`, `prof` | Firmware diagnostics | yes | no |
 
 While an app runs: `reboot` and `reboot-flash` act at once (no teardown); `reboot-ota` is dropped; `usb` waits for the launcher. Exit to the launcher before flashing. `get`, `put`, `screenshot` and the base64 forms share the port with the log, so each ends with a checksum to check against, and other log lines are dropped during a transfer and counted when it ends. On the device, a native app that never calls `sys->poll()` does not see commands until the launcher.
 

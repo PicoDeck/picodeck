@@ -565,6 +565,18 @@ static void dev_command_run(void *arg) {
             printf("[DEV] AlarmPool: free=%d lost=%d\n", free_slots, lost_slots);
         else
             printf("[DEV] AlarmPool: unavailable (pico_time not patched)\n");
+    } else if (strcmp(s_cmd_buf, "netstat") == 0) {
+        // tests/e2e/test_hw_tcp_resend.py: whether closed sockets give back
+        // what they held, and how often TCP has resent.
+        wifi_netstat_t n;
+        if (wifi_netstat(&n))
+            printf("[DEV] Net: pool_free=%lu pool_largest=%lu conns=%lu "
+                   "closing=%lu resent=%lu\n",
+                   (unsigned long)n.pool_free, (unsigned long)n.pool_largest,
+                   (unsigned long)n.conns, (unsigned long)n.closing,
+                   (unsigned long)n.resent);
+        else
+            printf("[DEV] Net: unavailable\n");
     } else if (strcmp(s_cmd_buf, "stack") == 0) {
         // Peak use of Core 0's 4 KB main stack since boot, and of the app
         // runtime's PSP stack since launch (when an app is running).

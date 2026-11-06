@@ -231,7 +231,12 @@ void tcp_close(tcp_conn_t *c) {
     if (!c || (!c->pcb && c->state != TCP_STATE_QUEUED))
         return;
     conn_req_t req = {.type = CONN_REQ_TCP_CLOSE, .conn = (http_conn_t *)c};
-    wifi_req_push(&req);
+    // A close right after a burst of writes finds the queue full. Dropped, the
+    // socket would stay open and the server would never see the close.
+    for (int i = 0; i < 2000 && !wifi_req_push(&req); i++) {
+        struct timespec ts = {0, 1000000};  // 1 ms
+        nanosleep(&ts, NULL);
+    }
 }
 
 // ── Data reading (Core 0) ───────────────────────────────────────────────────

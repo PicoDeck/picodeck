@@ -15,5 +15,7 @@ void  core1_free(void *ptr);
 
 // Returns true if ptr is within the Core 1 pool (for debug assertions)
 bool  core1_owns(const void *ptr);
+// Free bytes in total and in the largest block. Core 1 only: it walks the pool.
+void  core1_alloc_stats(size_t *free_total, size_t *largest);
 
 #endif // CORE1_ALLOC_H

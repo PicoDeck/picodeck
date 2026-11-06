@@ -4870,6 +4870,34 @@ void mg_multicast_restore(struct mg_connection *c, uint8_t *from) {
 #define MG_TCPIP_WIN 6000  // TCP window size
 #endif
 
+// PicoDeck patch: resend TCP data, from upstream 5c34018 (2026-08-07, "add
+// optional TCP retransmission"; 7.20 through 7.23 resend nothing, so one frame
+// lost after the driver took it left a hole the peer waited on for ever).
+// Opt in per interface with enable_tcp_retransmit; with it off, data goes as in
+// 7.20. Changed from upstream:
+// - The queue is one run of bytes, not length-prefixed segments: 6000 one-byte
+//   writes hold 6000 bytes, not 30 KB, and a resend carries up to an MSS of
+//   whatever is oldest.
+// - It tracks the peer's window only with the queue on (upstream's maxseq came
+//   between 7.20 and 5c34018). In flight: at most the window, at most
+//   MG_TCPIP_WIN.
+// - The queue is freed when it empties (Core 1's pool is 128 KB).
+// - A resend the driver refuses goes again on the next poll, uncounted.
+// - An allocation failure with nothing in flight fails the connection: nothing
+//   would ever wake it. Upstream waits.
+// SYN, FIN and ARP are not resent here (ARP is, by the patch above).
+#ifndef MG_TCPIP_RTX_MS
+#define MG_TCPIP_RTX_MS 1000  // Initial retransmission timeout (RFC-6298, 2.1)
+#endif
+#define MG_TCPIP_RTX_MAX_MS 60000  // Minimum permitted RTO cap (RFC-6298, 2.5)
+#define MG_TCPIP_RTX_R1 3  // Delivery-problem threshold (RFC-9293, 3.8.3)
+// No R2: MG_TCPIP_KEEPALIVE_MS closes a peer that has stopped answering, after
+// three minutes of silence, and a peer that answers is alive (its window may
+// just be shut).
+#ifndef MG_TCPIP_TXQ_ALIGN
+#define MG_TCPIP_TXQ_ALIGN 1024  // Retransmit queue allocation quantum
+#endif
+
 struct connstate {
   uint32_t seq, ack;                      // TCP seq/ack counters
   uint64_t timer;                         // TCP timer (see 'ttype' below)
@@ -4888,6 +4916,13 @@ struct connstate {
   bool fin_rcvd;         // We have received FIN from the peer
   bool twclosure;        // 3-way closure done
   uint8_t arp_tries;     // PicoDeck patch: ARP/NS requests resent so far
+  // PicoDeck patch: the retransmission queue (see MG_TCPIP_RTX_MS)
+  bool retransmit;       // Keep sent data until it is acknowledged
+  uint8_t txq_retries;   // Resends since the last ACK progress
+  uint16_t win;          // The peer's receive window
+  uint32_t txq_una;      // Oldest unacknowledged sequence number
+  uint64_t txq_timer;    // When to resend (RFC-6298, 5)
+  struct mg_iobuf txq;   // Sent, not acknowledged: the bytes from txq_una
 };
 
 #if defined(__DCC__)
@@ -6078,6 +6113,10 @@ static struct mg_connection *accept_conn(struct mg_connection *lsn,
   s = (struct connstate *) (c + 1);
   s->dmss = mss;  // from options in client SYN
   s->seq = mg_ntohl(pkt->tcp->ack), s->ack = mg_ntohl(pkt->tcp->seq);
+  // PicoDeck patch: the retransmission queue
+  s->retransmit = lsn->mgr->ifp->enable_tcp_retransmit;
+  s->txq.align = MG_TCPIP_TXQ_ALIGN;
+  s->txq_una = s->seq, s->win = mg_ntohs(pkt->tcp->win);
 #if MG_ENABLE_IPV6
   if (lsn->loc.is_ip6) {
     c->rem.addr.ip6[0] = pkt->ip6->src[0],
@@ -6165,6 +6204,13 @@ static bool udp_send(struct mg_connection *c, const void *buf, size_t len) {
   return tx_udp(ifp, s->mac, &ips, &c->rem, buf, len);
 }
 
+// PicoDeck patch: how much more may go out: the peer's window and MG_TCPIP_WIN,
+// less what is in flight.
+static size_t txq_room(const struct connstate *s) {
+  size_t cap = s->win < MG_TCPIP_WIN ? s->win : MG_TCPIP_WIN;
+  return s->txq.len < cap ? cap - s->txq.len : 0;
+}
+
 long mg_io_send(struct mg_connection *c, const void *buf, size_t len) {
   struct connstate *s = (struct connstate *) (c + 1);
   len = trim_len(c, len);
@@ -6174,18 +6220,74 @@ long mg_io_send(struct mg_connection *c, const void *buf, size_t len) {
     struct mg_tcpip_if *ifp = c->mgr->ifp;
     size_t sent;
     if (len > s->dmss) len = s->dmss;  // RFC-6691: reduce if sending opts
+    if (s->retransmit) {  // PicoDeck patch: queue it, within the window
+      size_t room = txq_room(s);
+      if (room == 0) return MG_IO_WAIT;
+      if (len > room) len = room;
+      if (s->txq.len == 0) s->txq_una = s->seq;
+      if (mg_iobuf_add(&s->txq, s->txq.len, buf, len) != len) {
+        // With data in flight an ACK will free memory. Without, nothing wakes
+        // this connection: say so rather than stall for ever.
+        if (s->txq.len == 0) mg_error(c, "oom");
+        return MG_IO_WAIT;
+      }
+    }
     sent = tx_tcp(ifp, s->mac, &c->loc, &c->rem, TH_PUSH | TH_ACK,
                   mg_htonl(s->seq), mg_htonl(s->ack), buf, len);
-    if (sent == 0) {
-      return MG_IO_WAIT;
-    } else if (sent == (size_t) -1) {
-      return MG_IO_ERR;
+    if (sent == 0 || sent == (size_t) -1) {
+      if (s->retransmit) mg_iobuf_del(&s->txq, s->txq.len - len, len);
+      return sent == 0 ? MG_IO_WAIT : MG_IO_ERR;
     } else {
       s->seq += (uint32_t) len;
+      if (s->retransmit && s->txq.len == len) {  // PicoDeck patch: first in
+        s->txq_timer = ifp->now + MG_TCPIP_RTX_MS;
+        s->txq_retries = 0;
+      }
       if (s->ttype == MIP_TTYPE_ACK) settmout(c, MIP_TTYPE_KEEPALIVE);
     }
   }
   return (long) len;
+}
+
+// PicoDeck patch: an ACK takes what it covers off the queue. Sequence numbers
+// compare modulo 2^32. An ACK older than the last one, or for bytes never sent
+// (the ACK of our FIN), changes nothing.
+static void txq_ack(struct connstate *s, uint32_t ackno, uint16_t win,
+                    uint64_t now) {
+  if ((int32_t) (ackno - s->txq_una) < 0 || (int32_t) (s->seq - ackno) < 0)
+    return;
+  s->win = win;
+  if (ackno == s->txq_una) return;  // duplicate: its window is all it brings
+  mg_iobuf_del(&s->txq, 0, (size_t) (ackno - s->txq_una));
+  s->txq_una = ackno;
+  s->txq_retries = 0;
+  s->txq_timer = now + MG_TCPIP_RTX_MS;  // RFC-6298, 5.3
+  if (s->txq.len == 0) mg_iobuf_free(&s->txq);
+}
+
+// PicoDeck patch: send what is oldest again, up to one segment, and back off
+// (RFC-6298, 5.5). It also serves as the probe of a window that has shut.
+static void txq_resend(struct mg_connection *c) {
+  struct connstate *s = (struct connstate *) (c + 1);
+  struct mg_tcpip_if *ifp = c->mgr->ifp;
+  size_t len = trim_len(c, s->txq.len), sent;
+  uint64_t rto = MG_TCPIP_RTX_MS;
+  uint8_t i;
+  if (len > s->dmss) len = s->dmss;
+  sent = tx_tcp(ifp, s->mac, &c->loc, &c->rem, TH_PUSH | TH_ACK,
+                mg_htonl(s->txq_una), mg_htonl(s->ack), s->txq.buf, len);
+  if (sent == (size_t) -1) {
+    mg_error(c, "retransmit");
+    return;
+  }
+  if (sent == 0) return;  // the driver is busy: next poll
+  ifp->nrtx++;
+  if (s->txq_retries < 255) s->txq_retries++;
+  // R1 reports a delivery problem; it does not close (RFC-9293, 3.8.3)
+  if (s->txq_retries == MG_TCPIP_RTX_R1) MG_ERROR(("%lu retransmit", c->id));
+  for (i = 0; i < s->txq_retries && rto < MG_TCPIP_RTX_MAX_MS; i++) rto *= 2;
+  if (rto > MG_TCPIP_RTX_MAX_MS) rto = MG_TCPIP_RTX_MAX_MS;
+  s->txq_timer = ifp->now + rto;
 }
 
 // PicoDeck patch: decrypt every record that is ready, not one per call. It
@@ -6232,6 +6334,10 @@ static void read_conn(struct mg_connection *c, struct pkt *pkt) {
   struct connstate *s = (struct connstate *) (c + 1);
   struct mg_iobuf *io = c->is_tls ? &c->rtls : &c->recv;
   uint32_t seq = mg_ntohl(pkt->tcp->seq);
+  // PicoDeck patch: every segment's ACK counts, whatever else it carries
+  if (s->retransmit && (pkt->tcp->flags & TH_ACK))
+    txq_ack(s, mg_ntohl(pkt->tcp->ack), mg_ntohs(pkt->tcp->win),
+            c->mgr->ifp->now);
   if (pkt->tcp->flags & TH_FIN) {
     uint8_t flags = TH_ACK;
     if (mg_ntohl(pkt->tcp->seq) != s->ack) {
@@ -6399,6 +6505,7 @@ static void rx_tcp(struct mg_tcpip_if *ifp, struct pkt *pkt) {
     // client got a server connection accept
     handle_opt(s, pkt->tcp, pkt->ip6 != NULL);  // process options (MSS)
     s->seq = mg_ntohl(pkt->tcp->ack), s->ack = mg_ntohl(pkt->tcp->seq) + 1;
+    s->txq_una = s->seq, s->win = mg_ntohs(pkt->tcp->win);  // PicoDeck patch
     tx_tcp_ctrlresp(ifp, pkt, TH_ACK, pkt->tcp->ack);
     c->is_connecting = 0;  // Client connected
     settmout(c, MIP_TTYPE_KEEPALIVE);
@@ -6787,6 +6894,10 @@ static void mg_tcpip_poll(struct mg_tcpip_if *ifp, uint64_t now) {
     struct connstate *s = (struct connstate *) (c + 1);
     if ((c->is_udp && !c->is_arplooking) || c->is_listening || c->is_resolving)
       continue;
+    // PicoDeck patch: the resend timer runs beside the one below, which goes on
+    // counting keep-alive misses: that is what ends a dead peer
+    if (s->txq.len > 0 && !c->is_closing && ifp->now > s->txq_timer)
+      txq_resend(c);
     if (ifp->now > s->timer) {
       if (s->ttype == MIP_TTYPE_ARP && s->arp_tries < MG_TCPIP_ARP_RETRIES) {
         // PicoDeck patch: ask again instead of failing (see MG_TCPIP_ARP_RETRIES)
@@ -6906,6 +7017,9 @@ static void l2addr_resolved(struct mg_connection *c) {
 void mg_connect_resolved(struct mg_connection *c) {
   struct mg_tcpip_if *ifp = c->mgr->ifp;
   uint8_t *l2addr;
+  // PicoDeck patch: the retransmission queue
+  ((struct connstate *) (c + 1))->retransmit = ifp->enable_tcp_retransmit;
+  ((struct connstate *) (c + 1))->txq.align = MG_TCPIP_TXQ_ALIGN;
   c->is_resolving = 0;
   if (ifp->eport < MG_EPHEMERAL_PORT_BASE) ifp->eport = MG_EPHEMERAL_PORT_BASE;
   c->loc.port = mg_htons(ifp->eport++);
@@ -6989,15 +7103,18 @@ static void init_closure(struct mg_connection *c) {
   struct connstate *s = (struct connstate *) (c + 1);
   if (c->is_udp == false && c->is_listening == false &&
       c->is_connecting == false) {  // For TCP conns,
-    tx_tcp(c->mgr->ifp, s->mac, &c->loc, &c->rem, TH_FIN | TH_ACK,
-           mg_htonl(s->seq), mg_htonl(s->ack), NULL, 0);
-    settmout(c, MIP_TTYPE_FIN);
+    // PicoDeck patch: a FIN the driver refused goes again on the next poll;
+    // the timer was started regardless, so it never went at all
+    if (tx_tcp(c->mgr->ifp, s->mac, &c->loc, &c->rem, TH_FIN | TH_ACK,
+               mg_htonl(s->seq), mg_htonl(s->ack), NULL, 0) != 0)
+      settmout(c, MIP_TTYPE_FIN);
   }
 }
 
 static void close_conn(struct mg_connection *c) {
   struct connstate *s = (struct connstate *) (c + 1);
   mg_iobuf_free(&s->raw);  // For TLS connections, release raw data
+  mg_iobuf_free(&s->txq);  // PicoDeck patch: the retransmission queue
   mg_close_conn(c);
 }
 
@@ -7027,7 +7144,11 @@ void mg_mgr_poll(struct mg_mgr *mgr, int ms) {
       c->is_tls_hs ? mg_tls_handshake(c) : handle_tls_recv(c);
     if (can_write(c)) write_conn(c);
     if (is_tls && c->send.len == 0) mg_tls_flush(c);
-    if (c->is_draining && c->send.len == 0 && s->ttype != MIP_TTYPE_FIN)
+    // PicoDeck patch: the FIN goes after everything else has been acknowledged
+    // (upstream 5c34018), and after what TLS still holds (upstream 5a317e81):
+    // its timer would end the connection before a resend could
+    if (c->is_draining && c->send.len == 0 && s->ttype != MIP_TTYPE_FIN &&
+        s->txq.len == 0 && !c->is_tls_throttled)
       init_closure(c);
     // For non-TLS, close immediately upon completing the 3-way closure
     // For TLS, handle any pending data (above) until MIP_TTYPE_FIN expires
@@ -16774,13 +16895,19 @@ long mg_tls_send(struct mg_connection *c, const void *buf, size_t len) {
                                         len);  // encrypt current data
   c->is_tls_throttled =
       (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE);
-  if (was_throttled) return MG_IO_WAIT;  // flushed throttled data instead
+  // PicoDeck patch (upstream 60aad5b3, 2026-06-10, "handle partial send after
+  // throttled"): a write stays in c->send until mbedTLS has handed all of its
+  // record on. This returned the whole of `len` while throttled, though
+  // mbedTLS takes one record at most: a c->send longer than that lost the rest,
+  // and the flush that ended the throttle then returned nothing. It hardly ever
+  // ran until the retransmission queue's in-flight cap made throttling routine.
+  if (was_throttled && c->is_tls_throttled) return MG_IO_WAIT;  // no changes
   if (c->is_tls_throttled) {
     tls->throttled_buf =
         (unsigned char *) buf;  // MbedTLS code actually ignores
-    tls->throttled_len = len;   //  these, but let's play API rules
-    return (long) len;          // already encripted that when throttled
-  }  // if last chunk fails to be sent, it needs to be flushed
+    tls->throttled_len = len;   // these, but let's play API rules
+    return MG_IO_WAIT;
+  }
   if (n <= 0) return MG_IO_ERR;
   return n;
 }

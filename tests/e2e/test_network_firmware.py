@@ -33,7 +33,7 @@ import pytest
 from helpers import E2E_DIR, case_params, lua_case_names, new_simulator, \
     run_lua_app, stage_lua_app
 from net_servers import (BlackholeServer, HttpTestServer, TcpEchoServer,
-                         big_body)
+                         TcpSinkServer, big_body)
 
 pytestmark = pytest.mark.firmware_net
 
@@ -45,11 +45,12 @@ APP_SRC = E2E_DIR / "net_fw" / "main.lua"
 # scenario (test_http_inflight_across_app_exit) and one is the app's own
 # "unknown case" guard; tcp_leave_open is driven by
 # test_tcp_app_exit_closes_sockets, http_read_timeout_hang by
-# test_read_timeout_fires_before_headers and pool_churn_then_fill by
-# test_pool_churn_releases_every_slot.
+# test_read_timeout_fires_before_headers, pool_churn_then_fill by
+# test_pool_churn_releases_every_slot, and the two sink cases by the tests named
+# after them, which read what arrived.
 _DRIVEN = {"http_leave_inflight", "http_after_inflight_exit",
            "tcp_leave_open", "http_read_timeout_hang", "pool_churn_then_fill",
-           "unknown_case"}
+           "tcp_write_then_close", "tcp_writer_is_held_back", "unknown_case"}
 CASES = [n for n in lua_case_names(APP_SRC) if n not in _DRIVEN]
 
 # Cases that fail today because of a known, unfixed bug: {case: reason}
@@ -102,6 +103,7 @@ def stage(sim, servers, case: str):
         "http": servers["http"].port,
         "echo": servers["echo"].port,
         "blackhole": servers["blackhole"].port,
+        "sink": servers["sink"].port if "sink" in servers else 0,
         "big_sum": _big_sum(),
         "case": case,
     }))
@@ -175,6 +177,35 @@ def test_tcp_close_releases_server_side(servers, simulator):
     assert still_open == 0, (
         f"{still_open} TCP connection(s) still open 2 s after sock:close() "
         f"(accepted {servers['echo'].accepted})")
+
+
+def test_write_then_close_delivers(servers, simulator):
+    """close() right after a write: all of it arrives, then the FIN. It used to
+    drop whatever Core 1 had not sent yet."""
+    sink = TcpSinkServer().start()
+    try:
+        run = run_case(simulator, {**servers, "sink": sink}, "tcp_write_then_close")
+        run.check_case("tcp_write_then_close")
+        assert sink.wait_closed(5.0), f"no FIN; {len(sink.data)} bytes arrived"
+        want = b"".join(b"%09d\n" % i for i in range(1, 6001))
+        assert bytes(sink.data) == want, f"{len(sink.data)} of {len(want)} bytes"
+    finally:
+        sink.stop()
+
+
+def test_writer_is_held_back(servers, simulator):
+    """A peer not reading: tcp_write refuses past TCP_SEND_BACKLOG, the socket
+    stays up, and once the peer reads every line arrives, in order."""
+    sink = TcpSinkServer(hold_s=2.0, rcvbuf=4096).start()
+    try:
+        run = run_case(simulator, {**servers, "sink": sink}, "tcp_writer_is_held_back",
+                       timeout=60.0)
+        run.check_case("tcp_writer_is_held_back")
+        assert sink.wait_closed(15.0), f"no FIN; {len(sink.data)} bytes arrived"
+        want = b"".join(b"%011d\n" % i + b"x" * 8180 for i in range(1, 401))
+        assert bytes(sink.data) == want, f"{len(sink.data)} of {len(want)} bytes"
+    finally:
+        sink.stop()
 
 
 def test_tcp_app_exit_closes_sockets(servers, simulator):
