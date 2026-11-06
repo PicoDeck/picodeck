@@ -134,7 +134,7 @@ download-lua:
 		echo "Downloading Lua $(LUA_VERSION)..."; \
 		mkdir -p third_party; \
 		cd third_party && \
-		curl -LO $(LUA_URL) && \
+		curl -fLO --retry 5 --retry-delay 10 --retry-all-errors --connect-timeout 30 $(LUA_URL) && \
 		tar -xzf lua-$(LUA_VERSION).tar.gz && \
 		mv lua-$(LUA_VERSION) lua-5.4 && \
 		rm lua-$(LUA_VERSION).tar.gz && \
