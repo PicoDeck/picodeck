@@ -63,6 +63,10 @@ setup: check-env download-lua download-fatfs
 
 # An empty third_party/<name> is a clone made without --recurse-submodules.
 # Without this, the build stops later with a CMake error about a missing file.
+# The host tests compile only these from third_party, and CI fetches only these.
+test-unit test-numfmt-sweep: REQUIRED_SUBMODULES := miniz umm_malloc
+fuzz-build: REQUIRED_SUBMODULES := miniz
+
 check-submodules:
 	@for m in $(REQUIRED_SUBMODULES); do \
 		if [ -z "$$(ls -A third_party/$$m 2>/dev/null)" ]; then \
