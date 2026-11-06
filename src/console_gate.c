@@ -108,6 +108,39 @@ void console_gate_stats(uint32_t *transfers, uint32_t *dropped_bytes) {
 }
 
 #ifndef PICODECK_HOST_TEST
+#include "pico/mutex.h"
+#include "pico/time.h"
+
+// Linked with --wrap (CMakeLists.txt) for the SDK's lock waits. Its version adds
+// an alarm to the default pool and cancels it, and each of those forces the
+// pool's interrupt, which runs on Core 0. So Core 1 waiting for a lock that
+// Core 0's thread holds, which is what a log line from each core at once comes
+// to, kept Core 0 in that interrupt and its thread from ever releasing the lock:
+// both cores froze for each 1 s lock timeout, and a Core 1 that kept logging ran
+// out the 10 s watchdog. Core 1 polls instead, in RAM, so the wait costs Core 0
+// nothing. (time.c's own calls, sleep_ms and the like, are not wrapped: they end
+// when their time is up, whoever holds what.)
+extern bool __real_best_effort_wfe_or_timeout(absolute_time_t timeout_timestamp);
+bool __time_critical_func(__wrap_best_effort_wfe_or_timeout)(absolute_time_t timeout_timestamp) {
+    if (get_core_num() == 0)
+        return __real_best_effort_wfe_or_timeout(timeout_timestamp);
+    tight_loop_contents();
+    return time_reached(timeout_timestamp);
+}
+
+// Linked with --wrap too, for the SDK's print and USB locks (its only callers). In
+// an interrupt, take the lock if it is free and never wait: that interrupt may
+// have preempted the holder of the USB lock on this core, while Core 1 holds the
+// print lock and waits for that USB lock. Then each of the three waits on the
+// next, until the 1 s timeouts, and a repeating timer that logs comes straight
+// back to wait again. A line that finds a lock taken is lost on USB.
+extern bool __real_mutex_try_enter_block_until(mutex_t *mtx, absolute_time_t until);
+bool __time_critical_func(__wrap_mutex_try_enter_block_until)(mutex_t *mtx, absolute_time_t until) {
+    if (__get_current_exception())
+        return mutex_try_enter(mtx, NULL);
+    return __real_mutex_try_enter_block_until(mtx, until);
+}
+
 // panic(), linked with --wrap=panic (CMakeLists.txt): open the gate, then the
 // SDK's own, its arguments untouched. Without this a panic during a transfer
 // would lose its message: the bkpt it ends in reaches hardfault_c, which keeps

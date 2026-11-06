@@ -571,8 +571,12 @@ endif()
 # Enable USB serial for stdio (printf goes to USB-C serial — handy for debug)
 pico_enable_stdio_usb(picodeck 1)
 pico_enable_stdio_uart(picodeck 1)
-# panic() opens the console gate before it prints (src/console_gate.c).
-target_link_options(picodeck PRIVATE "LINKER:--wrap=panic")
+# panic() opens the console gate before it prints; Core 1 waits for a lock without
+# touching the default alarm pool, and an interrupt does not wait for the print
+# locks at all (all in src/console_gate.c).
+target_link_options(picodeck PRIVATE "LINKER:--wrap=panic"
+                    "LINKER:--wrap=best_effort_wfe_or_timeout"
+                    "LINKER:--wrap=mutex_try_enter_block_until")
 
 pico_generate_pio_header(picodeck ${CMAKE_CURRENT_SOURCE_DIR}/src/drivers/lcd_spi.pio)
 

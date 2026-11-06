@@ -25,6 +25,11 @@
 //   - /system/crashlog.txt comes from the scratch registers (main.c hardfault_c)
 //     and /system/error.log from Core 0's thread, and neither passes through
 //     here.
+//
+// The SDK's own print and USB locks are a separate hazard, and console_gate.c
+// wraps how it waits for them, for any log line, transfer or none: Core 1 polls
+// (the SDK's wait keeps Core 0 in its alarm interrupt), and an interrupt doesn't
+// wait at all, so its line is lost on USB if another core is printing.
 // ======================================================================
 
 #include <stdbool.h>

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import re
+import time
 
 import pytest
 
@@ -87,6 +88,41 @@ def test_static_frame_stays_the_same(running):
     assert len(set(first)) > 2, "the fixture's stripes are not on screen"
     for i in range(1, 12):
         assert _pixels(running.screenshot()) == first, f"frame {i} differs"
+
+
+def _uptime_ms(target) -> int:
+    for line in target.command("status", timeout=3.0):
+        m = re.search(r" uptime_ms=(\d+)", line)
+        if m:
+            return int(m.group(1))
+    raise AssertionError("no status reply")
+
+
+@pytest.mark.hardware
+def test_commands_under_log_noise(noisy):
+    """Core 0 prints each reply while Core 1 and an interrupt log. That froze both
+    cores over the print locks (src/console_gate.c), and under this much noise the
+    watchdog reset the device, within 75 s every time."""
+    pm = noisy.pm
+    before = _uptime_ms(noisy)
+    count = 450
+    with pm._exclusive_serial(noisy.port):
+        ser = pm.open_serial(noisy.port, timeout=0.05)
+        try:
+            data = b""
+            for _ in range(count):
+                ser.write(b"ping\n")
+                ser.flush()
+                end = time.monotonic() + 0.2
+                while time.monotonic() < end:
+                    data += ser.read(4096)
+            end = time.monotonic() + 1.0
+            while time.monotonic() < end:
+                data += ser.read(4096)
+        finally:
+            ser.close()
+    assert data.count(b"[DEV] pong") == count
+    assert _uptime_ms(noisy) > before + count * 200, "the device reset"
 
 
 @pytest.mark.hardware
