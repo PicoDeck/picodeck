@@ -91,6 +91,18 @@ static void lua_show_launch_failure(const app_entry_t *app, const char *line1,
 // off this stack entirely.
 #define LUA_VM_STACK_SIZE (64u * 1024u)
 
+// Where the top of the stack sits in the XIP cache. The cache picks a line's set
+// from its address modulo 8 KB (src/hot_text.ld), and the stack's busiest lines
+// compete with the code hot_text.ld pins there. Moving the top alone, on the
+// device, in 256-byte steps: about half of all places cost a workload something
+// (Lua calling C up to 45%, a chargrid frame up to 40%), and all three of
+// test_lua_perf_hw's workloads ran at their best with the top from 0x354 to 0xF54.
+// So the stack goes in the middle of that, not wherever the launcher's allocations
+// left it. It depends on hot_text.ld's layout: check it again if that changes.
+#define LUA_STACK_TOP_WAY 8192u
+#define LUA_STACK_TOP_AT 0xA00u
+#define LUA_STACK_ALLOC (LUA_VM_STACK_SIZE + LUA_STACK_TOP_WAY)
+
 typedef struct {
   const app_entry_t *app;
   char *lua_src;      // freed by the VM body once parsed
@@ -238,7 +250,7 @@ static bool lua_run_app(const app_entry_t *app) {
          app->name, lua_psram_alloc_free_size());
 
   // ── VM stack (before anything else, so it sits below the VM's blocks) ────
-  uint8_t *stack = (uint8_t *)umm_malloc(LUA_VM_STACK_SIZE);
+  uint8_t *stack = (uint8_t *)umm_malloc(LUA_STACK_ALLOC);
   if (!stack) {
     lua_show_launch_failure(app, "Failed to start app:",
                             "no PSRAM block for the 64 KB Lua stack");
@@ -267,10 +279,15 @@ static bool lua_run_app(const app_entry_t *app) {
   // lua_bridge_input_init only flushes the event queue.
   kbd_hide_held();
 
-  lua_vm_ctx_t ctx = {app, lua_src, lua_len, false};
-  app_stack_run(stack, LUA_VM_STACK_SIZE, APP_STACK_LUA, lua_vm_body, &ctx);
+  uint32_t stack_size =
+      LUA_STACK_ALLOC -
+      (uint32_t)(((uintptr_t)stack + LUA_STACK_ALLOC - LUA_STACK_TOP_AT) %
+                 LUA_STACK_TOP_WAY);
 
-  uint32_t peak = app_stack_high_water(stack, LUA_VM_STACK_SIZE);
+  lua_vm_ctx_t ctx = {app, lua_src, lua_len, false};
+  app_stack_run(stack, stack_size, APP_STACK_LUA, lua_vm_body, &ctx);
+
+  uint32_t peak = app_stack_high_water(stack, stack_size);
   if (peak)
     printf("[LUA] Stack high-water: %lu of %lu bytes\n", (unsigned long)peak,
            (unsigned long)LUA_VM_STACK_SIZE);
