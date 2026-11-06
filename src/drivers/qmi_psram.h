@@ -14,7 +14,8 @@
 // APS6404L-3SQR is rated 109 MHz at 3.3 V, but this cap is NOT about the
 // chip's own rating — it is the fastest SCK proven to work with the RXDELAY
 // (read-sample delay) the boot self-test calibrates once and every later
-// clock change reuses unmodified (qmi_psram_update_timing()). Measured on
+// clock change only scales to the same delay in time (qmi_psram_rxdelay(),
+// qmi_psram_update_timing()). Measured on
 // hardware (specs/2026-09-28-qmi250-experiment-report.md): at 66.7-75 MHz
 // SCK, RXDELAY 1-4 all pass the self-test; at 83.3 MHz SCK (what the old 84
 // MHz cap gave at 250 MHz sysclk, the only supported clock above 75 MHz),
@@ -79,6 +80,27 @@ static inline qmi_psram_timing_t qmi_psram_timing(uint32_t lo_hz,
   return t;
 }
 
+// RXDELAY (when the QMI samples read data) counts half clk_sys cycles, so
+// the value the boot self-test passed at boot_hz is a shorter delay at a
+// faster clk_sys: the boot's rxdelay=1 at 200 MHz (2.5 ns) is 1.67 ns at
+// 300 MHz. Too short there: TIC-80 (code and data in QMI PSRAM) read bad
+// XIP cache lines every few minutes at 300 MHz/75 MHz SCK, and its
+// instruction fetches hardfaulted at valid code (UNDEFINSTR), while
+// rxdelay=2 ran clean. So keep at least the boot's delay in time:
+// ceil(boot_rxdelay * sys_hz / boot_hz), never below the boot value (200 MHz
+// and slower keep it) and at most the field's 7. Pure and host-testable
+// (tests/unit/test_qmi_psram_clkdiv.c).
+static inline uint32_t qmi_psram_rxdelay(uint32_t boot_rxdelay,
+                                         uint32_t boot_hz, uint32_t sys_hz) {
+  if (boot_hz == 0)
+    return boot_rxdelay;
+  uint32_t r =
+      (uint32_t)(((uint64_t)boot_rxdelay * sys_hz + boot_hz - 1) / boot_hz);
+  if (r < boot_rxdelay)
+    r = boot_rxdelay;
+  return r > 7 ? 7 : r;
+}
+
 // Detect and configure the QMI CS1 PSRAM in quad mode.  Runs a write/readback
 // self-test through the uncached alias; on failure it steps RXDELAY up, and
 // if no setting passes it returns the chip to serial SPI mode and restores
@@ -92,7 +114,8 @@ size_t qmi_psram_init(uint32_t cs_pin);
 void qmi_psram_update_timing(void);
 
 // Retime M1 for a clock change from one clk_sys to another, before the
-// switch: timing safe at both (qmi_psram_timing). The boot RXDELAY stays.
+// switch: timing safe at both (qmi_psram_timing), and the faster clock's
+// RXDELAY (qmi_psram_rxdelay: a longer delay at the slower one).
 // Call before set_sys_clock_khz, with the current and target clk_sys (either
 // order); safe no-op when the quad-mode init failed or never ran.
 void qmi_psram_prescale_timing(uint32_t a_hz, uint32_t b_hz);

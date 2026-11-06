@@ -34,6 +34,9 @@
 #define PSRAM_KGD             0x5D
 
 static bool s_quad_mode = false;
+// The RXDELAY the boot self-test passed and the clk_sys it passed at:
+// qmi_psram_rxdelay() scales it for every other clock.
+static uint32_t s_boot_rxdelay, s_boot_hz;
 static uint32_t s_reset_timing, s_reset_rfmt, s_reset_rcmd;
 static uint32_t s_reset_wfmt, s_reset_wcmd;
 
@@ -255,6 +258,8 @@ size_t qmi_psram_init(uint32_t cs_pin) {
     apply_timing(rxdelay, sys_hz, sys_hz);
     if (selftest()) {
       s_quad_mode = true;
+      s_boot_rxdelay = rxdelay;
+      s_boot_hz = sys_hz;
       printf("[QMI_PSRAM] quad mode OK: %u MB, rxdelay=%lu\n",
              (unsigned)(psram_size / (1024 * 1024)), (unsigned long)rxdelay);
       return psram_size;
@@ -283,19 +288,18 @@ size_t qmi_psram_init(uint32_t cs_pin) {
 void qmi_psram_update_timing(void) {
   if (!s_quad_mode)
     return;
-  // Keep the RXDELAY that passed the boot self-test; timing scales the rest.
-  uint32_t rxdelay = (qmi_hw->m[1].timing & QMI_M1_TIMING_RXDELAY_BITS) >>
-                     QMI_M1_TIMING_RXDELAY_LSB;
+  // The boot RXDELAY, kept at least as long in time (qmi_psram_rxdelay).
   uint32_t sys_hz = clock_get_hz(clk_sys);
-  apply_timing(rxdelay, sys_hz, sys_hz);
+  apply_timing(qmi_psram_rxdelay(s_boot_rxdelay, s_boot_hz, sys_hz), sys_hz,
+               sys_hz);
 }
 
 void qmi_psram_prescale_timing(uint32_t a_hz, uint32_t b_hz) {
   if (!s_quad_mode)
     return;
-  uint32_t rxdelay = (qmi_hw->m[1].timing & QMI_M1_TIMING_RXDELAY_BITS) >>
-                     QMI_M1_TIMING_RXDELAY_LSB;
-  apply_timing(rxdelay, a_hz < b_hz ? a_hz : b_hz, a_hz < b_hz ? b_hz : a_hz);
+  uint32_t lo = a_hz < b_hz ? a_hz : b_hz, hi = a_hz < b_hz ? b_hz : a_hz;
+  // The faster clock's RXDELAY: at the slower one it is a longer delay.
+  apply_timing(qmi_psram_rxdelay(s_boot_rxdelay, s_boot_hz, hi), lo, hi);
 }
 
 bool qmi_psram_is_quad(void) { return s_quad_mode; }
