@@ -83,7 +83,9 @@ function wire.read_string(buf, pos)
     pos = pos or 1
     if pos + 3 > #buf then return nil, pos end
     local len, npos = unpack(">I4", buf, pos)
-    if npos + len - 1 > #buf then return nil, pos end
+    -- On the device's 32-bit integers a length past 2^31 is negative, and adding
+    -- to one near it wraps: compare with the bytes left, and never add first.
+    if len < 0 or len > #buf - npos + 1 then return nil, pos end
     return sub(buf, npos, npos + len - 1), npos + len
 end
 
@@ -134,9 +136,9 @@ function wire.build_packet(payload, block_size)
     if block_size < 8 then block_size = 8 end
 
     -- packet_length = 1 (padding_length) + payload_length + padding_length
-    -- Total packet must be multiple of block_size, min 4 bytes padding
-    local min_total = 4 + 1 + #payload + 4  -- 4 header + 1 pad_len + payload + min 4 pad
-    local padding = block_size - (min_total % block_size)
+    -- RFC 4253 section 6: the whole packet (4 length + 1 pad_len + payload + padding)
+    -- is a multiple of block_size, with at least 4 bytes of padding.
+    local padding = block_size - (5 + #payload) % block_size
     if padding < 4 then padding = padding + block_size end
 
     local packet_length = 1 + #payload + padding

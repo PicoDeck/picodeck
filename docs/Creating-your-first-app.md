@@ -4,42 +4,71 @@ title: "Creating your first app"
 
 ## Your First App
 
-Creating an app is incredibly straightforward. You only need two files in a directory inside `/apps/` on the SD Card:
+Creating an app is incredibly straightforward. You only need two files in a folder of your own, at `/apps/<dir>/` on the SD card. Call this one `myapp`.
 
-1. `app.json`: A simple file describing your app.
+1. `app.json`: A simple file describing your app. The [`app.json` reference](App-Json-Reference.md) has every field.
 
+```json
+{
+    "id": "com.example.myapp",
+    "name": "My Awesome App",
+    "description": "The best app ever.",
+    "version": "1.0"
+}
 ```
-1     {
-2         "name": "My Awesome App",
-3         "description": "The best app ever.",
-4         "version": "1.0"
-5     }
-```
+
+The `id` names your app's data folder, so pick one and keep it: reverse-DNS, in lower case, is what the App Store accepts when you [publish](Publishing-Apps.md).
 
 2. `main.lua`: The entry point for your code, which runs in a simple loop.
 
-```
- 1     -- The 'picocalc' global is your gateway to the hardware
- 2     local pc = picocalc
- 3 
- 4     -- Main app loop
- 5     while true do
- 6         -- Read the keyboard once per frame
- 7         pc.input.update()
- 8 
- 9         -- Check for the ESC key to exit back to the launcher
-10         if pc.input.getButtonsPressed() & pc.input.BTN_ESC ~= 0 then
-11             return
-12         end
-13 
-14         -- Drawing
-15         pc.display.clear(pc.display.BLACK)
-16         pc.display.drawText(100, 150, "Hello, World!", pc.display.WHITE)
-17         pc.display.flush() -- Push your changes to the screen
-18     end
+```lua
+-- The 'picocalc' global is your gateway to the hardware
+local pc = picocalc
+
+-- Main app loop
+while true do
+    -- Read the keyboard once per frame
+    pc.input.update()
+
+    -- Check for the ESC key to exit back to the launcher
+    if pc.input.getButtonsPressed() & pc.input.BTN_ESC ~= 0 then
+        return
+    end
+
+    -- Drawing
+    pc.display.clear(pc.display.BLACK)
+    pc.display.drawText(100, 150, "Hello, World!", pc.display.WHITE)
+    pc.display.flush() -- Push your changes to the screen
+end
 ```
 
-The loop needs no `sleep`: `flush()` waits for the previous frame's transfer to the panel (about 16 ms for a full frame), which already limits a simple app to roughly 40-60 frames per second. To hold a lower rate, such as 30 FPS to save battery, bracket each frame with `picocalc.perf.beginFrame()` and `picocalc.perf.endFrame()` and call `picocalc.perf.setTargetFPS(30)` once; see [API Performance](API-Performance.md). `picocalc.sys.sleep(ms)` is for waiting, not for pacing.
+### Run it
+
+**On your computer:** make a folder to stand in for the card, put your app in its `apps/` folder, and point the [simulator](Simulator-and-Testing.md) at it (the folder, not `apps/`).
+
+```
+mycard/
+└── apps/
+    └── myapp/
+        ├── app.json
+        └── main.lua
+```
+
+```sh
+./picodeck-simulator-linux --sd-card mycard --launch myapp
+```
+
+That is the name of the [downloaded simulator](Simulator-and-Testing.md); one you built is `build_sim/picodeck_simulator`.
+
+**On a device:** copy the `myapp` folder into `apps/` on the card. With the device at the launcher, the system menu's **USB Disk Mode** makes the card a USB drive, so it can stay in the slot; [Getting started on a device](Getting-started-on-a-device.md#5-copy-your-own-apps) has the steps. Then pick the app in the launcher: with no `category` it is under Demos.
+
+Either way, it draws "Hello, World!" and Esc returns to the launcher.
+
+Keep the `input.update()` call even in a loop that ignores the keys. It, or `picocalc.sys.sleep()`, is what reads the keyboard, so it is also what opens the system menu: on a device, a loop that calls neither can only be left by switching it off.
+
+### Pacing
+
+The loop needs no `sleep`: `flush()` waits for the previous frame's transfer to the panel (about 16.4 ms for a full frame), which already limits a simple app to roughly 40-60 frames per second. To hold a lower rate, such as 30 FPS to save battery, bracket each frame with `picocalc.perf.beginFrame()` and `picocalc.perf.endFrame()` and call `picocalc.perf.setTargetFPS(30)` once; see [API Performance](API-Performance.md). `picocalc.sys.sleep(ms)` is for waiting, not for pacing. A screen that only a key changes should not redraw at all while it waits: see [Writing Fast Apps](Writing-Fast-Apps.md).
 
 ### Reading game controls
 
@@ -86,10 +115,36 @@ A is F4 until the player rebinds it, and Enter is not bound by default. The buil
 
 See [API Gamepad](API-Gamepad.md) for the buttons, the default keys and `getLabel()`.
 
+### Editor setup
+
+An editor with [lua-language-server](https://luals.github.io/) (the "Lua" extension in VS Code) can complete and check the whole `picocalc` API. Copy [`sdk/lua/picocalc.lua`](https://github.com/PicoDeck/picodeck/blob/master/sdk/lua/picocalc.lua) into your project as `libs/picocalc.lua`, and put the `.luarc.json` from the [SDK README](https://github.com/PicoDeck/picodeck/blob/master/sdk/README.md#editor-setup-for-lua) next to `app.json`. Neither runs on the device, so [leave them out of the zip](Publishing-Apps.md#quick-version) when you publish.
+
 ### Add an icon (optional)
 
-Put an `icon.png` (or `icon.bmp`) next to `app.json`. The launcher draws it at 24×24 pixels beside the app's name. Other sizes are scaled to fit with nearest-neighbour sampling, so draw at 24×24, or at an exact multiple such as 48×48, to keep the pixels crisp. Icons are drawn opaque: transparent PNG pixels come out black, so fill the whole square. The built-in icons use a dark navy background (RGB 12, 16, 48) behind their artwork. Without an icon, the launcher draws a game cartridge in the app's category colour, with the first letter of the app's name on its label.
+Put an `icon.png` (or `icon.bmp`) next to `app.json`. The launcher draws it at 24×24 pixels beside the app's name. Other sizes are scaled to fit with nearest-neighbour sampling, so draw at 24×24, or at an exact multiple such as 48×48, to keep the pixels crisp. Icons are drawn opaque: transparent PNG pixels come out black, so fill the whole square. The built-in icons use a dark navy background (RGB 12, 16, 48) behind their artwork. Without an icon, the launcher draws a game cartridge in the colour of the app's [category](App-Json-Reference.md#category), with the first letter of the app's name on its label.
 
-### Prefer C or C++?
+### Sample apps
 
-If you want to build high-performance apps or prefer working in C/C++, check out our guide on [Native App Development](Native-Loading.md).
+Every first-party app is a working example in the [`apps/`](https://github.com/PicoDeck/picodeck/tree/master/apps) folder of the PicoDeck repository. These are the ones to read first. All of them are Lua apps unless marked, and all run in the simulator.
+
+| App | Shows |
+|---|---|
+| [`hello`](https://github.com/PicoDeck/picodeck/tree/master/apps/hello) | The smallest drawing demo |
+| [`snake`](https://github.com/PicoDeck/picodeck/tree/master/apps/snake) | A complete small game |
+| [`minesweeper`](https://github.com/PicoDeck/picodeck/tree/master/apps/minesweeper) | A complete grid game |
+| [`platformer_demo`](https://github.com/PicoDeck/picodeck/tree/master/apps/platformer_demo) | The [game framework](API-Game.md): camera, scenes, saves |
+| [`guinea_pig`](https://github.com/PicoDeck/picodeck/tree/master/apps/guinea_pig) | A bigger game, with art and sound |
+| [`3dtest`](https://github.com/PicoDeck/picodeck/tree/master/apps/3dtest) | A spinning solid drawn with the display primitives, and an FPS counter |
+| [`graphicstest`](https://github.com/PicoDeck/picodeck/tree/master/apps/graphicstest) | Image loading and drawing |
+| [`fonttest`](https://github.com/PicoDeck/picodeck/tree/master/apps/fonttest) | Built-in fonts and a loaded `.pfn` |
+| [`panels_demo`](https://github.com/PicoDeck/picodeck/tree/master/apps/panels_demo) | The [Panels](Library-Panels.md) library. Needs `/system/lib/panels.lua` on the card |
+| [`terminal_example`](https://github.com/PicoDeck/picodeck/tree/master/apps/terminal_example) | The [terminal](API-Terminal.md) widget |
+| [`calculator`](https://github.com/PicoDeck/picodeck/tree/master/apps/calculator) | An app split into modules with [`require`](Standard-Lua-Libraries.md#requirename) |
+| [`editor`](https://github.com/PicoDeck/picodeck/tree/master/apps/editor), [`filemanager`](https://github.com/PicoDeck/picodeck/tree/master/apps/filemanager) | Tools with the `root-filesystem` [requirement](Global-Variables-and-Permissions.md#app-requirements) |
+| [`llmchat`](https://github.com/PicoDeck/picodeck/tree/master/apps/llmchat), [`wikipedia`](https://github.com/PicoDeck/picodeck/tree/master/apps/wikipedia) | Network apps with the `http` requirement |
+| [`systest`](https://github.com/PicoDeck/picodeck/tree/master/apps/systest) | A tour of the system APIs |
+| [`sdk/native`](https://github.com/PicoDeck/picodeck/tree/master/sdk/native) | **Native, C.** The template to [start a native app](Native-Loading.md) from |
+
+### Prefer C?
+
+If you want to build high-performance apps or prefer working in C (or a subset of C++), check out our guide on [Native App Development](Native-Loading.md).

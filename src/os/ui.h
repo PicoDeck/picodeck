@@ -5,6 +5,7 @@
 
 // Header bar height; ui_draw_header also draws a 1px border below it.
 #define UI_HEADER_H 20
+#define UI_FOOTER_H 18
 
 // Draw standard OS header (titlebar) with battery/wifi/clock status indicators.
 // Returns the rows it covers (UI_HEADER_H + 1): content starts at that y.

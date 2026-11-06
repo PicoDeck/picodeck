@@ -473,6 +473,80 @@ static void test_copy_row_alignments(void) {
       }
 }
 
+// The paired row loops against per-pixel ones, at every source and destination
+// alignment and length, over pixels that are often the key.
+static void test_row_loops_alignments(void) {
+  enum { N = 48 };
+  uint16_t src[N], dst[N], want[N];
+  const uint16_t key = 0xF81F;
+  for (int round = 0; round < 400; round++) {
+    for (int i = 0; i < N; i++)
+      src[i] = rnd(0, 2) ? key : (uint16_t)(0x1234 + rnd(0, 0x7FFF));
+    const bool swap = round & 1;
+    for (int so = 0; so < 4; so++)
+      for (int d0 = 0; d0 < 2; d0++)
+        for (int n = 0; n <= 30; n++) {
+          // Forwards from src + so.
+          memset(dst, 0, sizeof dst);
+          memset(want, 0, sizeof want);
+          disp_key_row(dst + d0, src + so, n, key, swap);
+          for (int i = 0; i < n; i++)
+            if (src[so + i] != key) want[d0 + i] = disp_px(src[so + i], swap);
+          CHECK(memcmp(dst, want, sizeof dst) == 0);
+          // Backwards from the n-th pixel, which stays inside src.
+          const uint16_t *back = src + so + (n ? n - 1 : 0);
+          memset(dst, 0, sizeof dst);
+          memset(want, 0, sizeof want);
+          disp_key_row_rev(dst + d0, back, n, key, swap);
+          for (int i = 0; i < n; i++)
+            if (back[-i] != key) want[d0 + i] = disp_px(back[-i], swap);
+          CHECK(memcmp(dst, want, sizeof dst) == 0);
+          memset(dst, 0, sizeof dst);
+          memset(want, 0, sizeof want);
+          disp_copy_row_rev(dst + d0, back, n, swap);
+          for (int i = 0; i < n; i++) want[d0 + i] = disp_px(back[-i], swap);
+          CHECK(memcmp(dst, want, sizeof dst) == 0);
+        }
+  }
+}
+
+// The firmware's midpoint filled circle as it was: four spans per step.
+static void ref_fill_circle_mid(uint16_t *fb, const disp_clip_t *c, int cx, int cy,
+                                int r, uint16_t v) {
+  int x = r, y = 0, d = 1 - r;
+  while (x >= y) {
+    ref_line(fb, c, cx - x, cy + y, cx + x, cy + y, v);
+    ref_line(fb, c, cx - x, cy - y, cx + x, cy - y, v);
+    ref_line(fb, c, cx - y, cy + x, cx + y, cy + x, v);
+    ref_line(fb, c, cx - y, cy - x, cx + y, cy - x, v);
+    y++;
+    if (d <= 0) {
+      d += 2 * y + 1;
+    } else {
+      x--;
+      d += 2 * (y - x) + 1;
+    }
+  }
+}
+
+static void test_fill_circle_mid(void) {
+  for (int r = 0; r <= 90; r++) {
+    disp_clip_t c = {0, 0, SW - 1, SH - 1};
+    reset(0);
+    disp_fill_circle_mid(screen(s_got), CW, &c, SW / 2, SH / 2, r, 5);
+    ref_fill_circle_mid(screen(s_want), &c, SW / 2, SH / 2, r, 5);
+    CHECK(same("midpoint disc"));
+  }
+  for (int i = 0; i < 4000; i++) {
+    disp_clip_t c = random_clip();
+    int r = rnd(0, 40), cx = rnd(-30, SW + 30), cy = rnd(-30, SH + 30);
+    reset(0);
+    disp_fill_circle_mid(screen(s_got), CW, &c, cx, cy, r, 5);
+    ref_fill_circle_mid(screen(s_want), &c, cx, cy, r, 5);
+    CHECK(same("midpoint disc, clipped"));
+  }
+}
+
 // The simulator's scaled NN: dest (dx, dy) samples (dx*sw/dw, dy*sh/dh).
 static void ref_scaled(uint16_t *fb, const disp_clip_t *cl, int x, int y,
                        const uint16_t *data, int sw, int sh, int dw, int dh,
@@ -505,6 +579,49 @@ static void test_blit_scaled(void) {
              x, y, key);
   }
   CHECK_EQ_INT(bad, 0);
+}
+
+// A gradient is the ramp of the whole line, clipped: each visible pixel is what
+// the unclipped line has there, and the ends are the two colours exactly.
+static void test_vline_gradient_matches_reference(void) {
+  int bad = 0;
+  for (int i = 0; i < 20000; i++) {
+    disp_clip_t c = random_clip();
+    int x = rnd(-4, SW + 4), y0 = rnd(-200, SH + 200), y1 = rnd(-200, SH + 200);
+    uint16_t top = (uint16_t)rnd(0, 0xFFFF), bottom = (uint16_t)rnd(0, 0xFFFF);
+    bool swap = rnd(0, 1);
+    reset(0x7777);
+    disp_fill_vline_gradient(screen(s_got), CW, &c, x, y0, y1, top, bottom, swap);
+    int a = y0, b = y1;
+    uint16_t ca = top, cb = bottom;
+    if (a > b) { int t = a; a = b; b = t; ca = bottom; cb = top; }
+    int span = b == a ? 1 : b - a;
+    for (int y = a; y <= b; y++) {
+      int t = y - a;
+      int r = ((ca >> 11) & 31) + (((cb >> 11) & 31) - ((ca >> 11) & 31)) * t / span;
+      int g = ((ca >> 5) & 63) + (((cb >> 5) & 63) - ((ca >> 5) & 63)) * t / span;
+      int bl = (ca & 31) + ((cb & 31) - (ca & 31)) * t / span;
+      ref_plot(screen(s_want), &c, x, y,
+               disp_px((uint16_t)((r << 11) | (g << 5) | bl), swap));
+    }
+    if (!same("gradient") && bad++ < 5)
+      printf("  gradient x %d y %d..%d\n", x, y0, y1);
+  }
+  CHECK_EQ_INT(bad, 0);
+}
+
+static void test_vline_gradient_reaches_both_ends_and_huge_coords(void) {
+  disp_clip_t c = {0, 0, SW - 1, SH - 1};
+  reset(0);
+  disp_fill_vline_gradient(screen(s_got), CW, &c, 3, 0, SH - 1, 0xF800, 0x001F, false);
+  CHECK_EQ_INT(screen(s_got)[3], 0xF800);
+  CHECK_EQ_INT(screen(s_got)[(SH - 1) * CW + 3], 0x001F);
+  // Off-screen ends: no overflow, and the middle of the ramp is what shows.
+  reset(0);
+  disp_fill_vline_gradient(screen(s_got), CW, &c, 3, -2000000000, 2000000000, 0xF800,
+                           0, false);
+  int r = screen(s_got)[3] >> 11;
+  CHECK(r >= 14 && r <= 16);
 }
 
 // Sub-rect stretch: destination (dx, dy) of the unclipped rect samples source
@@ -808,8 +925,12 @@ int main(void) {
   test_blit_nn();
   test_blit_partial();
   test_copy_row_alignments();
+  test_row_loops_alignments();
+  test_fill_circle_mid();
   test_blit_scaled();
   test_blit_scaled_rect_matches_reference();
+  test_vline_gradient_matches_reference();
+  test_vline_gradient_reaches_both_ends_and_huge_coords();
   test_tri_f_inside_outside_and_clip();
   test_tri_f_shared_edges_fill_once();
   test_tri_f_degenerate_and_huge();

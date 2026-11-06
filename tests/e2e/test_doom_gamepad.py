@@ -6,11 +6,11 @@ doom; `make` there) and skip without them (skip_allowlist.txt). They start
 E1M1 and read the effect off the screen: ammo for fire and weapon changes, a
 share of changed view pixels for turning, strafing and Doom's menu.
 
-Injected character keys tap for one poll, too short for Doom's 35 Hz tic, so
-the rebinding test swaps button keys (F3, F4) rather than letters. Only the
-`pad` and `keydown` dev commands are not served while a native app runs in the
-simulator; button keys reach it as clicks, or as inject_button press/release
-for a held key.
+The rebinding test swaps button keys (F3, F4) rather than letters, since a
+letter also reaches Doom as a typed key (test_doom_keys.py). Only the `pad` and
+`keydown` dev commands are not served while a native app runs in the simulator;
+button keys reach it as clicks, or as inject_button press/release for a held
+key.
 """
 
 import json

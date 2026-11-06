@@ -63,6 +63,12 @@ typedef struct {
 // bounds the phdr allocation and rejects PN_XNUM (0xFFFF) outright.
 #define ELF_PLAN_MAX_PHNUM 64u
 
+// Maximum virtual address range accepted for a native app image.
+// Rejects malformed or malicious ELFs before attempting a heap allocation.
+// 7 MB covers apps like TIC-80 (~5.4 MB with 4 MB sbrk heap in BSS).
+// The real limit is available PSRAM (6 MB on Pimoroni Pico Plus 2 W).
+#define NATIVE_MAX_IMAGE_SIZE (7u * 1024u * 1024u)
+
 typedef enum {
     ELF_OK = 0,
     ELF_ERR_TOO_SMALL,         // file shorter than an ELF header
@@ -70,7 +76,8 @@ typedef enum {
     ELF_ERR_CLASS,             // not ELFCLASS32 little-endian
     ELF_ERR_NOT_PIE,           // e_type != ET_DYN
     ELF_ERR_NOT_ARM,           // e_machine != EM_ARM
-    ELF_ERR_PHENTSIZE,         // e_phentsize != sizeof(Elf32_Phdr)
+    ELF_ERR_FLOAT_ABI,         // built with -mfloat-abi=hard
+    ELF_ERR_PHENTSIZE,        // e_phentsize != sizeof(Elf32_Phdr)
     ELF_ERR_PHNUM,             // e_phnum 0 or > ELF_PLAN_MAX_PHNUM
     ELF_ERR_PHDR_BOUNDS,       // phdr table outside the file (or wraps)
     ELF_ERR_SEG_FILESZ,        // PT_LOAD p_filesz > p_memsz

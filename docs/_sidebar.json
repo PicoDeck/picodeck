@@ -3,6 +3,10 @@
     "label": "Documentation",
     "items": [
       {
+        "label": "Getting started on a device",
+        "page": "Getting-started-on-a-device.md"
+      },
+      {
         "label": "Home",
         "page": "index.md"
       },
@@ -11,16 +15,24 @@
         "page": "Creating-your-first-app.md"
       },
       {
+        "label": "app.json Reference",
+        "page": "App-Json-Reference.md"
+      },
+      {
         "label": "Publishing Apps",
         "page": "Publishing-Apps.md"
       },
       {
-        "label": "Native Loading",
+        "label": "Native App Development",
         "page": "Native-Loading.md"
       },
       {
         "label": "Lua SDK Reference",
         "page": "Lua-SDK-Reference.md"
+      },
+      {
+        "label": "Writing Fast Apps",
+        "page": "Writing-Fast-Apps.md"
       }
     ]
   },
@@ -47,6 +59,10 @@
       {
         "label": "Library Panels",
         "page": "Library-Panels.md"
+      },
+      {
+        "label": "Library Widgets",
+        "page": "Library-Widgets.md"
       }
     ]
   },
@@ -118,7 +134,7 @@
         "page": "API-System-and-Config.md"
       },
       {
-        "label": "API Sysconfig",
+        "label": "API System Configuration",
         "page": "API-Sysconfig.md"
       },
       {

@@ -10,10 +10,6 @@
 
 #include <stdio.h>
 
-// Alarm pool created on Core 1 — all audio timer ISRs fire on Core 1,
-// keeping Core 0 free for the app/game loop.
-static alarm_pool_t *s_core1_alarm_pool = NULL;
-
 // audio_init's idle setup of the slice; the output replaces it.
 #define IDLE_PWM_WRAP 255
 
@@ -28,19 +24,6 @@ void audio_init(void) {
 
   audio_mix_init();
   audio_set_volume(100);
-}
-
-void audio_core1_init(void) {
-  // Hardware alarm 2 (the default pool uses 3, the keyboard bus engine 0).
-  // 4 slots covers the Core 1 tick and spare.
-  s_core1_alarm_pool = alarm_pool_create(2, 4);
-  if (!s_core1_alarm_pool) {
-    printf("[AUDIO] WARNING: failed to create Core 1 alarm pool\n");
-  }
-}
-
-alarm_pool_t *audio_get_core1_alarm_pool(void) {
-  return s_core1_alarm_pool;
 }
 
 // ── The output: the mix as PWM at AUDIO_OUT_RATE, fed by DMA ────────────────
@@ -207,6 +190,10 @@ void audio_apply_clock(void) {
   uint8_t div_int, div_frac4;
   output_divider(&div_int, &div_frac4);
   pwm_set_clkdiv_int_frac4(s_pwm_slice, div_int, div_frac4);
+}
+
+bool __time_critical_func(audio_core1_idle)(void) {
+  return !s_dma_start_pending && !s_output_on;
 }
 
 void audio_stream_poll(void) {

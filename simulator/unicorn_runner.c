@@ -20,21 +20,42 @@
 #include "hal/hal_sdcard.h"
 #include "hal/hal_timing.h"
 
+// Display functions (from simulator stubs)
+extern void display_clear_clip_rect(void);
+extern void display_set_font(int font_id);
+extern void display_clear(uint16_t color);
+extern int  display_draw_text(int x, int y, const char *text, uint16_t fg, uint16_t bg);
+extern void display_flush(void);
+
 // =============================================================================
 // Memory map constants
 // =============================================================================
 
+// What a native app has on the device: one QMI PSRAM heap (lua_psram_alloc.c)
+// that holds its image, its stack and its qmiAlloc blocks, and a 64 KB stack
+// (NATIVE_STACK_SIZE, native_loader.c).
+#define DEVICE_HEAP_SIZE    (6u * 1024 * 1024 - 128u * 1024)
+#define DEVICE_STACK_SIZE   (64u * 1024)
+#define DEVICE_BLOCK_SIZE   200u                 // UMM_BLOCK_BODY_SIZE
+
 #define EMU_CODE_BASE       0x10000000u
-#define EMU_CODE_SIZE       (8u * 1024 * 1024)   // 8MB (matches PSRAM on hardware)
+#define EMU_CODE_SIZE       (8u * 1024 * 1024)   // above the largest image allowed
 
 #define EMU_DATA_BASE       0x20000000u
 #define EMU_DATA_SIZE       (4u * 1024 * 1024)   // 4MB
 
 #define EMU_STACK_BASE      0x30000000u
-#define EMU_STACK_SIZE      (256u * 1024)         // 256KB
+// More than the device's, because a real app goes well past 64 KB here (C-Dogs, on
+// the way into a mission) and refusing it would stop it running at all. The part
+// below the device's stack starts read-only, so the first write there is noticed
+// and logged at no cost to any other access (write_prot_hook). Below that, pages
+// are mapped as they are touched, down to the end of the data region, as they
+// always were (mem_error_hook): only an access outside that window is a fault.
+#define EMU_STACK_SIZE      (256u * 1024)
+#define EMU_STACK_DEEP_SIZE (EMU_STACK_SIZE - DEVICE_STACK_SIZE)
 
 #define EMU_HEAP_BASE       0x40000000u
-#define EMU_HEAP_SIZE       (4u * 1024 * 1024)    // 4MB
+#define EMU_HEAP_SIZE       ((DEVICE_HEAP_SIZE + 0xFFFu) & ~0xFFFu)
 
 #define EMU_ARENA_BASE      0x50000000u
 #define EMU_ARENA_SIZE      (64u * 1024)          // 64KB
@@ -50,6 +71,7 @@
 
 #define EMU_REVCALL_BASE    0xF0010000u
 #define EMU_REVCALL_SIZE    (4u * 1024)           // 4KB for reverse-call stubs
+#define EMU_RETURN_STUB     (EMU_REVCALL_BASE + 8u)  // picodeck_main returns here
 
 // Maximum number of trampoline slots (API functions)
 #define MAX_TRAMP_SLOTS     512
@@ -141,25 +163,92 @@ uint32_t arena_write_buffer(uc_engine *uc, const void *data, uint32_t len) {
 }
 
 // =============================================================================
-// Heap emulator: simple bump allocator for qmiAlloc/qmiFree
+// Heap emulator for qmiAlloc/qmiFree: first fit over the spans of the region,
+// sorted by offset, with neighbours merged on free. Sizes round up to the
+// device's block, so many small requests run out as they do there. The list
+// lives on the host: nothing is written into emulated memory, and a reused block
+// keeps its old bytes (umm_malloc does not zero either).
 // =============================================================================
 
-static uint32_t s_heap_offset = 0;
+typedef struct {
+    uint32_t off;
+    uint32_t size;
+    bool used;
+} heap_span_t;
+
+static heap_span_t *s_heap_spans = NULL;
+static int s_heap_count = 0;
+static int s_heap_cap = 0;
+static uint32_t s_heap_limit = 0;
+
+static bool heap_span_insert(int at, heap_span_t span) {
+    if (s_heap_count == s_heap_cap) {
+        int cap = s_heap_cap ? s_heap_cap * 2 : 64;
+        heap_span_t *grown = realloc(s_heap_spans, (size_t)cap * sizeof(*grown));
+        if (!grown)
+            return false;
+        s_heap_spans = grown;
+        s_heap_cap = cap;
+    }
+    memmove(&s_heap_spans[at + 1], &s_heap_spans[at],
+            (size_t)(s_heap_count - at) * sizeof(*s_heap_spans));
+    s_heap_spans[at] = span;
+    s_heap_count++;
+    return true;
+}
+
+static void heap_span_remove(int at) {
+    s_heap_count--;
+    memmove(&s_heap_spans[at], &s_heap_spans[at + 1],
+            (size_t)(s_heap_count - at) * sizeof(*s_heap_spans));
+}
+
+// `limit` bytes are free, all in one span.
+static void heap_reset(uint32_t limit) {
+    s_heap_limit = limit;
+    s_heap_count = 0;
+    if (limit > 0)
+        heap_span_insert(0, (heap_span_t){0, limit, false});
+}
 
 uint32_t heap_alloc(uint32_t size) {
-    size = (size + 7) & ~7u;  // 8-byte align
-    if (s_heap_offset + size > EMU_HEAP_SIZE) {
-        fprintf(stderr, "[UNICORN] Heap exhausted!\n");
+    if (size == 0 || size > s_heap_limit)  // umm_malloc(0) is NULL too
         return 0;
+    size = (size + DEVICE_BLOCK_SIZE - 1) / DEVICE_BLOCK_SIZE * DEVICE_BLOCK_SIZE;
+    for (int i = 0; i < s_heap_count; i++) {
+        heap_span_t *span = &s_heap_spans[i];
+        if (span->used || span->size < size)
+            continue;
+        uint32_t off = span->off, left = span->size - size;
+        if (left > 0 && !heap_span_insert(i + 1, (heap_span_t){off + size, left, false}))
+            return 0;
+        s_heap_spans[i].size = size;
+        s_heap_spans[i].used = true;
+        return EMU_HEAP_BASE + off;
     }
-    uint32_t addr = EMU_HEAP_BASE + s_heap_offset;
-    s_heap_offset += size;
-    return addr;
+    return 0;
 }
 
 void heap_free(uint32_t addr) {
-    // Simple bump allocator doesn't free. Could be improved later.
-    (void)addr;
+    if (addr < EMU_HEAP_BASE)
+        return;
+    uint32_t off = addr - EMU_HEAP_BASE;
+    for (int i = 0; i < s_heap_count; i++) {
+        heap_span_t *span = &s_heap_spans[i];
+        if (span->off != off || !span->used)
+            continue;
+        span->used = false;
+        if (i + 1 < s_heap_count && !s_heap_spans[i + 1].used) {
+            span->size += s_heap_spans[i + 1].size;
+            heap_span_remove(i + 1);
+        }
+        if (i > 0 && !s_heap_spans[i - 1].used) {
+            s_heap_spans[i - 1].size += s_heap_spans[i].size;
+            heap_span_remove(i);
+        }
+        return;
+    }
+    // A pointer qmiAlloc did not return: ignored, as native_res_drop does.
 }
 
 // =============================================================================
@@ -173,12 +262,15 @@ char *uc_read_string(uc_engine *uc, uint32_t addr) {
     if (addr == 0) return NULL;
     char *buf = s_str_buf[s_str_idx];
     s_str_idx = (s_str_idx + 1) & 3;
-    // Read in small chunks to avoid crossing memory region boundaries.
-    // A bulk uc_mem_read that spans past a mapped region zeroes the buffer.
+    // Read in small chunks that stop at page ends, so none crosses a memory
+    // region boundary (a string can end right at the top of the stack). A bulk
+    // uc_mem_read that spans past a mapped region zeroes the buffer.
     size_t max = sizeof(s_str_buf[0]) - 1;
     size_t pos = 0;
     while (pos < max) {
         size_t chunk = 64;
+        size_t to_page_end = 0x1000u - ((addr + pos) & 0xFFFu);
+        if (chunk > to_page_end) chunk = to_page_end;
         if (pos + chunk > max) chunk = max - pos;
         uc_err err = uc_mem_read(uc, addr + pos, &buf[pos], chunk);
         if (err != UC_ERR_OK) {
@@ -207,6 +299,22 @@ extern uint32_t unicorn_tramp_get_slot_count(void);
 // Global Unicorn engine pointer (used by trampolines)
 uc_engine *g_uc = NULL;
 
+// What stopped the app where the device would have taken a HardFault: an access
+// to unmapped memory, a write to the read-only low addresses, a bad instruction.
+// The runner ends the app on it (see end_app_on_fault).
+static bool s_faulted = false;
+static char s_fault_text[96];
+
+static void fault_note(const char *fmt, ...) {
+    if (s_faulted)
+        return;  // the first is the cause
+    s_faulted = true;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(s_fault_text, sizeof(s_fault_text), fmt, ap);
+    va_end(ap);
+}
+
 // Interrupt hook for SVC-based trampolines.
 // On Cortex-M, SVC generates exception #11 (SVCall). Unicorn passes the
 // interrupt number via the `intno` parameter.
@@ -223,15 +331,16 @@ static void trampoline_hook(uc_engine *uc, uint32_t intno, void *user_data) {
         uint16_t insn;
         uc_mem_read(uc, pc, &insn, 2);
 
+        // picodeck_main returned: LR started out pointing at this stub.
+        if (pc == EMU_RETURN_STUB) {
+            printf("[UNICORN] Normal exit: app returned from picodeck_main()\n");
+            uc_emu_stop(uc);
+            return;
+        }
+
         // Only handle SVC instructions (0xDFxx).
-        // PC=0 with insn=0 means the app returned (LR was set to 0).
         if ((insn & 0xFF00) != 0xDF00) {
-            if (pc == 0) {
-                printf("[UNICORN] Normal exit: app returned from picodeck_main()\n");
-            } else {
-                fprintf(stderr, "[UNICORN] Unexpected interrupt on non-SVC insn 0x%04x at 0x%08x\n",
-                        insn, pc);
-            }
+            fault_note("bad instruction 0x%04x", insn);
             uc_emu_stop(uc);
             return;
         }
@@ -247,7 +356,7 @@ static void trampoline_hook(uc_engine *uc, uint32_t intno, void *user_data) {
         // Derive the slot from the PC, not the SVC immediate: SVC #imm8
         // wraps at 256, but slot count has grown past that.
         if (pc < EMU_TRAMP_BASE || pc >= EMU_TRAMP_BASE + MAX_TRAMP_SLOTS * 4) {
-            fprintf(stderr, "[UNICORN] SVC outside trampoline region at 0x%08x\n", pc);
+            fault_note("SVC outside the API table");
             uc_emu_stop(uc);
             return;
         }
@@ -256,16 +365,19 @@ static void trampoline_hook(uc_engine *uc, uint32_t intno, void *user_data) {
         // Dispatch the API call
         unicorn_tramp_dispatch(uc, slot);
 
+        // A callback it ran into the app (listDir, a menu item) faulted.
+        if (s_faulted) {
+            uc_emu_stop(uc);
+            return;
+        }
+
         // Return to caller: read LR (set by the BLX that called the trampoline)
         // and write it to PC.  Strip Thumb bit (bit 0) since PC doesn't encode it.
         uint32_t lr;
         uc_reg_read(uc, UC_ARM_REG_LR, &lr);
         uc_reg_write(uc, UC_ARM_REG_PC, &lr);
     } else {
-        fprintf(stderr, "[UNICORN] Unhandled interrupt: %u at PC=", intno);
-        uint32_t pc;
-        uc_reg_read(uc, UC_ARM_REG_PC, &pc);
-        fprintf(stderr, "0x%08x\n", pc);
+        fault_note("exception %u", intno);
         uc_emu_stop(uc);
     }
 }
@@ -341,12 +453,12 @@ static bool load_elf(uc_engine *uc, const char *path, uint32_t *out_entry) {
     }
 
     eerr = elf_plan_segments(&plan, phdrs, plan.phdrs_size,
-                             (uint32_t)file_len, EMU_CODE_SIZE);
+                             (uint32_t)file_len, NATIVE_MAX_IMAGE_SIZE);
     if (eerr != ELF_OK) {
         char detail[48] = "";
         if (eerr == ELF_ERR_IMAGE_TOO_LARGE)
-            snprintf(detail, sizeof(detail), "> %u byte code region",
-                     (uint32_t)EMU_CODE_SIZE);
+            snprintf(detail, sizeof(detail), "> %u byte limit",
+                     (uint32_t)NATIVE_MAX_IMAGE_SIZE);
         load_refused(elf_strerror(eerr), detail[0] ? detail : NULL);
         free(phdrs);
         fclose(f);
@@ -355,6 +467,20 @@ static bool load_elf(uc_engine *uc, const char *path, uint32_t *out_entry) {
 
     uint32_t mem_min = plan.mem_min;
     uint32_t image_size = plan.image_size;
+
+    // The device would run out here, with the OS's own allocations on top: the
+    // image and the stack have to fit its heap, and qmiAlloc gets what is left.
+    if (image_size > DEVICE_HEAP_SIZE - DEVICE_STACK_SIZE) {
+        char detail[64];
+        snprintf(detail, sizeof(detail), "image needs %uK, the device has at most %uK",
+                 image_size / 1024u, (DEVICE_HEAP_SIZE - DEVICE_STACK_SIZE) / 1024u);
+        load_refused("ELF: out of PSRAM", detail);
+        free(phdrs);
+        fclose(f);
+        return false;
+    }
+    heap_reset(DEVICE_HEAP_SIZE - DEVICE_STACK_SIZE - image_size);
+
     printf("[UNICORN] ELF image: %u bytes (vaddr 0x%08x..0x%08x)\n",
            image_size, mem_min, plan.mem_max);
 
@@ -404,24 +530,19 @@ static bool load_elf(uc_engine *uc, const char *path, uint32_t *out_entry) {
         return false;
     }
 
-    // Map the ELF's original virtual address range (0x0..image_size) as a shadow
-    // region.  Newlib and other library code may hold unrelocated pointers (e.g.
-    // internal _reent function pointers, lock stubs) that reference the original
-    // VirtAddr space.  Without this mapping, every 4KB page fault triggers the
-    // mem_error_hook one at a time, adding hundreds of dynamic uc_mem_map calls.
-    // On real RP2350 hardware, low addresses land in boot ROM (reads succeed,
-    // writes are silently ignored), so this mirrors that behavior.
+    // Map the ELF's original virtual address range (0x0..image_size) read-only.
+    // Newlib and other library code may read through unrelocated pointers (e.g.
+    // internal _reent function pointers, lock stubs) into the original VirtAddr
+    // space. On the RP2350 low addresses land in the boot ROM, where such a read
+    // does not fault: it just returns other bytes. A write or a call does not
+    // get this far.
     if (mem_min == 0 && image_size > 0) {
         uint32_t shadow_size = (image_size + 0xFFF) & ~0xFFFu;
-        uc_err serr = uc_mem_map(uc, 0, shadow_size, UC_PROT_ALL);
-        if (serr == UC_ERR_OK) {
-            printf("[UNICORN] Mapped shadow region 0x00000000..0x%08x for unrelocated accesses\n",
-                   shadow_size);
-        } else {
+        uc_err serr = uc_mem_map(uc, 0, shadow_size, UC_PROT_READ);
+        if (serr != UC_ERR_OK) {
             fprintf(stderr, "[UNICORN] WARNING: shadow region map failed: %s (size=0x%08x)\n",
                     uc_strerror(serr), shadow_size);
         }
-        // Non-fatal if it fails (mem_error_hook will handle individual pages)
     }
 
     // Compute entry point (inside the image, checked by elf_plan)
@@ -446,31 +567,76 @@ extern void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t 
 
 // =============================================================================
 // Main entry point
-// Memory error hook — prints the faulting address and instruction context
+// An access to unmapped memory: the device would fault, so the access fails and
+// emulation stops (returning false here).
 static bool mem_error_hook(uc_engine *uc, uc_mem_type type,
                            uint64_t address, int size, int64_t value,
                            void *user_data) {
-    (void)user_data; (void)value;
-    uint32_t pc, sp, lr;
-    uc_reg_read(uc, UC_ARM_REG_PC, &pc);
-    uc_reg_read(uc, UC_ARM_REG_SP, &sp);
-    uc_reg_read(uc, UC_ARM_REG_LR, &lr);
-    const char *op = (type == UC_MEM_READ_UNMAPPED) ? "READ" :
-                     (type == UC_MEM_WRITE_UNMAPPED) ? "WRITE" : "FETCH";
-    fprintf(stderr, "[UNICORN] MEM_ERROR: %s unmapped addr=0x%08llx size=%d at PC=0x%08x SP=0x%08x LR=0x%08x\n",
-            op, (unsigned long long)address, size, pc, sp, lr);
-    fflush(stderr);
-
-    // Dynamically map the faulting page so emulation can continue.
-    // This handles NULL pointer dereferences and hardware register accesses
-    // (e.g. RP2350 watchdog poke) that don't exist in the simulator.
-    uint64_t page_base = address & ~0xFFFULL;
-    uint32_t page_size = 0x1000;
-    uc_err err = uc_mem_map(uc, page_base, page_size, UC_PROT_ALL);
-    if (err == UC_ERR_OK) {
-        return true;  // retry the access
+    (void)uc; (void)size; (void)user_data; (void)value;
+    uint32_t addr = (uint32_t)address;
+    // The window below the stack: the stack still growing, not a bad pointer.
+    if (type != UC_MEM_FETCH_UNMAPPED && addr < EMU_STACK_BASE &&
+        addr >= EMU_DATA_BASE + EMU_DATA_SIZE) {
+        return uc_mem_map(uc, addr & ~0xFFFu, 0x1000, UC_PROT_ALL) == UC_ERR_OK;
     }
-    // If we can't map it, the access fails and emulation stops
+    const char *op = (type == UC_MEM_READ_UNMAPPED) ? "read" :
+                     (type == UC_MEM_WRITE_UNMAPPED) ? "write" : "call";
+    fault_note("%s of unmapped address 0x%08x", op, addr);
+    return false;
+}
+
+// A write to memory mapped read-only. In the stack's deep part it is the app going
+// past what the device's stack holds: say so once, with where, and let it run. Any
+// other write (the low addresses) is a fault.
+static bool write_prot_hook(uc_engine *uc, uc_mem_type type,
+                            uint64_t address, int size, int64_t value,
+                            void *user_data) {
+    (void)type; (void)size; (void)value; (void)user_data;
+    uint32_t addr = (uint32_t)address;
+    if (addr < EMU_STACK_BASE || addr >= EMU_STACK_BASE + EMU_STACK_DEEP_SIZE) {
+        fault_note("write to read-only address 0x%08x", addr);
+        return false;
+    }
+    uint32_t pc, lr;
+    uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+    uc_reg_read(uc, UC_ARM_REG_LR, &lr);
+    fprintf(stderr, "[UNICORN] stack passed %u KB at PC=0x%08x LR=0x%08x\n",
+            DEVICE_STACK_SIZE / 1024u, pc, lr);
+    sim_log_err("[NATIVE] %s: stack passed %u KB at PC=0x%08x LR=0x%08x (image at "
+                "0x%08x): the device's stack is that size, so it would fault here",
+                s_loading_app_name ? s_loading_app_name : "?", DEVICE_STACK_SIZE / 1024u,
+                pc, lr, (uint32_t)EMU_CODE_BASE);
+    return uc_mem_protect(uc, EMU_STACK_BASE, EMU_STACK_DEEP_SIZE, UC_PROT_ALL) == UC_ERR_OK;
+}
+
+// The device takes a HardFault here, shows its fault screen and reboots. The
+// simulator ends the app, reports it the way a Lua error is, and goes back to
+// the launcher. Returns false for the launcher's `ok`.
+static bool end_app_on_fault(uc_engine *uc, const char *app_name) {
+    uint32_t pc, lr;
+    uc_reg_read(uc, UC_ARM_REG_PC, &pc);
+    uc_reg_read(uc, UC_ARM_REG_LR, &lr);
+    char where[64];
+    snprintf(where, sizeof(where), "PC=0x%08x LR=0x%08x (image at 0x%08x)", pc, lr,
+             (uint32_t)EMU_CODE_BASE);
+    char msg[192];
+    snprintf(msg, sizeof(msg), "fault: %s, %s", s_fault_text, where);
+
+    fprintf(stderr, "[UNICORN] %s\n", msg);
+    crashlog_write("NATIVE ERROR", app_name, s_fault_text, where);
+    sim_app_outcome_set(SIM_APP_RESULT_ERROR, msg);
+    sim_log_err("[NATIVE] %s: %s", app_name, msg);
+
+    display_clear_clip_rect();  // whatever the app left set
+    display_set_font(0);
+    display_clear(0);
+    display_draw_text(8, 8, "App crashed", 0xF800, 0);
+    display_draw_text(8, 20, app_name, 0xFFFF, 0);
+    display_draw_text(8, 36, s_fault_text, 0xFFFF, 0);
+    display_draw_text(8, 48, where, 0x8410, 0);
+    display_flush();
+    for (int i = 0; i < 30 && !sim_test_mode(); i++)
+        hal_sleep_ms(100);
     return false;
 }
 
@@ -497,7 +663,8 @@ bool unicorn_run_app(const char *elf_path, const char *app_dir,
     handle_reset();
     s_arena_offset = 0;
     s_arena_reserved = 0;
-    s_heap_offset = 0;
+    s_faulted = false;
+    heap_reset(0);
 
     // ── Map memory regions ──────────────────────────────────────────────────
 
@@ -517,6 +684,8 @@ bool unicorn_run_app(const char *elf_path, const char *app_dir,
 
     // Stack (grows down from top)
     err = uc_mem_map(uc, EMU_STACK_BASE, EMU_STACK_SIZE, UC_PROT_ALL);
+    if (err == UC_ERR_OK)
+        err = uc_mem_protect(uc, EMU_STACK_BASE, EMU_STACK_DEEP_SIZE, UC_PROT_READ);
     if (err != UC_ERR_OK) {
         load_refused("sim: failed to map stack", uc_strerror(err));
         goto fail;
@@ -580,6 +749,9 @@ bool unicorn_run_app(const char *elf_path, const char *app_dir,
             0x4770,  // BX LR (safety, shouldn't reach here)
         };
         uc_mem_write(uc, EMU_REVCALL_BASE, revcall_code, sizeof(revcall_code));
+        // picodeck_main's return address: the hook recognises it by address.
+        uint16_t return_code = 0xDFFD;  // SVC #253
+        uc_mem_write(uc, EMU_RETURN_STUB, &return_code, sizeof(return_code));
     }
 
     // ── Fill trampoline region with SVC #N + BX LR instructions ────────
@@ -612,7 +784,7 @@ bool unicorn_run_app(const char *elf_path, const char *app_dir,
     }
 
 
-    // ── Memory error hook for debugging ────────────────────────────────
+    // ── Unmapped accesses end the app ──────────────────────────────────
     {
         uc_hook mem_hook;
         err = uc_hook_add(uc, &mem_hook,
@@ -620,6 +792,11 @@ bool unicorn_run_app(const char *elf_path, const char *app_dir,
                           (void *)mem_error_hook, NULL, 1, 0);
         if (err != UC_ERR_OK) {
             fprintf(stderr, "[UNICORN] Failed to add memory hook: %s\n", uc_strerror(err));
+        }
+        err = uc_hook_add(uc, &mem_hook, UC_HOOK_MEM_WRITE_PROT,
+                          (void *)write_prot_hook, NULL, 1, 0);
+        if (err != UC_ERR_OK) {
+            fprintf(stderr, "[UNICORN] Failed to add write hook: %s\n", uc_strerror(err));
         }
     }
 
@@ -657,8 +834,9 @@ bool unicorn_run_app(const char *elf_path, const char *app_dir,
     uc_reg_write(uc, UC_ARM_REG_R2, &r2);
     uc_reg_write(uc, UC_ARM_REG_R3, &r3);
 
-    // Set LR to 0 so return from picodeck_main causes a fetch fault (stopping emulation)
-    uint32_t lr = 0;
+    // Returning from picodeck_main lands on the return stub, so a call through a
+    // NULL function pointer (PC=0) is told apart from a normal exit.
+    uint32_t lr = EMU_RETURN_STUB | 1u;
     uc_reg_write(uc, UC_ARM_REG_LR, &lr);
 
     printf("[UNICORN] Starting emulation at 0x%08x (SP=0x%08x)\n", entry_point, sp);
@@ -678,7 +856,7 @@ bool unicorn_run_app(const char *elf_path, const char *app_dir,
             uc_reg_read(uc, UC_ARM_REG_SP, &sp_val);
             uc_reg_read(uc, UC_ARM_REG_LR, &lr_val);
 
-            if (err == UC_ERR_OK && g_emu_nested_stop) {
+            if (err == UC_ERR_OK && g_emu_nested_stop && !s_faulted) {
                 // Outer emulation was killed by nested uc_emu_stop (SVC #254).
                 // Resume from current PC (the SVC dispatch already set PC
                 // to LR, so we continue after the trampoline call).
@@ -690,15 +868,8 @@ bool unicorn_run_app(const char *elf_path, const char *app_dir,
             printf("[UNICORN] emu_start returned: err=%d pc=0x%08x sp=0x%08x lr=0x%08x nested=%d\n",
                    err, pc, sp_val, lr_val, g_emu_nested_stop);
             fflush(stdout);
-            if (err == UC_ERR_OK) {
-                printf("[UNICORN] Emulation stopped (uc_emu_stop called). PC=0x%08x SP=0x%08x LR=0x%08x\n",
-                       pc, sp_val, lr_val);
-            } else if (err == UC_ERR_FETCH_UNMAPPED && pc == 0) {
-                printf("[UNICORN] App returned normally\n");
-            } else {
-                fprintf(stderr, "[UNICORN] Emulation error: %s (PC=0x%08x SP=0x%08x LR=0x%08x)\n",
-                        uc_strerror(err), pc, sp_val, lr_val);
-            }
+            if (err != UC_ERR_OK)
+                fault_note("%s", uc_strerror(err));  // no hook covers it
             fflush(stdout); fflush(stderr);
             break;
         }
@@ -706,9 +877,11 @@ bool unicorn_run_app(const char *elf_path, const char *app_dir,
 
     printf("[UNICORN] App '%s' finished\n", app_name);
 
+    bool ok = s_faulted ? end_app_on_fault(uc, app_name) : true;
+
     uc_close(uc);
     g_uc = NULL;
-    return true;
+    return ok;
 
 fail:
     uc_close(uc);

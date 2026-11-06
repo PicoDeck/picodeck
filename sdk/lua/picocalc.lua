@@ -3,15 +3,18 @@
 -- This file is never executed — it exists solely to provide IDE autocomplete,
 -- hover documentation, and type checking for PicoDeck app development.
 --
--- Place `.luarc.json` at the project root and set:
---   "Lua.workspace.library": ["sdk/lua"]
+-- Copy this file into your project and point `.luarc.json` at it:
+--   "workspace.library": ["libs/picocalc.lua"]
+-- sdk/README.md has the whole setup.
 --
--- Generated from src/os/lua_bridge_*.c — keep in sync with the bridge sources.
--- tools/check_lua_stub.py (run by `pytest tests/unit`) compares every signature
--- here with the C function behind it: parameter count, optional parameters and
--- return count.
--- Note: only base/table/string/math stdlib is available (no utf8, no coroutine,
--- no io/os/package/debug).
+-- Hand-written from src/os/lua_bridge_*.c and docs/; nothing generates it.
+-- tools/check_lua_stub.py (run by `pytest tests/unit`) checks it against that C,
+-- both ways: every name the bridge registers has an entry here and every entry
+-- here has a name behind it, with the same parameter count, optional parameters
+-- and return count. It cannot check types or wording.
+-- Note: the stdlib is base, table, string, math, coroutine and utf8. io, os,
+-- package and debug are nil on the device, and dofile and loadfile too; require
+-- is PicoDeck's own (docs: Standard Lua Libraries).
 
 -- =============================================================================
 -- App globals (injected by launcher before app starts)
@@ -36,6 +39,15 @@ APP_ID = ""
 ---(each is registered only for an app that declares the requirement).
 ---@type { root_filesystem: boolean, http: boolean, audio: boolean }
 APP_REQUIREMENTS = {}
+
+---Load a Lua module that ships with your app, once, and return its first result
+---(`true` if it returns nothing). PicoDeck's own: sandboxed and text-only, with
+---no `package` table. `"src.physics"` is searched as `APP_DIR .. "/src/physics.lua"`,
+---then `/system/lib/src/physics.lua`; a module that is not found, or that requires
+---itself through a cycle, raises.
+---@param name string Dotted name: parts of 1-64 characters of `A-Za-z0-9_-`, at most 128 bytes
+---@return any module
+function require(name) end
 
 -- =============================================================================
 -- picocalc  (top-level namespace)
@@ -185,7 +197,9 @@ function picocalc.display.fillVLineGradient(x, y0, y1, color_top, color_bottom) 
 ---  "fade"     (r, g, b, factor? default 128) — tint toward target colour
 ---  "grayscale"
 ---  "blend"    (image: PicoDeckImage, alpha? 0-255, default 128)
----  "palette"  (lut: integer[] 1-256 RGB565 entries — remap each pixel to nearest entry)
+---  "palette"  (lut: integer[] 1-256 RGB565 entries — a lookup, not nearest colour: each
+---             pixel becomes entry (r3 << 5 | g3 << 2 | b2) + 1, and a shorter table
+---             uses its last entry for every higher index)
 ---  "dither"   (levels? default 4)
 ---  "scanline" (intensity? 0=none, 255=black lines, default 128)
 ---  "posterize"(levels? 2-32 per channel, default 4)
@@ -283,7 +297,8 @@ function picocalc.display.getWidth() end
 ---@return integer
 function picocalc.display.getHeight() end
 
----Set the LCD backlight brightness.
+---Set the LCD backlight brightness. The level holds until the app exits or the
+---user changes the Brightness setting; the system menu shows at the user's level.
 ---@param brightness integer 0 (off) – 255 (maximum)
 function picocalc.display.setBrightness(brightness) end
 
@@ -346,27 +361,29 @@ function picocalc.display.rgb(r, g, b) end
 ---@field BTN_RIGHT     integer D-pad right
 ---@field BTN_ENTER     integer Enter / OK
 ---@field BTN_ESC       integer Escape / back
----@field BTN_MENU      integer System menu (Sym key)
+---@field BTN_MENU      integer The menu key (Shift+F5, reported as F10): the OS's, never set in any mask
 ---@field BTN_F1        integer Function key 1
 ---@field BTN_F2        integer Function key 2
 ---@field BTN_F3        integer Function key 3
 ---@field BTN_F4        integer Function key 4
 ---@field BTN_F5        integer Function key 5
----@field BTN_F6        integer Function key 6
----@field BTN_F7        integer Function key 7
----@field BTN_F8        integer Function key 8
----@field BTN_F9        integer Function key 9
+---@field BTN_F6        integer Function key 6 (Shift+F1)
+---@field BTN_F7        integer Function key 7 (Shift+F2)
+---@field BTN_F8        integer Function key 8 (Shift+F3)
+---@field BTN_F9        integer Function key 9 (Shift+F4)
 ---@field BTN_BACKSPACE integer Backspace
 ---@field BTN_TAB       integer Tab
 ---@field BTN_DEL       integer Delete key
 ---@field BTN_SHIFT     integer Shift modifier
 ---@field BTN_CTRL      integer Ctrl modifier
 ---@field BTN_ALT       integer Alt modifier
----@field BTN_FN        integer Fn / Symbol modifier
+---@field BTN_FN        integer Sym (Fn) modifier
 picocalc.input = {}
 
 ---Poll the keyboard and trigger the system menu if Menu is pressed.
 ---Call once per frame before reading button state.
+---A key or gamepad button down when the system menu opens or closes reads as
+---not held, with no edges, events or chars, until it is released.
 function picocalc.input.update() end
 
 ---Return a bitmask of all currently held buttons (BTN_* constants).
@@ -384,12 +401,14 @@ function picocalc.input.getButtonsReleased() end
 ---Return the character typed this frame, or `nil` if none. One char per
 ---`update()`: when several keys arrive in one poll, the rest are returned by
 ---the following frames in order (up to 4 are kept). Holding a key repeats it.
----Enter returns `"\n"`, Backspace `"\b"`, Ctrl+letter a control code.
----Includes full keyboard layout; use for text input.
+---Enter returns `"\n"`, Backspace `"\b"`, Ctrl+letter a control code; Tab,
+---Delete, arrows and function keys none. The value stays until the next
+---`update()`: never loop on it (`while c do c = getChar() end` does not end).
 ---@return string|nil
 function picocalc.input.getChar() end
 
----Return the raw hardware key code for the last key event.
+---Return the code of the last key to go down or repeat during the last
+---`update()`, or 0 if none. It stays until the next `update()`.
 ---@return integer
 function picocalc.input.getRawKey() end
 
@@ -404,7 +423,9 @@ function picocalc.input.clearState() end
 function picocalc.input.setRepeat(delay_ms, rate_ms) end
 
 ---Like `getButtonsPressed()`, but held buttons also produce synthetic repeat
----edges according to `setRepeat()`. Use this for menu navigation.
+---edges according to `setRepeat()` (by default after 200 ms, then every 80 ms).
+---Use this for menu navigation. Call it at most once per frame: a second call
+---takes the next repeat early.
 ---@return integer bitmask
 function picocalc.input.getButtonsRepeated() end
 
@@ -414,7 +435,7 @@ function picocalc.input.getButtonsRepeated() end
 ---@field char? string `"char"` events only: the character (as `getChar()` would return it)
 ---@field mods integer BTN_SHIFT/BTN_CTRL/BTN_ALT/BTN_FN held at the event
 ---@field button? integer The BTN_* constant for keys that have one
----@field repeat? boolean true for a `down`/`char` produced by holding the key (read it as `ev["repeat"]`: `repeat` is a Lua keyword)
+---@field repeat? boolean true on a `down`/`char` a held key repeats with, absent on a press (read it as `ev["repeat"]`: `repeat` is a Lua keyword)
 
 ---Pop the oldest keyboard event, or `nil` when none is queued. Events are
 ---filled by `update()` in the order keys were pressed and released, so taps
@@ -434,9 +455,10 @@ function picocalc.input.pollEvent() end
 
 ---True while a key is held. `k` is a one-character string (`"w"`; letters
 ---ignore case) or an integer keycode as `pollEvent` reports it. Updated by
----`update()`. Reliable for buttons (arrows, Enter, Esc, F-keys, modifiers);
----letters and shifted symbols rely on the keyboard reporting their release and
----are pending hardware confirmation. `clearState()` clears a key that sticks.
+---`update()`. A key pressed before Shift or Alt and released under it stays set
+---until its next press and release, as its `BTN_*` bit does: see API Input.
+---`clearState()` clears a key that sticks. Raises on a longer string or a code
+---outside 0-255.
 ---@param k string|integer
 ---@return boolean
 function picocalc.input.isKeyDown(k) end
@@ -449,7 +471,7 @@ function picocalc.input.isKeyDown(k) end
 ---reports as itself through `picocalc.input`. Players rebind it: the global
 ---map is `/system/gamepad.json`, a per-game override `/data/<APP_ID>/gamepad.json`,
 ---both read when the app starts. Updated by `picocalc.input.update()`. Absent on firmware before API version 9: check
----`if picocalc.gamepad then`.
+---`if picocalc.gamepad then`. `getAxis` and the AXIS_* constants need API version 10: check `if picocalc.gamepad.getAxis then`.
 ---@class picocalc.gamepad
 ---@field PAD_UP     integer Up (default: Up arrow)
 ---@field PAD_DOWN   integer Down (default: Down arrow)
@@ -463,6 +485,12 @@ function picocalc.input.isKeyDown(k) end
 ---@field PAD_R      integer R (default: F3)
 ---@field PAD_START  integer Start (default: F1)
 ---@field PAD_SELECT integer Select (default: Tab)
+---@field AXIS_LX    integer Left stick, left to right
+---@field AXIS_LY    integer Left stick, up to down
+---@field AXIS_RX    integer Right stick, left to right
+---@field AXIS_RY    integer Right stick, up to down
+---@field AXIS_LT    integer Left trigger
+---@field AXIS_RT    integer Right trigger
 picocalc.gamepad = {}
 
 ---Bitmask of held gamepad buttons (PAD_* constants).
@@ -484,6 +512,15 @@ function picocalc.gamepad.getButtonsReleased() end
 ---@param slot? integer 0 = primary (default), 1 = alternate
 ---@return string|nil
 function picocalc.gamepad.getLabel(btn, slot) end
+
+---One analog axis as of the last `picocalc.input.update()`: a stick reads -1.0 to
+---1.0, right and down positive; a trigger 0.0 to 1.0. The dead zone is applied.
+---With no stick in use AXIS_LX and AXIS_LY read the D-pad (-1, 0 or +1: bound keys
+---or a controller's D-pad), so a game can read only these and still work on the
+---keyboard; the right stick and the triggers then read 0. API version 10.
+---@param axis integer One AXIS_* constant
+---@return number value
+function picocalc.gamepad.getAxis(axis) end
 
 -- =============================================================================
 -- picocalc.sys
@@ -515,10 +552,14 @@ function picocalc.sys.log(message) end
 ---@param ms integer
 function picocalc.sys.sleep(ms) end
 
----Exit the app cleanly and return to the launcher. Never returns.
+---Exit the app and return to the launcher, from any call depth. Never returns,
+---and cannot be caught: `pcall` catches the raise, and the next instruction raises
+---it again. No code of yours runs at exit except `__gc` handlers: a `__close`
+---handler does not finish.
 function picocalc.sys.exit() end
 
----Reboot the device via the watchdog timer. Never returns.
+---Reboot the device via the watchdog timer. Never returns. In the simulator the
+---app ends and the launcher takes over.
 function picocalc.sys.reboot() end
 
 ---Return `true` if USB power is connected (GP24 VBUS sense). Not reliable on
@@ -528,7 +569,8 @@ function picocalc.sys.reboot() end
 ---@return boolean
 function picocalc.sys.isUSBPowered() end
 
----Return a table with charging/percentage info.
+---Return a table with charging/percentage info, as the keyboard controller
+---reports it. `percent` is -1 before the first reading, as `getBattery()`.
 ---@return { charging: boolean, percent: integer }
 function picocalc.sys.getPowerStatus() end
 
@@ -542,7 +584,7 @@ function picocalc.sys.getClock() end
 ---fields describe the Lua small-object pools (objects of up to 128 B live in
 ---4 KB slabs carved from the PSRAM heap): slab count, slab bytes, live objects
 ---and their bytes. `pio_psram_*` describe the mainboard PIO PSRAM.
----@return { psram_free: integer, psram_used: integer, psram_total: integer, psram_largest_block: integer, psram_fragmentation: integer, small_pool_slabs: integer, small_pool_bytes: integer, small_pool_objects: integer, small_pool_object_bytes: integer, sram_free: integer, sram_used: integer, pio_psram_available: boolean, pio_psram_size: integer }
+---@return { psram_free: integer, psram_used: integer, psram_total: integer, psram_largest_block: integer, psram_fragmentation: integer, small_pool_slabs: integer, small_pool_bytes: integer, small_pool_objects: integer, small_pool_object_bytes: integer, sram_free: integer, sram_used: integer, pio_psram_available: boolean, pio_psram_size: integer, xip_cache_hit_rate: integer }
 function picocalc.sys.getMemInfo() end
 
 ---Return the OS firmware version string.
@@ -591,19 +633,23 @@ function picocalc.sys.clearMenuItems() end
 function picocalc.sys.triggerFault() end
 
 ---Reset the idle screen-dim timer (call on user activity to keep the screen on).
+---An app starts with the timer fresh and the screen lit.
 function picocalc.sys.resetIdleTimer() end
 
----Pause Core 1 background work (network polling, audio updates).
----@return boolean was_paused Previous state
+---Pause Core 1 background work (network polling, audio updates). Waits up to
+---500 ms for Core 1 to stop.
+---@return boolean paused `true` if Core 1 is paused now
 function picocalc.sys.pauseBackground() end
 
 ---Resume Core 1 background work after `pauseBackground()`.
 function picocalc.sys.resumeBackground() end
 
----Load and run a Lua library file from the SD card (like `require` for a path).
----Returns the chunk's return value, or `nil, error`.
----@param name string Module path or name
----@return any
+---Load and run `/system/lib/<name>.lua` and return its result, every call (unlike
+---`require`, which caches). `nil, error` if the file cannot be opened or is empty;
+---a syntax or runtime error in it raises.
+---@param name string Library name, no extension and no `/`
+---@return any result `nil` if the file cannot be opened or is empty
+---@return string? error
 function picocalc.sys.loadlib(name) end
 
 ---Read bytes from PIO PSRAM (second 8MB chip, if present) into a string.
@@ -673,7 +719,8 @@ local PicoDeckFile = {}
 ---@return string? data `nil` at end of file or on error
 function PicoDeckFile:read(len) end
 
----Write data. Returns bytes written (-1 on error).
+---Write data. Returns bytes written (-1 on error, including a handle not open
+---for writing). A full card is a smaller count, not an error.
 ---@param data string
 ---@return integer bytes_written
 function PicoDeckFile:write(data) end
@@ -710,8 +757,12 @@ function PicoDeckFile:fsize() end
 function picocalc.fs.fsize(file) end
 
 ---Open a file on the SD card.
+---Only the letters r, w and a of the mode count, not C's meanings: `"r"` and
+---`"r+"` read (the file must exist), `"w"` and `"w+"` write (emptying or
+---creating), `"a"` and `"a+"` write from the end (creating), `"rw"` does both
+---(creating, keeping the contents).
 ---@param path string Absolute SD card path
----@param mode? string `"r"` (default), `"w"`, `"a"`, `"r+"`, etc.
+---@param mode? string `"r"` (default), `"w"`, `"a"`, `"rw"`
 ---@return PicoDeckFile? handle
 ---@return string? error `"permission denied"`, `"cannot open file"` or `"too many open files"`
 function picocalc.fs.open(path, mode) end
@@ -723,7 +774,8 @@ function picocalc.fs.open(path, mode) end
 ---@return string? data `nil` on EOF or error
 function picocalc.fs.read(file, len) end
 
----Write data to an open file. Returns bytes written (-1 on error).
+---Write data to an open file. Returns bytes written (-1 on error, including a
+---handle not open for writing). A full card is a smaller count, not an error.
 ---Raises on a closed handle.
 ---@param file PicoDeckFile
 ---@param data string
@@ -731,7 +783,7 @@ function picocalc.fs.read(file, len) end
 function picocalc.fs.write(file, data) end
 
 ---Close an open file handle. Idempotent; `nil` is ignored.
----@param file PicoDeckFile?
+---@param file? PicoDeckFile
 function picocalc.fs.close(file) end
 
 ---Seek within an open file, relative to `whence`: `"set"` (default, from the
@@ -786,12 +838,15 @@ function picocalc.fs.isDir(path) end
 ---@field min? integer
 ---@field sec? integer
 
----List directory contents.
+---List directory contents. An empty table when the directory cannot be read,
+---plus `"permission denied"` when the sandbox refused it.
 ---@param path string
 ---@return PicoDeckDirEntry[]
+---@return string? error
 function picocalc.fs.listDir(path) end
 
----Create a directory (and any missing parents).
+---Create one directory; its parent must exist. `true` if created or already a
+---directory, `false` on an error (a missing parent, a file of that name).
 ---@param path string
 ---@return boolean ok
 function picocalc.fs.mkdir(path) end
@@ -801,25 +856,38 @@ function picocalc.fs.mkdir(path) end
 ---@return string path
 function picocalc.fs.appPath(name) end
 
----Show a fullscreen file-browser UI and return the selected path, or `nil` if cancelled.
+---Show a fullscreen file-browser UI and return the selected path, or `nil` if
+---cancelled. Esc goes up and cancels at the top: `/data/<APP_ID>` for a start
+---inside it, otherwise the start directory itself. `/data/<APP_ID>` is also where
+---it opens by default and instead of a directory the sandbox refuses.
 ---@param start_path? string Initial directory
 ---@return string? selected_path
 function picocalc.fs.browse(start_path) end
 
----Delete a file or empty directory.
+---Delete a file or empty directory. The volume root is refused.
 ---@param path string
 ---@return boolean ok
 ---@return string? error
 function picocalc.fs.delete(path) end
 
----Rename/move a file or directory.
+---Delete a directory and everything in it, or a single file. The volume root is
+---refused, for every app.
+---@param path string
+---@return boolean ok
+---@return string? error
+function picocalc.fs.deleteRecursive(path) end
+
+---Rename/move a file or directory. Refuses an existing `dst` (it does not
+---replace it, unlike POSIX): delete the old file first.
 ---@param src string
 ---@param dst string
 ---@return boolean ok
 ---@return string? error
 function picocalc.fs.rename(src, dst) end
 
----Copy a file. Optional progress callback receives `(done: integer, total: integer)`.
+---Copy a file, replacing `dst`. Optional progress callback receives
+---`(done: integer, total: integer)` after each 4 KB; an exit requested from it
+---stops the copy. On a failure `dst` is removed.
 ---@param src string
 ---@param dst string
 ---@param progress_fn? fun(done: integer, total: integer)
@@ -852,7 +920,20 @@ function picocalc.fs.diskInfo() end
 ---@param path string Directory to search
 ---@param pattern string Glob pattern, e.g. `"*.lua"`
 ---@return PicoDeckDirEntry[]
+---@return string? error `"permission denied"` when the sandbox refused it (the list is then empty)
 function picocalc.fs.glob(path, pattern) end
+
+---Check that the SD card answers, remounting it if it does not. Worth calling
+---before a run of writes after long network activity.
+---@return boolean ready `true` if the SD card is ready
+function picocalc.fs.ensureReady() end
+
+---Drop the SD bus to 1 MHz, or restore its normal speed. WiFi radio noise can
+---corrupt writes at full speed, so write large amounts under slow mode while the
+---network is transferring. It affects every file, is much slower (about 100 KB/s)
+---and ends when your app exits.
+---@param enabled boolean `true` to enable slow mode, `false` to disable
+function picocalc.fs.setSlowMode(enabled) end
 
 -- =============================================================================
 -- picocalc.config / picocalc.appconfig  (per-app, /data/<APP_ID>/config.json)
@@ -862,42 +943,43 @@ function picocalc.fs.glob(path, pattern) end
 ---@class picocalc.config
 picocalc.config = {}
 
----@class picocalc.appconfig
-picocalc.appconfig = {}
-
----Read a per-app config value, returning `fallback` if the key is absent.
+---Read a per-app config value, returning `fallback` (as a string) if the key is absent.
 ---@param key string
----@param fallback? string
+---@param fallback? string|number
 ---@return string? value
 function picocalc.config.get(key, fallback) end
 
 ---Write a per-app config value (in memory only — call `save()` to persist).
+---`nil` or `""` deletes the key. Numbers read back as strings. At most 32 keys,
+---keys up to 31 bytes, values up to 255: over a limit nothing is stored and an
+---existing key keeps its old value.
 ---@param key string
----@param value string
+---@param value? string|number
+---@return boolean ok
+---@return string? why `"config full"`, `"key too long"`, `"value too long"`, `"empty key"`, `"value contains a NUL byte"`, `"out of memory"`
 function picocalc.config.set(key, value) end
 
----Persist the per-app config to `/data/<APP_ID>/config.json`.
+---Persist the per-app config to `/data/<APP_ID>/config.json`. What the file holds
+---beyond the limits, or that is not a string, is written back as it was.
 ---@return boolean ok
 function picocalc.config.save() end
 
----Reload the per-app config from `/data/<APP_ID>/config.json`.
+---Reload the per-app config from `/data/<APP_ID>/config.json`, dropping unsaved
+---changes. Not needed before the first `get`: the store loads itself. `false` on
+---a first run, when there is no file yet.
 ---@return boolean ok
 function picocalc.config.load() end
 
 ---Clear all in-memory per-app entries (does not delete the file).
 function picocalc.config.clear() end
 
----Delete the per-app config file and clear all keys from memory.
+---Delete the per-app config file and clear all keys from memory. `true` whether
+---or not there was a file.
 ---@return boolean ok
 function picocalc.config.reset() end
 
--- picocalc.appconfig is an exact alias of picocalc.config (same store):
-picocalc.appconfig.get   = picocalc.config.get
-picocalc.appconfig.set   = picocalc.config.set
-picocalc.appconfig.save  = picocalc.config.save
-picocalc.appconfig.load  = picocalc.config.load
-picocalc.appconfig.clear = picocalc.config.clear
-picocalc.appconfig.reset = picocalc.config.reset
+---The same per-app store as `picocalc.config`, under the name the C API uses.
+picocalc.appconfig = picocalc.config
 
 -- =============================================================================
 -- picocalc.sysconfig  (system-wide, /system/config.json)
@@ -915,9 +997,10 @@ picocalc.sysconfig = {}
 ---@return string? value `nil` if key does not exist
 function picocalc.sysconfig.get(key) end
 
----Write a system config value (pass `nil` to delete the key).
+---Write a system config value in memory (`save()` keeps it). A number reads back
+---as a string. A value of `nil` or `""`, or none at all, deletes the key.
 ---@param key string
----@param value string|nil
+---@param value? string|number
 function picocalc.sysconfig.set(key, value) end
 
 ---Persist system config to `/system/config.json`.
@@ -935,9 +1018,10 @@ function picocalc.sysconfig.load() end
 ---@class picocalc.audio
 picocalc.audio = {}
 
----Play a tone at the given frequency. If `duration_ms` is 0 or omitted the
----tone plays indefinitely until `stopTone()` is called.
----@param freq integer Frequency in Hz (e.g. 440 for A4)
+---Play a square wave at the given frequency, replacing any tone playing. If
+---`duration_ms` is 0 or omitted the tone plays indefinitely until `stopTone()`
+---is called.
+---@param freq integer Frequency in Hz (e.g. 440 for A4), held to 20-20000
 ---@param duration_ms? integer Duration in milliseconds; 0 = indefinite
 function picocalc.audio.playTone(freq, duration_ms) end
 
@@ -945,10 +1029,32 @@ function picocalc.audio.playTone(freq, duration_ms) end
 function picocalc.audio.stopTone() end
 
 ---Set the master volume. It scales everything the mixer plays: tones,
----samples, the PCM stream (FilePlayer, MOD player) and MP3. It resets to
----100 when the app exits.
+---samples, the PCM stream (FilePlayer, MOD player) and MP3. A tone falls
+---faster than the rest (12% at volume 50, 0.3% at 10). It resets to 100 when
+---the app exits.
 ---@param volume integer 0 (mute) – 100 (maximum)
 function picocalc.audio.setVolume(volume) end
+
+---Start (or restart) the PCM stream at `sample_rate` and empty its buffer. Other
+---sounds keep playing. The FilePlayer and the MOD player use this stream while
+---they play: stop whichever is playing first. It plays from the first samples you
+---push; until then it is silent, and that silence does not count as an underrun.
+---@param sample_rate integer Sample rate in Hz (e.g. 44100)
+function picocalc.audio.startStream(sample_rate) end
+
+---Stop the PCM stream and empty its buffer. Tones and samples keep playing.
+function picocalc.audio.stopStream() end
+
+---Push interleaved stereo samples (left, right, left, right...) to the stream.
+---Pushes while no stream is started are dropped, and so are frames that do not fit
+---the buffer: check `ringFree()` first. The stream keeps the top 8 bits of each value.
+---@param samples integer[] 16-bit values, clamped. At most 512 (256 frames) per call; an odd last value is ignored
+function picocalc.audio.pushSamples(samples) end
+
+---Return the room left in the stream's buffer, in stereo frames: 4096 when empty,
+---0 while no stream is started. One frame is two values in `pushSamples`.
+---@return integer frames
+function picocalc.audio.ringFree() end
 
 -- =============================================================================
 -- picocalc.sound  (sample / fileplayer / MP3 player)
@@ -972,22 +1078,25 @@ local PicoDeckMp3Player = {}
 
 -- ── picocalc.sound top-level constructors ────────────────────────────────────
 
----Return the audio clock time in milliseconds since the last `resetTime()`.
+---Return the audio clock in milliseconds since the last `resetTime()` (or the
+---app's start). It advances only while the audio output runs: from the app's
+---first sound on, through silence too. Wraps after about 27 hours.
 ---@return integer ms
 function picocalc.sound.getCurrentTime() end
 
 ---Reset the audio clock to zero.
 function picocalc.sound.resetTime() end
 
----Return the number of currently active audio sources.
+---Return how many SamplePlayers are playing. A FilePlayer, MP3Player, MOD
+---player, tone or stream does not count.
 ---@return integer
 function picocalc.sound.playingSources() end
 
 ---Create a Sample, optionally loading a WAV file immediately. WAVs must be
 ---8- or 16-bit PCM, 1-2 channels (float, 24/32-bit, ADPCM are refused); only
 ---the first 64 KB of sample data is kept.
----@param path_or_duration? string|number WAV file path, or duration in seconds for an empty sample
----@param opts? {sampleRate?: integer, bits?: integer, channels?: integer} Format of an empty sample (with a duration only)
+---@param path_or_duration? string|number WAV file path, or a length in seconds for a silent sample (a placeholder: no API writes into a Sample)
+---@param opts? {sampleRate?: integer, bits?: integer, channels?: integer} Format of a silent sample (with a length only)
 ---@return PicoDeckSample? sample
 ---@return string? error
 function picocalc.sound.sample(path_or_duration, opts) end
@@ -996,28 +1105,40 @@ function picocalc.sound.sample(path_or_duration, opts) end
 ---The player keeps its sample alive: dropping your own reference to the sample
 ---is safe while the player plays it. A path loads a Sample that belongs to the
 ---player (`getSample()` returns it); it is freed with the player, or once a
----`setSample` replaces it. Samples have no fixed limit; at most 8 sampleplayers
----exist at once, freed by the garbage collector.
+---`setSample` replaces it. Samples have no fixed limit; a sampleplayer holds one
+---of the 8 voices until the garbage collector frees it, and stops when it does.
+---For a sound effect you can drop, use `sample:play()`.
 ---@param sample_or_path? PicoDeckSample|string
----@return PicoDeckSamplePlayer
+---@return PicoDeckSamplePlayer? player `nil` with every voice taken
+---@return string? error
 function picocalc.sound.sampleplayer(sample_or_path) end
 
----Create a FilePlayer for streaming WAV files from the SD card.
----@param buffer_size? integer Internal streaming buffer size in bytes
----@return PicoDeckFilePlayer
+---Create a FilePlayer for streaming WAV and QOA files from the SD card. At most
+---2 exist at once; one plays at a time.
+---@param buffer_size? integer Accepted and ignored
+---@return PicoDeckFilePlayer? player
+---@return string? error
 function picocalc.sound.fileplayer(buffer_size) end
 
----Create an MP3Player for streaming MP3 files from the SD card.
----@return PicoDeckMp3Player
+---Create an MP3Player for streaming MP3 files from the SD card. There is a single
+---MP3 decoder, so this returns the one live handle while it exists.
+---@return PicoDeckMp3Player? player
+---@return string? error
 function picocalc.sound.mp3player() end
 
 -- ── PicoDeckSample methods ──────────────────────────────────────────────────────
 
 ---Load a WAV file into this sample.
 ---@param path string
----@return boolean ok
+---@return boolean? ok `true`, or `nil` with the error
 ---@return string? error
 function PicoDeckSample:load(path) end
+
+---Write the sample data to a WAV file on the SD card.
+---@param filename string Path to write
+---@return boolean ok `false` with the error
+---@return string? error
+function PicoDeckSample:save(filename) end
 
 ---Return the number of PCM sample frames.
 ---@return integer
@@ -1031,23 +1152,37 @@ function PicoDeckSample:getSampleRate() end
 ---@return { bits: integer, channels: integer, sampleRate: integer }
 function PicoDeckSample:getFormat() end
 
----Decompress the sample (if compressed). Returns `self` for chaining.
+---Return the sample itself: a no-op, kept for API compatibility, since samples
+---are always stored decompressed.
 ---@return PicoDeckSample
 function PicoDeckSample:decompress() end
 
----Return a new Sample containing the sub-range `[start, end]` (sample frames).
+---Return a new Sample containing frames `start_frame` up to, not including,
+---`end_frame`.
 ---@param start_frame integer
 ---@param end_frame integer
----@return PicoDeckSample
+---@return PicoDeckSample? sample `nil` if the slice is empty or memory runs out
+---@return string? error
 function PicoDeckSample:getSubsample(start_frame, end_frame) end
 
----Play this sample immediately. `when` is accepted but ignored (no scheduler
+---Play this sample on a temporary player, which you may drop: it plays to the
+---end whatever the collector does, keeps the sample alive, and gives its voice
+---back when it ends. Kept, it still works and `play()` takes a voice again. To
+---stop a looping one (`repeat_count` 0), keep it.
+---@param repeat_count? integer Plays, 0 = loop until stopped (default 1)
+---@param rate? number Playback rate multiplier (default 1.0)
+---@return PicoDeckSamplePlayer? player `nil` with no voice free (8 at once) or no data
+---@return string? error
+function PicoDeckSample:play(repeat_count, rate) end
+
+---As `play`, once, with a volume. `when` is accepted but ignored (no scheduler
 ---on this hardware — playback starts now).
 ---@param when number Reserved; ignored (but required)
 ---@param vol? integer Volume 0–100 (default 100; larger values clamp to 100)
----@param rightvol? integer Right volume (ignored — mono PWM)
+---@param rightvol? integer Ignored: a player has one volume, for both channels
 ---@param rate? number Playback rate multiplier (default 1.0)
----@return PicoDeckSamplePlayer player The player that is playing the sample (raises if none is free)
+---@return PicoDeckSamplePlayer? player `nil` with no voice free (8 at once) or no data
+---@return string? error
 function PicoDeckSample:playAt(when, vol, rightvol, rate) end
 
 -- ── PicoDeckSamplePlayer methods ────────────────────────────────────────────────
@@ -1064,7 +1199,8 @@ function PicoDeckSamplePlayer:getSample() end
 
 ---Start playback. `repeat_count` = number of plays (0 = loop until stopped).
 ---@param repeat_count? integer
----@return boolean ok
+---@return boolean? ok `true` if started; `nil` with nothing to play, or for a finished player from `sample:play()` with no voice free
+---@return string? error
 function PicoDeckSamplePlayer:play(repeat_count) end
 
 ---Stop playback.
@@ -1074,8 +1210,11 @@ function PicoDeckSamplePlayer:stop() end
 ---@return boolean
 function PicoDeckSamplePlayer:isPlaying() end
 
----Pause or resume playback.
+---Pause or resume playback. A player from `sample:play()` gives its voice back
+---while paused; resuming with none free returns `nil, errstr` and it stays paused.
 ---@param paused boolean
+---@return nil
+---@return string? error
 function PicoDeckSamplePlayer:setPaused(paused) end
 
 ---Return the sample length in frames.
@@ -1098,9 +1237,9 @@ function PicoDeckSamplePlayer:setVolume(vol) end
 ---@return integer
 function PicoDeckSamplePlayer:getVolume() end
 
----Restrict playback to a sub-range (in sample frames).
----@param start_frame integer
----@param end_frame integer
+---Restrict playback to frames `start_frame` up to, not including, `end_frame`.
+---@param start_frame integer Ignored at or past `end_frame`
+---@param end_frame integer 0 = the end of the sample
 function PicoDeckSamplePlayer:setPlayRange(start_frame, end_frame) end
 
 ---Set playback rate multiplier (1.0 = normal speed).
@@ -1110,6 +1249,14 @@ function PicoDeckSamplePlayer:setRate(rate) end
 ---Return the current playback rate.
 ---@return number
 function PicoDeckSamplePlayer:getRate() end
+
+---Register a callback called when playback finishes; `nil` clears it.
+---@param fn fun()|nil
+function PicoDeckSamplePlayer:setFinishCallback(fn) end
+
+---Register a callback called each time the player loops; `nil` clears it.
+---@param fn fun()|nil
+function PicoDeckSamplePlayer:setLoopCallback(fn) end
 
 -- ── PicoDeckFilePlayer methods ──────────────────────────────────────────────────
 
@@ -1124,7 +1271,8 @@ function PicoDeckFilePlayer:load(path) end
 
 ---Start streaming playback.
 ---@param repeat_count? integer 0 = infinite
----@return boolean ok
+---@return boolean? ok `true` if started, `nil` with no file loaded
+---@return string? error
 function PicoDeckFilePlayer:play(repeat_count) end
 
 ---Stop playback.
@@ -1136,6 +1284,7 @@ function PicoDeckFilePlayer:pause() end
 ---Resume after pause.
 function PicoDeckFilePlayer:resume() end
 
+---Return `true` while playing.
 ---@return boolean
 function PicoDeckFilePlayer:isPlaying() end
 
@@ -1156,8 +1305,8 @@ function PicoDeckFilePlayer:getOffset() end
 ---@param seconds number
 function PicoDeckFilePlayer:setOffset(seconds) end
 
----Set the volume. `right` is accepted for Playdate compatibility, but both
----channels play at `left`.
+---Set the volume. `right` is accepted but ignored: both channels play at
+---`left`.
 ---@param left integer 0–100 (larger values clamp to 100)
 ---@param right? integer 0–100
 function PicoDeckFilePlayer:setVolume(left, right) end
@@ -1176,13 +1325,25 @@ function PicoDeckFilePlayer:setLoopRange(start_sec, end_sec) end
 ---@return boolean
 function PicoDeckFilePlayer:didUnderrun() end
 
----Register a callback called when playback finishes.
----@param fn fun()
+---Register a callback called when playback finishes; `nil` clears it.
+---@param fn fun()|nil
 function PicoDeckFilePlayer:setFinishCallback(fn) end
+
+---Register a callback called each time the file loops; `nil` clears it.
+---@param fn fun()|nil
+function PicoDeckFilePlayer:setLoopCallback(fn) end
 
 ---If `true`, stop automatically on buffer underrun rather than filling with silence.
 ---@param flag boolean
 function PicoDeckFilePlayer:setStopOnUnderrun(flag) end
+
+---Set the playback rate, clamped to 0.1-4.0. Uses nearest-neighbour resampling.
+---@param rate number Multiplier (1.0 = normal, 2.0 = double speed, 0.5 = half speed)
+function PicoDeckFilePlayer:setRate(rate) end
+
+---Return the current playback rate.
+---@return number rate
+function PicoDeckFilePlayer:getRate() end
 
 -- ── PicoDeckMp3Player methods ───────────────────────────────────────────────────
 
@@ -1195,7 +1356,8 @@ function PicoDeckMp3Player:load(path) end
 ---Start playback from the beginning of the file (also after it finished).
 ---A `play()` while playing fades out first (~1.5 ms, no click).
 ---@param repeat_count? integer 0 = loop until stopped; any other count plays once
----@return boolean ok
+---@return boolean? ok `true` if started, `nil` with no file loaded
+---@return string? error
 function PicoDeckMp3Player:play(repeat_count) end
 
 ---Stop playback (fades out over ~1.5 ms).
@@ -1272,6 +1434,10 @@ function picocalc.wifi.getIP() end
 ---@return string?
 function picocalc.wifi.getSSID() end
 
+---Check if the device has working internet connectivity (beyond just WiFi connection).
+---@return boolean online `true` if internet is reachable
+function picocalc.wifi.hasInternet() end
+
 -- =============================================================================
 -- picocalc.network  (HTTP client)
 -- =============================================================================
@@ -1324,35 +1490,40 @@ function PicoDeckHttpConn:setInsecure(flag) end
 ---@param flag boolean
 function PicoDeckHttpConn:setKeepAlive(flag) end
 
----Request a specific byte range (for resumable downloads).
+---Request a byte range on the next request only (for resumable downloads). A
+---server may still answer 200 with the whole body: check for 206.
 ---@param from integer Start byte offset (inclusive)
----@param to integer End byte offset (inclusive)
+---@param to integer End byte offset (inclusive), or -1 for the rest of the file
 function PicoDeckHttpConn:setByteRange(from, to) end
 
----Set the connection timeout in seconds (default: 10).
+---Set the connection timeout in seconds (default: 10). Fractions allowed; 0
+---turns it off.
 ---@param seconds number
 function PicoDeckHttpConn:setConnectTimeout(seconds) end
 
----Set the read timeout in seconds (default: 30).
+---Set how long a request may receive nothing, in seconds (default: 30), from the
+---moment it is sent. Fractions allowed; 0 turns it off.
 ---@param seconds number
 function PicoDeckHttpConn:setReadTimeout(seconds) end
 
 ---Set the internal read buffer size in bytes (default 4096, max 2097152 / 2 MiB).
+---`false` for 0, a negative size, over the maximum or too little memory; the old
+---buffer stays.
 ---@param bytes integer
 ---@return boolean ok
 function PicoDeckHttpConn:setReadBufferSize(bytes) end
 
 ---Send an HTTP GET request.
 ---@param path string URL path, e.g. `"/api/data"`
----@param headers? string Extra request headers (raw HTTP format)
+---@param headers? string|string[]|table<string, string> Extra request headers: a raw `"Key: Value"` string, an array of them, or a `{key = value}` table; 4095 bytes in all, or `false, "request headers too long ..."` and nothing is sent
 ---@return boolean ok
 ---@return string? error
 function PicoDeckHttpConn:get(path, headers) end
 
----Send an HTTP POST request.
+---Send an HTTP POST request. With two arguments the second is the body.
 ---@param path string
----@param headers? string Extra headers
----@param body? string Request body
+---@param headers? string|string[]|table<string, string> Extra headers, as for `get`
+---@param body? string Request body (binary safe)
 ---@return boolean ok
 ---@return string? error
 function PicoDeckHttpConn:post(path, headers, body) end
@@ -1377,7 +1548,8 @@ function PicoDeckHttpConn:getProgress() end
 function PicoDeckHttpConn:getBytesAvailable() end
 
 ---Read up to `length` bytes from the response body (max 131072 per call).
----Returns `nil` when done.
+---`nil` means nothing is available yet, not the end of the body: a loop that stops
+---on it stops early. `setRequestCompleteCallback` reports the end.
 ---@param length? integer Max bytes to read
 ---@return string?
 function PicoDeckHttpConn:read(length) end
@@ -1390,20 +1562,20 @@ function PicoDeckHttpConn:getResponseStatus() end
 ---@return { [string]: string }?
 function PicoDeckHttpConn:getResponseHeaders() end
 
----Register a callback fired each time new response data arrives.
----@param fn fun()
+---Register a callback fired each time new response data arrives; `nil` clears it.
+---@param fn? fun()
 function PicoDeckHttpConn:setRequestCallback(fn) end
 
----Register a callback fired once response headers have been parsed.
----@param fn fun()
+---Register a callback fired once response headers have been parsed; `nil` clears it.
+---@param fn? fun()
 function PicoDeckHttpConn:setHeadersReadCallback(fn) end
 
----Register a callback fired when the full response body has been received.
----@param fn fun()
+---Register a callback fired when the full response body has been received; `nil` clears it.
+---@param fn? fun()
 function PicoDeckHttpConn:setRequestCompleteCallback(fn) end
 
----Register a callback fired when the request fails (not after a successful response). Called with no arguments; read getError() inside it, since the connection is released afterwards.
----@param fn fun()
+---Register a callback fired when the request fails (not after a successful response). Called with no arguments; read getError() inside it, since the connection is released afterwards. `nil` clears it.
+---@param fn? fun()
 function PicoDeckHttpConn:setConnectionClosedCallback(fn) end
 
 -- =============================================================================
@@ -1411,6 +1583,11 @@ function PicoDeckHttpConn:setConnectionClosedCallback(fn) end
 -- =============================================================================
 
 ---@class picocalc.tcp
+---@field CB_CONNECT integer `getEvents()` bit: connected (1)
+---@field CB_READ    integer `getEvents()` bit: data arrived (2)
+---@field CB_WRITE   integer Reserved: never set (4)
+---@field CB_CLOSED  integer `getEvents()` bit: the peer closed (8)
+---@field CB_FAILED  integer `getEvents()` bit: the connection failed (16)
 picocalc.tcp = {}
 
 ---@class PicoDeckTcpConn : userdata
@@ -1449,12 +1626,14 @@ function PicoDeckTcpConn:setInsecure(flag) end
 ---@return string?
 function PicoDeckTcpConn:peerFingerprint() end
 
----Write data to the connection. Returns bytes written, or -1 on error.
+---Queue data for sending. Returns the bytes queued (all of them), or -1 if
+---nothing was queued. -1 is usually transient: at most 8 writes can wait, so
+---retry while `isConnected()`.
 ---@param data string
 ---@return integer
 function PicoDeckTcpConn:write(data) end
 
----Read up to `max_len` bytes. Returns `nil` if no data is available.
+---Read up to `max_len` bytes (default 4096). Returns `nil` if no data is available.
 ---@param max_len? integer
 ---@return string?
 function PicoDeckTcpConn:read(max_len) end
@@ -1475,38 +1654,45 @@ function PicoDeckTcpConn:error() end
 ---@return boolean
 function PicoDeckTcpConn:isConnected() end
 
+---Connect timeout for the next `connect()` (default 15 s, covers the TLS
+---handshake). Fractions allowed; 0 turns it off.
 ---@param seconds number
 function PicoDeckTcpConn:setConnectTimeout(seconds) end
 
----Read timeout; off by default, 0 disables it. Applies to the connection.
+---Read timeout; off by default, 0 disables it. Fractions allowed. Applies to the
+---connection.
 ---@param seconds number
 function PicoDeckTcpConn:setReadTimeout(seconds) end
 
----Register a callback fired when the connection is established.
----@param fn fun(conn: PicoDeckTcpConn)
+---Register a callback fired when the connection is established; `nil` clears it.
+---A failed connect fires the close callback instead.
+---@param fn? fun(conn: PicoDeckTcpConn)
 function PicoDeckTcpConn:setConnectCallback(fn) end
 
----Register a callback fired when data arrives.
----@param fn fun(conn: PicoDeckTcpConn)
+---Register a callback fired when data arrives; `nil` clears it.
+---@param fn? fun(conn: PicoDeckTcpConn)
 function PicoDeckTcpConn:setReadCallback(fn) end
 
----Register a callback fired when the connection closes.
----@param fn fun(conn: PicoDeckTcpConn)
+---Register a callback fired when the peer closes the connection or it fails,
+---not after your own `close()`; `nil` clears it.
+---@param fn? fun(conn: PicoDeckTcpConn)
 function PicoDeckTcpConn:setCloseCallback(fn) end
 
 ---Return and clear the pending events that have no callback registered, as a
----bitmask of `picocalc.tcp.CB_CONNECT` (1), `CB_READ` (2), `CB_WRITE` (4),
----`CB_CLOSED` (8), `CB_FAILED` (16). Callbacks receive the socket and never
----nest; buffered data stays readable after the peer closes.
+---bitmask of `picocalc.tcp.CB_CONNECT` (1), `CB_READ` (2), `CB_CLOSED` (8),
+---`CB_FAILED` (16). `CB_WRITE` (4) is reserved and never set. Callbacks receive
+---the socket and never nest; buffered data stays readable after the peer closes.
 ---@return integer
 function PicoDeckTcpConn:getEvents() end
 
----Block until connected, with an optional timeout. Returns `true` if connected.
+---Block until connected, with an optional timeout (default 10 s). Returns `true`
+---if connected. Callbacks, the system menu and exit work during the wait.
 ---@param timeout_seconds? number
 ---@return boolean
 function PicoDeckTcpConn:waitConnected(timeout_seconds) end
 
----Block until data is available, with an optional timeout. Returns `true` if data arrived.
+---Block until data is available, with an optional timeout (default 10 s). Returns
+---`true` if data arrived. Callbacks, the system menu and exit work during the wait.
 ---@param timeout_seconds? number
 ---@return boolean
 function PicoDeckTcpConn:waitData(timeout_seconds) end
@@ -1526,6 +1712,7 @@ function picocalc.ui.drawHeader(title) end
 ---Draw a status bar at the bottom of the screen.
 ---@param left? string Left-aligned text
 ---@param right? string Right-aligned text
+---@return integer height rows the footer covers (18), from y = 302
 function picocalc.ui.drawFooter(left, right) end
 
 ---Draw a tab bar. Returns the new active tab index and the tab-bar height.
@@ -1545,7 +1732,7 @@ function picocalc.ui.drawTabs(y, tabs, active_index, prev_key, next_key) end
 function picocalc.ui.textInput(prompt, default) end
 
 ---Show a blocking yes/no confirmation dialog. Returns `true` if the user confirms.
----@param message string
+---@param message string Wraps at 43 characters; the box grows, up to 20 lines
 ---@return boolean
 function picocalc.ui.confirm(message) end
 
@@ -1553,8 +1740,127 @@ function picocalc.ui.confirm(message) end
 ---@param cx integer Centre x
 ---@param cy integer Centre y
 ---@param r? integer Radius
----@param frame? integer Animation frame index (auto-advances if omitted)
+---@param frame? integer Animation frame index (default 0: pass a counter to animate)
 function picocalc.ui.drawSpinner(cx, cy, r, frame) end
+
+---Draw a splash screen with the PicoDeck logo, and present it.
+---@param status? string
+---@param subtext? string
+function picocalc.ui.splash(status, subtext) end
+
+---Draw a panel/card with an optional title bar.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param h integer
+---@param title? string
+---@return integer content_y where the panel's content starts
+function picocalc.ui.drawPanel(x, y, w, h, title) end
+
+---Draw a single-line text field (rendering only: it handles no input).
+---@param x integer
+---@param y integer
+---@param w integer Shows `(w - 8) / 6` characters
+---@param text string
+---@param cursor_pos integer 0-based
+---@param scroll_offset integer Characters to skip from the start of `text`
+---@param focused? boolean
+---@param show_cursor? boolean
+---@return integer height 13
+function picocalc.ui.drawTextField(x, y, w, text, cursor_pos, scroll_offset, focused, show_cursor) end
+
+---Draw a multi-line text area (rendering only: it handles no input).
+---@param x integer
+---@param y integer
+---@param w integer Rows show `(w - 8) / 6` characters
+---@param h integer
+---@param text string
+---@param segments integer[] 0-based row-start offsets, as `wrapText` returns them
+---@param scroll_y integer Rows to skip
+---@param cursor_row integer 0-based, from the first segment
+---@param cursor_col integer 0-based
+---@param focused? boolean
+---@param show_cursor? boolean
+---@return integer rows how many rows the box shows
+function picocalc.ui.drawTextArea(x, y, w, h, text, segments, scroll_y, cursor_row, cursor_col, focused, show_cursor) end
+
+---Draw a selectable list row.
+---@param x integer
+---@param y integer
+---@param w integer Shows `(w - 8) / 6` characters
+---@param text string
+---@param selected? boolean
+---@param focused? boolean
+---@return integer height 13
+function picocalc.ui.drawListItem(x, y, w, text, selected, focused) end
+
+---Draw a progress bar.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param h integer
+---@param progress number 0.0 to 1.0
+---@param fill_color? integer RGB565 (default green)
+function picocalc.ui.drawProgress(x, y, w, h, progress, fill_color) end
+
+---Draw a checkbox.
+---@param x integer
+---@param y integer
+---@param checked? boolean
+---@param focused? boolean
+---@return integer height 10
+function picocalc.ui.drawCheckbox(x, y, checked, focused) end
+
+---Draw a radio button.
+---@param x integer
+---@param y integer
+---@param selected? boolean
+---@param focused? boolean
+---@return integer height 11
+function picocalc.ui.drawRadio(x, y, selected, focused) end
+
+---Draw a horizontal divider line.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param color? integer RGB565
+---@return integer height 1
+function picocalc.ui.drawDivider(x, y, w, color) end
+
+---Draw a toast bar at a y of your choice, now. For a toast the OS shows and times, use `toast`.
+---@param y integer
+---@param text string
+---@param bg_color? integer RGB565 (default dark grey, also for 0)
+---@return integer height 14
+function picocalc.ui.drawToast(y, text, bg_color) end
+
+---Push a system toast: the OS draws it over your frames for about 3 s. Up to 63
+---bytes of text. Three can wait behind the one showing; a fourth drops the oldest.
+---@param text string
+---@param style? integer `TOAST_INFO` (default), `TOAST_SUCCESS`, `TOAST_WARNING` or `TOAST_ERROR`
+function picocalc.ui.toast(text, style) end
+
+picocalc.ui.TOAST_INFO = 0
+picocalc.ui.TOAST_SUCCESS = 1
+picocalc.ui.TOAST_WARNING = 2
+picocalc.ui.TOAST_ERROR = 3
+
+---Draw a button.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param label string
+---@param focused? boolean
+---@param pressed? boolean
+---@return integer height 15
+function picocalc.ui.drawButton(x, y, w, label, focused, pressed) end
+
+---Word-wrap text for `drawTextArea`. `\n` always starts a new row.
+---@param text string
+---@param max_cols integer Columns per row; zero or less makes the whole text one row
+---@return integer[] segments 0-based byte offsets where the rows start
+---@return integer rows
+function picocalc.ui.wrapText(text, max_cols) end
 
 -- =============================================================================
 -- picocalc.perf  (performance profiling)
@@ -1594,16 +1900,19 @@ function picocalc.perf.setTargetFPS(fps) end
 ---@class picocalc.graphics
 picocalc.graphics = {}
 
----Set the default drawing colour used by `clear()` and filled graphic operations.
+---Set the text colour of `graphics.drawText`, `drawTextAligned`, `drawTextInRect`
+---and `imageWithText`. `graphics.clear()` uses the background colour instead
+---(`setBackgroundColor`).
 ---@param color integer RGB565
 function picocalc.graphics.setColor(color) end
 
----Set the background (erase) colour.
----@param color integer RGB565
+---Set the background (erase) colour. `false` makes the background of
+---graphics.drawText, drawTextAligned and drawTextInRect transparent.
+---@param color integer|false RGB565, or false
 function picocalc.graphics.setBackgroundColor(color) end
 
 ---Set a global transparent colour for image blitting (`nil` to disable).
----@param color integer|nil RGB565
+---@param color? integer RGB565; nil, 0 or nothing disables the key
 function picocalc.graphics.setTransparentColor(color) end
 
 ---Return the current global transparent colour, or `nil`.
@@ -1633,9 +1942,10 @@ function picocalc.graphics.drawGrid(x, y, cell_w, cell_h, cols, rows, color) end
 ---@param border integer RGB565 outline colour
 function picocalc.graphics.fillBorderedRect(x, y, w, h, fill, border) end
 
----Draw a 2D block-grid playfield (Tetris/Puzzle-style): grid lines plus a
----filled block for every non-zero cell. `playfield[row][col]` = colour (0 = empty).
----@param playfield integer[][] 2D array [row][col] of RGB565 colours
+---Draw a 2D block-grid playfield (Tetris/Puzzle-style): grid lines plus a filled
+---block for every cell with a colour. `nil` = empty, and what is on screen shows
+---through. `0` is a colour like any other: it draws a black block.
+---@param playfield (integer?)[][] 2D array [row][col] of RGB565 colours, 1-based
 ---@param ox integer Origin x
 ---@param oy integer Origin y
 ---@param block_size integer Pixels per cell
@@ -1654,9 +1964,25 @@ function picocalc.graphics.drawPlayfield(playfield, ox, oy, block_size, cols, ro
 ---@return integer live_count Particles still alive
 function picocalc.graphics.updateDrawParticles(particles, dt) end
 
----Set a global stencil pattern (8 bytes, checkerboard phase).
----@param pattern integer[] 8 bytes
+---Accepted but not applied: stores a global stencil pattern no drawing call reads.
+---@param pattern integer[]|nil 8 bytes, one per row of the 8x8 pattern; `nil` clears it
 function picocalc.graphics.setStencilPattern(pattern) end
+
+---Rotate, project and draw a 3D wireframe model in one C call. Model coordinates are
+---pixels: at `z = 0` a vertex lands `x, y` pixels from `scx, scy`, and a vertex at
+---depth `z` is scaled by `fov / (fov + z)`. This call does not clip against the camera.
+---@param verts number[] Flat `{x1, y1, z1, x2, y2, z2, ...}`; only the first 64 vertices are used
+---@param edges integer[] Flat `{a1, b1, a2, b2, ...}`: 1-based vertex index pairs
+---@param aX number Rotation around X in radians, applied in X, Y, Z order
+---@param aY number Rotation around Y
+---@param aZ number Rotation around Z
+---@param scx integer Screen-space centre x (the projection origin)
+---@param scy integer Screen-space centre y
+---@param fov number Distance from the camera to the plane `z = 0` (larger means less perspective); keep it above the model's depth
+---@param edgeColor integer RGB565 edge colour
+---@param vertColor? integer RGB565 vertex dot colour; absent or 0 draws no dots
+---@param vertSize? integer Vertex dot size in pixels (default 3)
+function picocalc.graphics.draw3DWireframe(verts, edges, aX, aY, aZ, scx, scy, fov, edgeColor, vertColor, vertSize) end
 
 ---Draw text using the default font. Returns pixel width.
 ---@param text string
@@ -1744,7 +2070,7 @@ function picocalc.graphics.image.loadScaled(path, w, h) end
 ---Load an image from a Lua string (in-memory buffer). Format is auto-detected
 ---from magic bytes (BMP, JPEG, PNG, GIF).
 ---@param data string|userdata Raw encoded image bytes, or a qmibuf
----@param length? integer With a qmibuf: how many bytes of it to decode (default: all)
+---@param length? integer How many bytes of it to decode (default: all)
 ---@return PicoDeckImage img Raises on an unsupported or corrupt buffer
 function picocalc.graphics.image.loadFromBuffer(data, length) end
 
@@ -1789,12 +2115,13 @@ function PicoDeckImage:getSize() end
 ---@return PicoDeckImage
 function PicoDeckImage:copy() end
 
----Draw the image at (x, y). Optional options table can include `flipX` and `flipY`.
----Optional `rect` clips the source region `{x, y, w, h}`.
+---Draw the image at (x, y). The third argument is a table with `flipX` and `flipY`,
+---or a boolean: `true` flips horizontally. Optional `rect` clips the source region.
 ---@param x integer
 ---@param y integer
 ---@param options? { flipX?: boolean, flipY?: boolean }
----@param rect? { x: integer, y: integer, w: integer, h: integer }
+---@param rect? PicoDeckRect
+---@overload fun(self: PicoDeckImage, x: integer, y: integer, flipX: boolean, rect?: PicoDeckRect)
 function PicoDeckImage:draw(x, y, options, rect) end
 
 ---Draw the image with an anchor point. `ax`, `ay` in [0,1] — (0,0) = top-left, (0.5,0.5) = centre.
@@ -1885,8 +2212,31 @@ function PicoDeckImage:setPixels(data, x, y, w, h) end
 ---@class picocalc.graphics.sprite
 picocalc.graphics.sprite = {}
 
+---A sprite. These fields read and write like the matching methods; writing any
+---other field is silently ignored, and reads `nil` after: keep game state in your
+---own table.
 ---@class PicoDeckSprite : userdata
+---@field x integer
+---@field y integer
+---@field width integer Bounds only: drawing uses the image's own size
+---@field height integer Bounds only
+---@field z integer The Z-index, as `setZIndex`
+---@field visible boolean
+---@field scale number Uniform scale
+---@field scale_nn integer Integer nearest-neighbour scale, as `setScaleNN`
+---@field rotation number In radians
+---@field tag integer
+---@field image PicoDeckImage? Read-only: writing it does nothing (use `setImage`)
 local PicoDeckSprite = {}
+
+---A rectangle table, named or positional: `{x=, y=, w=, h=}` or `{x, y, w, h}`.
+---@alias PicoDeckRect {x: integer, y: integer, w: integer, h: integer}|integer[]
+
+---A point table, named or positional: `{x=, y=}` or `{x, y}`.
+---@alias PicoDeckPoint {x: integer, y: integer}|integer[]
+
+---A line-segment table, named or positional: `{x1=, y1=, x2=, y2=}` or `{x1, y1, x2, y2}`.
+---@alias PicoDeckLine {x1: integer, y1: integer, x2: integer, y2: integer}|integer[]
 
 ---Create a new Sprite object, optionally with an image.
 ---@param image? PicoDeckImage
@@ -1901,7 +2251,8 @@ function picocalc.graphics.sprite.addSprite(sprite) end
 ---@param sprite PicoDeckSprite
 function picocalc.graphics.sprite.removeSprite(sprite) end
 
----Update all sprites (calls each sprite's update callback).
+---Draw every visible sprite with updates enabled, lowest z-index first. No
+---callback is called and neither a clear nor a flush is done.
 function picocalc.graphics.sprite.update() end
 
 ---Return all sprites in the global list.
@@ -1923,94 +2274,140 @@ function picocalc.graphics.sprite.removeSprites(sprites) end
 ---@param fn fun(sprite: PicoDeckSprite)
 function picocalc.graphics.sprite.performOnAllSprites(fn) end
 
----Return sprites whose bounds overlap a point.
+---Return the sprites whose collision box contains a point.
 ---@param x integer
 ---@param y integer
 ---@return PicoDeckSprite[]
+---@overload fun(point: PicoDeckPoint): PicoDeckSprite[]
 function picocalc.graphics.sprite.querySpritesAtPoint(x, y) end
 
----Return sprites whose bounds overlap a rectangle.
+---Return the sprites whose collision box overlaps a rectangle.
 ---@param x integer
 ---@param y integer
 ---@param w integer
 ---@param h integer
 ---@return PicoDeckSprite[]
+---@overload fun(rect: PicoDeckRect): PicoDeckSprite[]
 function picocalc.graphics.sprite.querySpritesInRect(x, y, w, h) end
 
----Return sprites whose bounds intersect a line segment.
+---Return the sprites whose collision box a line segment touches.
 ---@param x1 integer
 ---@param y1 integer
 ---@param x2 integer
 ---@param y2 integer
 ---@return PicoDeckSprite[]
+---@overload fun(line: PicoDeckLine): PicoDeckSprite[]
 function picocalc.graphics.sprite.querySpritesAlongLine(x1, y1, x2, y2) end
 
----Return collision info for sprites along a line segment.
+---Return where a line segment first crosses each sprite's collision box.
 ---@param x1 integer
 ---@param y1 integer
 ---@param x2 integer
 ---@param y2 integer
----@return table[]
+---@return {sprite: PicoDeckSprite, x: integer, y: integer}[]
+---@overload fun(line: PicoDeckLine): {sprite: PicoDeckSprite, x: integer, y: integer}[]
 function picocalc.graphics.sprite.querySpriteInfoAlongLine(x1, y1, x2, y2) end
 
----Set clip rects for sprites in a z-index range (stored, not applied).
----@param clip_rect { x: integer, y: integer, w: integer, h: integer }
+---Accepted but not applied: stores one clip rectangle on every sprite whose
+---z-index is in the range.
+---@param clip_rect PicoDeckRect All four fields required
 ---@param z_start integer
 ---@param z_end integer
 ---@overload fun(x: integer, y: integer, w: integer, h: integer, z_start: integer, z_end: integer)
 function picocalc.graphics.sprite.setClipRectsInRange(clip_rect, z_start, z_end) end
 
----Clear clip rects for sprites in a z-index range.
+---Accepted but not applied: clears the stored rectangle of every sprite whose
+---z-index is in the range.
 ---@param z_start integer
 ---@param z_end integer
 function picocalc.graphics.sprite.clearClipRectsInRange(z_start, z_end) end
 
----Add an invisible collision sprite at a rect (useful for tilemaps).
+---Add an invisible sprite with no image, collisions on and a `w` by `h` collision
+---rectangle at `x, y`: for walls and trigger zones. Raises when the manager is full.
 ---@param x integer
 ---@param y integer
 ---@param w integer
 ---@param h integer
 ---@return PicoDeckSprite
+---@overload fun(rect: PicoDeckRect): PicoDeckSprite
 function picocalc.graphics.sprite.addEmptyCollisionSprite(x, y, w, h) end
+
+---One invisible collision sprite per tile whose index is in wallIDs. Walls past
+---the manager's 256 sprites are not made.
+---@param tilemap PicoDeckTilemap
+---@param wallIDs integer[]
+---@param xOffset? integer
+---@param yOffset? integer
+---@return integer count Wall sprites created
+---@return integer skipped Wall tiles left out because the manager was full
+function picocalc.graphics.sprite.addWallSprites(tilemap, wallIDs, xOffset, yOffset) end
+
+---Create a sprite with text rendered into it, in the current graphics colour. The
+---image is capped at 2048 px.
+---@param text string
+---@param maxWidth integer Maximum image width in pixels
+---@param maxHeight integer Maximum image height in pixels
+---@param bgColor? integer RGB565 background (default: the graphics background colour)
+---@param font? PicoDeckFont
+---@return PicoDeckSprite? sprite `nil` if the image could not be made
+function picocalc.graphics.sprite.spriteWithText(text, maxWidth, maxHeight, bgColor, font) end
 
 -- PicoDeckSprite methods
 
----@param image PicoDeckImage|nil `nil` clears the image
+---Set the sprite's image.
+---@param image? PicoDeckImage `nil` or nothing clears the image
 ---@param flip? boolean Horizontal flip
 ---@param scale? number Only applied when given
----@param scale_y? number Only applied when given (unlike `setScale`, it does not default to `scale`)
+---@param scale_y? number Stored when given, not applied: sprites draw at one factor
 function PicoDeckSprite:setImage(image, flip, scale, scale_y) end
 
+---Return the sprite's image (the image object itself).
 ---@return PicoDeckImage?
 function PicoDeckSprite:getImage() end
 
----Add this sprite to the global sprite list.
+---Add this sprite to the global sprite list. Raises when the manager is full.
 function PicoDeckSprite:add() end
+
+---The same as add().
+function PicoDeckSprite:addSprite() end
 
 ---Remove this sprite from the global sprite list.
 function PicoDeckSprite:remove() end
 
+---The same as remove().
+function PicoDeckSprite:removeSprite() end
+
+---Move the sprite to absolute coordinates. Positions are whole pixels: a float
+---rounds to nearest, so keep a fractional position in your own variable.
 ---@param x integer
 ---@param y integer
 function PicoDeckSprite:moveTo(x, y) end
 
+---Move the sprite by a relative offset, rounded to whole pixels on each call:
+---`moveBy(0.4, 0)` never moves it. For a fractional speed, keep your own float
+---position and `moveTo` it.
 ---@param dx integer
 ---@param dy integer
 function PicoDeckSprite:moveBy(dx, dy) end
 
+---Return the sprite's position.
 ---@return integer x
 ---@return integer y
 function PicoDeckSprite:getPosition() end
 
+---Set the Z-index, which orders `graphics.sprite.update()`: a lower z draws first.
 ---@param z integer
 function PicoDeckSprite:setZIndex(z) end
 
+---Return the sprite's Z-index.
 ---@return integer
 function PicoDeckSprite:getZIndex() end
 
+---Show or hide the sprite.
 ---@param visible boolean
 function PicoDeckSprite:setVisible(visible) end
 
+---Return `true` if the sprite is visible.
 ---@return boolean
 function PicoDeckSprite:isVisible() end
 
@@ -2019,45 +2416,54 @@ function PicoDeckSprite:isVisible() end
 ---@param cy integer
 function PicoDeckSprite:setCenter(cx, cy) end
 
+---Return the sprite's center point.
 ---@return integer cx
 ---@return integer cy
 function PicoDeckSprite:getCenter() end
 
+---Return the sprite's center point as a table.
 ---@return integer[] point `{cx, cy}`: one table, not two values
 function PicoDeckSprite:getCenterPoint() end
 
+---Set the sprite's dimensions (bounds only: drawing uses the image's own size).
 ---@param w integer
 ---@param h integer
 function PicoDeckSprite:setSize(w, h) end
 
+---Return the sprite's dimensions.
 ---@return integer w
 ---@return integer h
 function PicoDeckSprite:getSize() end
 
+---Set the sprite's scale. Sprites scale uniformly: both axes draw at `scale`.
 ---@param scale number
----@param scale_y? number Defaults to `scale`
+---@param scale_y? number Defaults to `scale`. Stored, not applied: sprites draw at one factor
 function PicoDeckSprite:setScale(scale, scale_y) end
 
+---Return the sprite's scale factors.
 ---@return number scale
 ---@return number scale_y
 function PicoDeckSprite:getScale() end
 
----Enable nearest-neighbour scaling.
----@param nn boolean
+---Scale by a whole number, nearest-neighbour. Also `sprite.scale_nn = n`.
+---@param nn integer Positive
 function PicoDeckSprite:setScaleNN(nn) end
 
----@param color integer|nil RGB565
+---Set a per-sprite transparent colour, overriding the global one.
+---@param color? integer RGB565; nil or nothing uses the global key
 function PicoDeckSprite:setTransparentColor(color) end
 
 ---Set the rotation. The angle is in radians.
 ---@param radians number
 ---@param scale? number Also sets the scale
----@param scale_y? number Also sets the vertical scale
+---@param scale_y? number Stored, not applied: sprites draw at one factor, as in `setScale`
 function PicoDeckSprite:setRotation(radians, scale, scale_y) end
 
+---Return the sprite's rotation angle in radians.
 ---@return number
 function PicoDeckSprite:getRotation() end
 
+---Create a copy of the sprite.
 ---@return PicoDeckSprite
 function PicoDeckSprite:copy() end
 
@@ -2071,15 +2477,19 @@ function PicoDeckSprite:setSourceRect(x, y, w, h) end
 ---Remove the source-rect restriction.
 function PicoDeckSprite:clearSourceRect() end
 
+---Enable or disable automatic updates by `graphics.sprite.update()`.
 ---@param enabled boolean
 function PicoDeckSprite:setUpdatesEnabled(enabled) end
 
+---Return `true` if updates are enabled.
 ---@return boolean
 function PicoDeckSprite:updatesEnabled() end
 
+---Set a user-defined tag value.
 ---@param tag integer
 function PicoDeckSprite:setTag(tag) end
 
+---Return the sprite's tag.
 ---@return integer
 function PicoDeckSprite:getTag() end
 
@@ -2091,6 +2501,7 @@ function PicoDeckSprite:setImageDrawMode(mode) end
 ---@param flip boolean
 function PicoDeckSprite:setImageFlip(flip) end
 
+---Return the horizontal flip state.
 ---@return boolean flip Horizontal flip
 function PicoDeckSprite:getImageFlip() end
 
@@ -2098,29 +2509,35 @@ function PicoDeckSprite:getImageFlip() end
 ---@param ignore boolean
 function PicoDeckSprite:setIgnoresDrawOffset(ignore) end
 
----Set the sprite bounding box.
+---Accepted but not applied: stores a rectangle getBounds returns.
 ---@param x integer
 ---@param y integer
 ---@param w integer
 ---@param h integer
+---@overload fun(self: PicoDeckSprite, rect: PicoDeckRect)
 function PicoDeckSprite:setBounds(x, y, w, h) end
 
+---Return the rectangle `setBounds` stored.
 ---@return integer x
 ---@return integer y
 ---@return integer w
 ---@return integer h
 function PicoDeckSprite:getBounds() end
 
+---Return the rectangle `setBounds` stored, as a table.
 ---@return { x: integer, y: integer, w: integer, h: integer }
 function PicoDeckSprite:getBoundsRect() end
 
+---Accepted but not applied: stores a flag isOpaque returns.
 ---@param opaque boolean
 function PicoDeckSprite:setOpaque(opaque) end
 
+---Return the sprite's opaque flag.
 ---@return boolean
 function PicoDeckSprite:isOpaque() end
 
----@param fn fun(sprite: PicoDeckSprite, x: integer, y: integer, w: integer, h: integer)
+---Accepted but not applied: the callback is ignored and never called.
+---@param fn function
 function PicoDeckSprite:setBackgroundDrawingCallback(fn) end
 
 ---Draw this sprite immediately (outside the normal update cycle).
@@ -2128,50 +2545,58 @@ function PicoDeckSprite:setBackgroundDrawingCallback(fn) end
 ---@param y? integer Defaults to the sprite's y
 function PicoDeckSprite:draw(x, y) end
 
----Update this sprite (calls its registered update callback).
+---Draw this sprite if it is visible and has updates enabled. No callback is called.
 function PicoDeckSprite:update() end
 
+---Enable collision detection for `moveWithCollisions` and the `overlappingSprites` calls. Off by default, except for wall and empty collision sprites.
 ---@param enabled boolean
 function PicoDeckSprite:setCollisionsEnabled(enabled) end
 
+---Return `true` if collisions are enabled.
 ---@return boolean
 function PicoDeckSprite:collisionsEnabled() end
 
----Set the collision rectangle (relative to the sprite's bounds).
+---Set the collision rectangle, relative to the sprite's position. In a table, a
+---missing `w` or `h` takes the sprite's size.
 ---@param x integer
 ---@param y integer
 ---@param w integer
 ---@param h integer
+---@overload fun(self: PicoDeckSprite, rect: PicoDeckRect)
 function PicoDeckSprite:setCollideRect(x, y, w, h) end
 
+---Return the collision rectangle as set: `0, 0, 0, 0` until one is, while the sprite collides at its drawn box.
 ---@return integer x
 ---@return integer y
 ---@return integer w
 ---@return integer h
 function PicoDeckSprite:getCollideRect() end
 
----Return the collision rectangle in world coordinates.
+---Return the absolute collision box: the collide rect, or the drawn box if there
+---is none, at the sprite's position.
 ---@return integer x
 ---@return integer y
 ---@return integer w
 ---@return integer h
 function PicoDeckSprite:getCollideBounds() end
 
----Clear the collision rectangle (no collision).
+---Reset the collision rectangle to the full sprite size.
 function PicoDeckSprite:clearCollideRect() end
 
----Return sprites that currently overlap this sprite's collision rect.
+---Return the sprites in the manager whose collision box overlaps this one's.
+---Collisions must be enabled on both sprites; group masks do not filter it.
 ---@return PicoDeckSprite[]
 function PicoDeckSprite:overlappingSprites() end
 
----Return all sprites that overlap this sprite's collision rect (including off-screen).
----@return PicoDeckSprite[]
+---Return all pairs of sprites in the manager that overlap, under the same
+---conditions as `overlappingSprites`. The sprite it is called on plays no part.
+---@return PicoDeckSprite[][] pairs Array of `{sprite1, sprite2}`
 function PicoDeckSprite:allOverlappingSprites() end
 
----Clear the stencil mask.
+---Accepted but not applied: drops the sprite's stencil image and stencil pattern.
 function PicoDeckSprite:clearStencil() end
 
----Set an ordered-dither stencil pattern of the given density (stored only: drawing does not apply it).
+---Accepted but not applied: stores an ordered-dither stencil pattern of the given density.
 ---@param level number 0 (nothing drawn) to 1 (everything drawn); other values clamp
 function PicoDeckSprite:setStencilPattern(level) end
 
@@ -2180,23 +2605,104 @@ function PicoDeckSprite:setStencilPattern(level) end
 ---@return boolean
 function PicoDeckSprite:alphaCollision(other) end
 
----Move toward (goalX, goalY), sliding along any collision rects in the way.
+---Move toward (goalX, goalY), X then Y, stopping at the first sprite in the way
+---on each axis, so a fast sprite cannot pass through a wall.
 ---Returns the actual position reached plus a list of collisions; each
----collision is `{sprite, other, type, x, y, normal = {x, y}, touch}`.
+---collision is `{sprite, other, type = 1, normal = {x, y}, touch = {x, y}}`.
 ---@param goalX integer
 ---@param goalY integer
 ---@return integer actualX
 ---@return integer actualY
 ---@return table[] collisions
+---@overload fun(self: PicoDeckSprite, goal: PicoDeckPoint): integer, integer, table[]
 function PicoDeckSprite:moveWithCollisions(goalX, goalY) end
 
----Return this sprite's collision response mode (default `"slide"`).
+---Always `"slide"`: moveWithCollisions does not call it and it cannot be overridden.
 ---@return string
 function PicoDeckSprite:collisionResponse() end
 
----Set a mask image used as this sprite's stencil (arg 3 reserved).
+---Accepted but not applied: keeps a stencil image for the sprite.
 ---@param image PicoDeckImage
 function PicoDeckSprite:setStencilImage(image) end
+
+---Set the groups this sprite belongs to. `moveWithCollisions` passes through a
+---sprite when the mover's collides-with mask and the other's group mask are both
+---non-zero and share no bit; a mask of 0 (the default) collides with everything.
+---@param groups integer Bitmask of groups
+function PicoDeckSprite:setGroups(groups) end
+
+---Set which groups this sprite collides with in `moveWithCollisions` (see `setGroups`).
+---@param groups integer Bitmask
+function PicoDeckSprite:setCollidesWithGroups(groups) end
+
+---The same as `setGroups`.
+---@param mask integer
+function PicoDeckSprite:setGroupMask(mask) end
+
+---Return the group mask.
+---@return integer mask
+function PicoDeckSprite:getGroupMask() end
+
+---The same as `setCollidesWithGroups`.
+---@param mask integer
+function PicoDeckSprite:setCollidesWithGroupsMask(mask) end
+
+---Return the collides-with mask.
+---@return integer mask
+function PicoDeckSprite:getCollidesWithGroupsMask() end
+
+---Reset the group mask to 0.
+function PicoDeckSprite:resetGroupMask() end
+
+---Reset the collides-with mask to 0.
+function PicoDeckSprite:resetCollidesWithGroupsMask() end
+
+---Check if a point lies in the sprite's collision box. Collisions need not be enabled.
+---@param x integer
+---@param y integer
+---@return boolean hit
+---@overload fun(self: PicoDeckSprite, point: PicoDeckPoint): boolean
+function PicoDeckSprite:checkCollisions(x, y) end
+
+---Accepted but not applied: stores a clipping rectangle. For a clip that works, use
+---`display.setClipRect` around the draw.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param h integer
+---@overload fun(self: PicoDeckSprite, rect: PicoDeckRect)
+function PicoDeckSprite:setClipRect(x, y, w, h) end
+
+---Accepted but not applied: clears the stored rectangle.
+function PicoDeckSprite:clearClipRect() end
+
+---Accepted but not applied: stores a flag `getAlwaysRedraw` returns.
+---`graphics.sprite.update()` redraws every sprite anyway.
+---@param flag boolean
+function PicoDeckSprite:setAlwaysRedraw(flag) end
+
+---Return the flag `setAlwaysRedraw` stored.
+---@return boolean
+function PicoDeckSprite:getAlwaysRedraw() end
+
+---Accepted but not applied: `graphics.sprite.update()` redraws every sprite anyway.
+function PicoDeckSprite:markDirty() end
+
+---Accepted but not applied: there is no partial redraw.
+---@param x integer
+---@param y integer
+---@param width integer
+---@param height integer
+function PicoDeckSprite:addDirtyRect(x, y, width, height) end
+
+---Accepted but not applied: stores a flag nothing reads. A changed image shows at the next draw.
+---@param flag boolean
+function PicoDeckSprite:setRedrawsOnImageChange(flag) end
+
+---Assign a tilemap: the sprite renders it instead of an image, its position being
+---where the map's top-left corner draws (the opposite sign to `tilemap:draw(scrollX, scrollY)`).
+---@param tilemap PicoDeckTilemap|nil `nil` clears it
+function PicoDeckSprite:setTilemap(tilemap) end
 
 -- ── Tilemap ─────────────────────────────────────────────────────────────────
 
@@ -2332,7 +2838,7 @@ function PicoDeckAnimationLoop:update() end
 ---@return PicoDeckImage?
 function PicoDeckAnimationLoop:image() end
 
----Return `true` if the animation still has frames (always `true` for loops).
+---Return `true` if the loop has at least one frame.
 ---@return boolean
 function PicoDeckAnimationLoop:isValid() end
 
@@ -2396,11 +2902,13 @@ function PicoDeckBlinker:stop() end
 ---Remove from the global blinker list.
 function PicoDeckBlinker:remove() end
 
+---Return `true` if the blinker is running.
 ---@return boolean
 function PicoDeckBlinker:isRunning() end
 
----Advance the blinker timer by the elapsed time.
----@return boolean on Whether the blinker is currently on
+---Advance the blinker timer by the elapsed time. The first call starts a blinker
+---that has never been started or stopped.
+---@return boolean on Whether it is on; false once stopped or finished, until start()
 function PicoDeckBlinker:update() end
 
 -- ── Animator ──────────────────────────────────────────────────────────────────
@@ -2470,7 +2978,7 @@ function picocalc.graphics.font.new(name_or_path) end
 ---@param y integer
 ---@param text string
 ---@param fg integer RGB565 foreground colour
----@param bg? integer RGB565 background colour
+---@param bg? integer|false RGB565 background colour; false is transparent
 ---@return integer width Pixel width of the drawn text
 function PicoDeckFont:drawText(x, y, text, fg, bg) end
 
@@ -2480,7 +2988,7 @@ function PicoDeckFont:drawText(x, y, text, fg, bg) end
 ---@param text string
 ---@param alignment integer 0=left, 1=centre, 2=right
 ---@param fg integer RGB565
----@param bg? integer RGB565
+---@param bg? integer|false RGB565; false is transparent
 function PicoDeckFont:drawTextAligned(x, y, text, alignment, fg, bg) end
 
 ---Word-wrap text within a bounding rect. Wrapping breaks at spaces and uses
@@ -2493,7 +3001,7 @@ function PicoDeckFont:drawTextAligned(x, y, text, alignment, fg, bg) end
 ---@param text string
 ---@param alignment? integer 0=left (default), 1=centre, 2=right
 ---@param fg? integer RGB565
----@param bg? integer RGB565
+---@param bg? integer|false RGB565; false is transparent
 function PicoDeckFont:drawTextInRect(x, y, w, h, text, alignment, fg, bg) end
 
 ---Return the glyph height of this font.
@@ -2520,8 +3028,11 @@ function PicoDeckFont:getName() end
 -- picocalc.gfx3d
 -- =============================================================================
 
+---A triangle mesh from `picocalc.gfx3d.newMesh`. It is freed when collected.
 ---@class PicoDeckMesh : userdata
 local PicoDeckMesh = {}
+
+---Return the vertex and triangle counts and the bounding sphere, which culling tests.
 ---@return integer nverts
 ---@return integer ntris
 ---@return number cx
@@ -2530,54 +3041,155 @@ local PicoDeckMesh = {}
 ---@return number radius
 function PicoDeckMesh:getInfo() end
 
+---A small retained-mode 3D renderer. Coordinates are right-handed with y up, and
+---the camera looks along negative z. Angles are radians, colours RGB565.
 ---@class picocalc.gfx3d
----@field DOUBLE_SIDED integer
----@field UNLIT integer
----@field NO_FOG integer
+---@field DOUBLE_SIDED integer Draw the triangle's back too, lit as its own side
+---@field UNLIT integer Ignore the light: always full colour
+---@field NO_FOG integer Ignore fog
 picocalc.gfx3d = {}
----@param verts number[] flat x, y, z list
----@param tris integer[] flat 1-based index list, 3 per triangle, CCW = front
----@param colors integer|integer[] one RGB565 colour, or one per triangle
----@param flags? integer|integer[] DOUBLE_SIDED | UNLIT | NO_FOG
+
+---Build a mesh.
+---@param verts number[] Flat `{x1, y1, z1, x2, y2, z2, ...}`; at most 4096 vertices
+---@param tris integer[] Flat 1-based vertex indices, three per triangle, counter-clockwise = front; at most 8192 triangles
+---@param colors integer|integer[] One RGB565 colour for every triangle, or one per triangle
+---@param flags? integer|integer[] `DOUBLE_SIDED`, `UNLIT` and `NO_FOG` added together, for all triangles or one value per triangle
 ---@return PicoDeckMesh
 function picocalc.gfx3d.newMesh(verts, tris, colors, flags) end
+
+---Set the screen rectangle the scene is drawn into. It is clipped to the screen, and
+---it is an error if nothing is left.
+---@param x integer
+---@param y integer
+---@param w integer
+---@param h integer
 function picocalc.gfx3d.setViewport(x, y, w, h) end
+
+---Set the vertical field of view and the near and far planes.
+---@param fovY number 0.01-3.0 radians
+---@param near number Above 0
+---@param far number Above `near`
 function picocalc.gfx3d.setProjection(fovY, near, far) end
+
+---Place the camera from a position and angles.
+---@param x number
+---@param y number
+---@param z number
+---@param yaw number Positive turns left
+---@param pitch number Positive looks up
+---@param roll number Positive banks left
 function picocalc.gfx3d.setCamera(x, y, z, yaw, pitch, roll) end
----@param ux? number Up vector (default 0, 1, 0)
+
+---Place the camera at `e` looking at `t`. Raises when `e` equals `t`, or when `u` is
+---parallel to the view direction.
+---@param ex number
+---@param ey number
+---@param ez number
+---@param tx number
+---@param ty number
+---@param tz number
+---@param ux? number Up direction (default 0, 1, 0): tilting it rolls the camera
 ---@param uy? number
 ---@param uz? number
 function picocalc.gfx3d.lookAt(ex, ey, ez, tx, ty, tz, ux, uy, uz) end
----@param ambient? number Default 0.25
+
+---Set the direction towards the light and the ambient level. Raises on a zero direction.
+---@param dx number
+---@param dy number
+---@param dz number
+---@param ambient? number Clamped to 0-1 (default 0.25)
 function picocalc.gfx3d.setLight(dx, dy, dz, ambient) end
+
+---Blend each face towards `color`, linearly from depth `near` to depth `far`.
+---`setFog(nil)` turns fog off. Raises unless `0 <= near < far`.
+---@param near number
+---@param far number
+---@param color integer RGB565
+---@overload fun(off?: nil)
 function picocalc.gfx3d.setFog(near, far, color) end
----@param bands {[1]: number, [2]: integer}[]|nil
+
+---Fill the viewport before drawing with colour bands parallel to the horizon.
+---`setSky(nil)` turns it off. A band covers from its angle up to the next band's.
+---@param bands? {[1]: number, [2]: integer}[] 1-8 `{angle, color}` pairs, elevation angles in radians increasing within +-89 degrees
 function picocalc.gfx3d.setSky(bands) end
----@param clearColor? integer
+
+---Start a frame. The viewport is filled at `endScene()`, with the sky if one is set,
+---otherwise with `clearColor` if one is given.
+---@param clearColor? integer RGB565
 function picocalc.gfx3d.beginScene(clearColor) end
+
+---Draw one instance of a mesh at a position and rotation. Raises outside
+---`beginScene()`/`endScene()`.
+---@param mesh PicoDeckMesh
+---@param x number
+---@param y number
+---@param z number
+---@param yaw number
+---@param pitch number
+---@param roll number
 ---@param scale? number Default 1; must be positive
----@param bias? number Default 0
----@param sortAsOne? boolean
+---@param bias? number World units added to the depth used for ordering (default 0): positive draws it behind
+---@param sortAsOne? boolean Order the whole instance by the depth of its origin, for props that sit on long triangles
 function picocalc.gfx3d.draw(mesh, x, y, z, yaw, pitch, roll, scale, bias, sortAsOne) end
+
+---Like `draw`, but oriented by a forward vector (the model's -z points along it) and
+---an up vector. Raises when either is zero, or when they are parallel.
+---@param mesh PicoDeckMesh
+---@param x number
+---@param y number
+---@param z number
+---@param fx number
+---@param fy number
+---@param fz number
+---@param ux number
+---@param uy number
+---@param uz number
 ---@param scale? number Default 1; must be positive
 ---@param bias? number Default 0
 ---@param sortAsOne? boolean
 function picocalc.gfx3d.drawBasis(mesh, x, y, z, fx, fy, fz, ux, uy, uz, scale, bias, sortAsOne) end
----@param list table an array of meshes built in world coordinates
----@param bias number|nil depth bias for every mesh (default 0)
----@param start integer|nil the first index drawn; the rest wrap round (default 1)
+
+---Draw every mesh in `list` as it is, in world coordinates with no transform: one
+---call costs far less than a `draw` per mesh. Raises on an element that is not a mesh.
+---@param list PicoDeckMesh[]
+---@param bias? number Depth bias for every mesh (default 0)
+---@param start? integer The first index drawn, 1 to `#list`; the rest wrap round (default 1)
 function picocalc.gfx3d.drawList(list, bias, start) end
+
+---Draw distant scenery centred on the camera: it turns with the camera but never moves
+---with it, is never fogged or far-clipped, and is drawn before everything else.
+---@param mesh PicoDeckMesh
 function picocalc.gfx3d.drawBackground(mesh) end
+
+---Draw a camera-facing image centred at `(x, y, z)`, sorted with the triangles. The
+---image's transparent colour is honoured, and it stays alive until the next `beginScene()`.
+---@param image PicoDeckImage
+---@param x number
+---@param y number
+---@param z number
+---@param size number World units tall; must be positive
 ---@param sx? integer Source rect x (default 0)
 ---@param sy? integer Source rect y (default 0)
 ---@param sw? integer Source rect width (default: the rest of the image)
 ---@param sh? integer Source rect height (default: the rest of the image)
 ---@param bias? number Default 0
 function picocalc.gfx3d.drawSprite(image, x, y, z, size, sx, sy, sw, sh, bias) end
+
+---Fill the viewport (sky or clear colour) and draw everything, far to near, into the
+---back buffer. Call `display.flush()` afterwards as usual.
 function picocalc.gfx3d.endScene() end
----@return number|nil sx, number sy, number depth
+
+---Return a world point's position on screen, or `nil` if it is behind the near plane.
+---@param x number
+---@param y number
+---@param z number
+---@return number? sx `nil` alone when behind the near plane
+---@return number sy
+---@return number depth
 function picocalc.gfx3d.project(x, y, z) end
----@param t table|nil a table to fill and return instead of a new one
+
+---Return a table describing the last frame.
+---@param t? table A table to fill and return instead of a new one, so a per-frame call allocates nothing
 ---@return {tris_in: integer, culled: integer, clipped: integer, drawn: integer, sprites: integer, overflow: integer, us_geom: integer, us_raster: integer}
 function picocalc.gfx3d.getStats(t) end
 
@@ -2592,15 +3204,19 @@ picocalc.video = {}
 local PicoDeckVideoPlayer = {}
 
 ---Create a new video player. Freed by the garbage collector when unreferenced.
----@return PicoDeckVideoPlayer
+---Not in the simulator, which has no decoder: it returns `nil, errstr` there.
+---@return PicoDeckVideoPlayer? player
+---@return string? error
 function picocalc.video.player() end
 
----Load an MJPEG AVI file. Returns `true` on success.
+---Load an MJPEG AVI file.
 ---@param path string
----@return boolean ok
+---@return boolean ok `false` if the file cannot be used
+---@return string? error `"access denied"` outside the sandbox; otherwise none
 function PicoDeckVideoPlayer:load(path) end
 
----Start playback. Raises clock to 300 MHz and disconnects WiFi for decode performance.
+---Start playback. Raises the clock to 300 MHz and disconnects WiFi until `stop()`
+---or the player is collected.
 function PicoDeckVideoPlayer:play() end
 
 ---Pause playback.
@@ -2609,12 +3225,12 @@ function PicoDeckVideoPlayer:pause() end
 ---Resume after pause.
 function PicoDeckVideoPlayer:resume() end
 
----Stop playback and restore system clock / reconnect WiFi.
+---Stop playback, put the clock back as it was and reconnect WiFi if it was up.
 function PicoDeckVideoPlayer:stop() end
 
----Advance one frame and decode it to the display. Call once per loop iteration.
----Returns `true` while still playing.
----@return boolean playing
+---Decode the next frame if one is due. Call it on every pass of your loop. With
+---auto-flush on, do not also call `display.flush()`: that flickers.
+---@return boolean decoded `true` only on a pass that decoded a frame; `false` between frames too, so use `isPlaying()` to see whether it still plays
 function PicoDeckVideoPlayer:update() end
 
 ---Seek to a specific frame index. Clamps to the file and never wraps: seeking
@@ -2662,9 +3278,11 @@ function PicoDeckVideoPlayer:showOSD() end
 ---@param ms integer
 function PicoDeckVideoPlayer:setOSDTimeout(ms) end
 
+---`true` while playing.
 ---@return boolean
 function PicoDeckVideoPlayer:isPlaying() end
 
+---`true` while paused.
 ---@return boolean
 function PicoDeckVideoPlayer:isPaused() end
 
@@ -2690,12 +3308,15 @@ function PicoDeckVideoPlayer:hasAudio() end
 ---@param vol integer 0–100
 function PicoDeckVideoPlayer:setVolume(vol) end
 
+---Return the current volume.
 ---@return integer
 function PicoDeckVideoPlayer:getVolume() end
 
+---Mute or unmute the audio (the video still plays).
 ---@param muted boolean
 function PicoDeckVideoPlayer:setMuted(muted) end
 
+---Return the current mute state.
 ---@return boolean
 function PicoDeckVideoPlayer:isMuted() end
 
@@ -2703,7 +3324,9 @@ function PicoDeckVideoPlayer:isMuted() end
 ---@param loop boolean
 function PicoDeckVideoPlayer:setLoop(loop) end
 
----If `true` (default), `update()` calls `display.flush()` automatically after each frame.
+---If `true` (default), the player presents each frame itself, at the next
+---`update()`. If `false`, call `display.flush()` once per decoded frame: only
+---when `update()` returned `true`.
 ---@param af boolean
 function PicoDeckVideoPlayer:setAutoFlush(af) end
 
@@ -2735,21 +3358,27 @@ local PicoDeckCamera = {}
 ---@return PicoDeckCamera
 function picocalc.game.camera.new() end
 
----@param x integer
----@param y integer
+---Set the camera position: the world point to show at the centre of the screen.
+---@param x number
+---@param y number
 function PicoDeckCamera:setPosition(x, y) end
 
----@param dx integer
----@param dy integer
+---Move the camera by a relative offset.
+---@param dx number
+---@param dy number
 function PicoDeckCamera:move(dx, dy) end
 
----@return integer x
----@return integer y
+---Return the camera position in world coordinates.
+---@return number x
+---@return number y
 function PicoDeckCamera:getPosition() end
 
----@param zoom number
+---Set the camera zoom factor. It scales what `getOffset` and the conversions
+---return: the drawing, and any scaling of it, is yours.
+---@param zoom number Clamped to 0.1-10
 function PicoDeckCamera:setZoom(zoom) end
 
+---Return the current zoom factor.
 ---@return number
 function PicoDeckCamera:getZoom() end
 
@@ -2801,17 +3430,17 @@ function PicoDeckCamera:shakeY(amplitude, duration) end
 function PicoDeckCamera:stopShake() end
 
 ---Convert world-space coordinates to screen-space.
----@param wx integer
----@param wy integer
+---@param wx number
+---@param wy number
 ---@return integer sx
 ---@return integer sy
 function PicoDeckCamera:worldToScreen(wx, wy) end
 
 ---Convert screen-space coordinates to world-space.
----@param sx integer
----@param sy integer
----@return integer wx
----@return integer wy
+---@param sx number
+---@param sy number
+---@return number wx
+---@return number wy
 function PicoDeckCamera:screenToWorld(sx, sy) end
 
 ---Update camera position (advances follow target, shake, etc.).
@@ -2829,20 +3458,27 @@ function PicoDeckCamera:getOffset() end
 ---@class picocalc.game.scene
 picocalc.game.scene = {}
 
----@class PicoDeckScene : userdata
-local PicoDeckScene = {}
+---A plain table with up to four functions. They are called with no `self`:
+---write `function play.update(dt)`, not `function play:update(dt)`. An error in
+---one stops the app like any other Lua error. Nothing runs at Exit App, so save
+---when data changes rather than in `exit()`.
+---@class PicoDeckScene
+---@field update? fun(dt: number)
+---@field draw? fun()
+---@field enter? fun() Runs again when a `pop` reveals the scene
+---@field exit? fun() Runs when `switch` or `pop` leaves the scene
 
----Create a new Scene. A scene is a table-like object with `update()`, `draw()`,
----`enter()`, and `exit()` lifecycle methods.
+---Create a new, empty scene: the same as `{}`.
 ---@return PicoDeckScene
 function picocalc.game.scene.new() end
 
----Add a scene to the manager (does not make it active).
+---Add a scene to the manager (does not make it active). At most 16 scenes, and
+---names of up to 63 bytes. An existing name is replaced, on the stack too.
 ---@param name string
 ---@param scene PicoDeckScene
 function picocalc.game.scene.add(name, scene) end
 
----Remove a named scene.
+---Remove a named scene, and take it off the stack with no `exit()`.
 ---@param name string
 function picocalc.game.scene.remove(name) end
 
@@ -2855,15 +3491,17 @@ function picocalc.game.scene.has(name) end
 ---@param name string
 function picocalc.game.scene.switch(name) end
 
----Push a scene on the stack without exiting the current one.
+---Push a scene on the stack (at most 4 deep) and call its `enter()`. The scene
+---below gets no `exit()` and stops running: only the top scene updates and draws.
 ---@param name string
 function picocalc.game.scene.push(name) end
 
----Pop the top scene off the stack and return to the previous scene.
+---Pop the top scene (`exit()`) and return to the previous one, whose `enter()`
+---runs again. Popping the last scene raises an error.
 function picocalc.game.scene.pop() end
 
----Return the current scene.
----@return PicoDeckScene?
+---Return the current scene's name, as `switch` takes it.
+---@return string?
 function picocalc.game.scene.getCurrent() end
 
 ---Call `update(dt)` on the current scene.
@@ -2873,11 +3511,32 @@ function picocalc.game.scene.update(dt) end
 ---Call `draw()` on the current scene.
 function picocalc.game.scene.draw() end
 
----Return (or create) an object pool associated with a scene.
----@param name string Scene name
+---Create an object pool, up to 8 per app. Each call makes a new one. An error
+---in the factory is raised from `acquire` and `prewarm`.
+---@param name string A label: it becomes the table's `name` field
 ---@param factory fun(): any Factory function for new objects
----@return table pool
+---@return PicoDeckObjectPool pool
 function picocalc.game.scene.objectPool(name, factory) end
+
+---Holds up to 64 idle objects.
+---@class PicoDeckObjectPool
+---@field name string
+local PicoDeckObjectPool = {}
+
+---Take the most recently released object, or call the factory for a new one.
+---@return any
+function PicoDeckObjectPool:acquire() end
+
+---Return an object for reuse. With 64 idle already, it is dropped.
+---@param obj any
+function PicoDeckObjectPool:release(obj) end
+
+---Add `count` new idle objects (at most 64, and stopping when the pool is full).
+---@param count integer
+function PicoDeckObjectPool:prewarm(count) end
+
+---Discard every idle object.
+function PicoDeckObjectPool:clear() end
 
 ---Set a global value accessible to all scenes.
 ---@param key string
@@ -2939,9 +3598,10 @@ picocalc.terminal = {}
 local PicoDeckTerminal = {}
 
 ---Create a terminal widget with `cols` × `rows` characters and `scrollback_lines` of history.
----@param cols integer
----@param rows integer
----@param scrollback_lines? integer
+---A terminal of up to 22 rows draws from y = 28; a taller one moves up to fit.
+---@param cols? integer 1-53 (default 53)
+---@param rows? integer 1-26 (default 26)
+---@param scrollback_lines? integer At most 5000; zero or less means the default, 1000
 ---@return PicoDeckTerminal
 function picocalc.terminal.new(cols, rows, scrollback_lines) end
 
@@ -2972,33 +3632,41 @@ function PicoDeckTerminal:setColors(fg, bg) end
 ---@return integer bg
 function PicoDeckTerminal:getColors() end
 
----Scroll the terminal by `lines` lines (positive = down).
+---Shift the grid's contents, destructively: positive moves them up, the top rows
+---going into the scrollback; negative moves them down, the bottom rows being lost.
+---To look back without changing anything, use `setScrollbackOffset`.
 ---@param lines integer
 function PicoDeckTerminal:scroll(lines) end
 
 ---Render the full terminal to the display.
 function PicoDeckTerminal:render() end
 
----Render only dirty (changed) cells to the display.
+---Render only dirty rows to the display, or everything if a `flush()` has swapped
+---the framebuffers since the last render. Partial with `display.flushRows`.
 function PicoDeckTerminal:renderDirty() end
 
+---Return the total number of columns in the terminal grid.
 ---@return integer
 function PicoDeckTerminal:getCols() end
 
+---Return the total number of rows in the terminal grid.
 ---@return integer
 function PicoDeckTerminal:getRows() end
 
+---Show or hide the cursor. One setting shared by every terminal.
 ---@param visible boolean
 function PicoDeckTerminal:setCursorVisible(visible) end
 
+---Enable or disable cursor blinking. One setting shared by every terminal.
 ---@param blink boolean
 function PicoDeckTerminal:setCursorBlink(blink) end
 
 ---Select the font for this terminal.
----@param font_id integer One of the FONT_* constants
-function PicoDeckTerminal:setFont(font_id) end
+---@param name string `"scientifica"` or `"scientifica_bold"`
+function PicoDeckTerminal:setFont(name) end
 
----@return integer
+---Return the current font name.
+---@return string name
 function PicoDeckTerminal:getFont() end
 
 ---Mark all cells as dirty (forces a full re-render on next `renderDirty`).
@@ -3017,16 +3685,17 @@ function PicoDeckTerminal:getDirtyRange() end
 ---@return integer
 function PicoDeckTerminal:getScrollbackCount() end
 
----Return the content of scrollback line `line` as an array of cell values.
+---Return scrollback line `line` (1-based) as a plain string: characters only, no
+---colours. Raises if `line` is out of range.
 ---@param line integer
----@return integer[]
+---@return string
 function PicoDeckTerminal:getScrollbackLine(line) end
 
 ---Return the current scrollback display offset.
 ---@return integer
 function PicoDeckTerminal:getScrollbackOffset() end
 
----Set the scrollback display offset.
+---View the text `offset` lines back from the live grid (0 = live).
 ---@param offset integer
 function PicoDeckTerminal:setScrollbackOffset(offset) end
 
@@ -3038,11 +3707,11 @@ function PicoDeckTerminal:waitForAnyKey() end
 ---@return integer button_mask
 function PicoDeckTerminal:waitForKey(key) end
 
----Return the next key event without blocking, or `nil` if no key is pending.
+---The buttons that went down at the last `input.update()`, or `nil`. Does not poll.
 ---@return integer?
 function PicoDeckTerminal:readKey() end
 
----Return the next ASCII character without blocking, or `nil`.
+---The character of the last `input.update()`, or `nil`. Does not poll.
 ---@return string?
 function PicoDeckTerminal:readChar() end
 
@@ -3100,6 +3769,49 @@ function PicoDeckTerminal:setWordWrapColumn(column) end
 ---Show or hide the wrap-continuation indicator.
 ---@param enabled boolean
 function PicoDeckTerminal:setWrapIndicator(enabled) end
+
+---Return the current word-wrap state.
+---@return boolean enabled
+function PicoDeckTerminal:getWordWrap() end
+
+---Return the number of visual (wrapped) rows the current content occupies.
+---@return integer rows
+function PicoDeckTerminal:getVisualRowCount() end
+
+---Place the terminal between two pixel rows of the screen. Row 0 of the grid draws
+---at `y_start`; a row that does not fully fit above `y_end` is not drawn.
+---@param y_start integer First pixel row to draw on (below 0 reads as 0)
+---@param y_end integer The pixel row below the last one to draw on (above 320 reads as 320). If it is not below `y_start`, the call changes nothing
+function PicoDeckTerminal:setRenderBounds(y_start, y_end) end
+
+---Set the character at column `x`, row `y` (0-based). Out-of-bounds coordinates are ignored.
+---@param x integer Column
+---@param y integer Row
+---@param ch string Only its first byte is used
+function PicoDeckTerminal:setCell(x, y, ch) end
+
+---Return the character at column `x`, row `y` as a one-character string; `" "` for
+---out-of-bounds coordinates or empty cells.
+---@param x integer Column
+---@param y integer Row
+---@return string ch
+function PicoDeckTerminal:getCell(x, y) end
+
+---Set the foreground and background colours of a single cell. Marks the row dirty.
+---@param x integer Column
+---@param y integer Row
+---@param fg integer RGB565
+---@param bg integer RGB565
+function PicoDeckTerminal:setCellColors(x, y, fg, bg) end
+
+---Batch-set foreground and background colours for a range of cells in row `y`.
+---Marks the row dirty.
+---@param y integer Row
+---@param fgTable integer[] RGB565 foreground colours
+---@param bgTable integer[] RGB565 background colours
+---@param startX? integer First column (default 0)
+---@param count? integer Cells to set (default: all columns)
+function PicoDeckTerminal:setRowColors(y, fgTable, bgTable, startX, count) end
 
 -- =============================================================================
 -- picocalc.crypto  (hashing, symmetric encryption, key exchange)
@@ -3233,9 +3945,10 @@ local PicoDeckModPlayer = {}
 ---@return string? error
 function picocalc.modplayer.create() end
 
----Load a .mod file.
+---Load a .mod file (at most 512 KB). XM, S3M and IT are not supported.
 ---@param path string
 ---@return boolean ok
+---@return string? error `"access denied"` outside the sandbox; otherwise none
 function PicoDeckModPlayer:load(path) end
 
 ---Start playback.
@@ -3251,6 +3964,7 @@ function PicoDeckModPlayer:pause() end
 ---Resume after pause.
 function PicoDeckModPlayer:resume() end
 
+---Return `true` while playing.
 ---@return boolean
 function PicoDeckModPlayer:isPlaying() end
 
@@ -3258,6 +3972,7 @@ function PicoDeckModPlayer:isPlaying() end
 ---@param vol integer 0–100
 function PicoDeckModPlayer:setVolume(vol) end
 
+---Return the current playback volume.
 ---@return integer
 function PicoDeckModPlayer:getVolume() end
 
@@ -3338,7 +4053,7 @@ function picocalc.zip.open(path) end
 ---@return { name: string, size: integer, compressed_size: integer }[] entries
 function PicoDeckZipArchive:list() end
 
----Return `true` if an entry with this exact name exists.
+---Return `true` if an entry with this name exists. Names are compared ignoring case.
 ---@param name string
 ---@return boolean
 function PicoDeckZipArchive:exists(name) end
@@ -3356,7 +4071,7 @@ function PicoDeckZipArchive:size(name) end
 function PicoDeckZipArchive:numEntries() end
 
 ---The index of an entry (0-based, as in the C API), as `statIndex()` and
----`extractEntry()` address it, or `nil` if no entry has that exact name.
+---`extractEntry()` address it, or `nil` if no entry has that name (ignoring case).
 ---@param name string
 ---@return integer? index
 function PicoDeckZipArchive:locate(name) end
@@ -3413,15 +4128,20 @@ function PicoDeckZipArchive:close() end
 ---@field null userdata Sentinel representing JSON null (compare with json.isNull)
 picocalc.json = {}
 
----Encode a Lua value as a JSON string.
+---Encode a Lua value as a JSON string. Raises on a function, userdata other than
+---`json.null`, a thread, NaN, infinity, a cycle or nesting deeper than 32. An empty
+---table is `{}`, a table with holes or mixed keys is an object, numeric keys become
+---strings and boolean keys are dropped.
 ---@param value any
 ---@param opts? {indent?: integer} Spaces per indent level (default 0: compact)
 ---@return string
 function picocalc.json.encode(value, opts) end
 
----Decode a JSON string into Lua values. JSON null decodes to `json.null`.
+---Decode a JSON string into Lua values. JSON null decodes to `json.null`. Bad
+---input returns `nil, err`; it does not raise.
 ---@param text string
----@return any
+---@return any value
+---@return string? error
 function picocalc.json.decode(text) end
 
 ---Return `true` if `v` is the `json.null` sentinel.
@@ -3430,25 +4150,27 @@ function picocalc.json.decode(text) end
 function picocalc.json.isNull(v) end
 
 -- =============================================================================
--- picocalc.repl  (interactive Lua REPL)
+-- picocalc.repl  (console input bar and scrolling output)
 -- =============================================================================
 
 ---@class picocalc.repl
 picocalc.repl = {}
 
----Read a line of REPL input (non-blocking). Returns the line, or nil if no
----complete line is ready (also nil on Esc).
+---Read a line of REPL input (non-blocking; it polls the keyboard itself). Returns
+---the line, or nil if no complete line is ready. Esc also reads as nil, and keeps
+---the typed text: check `input.getButtonsPressed()` straight after this.
 ---@return string?
 function picocalc.repl.readline() end
 
----Print to the REPL output.
+---Print to the REPL output. With no arguments it only draws the screen.
 ---@param ... any
 function picocalc.repl.print(...) end
 
----Clear the REPL screen.
+---Clear the REPL screen and forget its output and any typed text.
 function picocalc.repl.clear() end
 
----Enable or disable input echo.
+---Enable or disable input echo. Off, the bar shows `*`s and a submitted line is
+---returned but not added to the output.
 ---@param flag boolean
 function picocalc.repl.echo(flag) end
 
@@ -3456,152 +4178,296 @@ function picocalc.repl.echo(flag) end
 -- draw3DWireframeEx  (global software-3D helper, not under picocalc.*)
 -- =============================================================================
 
----Draw a rotating 3D wireframe (optionally filled) model.
----@param verts number[] Flat vertex array {x,y,z, x,y,z, ...}
----@param edges integer[] Flat edge index pairs {a,b, a,b, ...} (1-based)
----@param angleX number Rotation around X (radians)
----@param angleY number Rotation around Y (radians)
----@param angleZ number Rotation around Z (radians)
----@param scx integer Screen centre x
----@param scy integer Screen centre y
----@param fov number Field of view / perspective divisor
----@param edgeColor integer RGB565 line colour
----@param fillColor? integer RGB565 face fill colour (default 0)
----@param fillMode? integer 0=wireframe, 1=fill, 2=both (default 0)
----@param vertSize? integer Vertex dot size (default 3)
----@param faces? integer[] Flat vertex-index triples for filled triangles
+---Enhanced `picocalc.graphics.draw3DWireframe` with optional filled, lit triangles,
+---using the same coordinates and `fov`. It also clips edges where they reach the
+---camera. A global function, not under `picocalc.*`.
+---@param verts number[] Flat `{x1, y1, z1, x2, y2, z2, ...}`; only the first 64 vertices are used
+---@param edges integer[] Flat `{a1, b1, a2, b2, ...}`: 1-based vertex index pairs
+---@param angleX number Rotation around X in radians
+---@param angleY number Rotation around Y in radians
+---@param angleZ number Rotation around Z in radians
+---@param scx integer Screen-space centre x
+---@param scy integer Screen-space centre y
+---@param fov number Distance from the camera to the plane `z = 0` (larger means less perspective)
+---@param edgeColor integer RGB565 colour of edges and vertex dots
+---@param fillColor? integer RGB565 base colour of the faces, shaded per face; default 0 means no fill, not black
+---@param fillMode? integer 0 = wireframe only (default), 1 = fill only, 2 = both
+---@param vertSize? integer Vertex dot size in pixels; 0 for none (default 3)
+---@param faces? integer[] Flat 1-based vertex-index triples; a face is drawn only when its vertices run counter-clockwise on screen
 function draw3DWireframeEx(verts, edges, angleX, angleY, angleZ, scx, scy, fov, edgeColor, fillColor, fillMode, vertSize, faces) end
 
 -- =============================================================================
 -- picocalc.chargrid
 -- =============================================================================
 
+---A grid of character cells, drawn in one call. Coordinates are 0-based cells:
+---writes outside the grid are dropped. Colours are indices into the grid's own
+---256-entry palette, glyphs a code 0-255 or a one-character string. Positions and
+---sizes are numbers (floats round); colours and codes must be integers.
 ---@class PicoDeckCharGrid : userdata
 local PicoDeckCharGrid = {}
+
+---Return the grid size in cells.
 ---@return integer cols
 ---@return integer rows
 function PicoDeckCharGrid:getSize() end
+
+---Return the cell size in pixels.
 ---@return integer cellW
 ---@return integer cellH
 function PicoDeckCharGrid:getCellSize() end
+
+---Rebuild the glyphs 0x20-0xFF from a font, keeping the cell size and any defined
+---glyphs. Raises if the font id is not loaded.
 ---@param fontId integer
 function PicoDeckCharGrid:setFont(fontId) end
+
+---Replace a glyph with a bitmap. A defined glyph survives `setFont`.
 ---@param code integer 1-255
 ---@param rows integer[] cellH rows, bit cellW-1 = leftmost pixel
 function PicoDeckCharGrid:defineGlyph(code, rows) end
+
+---Set palette entries from `first` onward. `first + #colors` may be at most 256.
 ---@param colors integer[] RGB565
 ---@param first? integer default 0
 function PicoDeckCharGrid:setPalette(colors, first) end
+
+---Set one palette entry; every cell using it changes at the next draw.
+---@param index integer 0-255
+---@param color integer RGB565
 function PicoDeckCharGrid:setColor(index, color) end
----@return integer color
+
+---Return one palette entry.
+---@param index integer 0-255
+---@return integer color RGB565
 function PicoDeckCharGrid:getColor(index) end
----@param glyphs string|integer[]
----@param dither? boolean
+
+---Set the ramp `shadeRow` maps levels through, 1-256 entries.
+---@param glyphs string|integer[] A UTF-8 string, or a table of codes
+---@param dither? boolean A 4x4 ordered dither spreads levels between entries
 function PicoDeckCharGrid:setRamp(glyphs, dither) end
----@param indices integer[]
----@param dither? boolean
+
+---Set the colour ramp `shadeRow` maps tones (or levels) through, 1-256 entries.
+---@param indices integer[] Palette indices
+---@param dither? boolean A 4x4 ordered dither spreads tones between entries
 function PicoDeckCharGrid:setColorRamp(indices, dither) end
----@param glyph? integer|string
----@param fg? integer
----@param bg? integer
+
+---Fill every cell.
+---@param glyph? integer|string default 0
+---@param fg? integer default 15
+---@param bg? integer default 0
 function PicoDeckCharGrid:clear(glyph, fg, bg) end
+
+---Set one cell. Nil colours are kept.
+---@param x number
+---@param y number
 ---@param glyph integer|string
 ---@param fg? integer
 ---@param bg? integer
 function PicoDeckCharGrid:set(x, y, glyph, fg, bg) end
+
+---Return one cell; `0, 0, 0` outside the grid.
+---@param x number
+---@param y number
 ---@return integer glyph
 ---@return integer fg
 ---@return integer bg
 function PicoDeckCharGrid:get(x, y) end
+
+---Fill a rectangle. Nil leaves that plane alone (`fill(x, y, w, h, nil, 9)` recolours).
+---@param x number
+---@param y number
+---@param w number
+---@param h number
 ---@param glyph? integer|string
+---@param fg? integer
+---@param bg? integer
 function PicoDeckCharGrid:fill(x, y, w, h, glyph, fg, bg) end
----@param glyphs string|integer[]|integer|nil
+
+---Write cells along row `y`. Each plane is a string (one byte per cell), a table of
+---integers, one integer (fills), or nil (left alone). The sequences must have equal
+---lengths; with none, the integers fill to the end of the row.
+---@param y number
+---@param glyphs? string|integer[]|integer
 ---@param fgs? string|integer[]|integer
 ---@param bgs? string|integer[]|integer
----@param x? integer
+---@param x? number First column (default 0)
 function PicoDeckCharGrid:setRow(y, glyphs, fgs, bgs, x) end
+
+---Return `n` cells from `x` as three strings. Cells outside the grid are left out.
+---@param y number
+---@param x? number default 0
+---@param n? number default: to the end of the row
 ---@return string glyphs
 ---@return string fgs
 ---@return string bgs
 function PicoDeckCharGrid:getRow(y, x, n) end
+
+---Like `setRow` for a rectangle: sequences hold `w * h` entries, row by row.
+---@param x number
+---@param y number
+---@param w number
+---@param h number
+---@param glyphs? string|integer[]|integer
+---@param fgs? string|integer[]|integer
+---@param bgs? string|integer[]|integer
 function PicoDeckCharGrid:setRect(x, y, w, h, glyphs, fgs, bgs) end
----@param levels number[]|nil
----@param tones? number[]
----@param x? integer
+
+---Shade cells along row `y`: levels pick glyphs through the ramp, tones pick
+---foreground colours through the colour ramp, and without tones levels pick the
+---colours too. Give levels or tones; raises when a needed ramp is not set.
+---@param y number
+---@param levels? number[] 0-1; non-numbers and holes count as 0
+---@param tones? number[] 0-1; the same length as `levels`
+---@param x? number First column (default 0)
 function PicoDeckCharGrid:shadeRow(y, levels, tones, x) end
----@return integer x
+
+---Write UTF-8 text; `\n` continues at `x` on the next row. Nil colours are kept.
+---@param x number
+---@param y number
+---@param text string
+---@param fg? integer
+---@param bg? integer
+---@return integer x The x after the text
 function PicoDeckCharGrid:print(x, y, text, fg, bg) end
----@return integer rows
+
+---Word-wrap text into rows `w` cells wide. Nil colours are kept.
+---@param x number
+---@param y number
+---@param w number
+---@param text string
+---@param fg? integer
+---@param bg? integer
+---@return integer rows The number of rows used
 function PicoDeckCharGrid:printWrapped(x, y, w, text, fg, bg) end
----@param style? integer BOX_SINGLE | BOX_BLOCK | BOX_ASCII
+
+---Draw a frame (nothing when `w` or `h` is below 2), leaving the inside untouched.
+---@param x number
+---@param y number
+---@param w number
+---@param h number
+---@param style? integer `BOX_SINGLE` (default), `BOX_BLOCK` or `BOX_ASCII`
+---@param fg? integer
+---@param bg? integer
 function PicoDeckCharGrid:box(x, y, w, h, style, fg, bg) end
+
+---Write multi-line UTF-8 art. Cells whose character is `transparent` are left alone.
+---@param x number
+---@param y number
+---@param art string
+---@param fg? integer
+---@param bg? integer
 ---@param transparent? string|integer default " "
 function PicoDeckCharGrid:stamp(x, y, art, fg, bg, transparent) end
+
+---Copy a rectangle of cells (all three planes) from `src`, which may be this grid, to
+---`(dx, dy)`. Overlapping copies are safe.
 ---@param src PicoDeckCharGrid
----@param transparentGlyph? integer|string
+---@param sx number
+---@param sy number
+---@param w number
+---@param h number
+---@param dx number
+---@param dy number
+---@param transparentGlyph? integer|string Source cells holding it are skipped
 function PicoDeckCharGrid:blit(src, sx, sy, w, h, dx, dy, transparentGlyph) end
+
+---Shift the contents and fill the cells that come into view.
+---@param dx number
+---@param dy number
+---@param glyph? integer|string default 0
+---@param fg? integer default 15
+---@param bg? integer default 0
 function PicoDeckCharGrid:scroll(dx, dy, glyph, fg, bg) end
+
+---Draw cells `sx..sx+w-1` by `sy..sy+h-1` with cell `(sx, sy)` at pixel `(px, py)`,
+---inside the display clip rect. Cells past the edge are clipped.
+---@param px number
+---@param py number
+---@param sx? number default 0
+---@param sy? number default 0
+---@param w? number default: the grid's cols
+---@param h? number default: the grid's rows
 function PicoDeckCharGrid:draw(px, py, sx, sy, w, h) end
+
+---Return whether any write happened since the last `draw`.
 ---@return boolean
 function PicoDeckCharGrid:isDirty() end
+
+---Return the last `draw`'s cells and its time in microseconds.
 ---@return {cells: integer, us: integer}
 function PicoDeckCharGrid:getStats() end
 
+---A compiled per-cell program from `picocalc.chargrid.shader`.
 ---@class PicoDeckCharShader : userdata
 local PicoDeckCharShader = {}
+
+---Set a declared uniform. Raises for an unknown name.
 ---@param name string a declared uniform
----@param value number
+---@param value number Finite
 function PicoDeckCharShader:set(name, value) end
+
+---Copy `values[1..n]` into a declared array. Raises for an unknown name.
 ---@param name string a declared array
 ---@param values number[] shader index 0 is values[1]
 ---@param n? integer default #values, at most 1024
 function PicoDeckCharShader:setArray(name, values, n) end
+
+---Run over a cell rect (default: the whole grid), clipped to the grid, and mark the
+---grid dirty. The layers follow in declaration order, and their count must match.
 ---@param grid PicoDeckCharGrid
 ---@param ... number|PicoDeckCharGrid optional x, y, w, h, then the declared layers in order
 function PicoDeckCharShader:run(grid, ...) end
+
+---Return the last run's cells and time, and the compiled program's size.
 ---@return {cells: integer, us: integer, instructions: integer, registers: integer}
 function PicoDeckCharShader:getStats() end
 
 ---@class picocalc.chargrid
----@field EMPTY integer
----@field DOT1 integer
----@field DOT2 integer
----@field DOT3 integer
----@field DOT4 integer
----@field SHADE1 integer
----@field SHADE2 integer
----@field SHADE3 integer
----@field SHADE4 integer
----@field HALF_TOP integer
----@field HALF_BOTTOM integer
----@field HALF_LEFT integer
----@field HALF_RIGHT integer
----@field BOX_H integer
----@field BOX_V integer
----@field BOX_TL integer
----@field BOX_TR integer
----@field BOX_BL integer
----@field BOX_BR integer
----@field BOX_LT integer
----@field BOX_RT integer
----@field BOX_TT integer
----@field BOX_BT integer
----@field BOX_X integer
----@field TRI_UP integer
----@field TRI_RIGHT integer
----@field TRI_DOWN integer
----@field TRI_LEFT integer
----@field BOX_SINGLE integer
----@field BOX_BLOCK integer
----@field BOX_ASCII integer
+---@field EMPTY integer Nothing: the cell's background only
+---@field DOT1 integer Dots of growing size: `·`
+---@field DOT2 integer `•`
+---@field DOT3 integer `●`
+---@field DOT4 integer `⬤`
+---@field SHADE1 integer Shades: `░`
+---@field SHADE2 integer `▒`
+---@field SHADE3 integer `▓`
+---@field SHADE4 integer `█`
+---@field HALF_TOP integer `▀`
+---@field HALF_BOTTOM integer `▄`
+---@field HALF_LEFT integer `▌`
+---@field HALF_RIGHT integer `▐`
+---@field BOX_H integer `─`
+---@field BOX_V integer `│`
+---@field BOX_TL integer `┌`
+---@field BOX_TR integer `┐`
+---@field BOX_BL integer `└`
+---@field BOX_BR integer `┘`
+---@field BOX_LT integer `├`
+---@field BOX_RT integer `┤`
+---@field BOX_TT integer `┬`
+---@field BOX_BT integer `┴`
+---@field BOX_X integer `┼`
+---@field TRI_UP integer `▲`
+---@field TRI_RIGHT integer `▶`
+---@field TRI_DOWN integer `▼`
+---@field TRI_LEFT integer `◀`
+---@field BOX_SINGLE integer `grid:box` style: single lines (the default)
+---@field BOX_BLOCK integer `grid:box` style: blocks
+---@field BOX_ASCII integer `grid:box` style: ASCII
 picocalc.chargrid = {}
----@param cols number
----@param rows number
----@param fontId? integer
----@param cellW? number
----@param cellH? number
+
+---Create a grid. Without a font, `cellW` and `cellH` are required, and leaving them
+---out raises.
+---@param cols number 1-1024, `cols * rows` at most 65,536
+---@param rows number 1-1024
+---@param fontId? integer A built-in font id or one from `display.loadFont`; nil for no font
+---@param cellW? number 1-16; defaults to the font's size
+---@param cellH? number 1-32; defaults to the font's size
 ---@return PicoDeckCharGrid
 function picocalc.chargrid.new(cols, rows, fontId, cellW, cellH) end
+
+---Compile a shader. It never raises for a bad program.
 ---@param source string
 ---@return PicoDeckCharShader|nil shader
 ---@return string? err "line L:C: message"
@@ -3611,18 +4477,27 @@ function picocalc.chargrid.shader(source) end
 -- picocalc.noise
 -- =============================================================================
 
+---Deterministic 2-D noise: the same inputs give the same results in the simulator and
+---on the device. Coordinates must be finite and a seed an integer, or it raises.
 ---@class picocalc.noise
 picocalc.noise = {}
+
+---The lattice hash of the integer point (`floor(x)`, `floor(y)`).
 ---@param x number floored
 ---@param y number floored
 ---@param seed? integer default 0
 ---@return number h in [0, 1)
 function picocalc.noise.hash(x, y, seed) end
+
+---Value noise: the hashes of the four surrounding lattice points, blended with
+---smoothstep weights.
 ---@param x number
 ---@param y number
 ---@param seed? integer default 0
 ---@return number v in [0, 1)
 function picocalc.noise.value(x, y, seed) end
+
+---Fractal noise: `octaves` layers of `value` at doubling frequency and halving weight.
 ---@param x number
 ---@param y number
 ---@param octaves integer 1-8

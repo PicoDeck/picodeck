@@ -16,6 +16,15 @@
 #define UW_BTN_BG     RGB565(30,  40,  70)   // Button background
 #define UW_BTN_FOCUS  RGB565(45,  60, 100)   // Button focused background
 
+// Rows each fixed-height widget covers (picocalc.ui's draw* return them).
+#define UW_ROW_H         13   // text field, list item: 8px font + 5px padding
+#define UW_BUTTON_H      15
+#define UW_CHECKBOX_H    10
+#define UW_RADIO_H       11   // a circle of radius 5 around (x + 5, y + 5)
+#define UW_DIVIDER_H      1
+#define UW_TOAST_H       14
+#define UW_PANEL_TITLE_H 18   // border + title bar + divider: where a titled panel's content starts
+
 // ── Stateless widget rendering primitives ────────────────────────────────────
 // These functions draw widgets to the framebuffer with no internal state.
 // All state (text, cursor, focus) is managed by the caller (Lua side).
@@ -48,10 +57,10 @@ void ui_widget_progress(int x, int y, int w, int h,
                         float progress,
                         uint16_t fill_color, uint16_t border);
 
-// Checkbox indicator (12x12 box with optional checkmark)
+// Checkbox indicator (10x10 box with optional checkmark)
 void ui_widget_checkbox(int x, int y, bool checked, bool focused);
 
-// Radio button indicator (12x12 circle with optional dot)
+// Radio button indicator (11x11 circle with optional dot)
 void ui_widget_radio(int x, int y, bool selected, bool focused);
 
 // Horizontal divider line

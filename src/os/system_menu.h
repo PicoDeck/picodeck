@@ -5,7 +5,7 @@
 // =============================================================================
 // System Menu Overlay
 //
-// An OS-level menu triggered by the F10 key (BTN_F 0x90).
+// An OS-level menu triggered by the system menu key (Shift+F5, reported as F10: KEY_F10, 0x90).
 // When invoked, it pauses the running Lua app, draws a translucent overlay
 // with built-in items (Brightness, Battery, WiFi, Reboot, Exit App) plus any
 // app-registered custom items, and resumes the app on dismiss.

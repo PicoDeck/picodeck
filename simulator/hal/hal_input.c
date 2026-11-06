@@ -37,6 +37,9 @@ static uint32_t g_injected_latched = 0;  // held injections, released only by ha
 // one-shots. A click injected since the last read is the device's "pending"
 // one, which kbd_clear_state leaves to be published with its edge.
 static uint32_t g_injected_click_read = 0;
+// A host key went down since the last poll (the idle dim's activity: a typed
+// letter sets no button edge, and an injected char must not count).
+static bool g_host_key_down = false;
 static char g_char_buffer[256];
 static int g_char_head = 0;
 static int g_char_tail = 0;
@@ -180,7 +183,10 @@ void hal_input_handle_event(const SDL_Event* event) {
         SDL_Keycode key = event->key.keysym.sym;
         
         pthread_mutex_lock(&s_input_mutex);
-        
+
+        if (pressed)
+            g_host_key_down = true;
+
         // SDL auto-repeat is the desktop's HOLD: flagged, not a new press.
         uint8_t rep = event->key.repeat ? KBD_EVF_REPEAT : 0;
 
@@ -374,16 +380,44 @@ uint32_t hal_input_get_buttons_pressed(void) {
     return result;
 }
 
-char hal_input_get_char(void) {
+char hal_input_get_char_ex(bool *injected) {
+    *injected = false;
     pthread_mutex_lock(&s_input_mutex);
     if (g_char_head == g_char_tail) {
         pthread_mutex_unlock(&s_input_mutex);
         return 0;
     }
     char c = g_char_buffer[g_char_tail];
+    *injected = g_char_seq[g_char_tail] != 0;
     g_char_tail = (g_char_tail + 1) % sizeof(g_char_buffer);
     pthread_mutex_unlock(&s_input_mutex);
     return c;
+}
+
+bool hal_input_drop_host_char(char c) {
+    const int size = (int)sizeof(g_char_buffer);
+    uint8_t want = kbd_key_fold((uint8_t)c);
+    bool found = false;
+    pthread_mutex_lock(&s_input_mutex);
+    for (int i = g_char_tail; i != g_char_head; i = (i + 1) % size) {
+        if (g_char_seq[i] || kbd_key_fold((uint8_t)g_char_buffer[i]) != want)
+            continue;
+        // Close the gap, so what is behind it stays in order.
+        for (int n = (i + 1) % size; n != g_char_head; i = n, n = (n + 1) % size) {
+            g_char_buffer[i] = g_char_buffer[n];
+            g_char_seq[i] = g_char_seq[n];
+        }
+        g_char_head = i;
+        found = true;
+        break;
+    }
+    pthread_mutex_unlock(&s_input_mutex);
+    return found;
+}
+
+char hal_input_get_char(void) {
+    bool injected;
+    return hal_input_get_char_ex(&injected);
 }
 
 bool hal_input_poll_char(char* out_char) {
@@ -435,11 +469,26 @@ void hal_input_discard_pending(void) {
     pthread_mutex_unlock(&s_input_mutex);
 }
 
+bool hal_input_take_host_key(void) {
+    pthread_mutex_lock(&s_input_mutex);
+    bool was = g_host_key_down;
+    g_host_key_down = false;
+    pthread_mutex_unlock(&s_input_mutex);
+    return was;
+}
+
 uint32_t hal_input_injected_down(void) {
     pthread_mutex_lock(&s_input_mutex);
     uint32_t down = (g_injected_click & g_injected_click_read) | g_injected_latched;
     pthread_mutex_unlock(&s_input_mutex);
     return down;
+}
+
+uint32_t hal_input_read_down(void) {
+    pthread_mutex_lock(&s_input_mutex);
+    uint32_t down = g_buttons & ~(g_injected_click & ~g_injected_click_read);
+    pthread_mutex_unlock(&s_input_mutex);
+    return down & ~BTN_MENU;
 }
 
 // The menu flag lives here, under the input mutex, so raising it and noting

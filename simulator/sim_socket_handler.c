@@ -15,9 +15,11 @@
 #include "drivers/sound.h"
 #include "drivers/mp3_player.h"
 #include "os/core0_idle.h"
+#include "os/idle_dim.h"
 #include "os/launcher.h"
 #include "os/lua_psram_alloc.h"
 #include "os/screenshot.h"
+#include "os/serial_frame.h"
 #include "os/os.h"
 #include "sim_wifi.h"
 #include "os/terminal.h"
@@ -394,6 +396,37 @@ static char *framebuffer_base64(int *out_len) {
     return b64;
 }
 
+// ── The firmware's `screenshot` stream, as base64 ──────────────────────────────
+// The bytes that dev command sends over serial (src/os/serial_frame.h), for the
+// host's reader to read end to end (tests/e2e/test_screenshot_frame.py). Pixels
+// in panel order, as the firmware's framebuffer holds them.
+
+static char *serial_frame_base64(int *out_len) {
+    uint16_t *fb = hal_display_get_framebuffer();
+    if (!fb) { *out_len = 0; return NULL; }
+    const size_t pixel_bytes = 320 * 320 * 2;
+    const size_t total = SCRN_HEADER_LEN + pixel_bytes + SCRN_TRAILER_LEN;
+    uint8_t *raw = malloc(total);
+    char *b64 = malloc(b64_enc_size(total) + 1);
+    if (!raw || !b64) { free(raw); free(b64); *out_len = 0; return NULL; }
+
+    scrn_frame_header(raw, 320, 320, SCRN_FORMAT_RGB565, SCRN_FLAG_TRAILER);
+    uint8_t *pixels = raw + SCRN_HEADER_LEN;
+    for (size_t i = 0; i < 320 * 320; i++) {
+        pixels[i * 2] = (uint8_t)(fb[i] >> 8);
+        pixels[i * 2 + 1] = (uint8_t)fb[i];
+    }
+    char trailer[SCRN_TRAILER_LEN + 1];
+    scrn_frame_trailer(trailer, serial_fnv1a_update(SERIAL_FNV1A_INIT, pixels,
+                                                    (uint32_t)pixel_bytes));
+    memcpy(pixels + pixel_bytes, trailer, SCRN_TRAILER_LEN);
+
+    b64_encode(raw, total, b64);
+    free(raw);
+    *out_len = (int)strlen(b64);
+    return b64;
+}
+
 // ── Method handlers ────────────────────────────────────────────────────────────
 
 static char *h_ping(const char *params) {
@@ -596,6 +629,8 @@ static char *h_screenshot(const char *params) {
     int len;
     if (strcmp(format, "raw") == 0) {
         data = framebuffer_base64(&len);
+    } else if (strcmp(format, "serial") == 0) {
+        data = serial_frame_base64(&len);
     } else {
         data = take_screenshot_png(&len);
     }
@@ -940,6 +975,18 @@ static char *h_set_wifi_state(const char *params) {
     json_get_str(params, "error_str", error_str, sizeof(error_str));
     json_get_int(params, "error_code", &error_code);
 
+    // A misnamed parameter or an unknown status changed nothing and replied ok.
+    static const char *const known[] = {"connecting", "failed", "connected", "online",
+                                        "disconnected", "not_available", "error"};
+    bool is_known = false;
+    for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++)
+        is_known = is_known || strcmp(status, known[i]) == 0;
+    if (!is_known) {
+        return strdup("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":"
+                      "\"status must be connecting, failed, connected, online, disconnected, "
+                      "not_available or error\"}}");
+    }
+
     int forced = -1;
     if (strcmp(status, "connecting") == 0) forced = WIFI_STATUS_CONNECTING;
     else if (strcmp(status, "failed") == 0) forced = WIFI_STATUS_FAILED;
@@ -981,6 +1028,28 @@ static char *h_set_battery(const char *params) {
     json_get_bool(params, "charging", &charging);
     sim_kbd_set_battery(percent, charging);
     return strdup("{\"jsonrpc\":\"2.0\",\"result\":{\"ok\":true}}");
+}
+
+// {level, dimmed}: the level last written to the backlight (kbd_set_backlight)
+// and whether idle dim holds it down (--idle-dim).
+extern bool sim_sd_slow_mode(void);
+
+// What fs.setSlowMode last set: the device's SD bus speed has no other witness.
+static char *h_get_sd_slow_mode(const char *params) {
+    (void)params;
+    return strdup(sim_sd_slow_mode() ? "{\"jsonrpc\":\"2.0\",\"result\":{\"slow\":true}}"
+                                     : "{\"jsonrpc\":\"2.0\",\"result\":{\"slow\":false}}");
+}
+
+extern int sim_kbd_get_backlight(void);
+
+static char *h_get_backlight(const char *params) {
+    (void)params;
+    char buf[96];
+    snprintf(buf, sizeof(buf),
+             "{\"jsonrpc\":\"2.0\",\"result\":{\"level\":%d,\"dimmed\":%s}}",
+             sim_kbd_get_backlight(), idle_dim_is_dimmed() ? "true" : "false");
+    return strdup(buf);
 }
 
 // {since_seq, tail}: entries with seq >= since_seq (0 = all held), or only
@@ -1423,6 +1492,8 @@ static struct {
     { "get_wifi_state",     h_get_wifi_state },
     { "set_wifi_state",     h_set_wifi_state },
     { "set_battery",        h_set_battery },
+    { "get_backlight",      h_get_backlight },
+    { "get_sd_slow_mode",   h_get_sd_slow_mode },
     { "get_log_buffer",     h_get_log_buffer },
     { "set_time_multiplier",h_set_time_multiplier },
     { "step_time",          h_step_time },

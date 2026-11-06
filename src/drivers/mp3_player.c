@@ -4,6 +4,7 @@
 #include "mp3_sched.h"
 #include "mp3_id3.h"
 #include "../os/core0_idle.h"
+#include "../os/gfx3d.h"
 #include "sdcard.h"
 #include "pio_psram.h"
 #include "pico/platform.h"
@@ -63,16 +64,37 @@ static struct mad_synth  *s_mad_synth  = NULL;
 //  - the window D[] (libmad's synth.c, MAD_D_IN_RAM): 0.6 ms more.
 // Next in line, with no SRAM left: the overlap (4.5 KB, 1.4 ms) and
 // layer3.c's code (~11 KB, 1-2 ms).
+#endif
+// One block, so that it can be lent whole: nothing uses it before an MP3 session
+// starts (load, start_fed, the bench), and a game playing QOA or nothing has it
+// for gfx3d (sram_claim, src/os/gfx3d.h: on Core 0, like every gfx3d call). The
+// session keeps it until the next mp3_player_reset, at the app's exit. Core 1's
+// update and the mixer touch it only while a file plays.
 static struct {
+#if defined(PICODECK_MP3_SRAM)
     struct mad_synth synth;
     mad_fixed_t sbsample[2][18][32];
     mad_fixed_t xr[576 * 2];
-} s_mp3_sram;
 #endif
+    uint8_t staging[STAGING_BUF_SIZE];
+} s_mp3_sram __attribute__((aligned(8)));
+static bool s_sram_claimed;
+
+static void sram_claim(void) {
+    gfx3d_sram_take_back();
+    s_sram_claimed = true;
+}
+
+void *gfx3d_sram_tier(size_t *bytes) {
+    if (s_sram_claimed) return NULL;
+    *bytes = sizeof(s_mp3_sram);
+    return &s_mp3_sram;
+}
 static sdfile_t    s_file = NULL;
 static uint32_t    s_file_pos = 0;  // next byte of s_file to decode (Core 1
                                     // reads at it: no blocking fseek there)
 static uint32_t    s_data_start = 0;  // the first byte past the ID3v2 tags
+static uint32_t    s_file_size = 0;   // (fsize blocks: Core 1 reads this copy)
 // The compressed input, in QMI PSRAM (umm, from init): libmad reads it a
 // byte at a time once per frame (~0.4 KB a frame at 128 kbps), so the
 // cache serves it with a few dozen line fills; SRAM goes to the decoder's
@@ -121,7 +143,6 @@ static int  s_pcm_channels = 2;
 // updates. A striped spin lock with interrupts off: never held across
 // anything slow (SD, PIO PSRAM copies, printf, umm), never nested with
 // another lock.
-static uint8_t s_staging_buf[STAGING_BUF_SIZE] __attribute__((aligned(4)));
 static pcm_stage_t s_stage;
 static critical_section_t s_stage_cs;
 static atomic_bool s_stage_ready;  // set once: the mixer may run before the first init
@@ -550,6 +571,67 @@ static void fed_note_frame(uint32_t at, uint32_t valid) {
     atomic_store_explicit(&s_mark_state, MARK_REACHED, memory_order_release);
 }
 
+// ── Tags after the first frame (issue #63) ──────────────────────────────────
+typedef enum {
+    TAG_NONE,        // no tag, or none to believe: libmad walks the bytes
+    TAG_SKIPPED,     // past it, nothing read from the card
+    TAG_SKIPPED_READ,// past it, the card read to prove it: this update's last
+    TAG_CUT_SHORT,   // the buffer ends inside what may be its header: read on
+    TAG_BUSY,        // the proof needs the card, which is taken: next update
+} tag_skip_t;
+
+// The decoder lost sync at the buffer's first byte, between frames. If a tag
+// starts there, moves past it: the rest of it in the buffer is dropped, the
+// rest of it in the file never read. A tag is believed only if it fits the
+// file and the stream goes on where it ends (mp3_id3.h): it would otherwise
+// lose audio, where walking it byte by byte, as libmad then does, costs time.
+// Core 1: s_file_size was read on Core 0, and the one look at the card is a
+// try. Fed data (a video's audio chunks) has no tags and no seeking.
+static tag_skip_t skip_tag(void) {
+    if (s_fed_mode || !s_file)
+        return TAG_NONE;
+    const uint8_t *p = s_decode_buffer + s_buffer_pos;
+    uint32_t have = (uint32_t)s_bytes_in_buffer;
+    if (!s_input_end && mp3_tag_cut_short(p, have))
+        return TAG_CUT_SHORT;
+    uint32_t len = mp3_tag_size(p, have);
+    uint32_t at = s_file_pos - have;
+    if (len == 0 || at > s_file_size || len > s_file_size - at)
+        return TAG_NONE;
+    uint32_t left = s_file_size - at - len;
+    bool read = false;
+    // (Under MP3_RESUME_BYTES left, no frame can follow: the file's end.)
+    if (left >= MP3_RESUME_BYTES) {
+        uint8_t next[MP3_RESUME_BYTES];
+        if (len + MP3_RESUME_BYTES <= have) {
+            memcpy(next, p + len, MP3_RESUME_BYTES);
+        } else {
+            int br = sdcard_try_fread_at(s_file, at + len, next, MP3_RESUME_BYTES);
+            if (br == SDCARD_BUSY) {
+                s_diag_sd_fail++;
+                return TAG_BUSY;
+            }
+            if (br != (int)MP3_RESUME_BYTES)
+                return TAG_NONE;
+            read = true;
+        }
+        if (!mp3_stream_resumes(next))
+            return TAG_NONE;
+    }
+    // (The zeroed guard bytes stay right after the buffer's data.)
+    uint32_t in_buffer = len < have ? len : have;
+    if (left < MP3_RESUME_BYTES) {
+        in_buffer = have;           // what is left is no audio
+        s_file_pos = s_file_size;
+        s_input_end = true;         // as if the audio had ended the file
+    } else if (at + len > s_file_pos) {
+        s_file_pos = at + len;
+    }
+    s_buffer_pos += (int)in_buffer;
+    s_bytes_in_buffer -= (int)in_buffer;
+    return read ? TAG_SKIPPED_READ : TAG_SKIPPED;
+}
+
 // ── Decode: fill PCM ring buffer (called from main loop, NOT ISR) ───────────
 
 // Writes the granule just synthesised (576 samples a channel) to the PCM ring.
@@ -616,7 +698,7 @@ static void decode_fill_ring(void) {
     int errors_this_update = 0;
     bool rewound = false;
     // Every pass either decodes a granule, gets new input, counts an error
-    // (capped), or leaves: the loop is bounded within one update.
+    // or a tag (capped), or leaves: the loop is bounded within one update.
     while (frames_decoded < max_frames &&
            ring_free() >= MP3_GRANULE_SAMPLES * 2 * 2) {
         uint64_t t0 = time_us_64();
@@ -641,6 +723,28 @@ static void decode_fill_ring(void) {
                               valid + (s_input_end ? MAD_BUFFER_GUARD : 0));
 
             int rc = mad_frame_decode_begin(s_mad_frame, s_mad_stream);
+            // No sync word where a frame should start: a tag there is skipped
+            // whole, with nothing of it consumed yet and no error counted.
+            // (A stream whose frames follow each other never comes here.)
+            if (rc != 0 && s_mad_stream->error == MAD_ERROR_LOSTSYNC &&
+                s_mad_stream->this_frame == base) {
+                tag_skip_t tag = skip_tag();
+                if (tag == TAG_SKIPPED) {
+                    if (++errors_this_update >= MAX_ERRORS_PER_UPDATE)
+                        break;
+                    continue;
+                }
+                if (tag == TAG_SKIPPED_READ || tag == TAG_BUSY)
+                    break;
+                if (tag == TAG_CUT_SHORT) {
+                    refill_t r = refill_decode_buffer();
+                    if (r == REFILL_WAIT)
+                        break;
+                    if (r == REFILL_EOF)
+                        s_input_end = true;
+                    continue;
+                }
+            }
             // Track consumed bytes (on an error too)
             if (s_mad_stream->next_frame) {
                 int consumed = (int)(s_mad_stream->next_frame - (s_decode_buffer + s_buffer_pos));
@@ -777,6 +881,8 @@ static int read_from_locked(uint32_t pos) {
 static bool rewind_locked(void) {
     if (!s_file)
         return false;
+    int size = sdcard_fsize_handle(s_file);
+    s_file_size = size > 0 ? (uint32_t)size : 0;
     // After each tag the read starts again where it ends, so the buffer
     // starts with the next tag or the audio and holds as much of it as it
     // can: libmad (and load()'s probe) need a whole frame, and the next
@@ -825,6 +931,7 @@ static void bind_frame(void) {
 
 void mp3_player_reset(void) {
     if (!s_initialized) return;
+    gfx3d_sram_take_back();  // the decoder's state is cleared below
     if (s_fed_mode) mp3_player_stop_fed();
     mutex_enter_blocking(&s_mp3_mutex);
     detach();
@@ -844,6 +951,7 @@ void mp3_player_reset(void) {
     if (s_mad_frame)  mad_frame_init(s_mad_frame);
     s_in_frame = false;
     if (s_mad_synth)  mad_synth_init(s_mad_synth);
+    s_sram_claimed = false;
     mutex_exit(&s_mp3_mutex);
 }
 
@@ -870,10 +978,11 @@ void mp3_player_deinit(void) {
 bool mp3_player_init(void) {
     if (s_initialized) return true;
 
+    gfx3d_sram_take_back();  // the decoder's state is cleared below
     mutex_init(&s_mp3_mutex);
     if (!atomic_load(&s_stage_ready)) {
         critical_section_init_with_lock_num(&s_stage_cs, next_striped_spin_lock_num());
-        pcm_stage_init(&s_stage, s_staging_buf, STAGING_BUF_SIZE, AUDIO_OUT_RATE);
+        pcm_stage_init(&s_stage, s_mp3_sram.staging, STAGING_BUF_SIZE, AUDIO_OUT_RATE);
         atomic_store_explicit(&s_stage_ready, true, memory_order_release);
     }
     printf("[MP3] Initializing libmad decoder...\n");
@@ -959,6 +1068,7 @@ bool mp3_player_load(mp3_player_t *player, const char *path) {
     // the decoder's buffers are missing.)
     if (!player || !path || !s_initialized) return false;
 
+    sram_claim();
     // Video audio and file playback share the decoder: stop fed mode first.
     if (s_fed_mode) mp3_player_stop_fed();
     fade_out_and_wait();
@@ -1151,6 +1261,7 @@ bool mp3_player_start_fed(uint32_t sample_rate, uint16_t channels) {
     if (!s_initialized) {
         if (!mp3_player_init()) return false;
     }
+    sram_claim();
     // A playing session restarted here (a seek's fallback) is silent from
     // its fade-out until start_fed_output starts the new audio.
     bool audible = s_fed_mode && s_mixing && audio_output_running();
@@ -1388,6 +1499,12 @@ bool mp3_player_is_fed_mode(void) {
     return s_fed_mode;
 }
 
+// Core 1's tick gate: exactly the condition under which the update does work.
+// Skipped updates are not counted in mp3stats' `updates`.
+bool __time_critical_func(mp3_player_core1_idle)(void) {
+    return !s_player.playing || s_player.paused;
+}
+
 void mp3_player_update(void) {
     if (!s_initialized) return;
     if (!mutex_try_enter(&s_mp3_mutex, NULL)) { s_diag_skip_mutex++; return; }
@@ -1468,6 +1585,7 @@ void mp3_player_bench(const char *path, uint32_t frames, uint32_t flags) {
         printf("[DEV] mp3bench: error=busy\n");
         return;
     }
+    sram_claim();
     sdfile_t f = sdcard_fopen(path, "rb");
     if (!f) {
         printf("[DEV] mp3bench: error=open\n");

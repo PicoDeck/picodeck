@@ -16,6 +16,7 @@ local MSG = {
     DEBUG                = 4,
     SERVICE_REQUEST      = 5,
     SERVICE_ACCEPT       = 6,
+    EXT_INFO             = 7,
     KEXINIT              = 20,
     NEWKEYS              = 21,
     KEX_ECDH_INIT        = 30,
@@ -24,6 +25,8 @@ local MSG = {
     USERAUTH_FAILURE     = 51,
     USERAUTH_SUCCESS     = 52,
     USERAUTH_BANNER      = 53,
+    GLOBAL_REQUEST       = 80,
+    REQUEST_FAILURE      = 82,
     CHANNEL_OPEN         = 90,
     CHANNEL_OPEN_CONFIRM = 91,
     CHANNEL_OPEN_FAILURE = 92,
@@ -39,10 +42,24 @@ transport.MSG = MSG
 
 -- Algorithm preferences
 local CLIENT_KEX       = {"curve25519-sha256", "ecdh-sha2-nistp256"}
+-- Only what picocalc.crypto can verify: never "ssh-rsa", whose signatures are SHA-1.
 local CLIENT_HOSTKEY   = {"rsa-sha2-256", "ecdsa-sha2-nistp256"}
+local HOSTKEY_KEY_TYPE = {
+    ["rsa-sha2-256"] = "ssh-rsa",  -- RFC 8332: the key blob keeps its old name
+    ["ecdsa-sha2-nistp256"] = "ecdsa-sha2-nistp256",
+}
 local CLIENT_CIPHER    = {"aes128-ctr", "aes256-ctr"}
 local CLIENT_MAC       = {"hmac-sha2-256", "hmac-sha1"}
 local CLIENT_COMPRESS  = {"none"}
+
+-- RFC 4253 section 6: a whole packet is at least 16 bytes, so packet_length (which
+-- leaves out its own 4) at least 12. Section 6.1: 35000 is the most a peer must accept.
+local MIN_PACKET_LENGTH = 12
+local MAX_PACKET_LENGTH = 35000
+-- Longest line accepted while waiting for the version string (as OpenSSH).
+local MAX_LINE_LENGTH = 8192
+local KEXINIT_LISTS = {"kex", "hostkey", "cipher_c2s", "cipher_s2c", "mac_c2s", "mac_s2c",
+                       "compress_c2s", "compress_s2c"}
 
 -- ── Constructor ─────────────────────────────────────────────────────────────
 
@@ -50,6 +67,9 @@ function transport.new(conn)
     local self = setmetatable({}, transport)
     self.conn = conn               -- TCP connection userdata
     self.recv_buf = ""             -- accumulated receive buffer
+    self.rx_head = nil             -- first block of the packet still arriving (decrypted)
+    self.rx_length = nil           -- ...and its packet_length
+    self.dead = false              -- the connection cannot go on: see self.error
     self.client_version = "SSH-2.0-PicoDeck_1.0"
     self.server_version = nil
     self.session_id = nil
@@ -70,8 +90,10 @@ function transport.new(conn)
     -- Key exchange state
     self.kex_algo = nil
     self.hostkey_algo = nil
-    self.cipher_algo = nil
-    self.mac_algo = nil
+    self.cipher_c2s = nil
+    self.cipher_s2c = nil
+    self.mac_c2s = nil
+    self.mac_s2c = nil
     self.client_kexinit_payload = nil
     self.server_kexinit_payload = nil
 
@@ -81,39 +103,31 @@ end
 
 -- ── Low-level I/O ───────────────────────────────────────────────────────────
 
--- Read available data from TCP into recv_buf.
--- Returns false if the connection is dead.
-function transport:fill_buf()
-    if not self.conn:isConnected() then
-        return false
+-- The connection cannot go on. The first reason stays.
+function transport:fail(msg)
+    if not self.dead then
+        self.dead = true
+        self.error = msg
     end
+    return nil
+end
+
+function transport:connection_closed()
+    local err = self.conn:error()
+    return self:fail("connection closed" .. (err and (": " .. err) or ""))
+end
+
+-- Read available data from TCP into recv_buf.
+-- Returns false if the connection is dead and nothing is left to read. Read first:
+-- data the peer sent before closing stays readable, and a server's last packet is
+-- often the DISCONNECT that says why.
+function transport:fill_buf()
     local data = self.conn:read(8192)
     if data then
         self.recv_buf = self.recv_buf .. data
+        return true
     end
-    return true
-end
-
--- Read exactly n bytes from recv_buf, blocking with timeout
-function transport:read_bytes(n, timeout_ms)
-    timeout_ms = timeout_ms or 30000
-    local start = picocalc.sys.getTimeMs()
-    while #self.recv_buf < n do
-        if not self:fill_buf() then
-            local err = self.conn:error()
-            self.error = "connection closed" .. (err and (": " .. err) or "")
-            return nil
-        end
-        if #self.recv_buf >= n then break end
-        if picocalc.sys.getTimeMs() - start > timeout_ms then
-            self.error = "timeout reading " .. n .. " bytes"
-            return nil
-        end
-        picocalc.sys.sleep(5)
-    end
-    local result = self.recv_buf:sub(1, n)
-    self.recv_buf = self.recv_buf:sub(n + 1)
-    return result
+    return self.conn:isConnected()
 end
 
 -- Read a line ending with \r\n (for version exchange)
@@ -126,6 +140,10 @@ function transport:read_line(timeout_ms)
             local line = self.recv_buf:sub(1, i - 1)
             self.recv_buf = self.recv_buf:sub(i + 2)
             return line
+        end
+        if #self.recv_buf > MAX_LINE_LENGTH then
+            self.error = "line from server too long"
+            return nil
         end
         if not self:fill_buf() then
             local err = self.conn:error()
@@ -180,96 +198,131 @@ function transport:send_packet(payload)
     return true
 end
 
-function transport:recv_packet(timeout_ms)
-    timeout_ms = timeout_ms or 30000
+-- Take one whole packet out of recv_buf, without waiting. Returns its payload, or nil
+-- if more bytes are needed or if the stream has gone wrong (then self.dead is set).
+-- A packet still arriving stays in progress for the next call: its first block has
+-- already gone through the cipher, so it can be neither put back nor read again.
+function transport:take_packet()
+    if self.dead then return nil end
+
+    local block_size = self.recv_cipher and 16 or 8
+    if not self.rx_head then
+        if #self.recv_buf < block_size then return nil end
+        local head = self.recv_buf:sub(1, block_size)
+        self.recv_buf = self.recv_buf:sub(block_size + 1)
+        if self.recv_cipher then head = self.recv_cipher:update(head) end
+
+        -- Nothing has authenticated this yet. Negative on the device past 2^31.
+        local packet_length = string.unpack(">I4", head)
+        if packet_length < MIN_PACKET_LENGTH or packet_length > MAX_PACKET_LENGTH
+                or (packet_length + 4) % block_size ~= 0 then
+            return self:fail(string.format("bad packet length from server (0x%08x)", packet_length))
+        end
+        self.rx_head, self.rx_length = head, packet_length
+    end
+
     local mac_len = 0
     if self.recv_mac_algo == "hmac-sha2-256" then mac_len = 32
     elseif self.recv_mac_algo == "hmac-sha1" then mac_len = 20
     end
 
-    if self.recv_cipher then
-        -- Read first block to get packet_length
-        local block_size = 16
-        local first_block = self:read_bytes(block_size, timeout_ms)
-        if not first_block then return nil end
+    local rest_len = self.rx_length + 4 - block_size
+    if #self.recv_buf < rest_len + mac_len then return nil end
 
-        local decrypted_first = self.recv_cipher:update(first_block)
-        local packet_length = string.unpack(">I4", decrypted_first)
+    local rest = self.recv_buf:sub(1, rest_len)
+    local mac = self.recv_buf:sub(rest_len + 1, rest_len + mac_len)
+    self.recv_buf = self.recv_buf:sub(rest_len + mac_len + 1)
+    if self.recv_cipher and rest_len > 0 then rest = self.recv_cipher:update(rest) end
 
-        -- Read remaining encrypted data
-        local remaining = packet_length - (block_size - 4)
-        local rest = ""
-        if remaining > 0 then
-            rest = self:read_bytes(remaining, timeout_ms)
-            if not rest then return nil end
-            rest = self.recv_cipher:update(rest)
+    local packet = self.rx_head .. rest
+    local packet_length = self.rx_length
+    self.rx_head, self.rx_length = nil, nil
+
+    if mac_len > 0 then
+        local mac_input = string.pack(">I4", self.recv_seq) .. packet
+        local expected_mac
+        if self.recv_mac_algo == "hmac-sha2-256" then
+            expected_mac = crypto.hmacSHA256(self.recv_mac_key, mac_input)
+        else
+            expected_mac = crypto.hmacSHA1(self.recv_mac_key, mac_input)
         end
-
-        local full_packet = decrypted_first .. rest
-
-        -- Read and verify MAC
-        if mac_len > 0 then
-            local mac = self:read_bytes(mac_len, timeout_ms)
-            if not mac then return nil end
-
-            local mac_input = string.pack(">I4", self.recv_seq) .. full_packet
-            local expected_mac
-            if self.recv_mac_algo == "hmac-sha2-256" then
-                expected_mac = crypto.hmacSHA256(self.recv_mac_key, mac_input)
-            else
-                expected_mac = crypto.hmacSHA1(self.recv_mac_key, mac_input)
-            end
-
-            if mac ~= expected_mac then
-                self.error = "MAC verification failed"
-                return nil
-            end
+        if mac ~= expected_mac then
+            return self:fail("MAC verification failed")
         end
+    end
 
-        self.recv_seq = self.recv_seq + 1
+    self.recv_seq = self.recv_seq + 1
 
-        -- Extract payload
-        local padding_length = string.byte(full_packet, 5)
-        local payload_length = packet_length - padding_length - 1
-        return full_packet:sub(6, 5 + payload_length)
-    else
-        -- Plaintext mode
-        local header = self:read_bytes(4, timeout_ms)
-        if not header then return nil end
+    -- At least 4 bytes of padding (RFC 4253 section 6), and every message has a type.
+    local padding_length = string.byte(packet, 5)
+    local payload_length = packet_length - padding_length - 1
+    if padding_length < 4 or payload_length < 1 then
+        return self:fail("bad padding from server")
+    end
+    return packet:sub(6, 5 + payload_length)
+end
 
-        local packet_length = string.unpack(">I4", header)
-        if packet_length > 35000 then
-            self.error = "packet too large: " .. packet_length
-            return nil
+-- Deal with a message that can arrive at any time, whatever the caller is waiting
+-- for. Returns true if it was one (the connection may have ended: see self.dead).
+function transport:handle_common_message(payload)
+    local msg_type = string.byte(payload, 1)
+
+    if msg_type == MSG.IGNORE or msg_type == MSG.DEBUG or msg_type == MSG.UNIMPLEMENTED then
+        return true
+    elseif msg_type == MSG.DISCONNECT then
+        local _, desc_pos = wire.read_uint32(payload, 2)  -- reason code
+        local desc = wire.read_string(payload, desc_pos) or "unknown"
+        self:fail("server disconnected: " .. desc)
+        return true
+    elseif not self.recv_cipher then
+        return false  -- during the first key exchange, the rest are the caller's to refuse
+    elseif msg_type == MSG.EXT_INFO then
+        return true  -- not asked for, and nothing here would use it
+    elseif msg_type == MSG.GLOBAL_REQUEST then
+        -- OpenSSH sends hostkeys-00@openssh.com right after login, and keepalives
+        -- that want a reply. This client supports none: RFC 4254 section 4.
+        local _, pos = wire.read_string(payload, 2)
+        if wire.read_boolean(payload, pos) then
+            self:send_packet(string.char(MSG.REQUEST_FAILURE))
         end
+        return true
+    elseif msg_type == MSG.KEXINIT then
+        -- A server waits for the exchange before sending more, so without this the
+        -- session would just stop. 3 = SSH_DISCONNECT_KEY_EXCHANGE_FAILED.
+        local reason = "server asked to re-key, which this client cannot do"
+        self:send_packet(string.char(MSG.DISCONNECT) .. wire.uint32(3)
+                         .. wire.string(reason) .. wire.string(""))
+        self:fail(reason)
+        return true
+    end
+    return false
+end
 
-        local body = self:read_bytes(packet_length, timeout_ms)
-        if not body then return nil end
-
-        self.recv_seq = self.recv_seq + 1
-
-        local padding_length = string.byte(body, 1)
-        local payload_length = packet_length - padding_length - 1
-        return body:sub(2, 1 + payload_length)
+-- Take the next message for the caller out of recv_buf, without waiting. Returns its
+-- payload, or nil if more bytes are needed or the connection has ended (self.dead).
+function transport:take_message()
+    while true do
+        local payload = self:take_packet()
+        if not payload then return nil end
+        if not self:handle_common_message(payload) then return payload end
     end
 end
 
--- Receive a packet, skipping IGNORE and DEBUG messages
+-- Wait for the next message for the caller.
 function transport:recv_packet_skip(timeout_ms)
+    timeout_ms = timeout_ms or 30000
+    local start = picocalc.sys.getTimeMs()
     while true do
-        local payload = self:recv_packet(timeout_ms)
-        if not payload then return nil end
-        local msg_type = string.byte(payload, 1)
-        if msg_type == MSG.IGNORE or msg_type == MSG.DEBUG then
-            -- skip
-        elseif msg_type == MSG.DISCONNECT then
-            local _, reason, desc = wire.read_uint32(payload, 2)
-            desc = wire.read_string(payload, desc) or "unknown"
-            self.error = "server disconnected: " .. desc
+        local payload = self:take_message()
+        if payload or self.dead then return payload end
+
+        local had = #self.recv_buf
+        if not self:fill_buf() then return self:connection_closed() end
+        if picocalc.sys.getTimeMs() - start > timeout_ms then
+            self.error = "timeout waiting for the server"
             return nil
-        else
-            return payload
         end
+        if #self.recv_buf == had then picocalc.sys.sleep(5) end
     end
 end
 
@@ -281,10 +334,7 @@ function transport:exchange_versions()
     -- Read lines until we find one starting with "SSH-2.0-"
     for _ = 1, 20 do
         local line = self:read_line(10000)
-        if not line then
-            self.error = "timeout waiting for server version"
-            return false
-        end
+        if not line then return false end
         if line:sub(1, 4) == "SSH-" then
             if line:sub(1, 8) ~= "SSH-2.0-" then
                 self.error = "unsupported SSH version: " .. line
@@ -319,18 +369,18 @@ function transport:build_kexinit()
     return payload
 end
 
+-- The KEXINIT name-lists, in order. Returns nil if any is cut short.
 function transport:parse_kexinit(payload)
     local pos = 2 + 16  -- skip msg_type + cookie
     local server = {}
 
-    server.kex, pos = wire.read_namelist(payload, pos)
-    server.hostkey, pos = wire.read_namelist(payload, pos)
-    server.cipher_c2s, pos = wire.read_namelist(payload, pos)
-    server.cipher_s2c, pos = wire.read_namelist(payload, pos)
-    server.mac_c2s, pos = wire.read_namelist(payload, pos)
-    server.mac_s2c, pos = wire.read_namelist(payload, pos)
-    server.compress_c2s, pos = wire.read_namelist(payload, pos)
-    server.compress_s2c, pos = wire.read_namelist(payload, pos)
+    for _, field in ipairs(KEXINIT_LISTS) do
+        server[field], pos = wire.read_namelist(payload, pos)
+        if not server[field] then
+            self.error = "malformed KEXINIT from server"
+            return nil
+        end
+    end
 
     return server
 end
@@ -348,15 +398,24 @@ function transport:negotiate_algorithms(server)
         return false
     end
 
-    self.cipher_algo = wire.negotiate(CLIENT_CIPHER, server.cipher_c2s)
-    if not self.cipher_algo then
+    -- Each direction on its own (RFC 4253 section 7.1): nothing makes a server's lists match.
+    self.cipher_c2s = wire.negotiate(CLIENT_CIPHER, server.cipher_c2s)
+    self.cipher_s2c = wire.negotiate(CLIENT_CIPHER, server.cipher_s2c)
+    if not self.cipher_c2s or not self.cipher_s2c then
         self.error = "no common cipher algorithm"
         return false
     end
 
-    self.mac_algo = wire.negotiate(CLIENT_MAC, server.mac_c2s)
-    if not self.mac_algo then
+    self.mac_c2s = wire.negotiate(CLIENT_MAC, server.mac_c2s)
+    self.mac_s2c = wire.negotiate(CLIENT_MAC, server.mac_s2c)
+    if not self.mac_c2s or not self.mac_s2c then
         self.error = "no common MAC algorithm"
+        return false
+    end
+
+    if not wire.negotiate(CLIENT_COMPRESS, server.compress_c2s)
+            or not wire.negotiate(CLIENT_COMPRESS, server.compress_s2c) then
+        self.error = "no common compression algorithm"
         return false
     end
 
@@ -390,14 +449,25 @@ function transport:verify_host_key(K_S, H, sig_blob)
         return false
     end
 
-    if algo == "rsa-sha2-256" or algo == "ssh-rsa" then
-        return crypto.rsaVerify(K_S, sig_data, H)
-    elseif algo == "ecdsa-sha2-nistp256" then
-        return crypto.ecdsaP256Verify(K_S, sig_data, H)
-    else
-        self.error = "unsupported signature algorithm: " .. algo
+    -- The server must sign with the algorithm the exchange agreed on, using a key
+    -- of that algorithm's type. The verifiers do not read the key's type field.
+    if algo ~= self.hostkey_algo then
+        self.error = "unexpected signature algorithm: " .. algo
         return false
     end
+    local key_type = wire.read_string(K_S, 1)
+    if key_type ~= HOSTKEY_KEY_TYPE[algo] then
+        self.error = "unexpected host key type: " .. tostring(key_type)
+        return false
+    end
+
+    -- A host signs H with the scheme's usual hash, so the digest under the
+    -- signature is SHA-256(H), not H (RFC 5656 section 3.1.2, RFC 8332 section 3).
+    local digest = crypto.sha256(H)
+    if algo == "rsa-sha2-256" then
+        return crypto.rsaVerify(K_S, sig_data, digest)
+    end
+    return crypto.ecdsaP256Verify(K_S, sig_data, digest)
 end
 
 -- Perform ECDH key exchange (curve25519-sha256 or ecdh-sha2-nistp256)
@@ -483,17 +553,17 @@ function transport:derive_keys()
     local H = self._H
     local sid = self.session_id
 
-    local cipher_key_len = (self.cipher_algo == "aes256-ctr") and 32 or 16
+    local function cipher_key_len(algo) return algo == "aes256-ctr" and 32 or 16 end
+    local function mac_key_len(algo) return algo == "hmac-sha2-256" and 32 or 20 end
     local iv_len = 16
-    local mac_key_len = (self.mac_algo == "hmac-sha2-256") and 32 or 20
 
     -- RFC 4253 §7.2: key derivation
     local iv_c2s    = crypto.deriveKey(K, H, sid, "A", iv_len)
     local iv_s2c    = crypto.deriveKey(K, H, sid, "B", iv_len)
-    local key_c2s   = crypto.deriveKey(K, H, sid, "C", cipher_key_len)
-    local key_s2c   = crypto.deriveKey(K, H, sid, "D", cipher_key_len)
-    local mackey_c2s = crypto.deriveKey(K, H, sid, "E", mac_key_len)
-    local mackey_s2c = crypto.deriveKey(K, H, sid, "F", mac_key_len)
+    local key_c2s   = crypto.deriveKey(K, H, sid, "C", cipher_key_len(self.cipher_c2s))
+    local key_s2c   = crypto.deriveKey(K, H, sid, "D", cipher_key_len(self.cipher_s2c))
+    local mackey_c2s = crypto.deriveKey(K, H, sid, "E", mac_key_len(self.mac_c2s))
+    local mackey_s2c = crypto.deriveKey(K, H, sid, "F", mac_key_len(self.mac_s2c))
 
     return {
         iv_c2s = iv_c2s, iv_s2c = iv_s2c,
@@ -516,12 +586,12 @@ function transport:activate_keys(keys)
     -- Activate send cipher
     self.send_cipher = crypto.aes_ctr_new(keys.key_c2s, keys.iv_c2s)
     self.send_mac_key = keys.mackey_c2s
-    self.send_mac_algo = self.mac_algo
+    self.send_mac_algo = self.mac_c2s
 
     -- Activate recv cipher
     self.recv_cipher = crypto.aes_ctr_new(keys.key_s2c, keys.iv_s2c)
     self.recv_mac_key = keys.mackey_s2c
-    self.recv_mac_algo = self.mac_algo
+    self.recv_mac_algo = self.mac_s2c
 
     return true
 end
@@ -549,7 +619,7 @@ function transport:handshake()
 
     -- Negotiate algorithms
     local server = self:parse_kexinit(server_kexinit)
-    if not self:negotiate_algorithms(server) then return false end
+    if not server or not self:negotiate_algorithms(server) then return false end
 
     -- ECDH key exchange
     if not self:do_kex() then return false end

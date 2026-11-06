@@ -2,7 +2,7 @@
 the background (cadence, key-to-ring latency bound, interrupt cost),
 input.update() no longer waits on the 10 kHz bus, a bus fault recovers, a
 clock change keeps the keyboard, reads stop while nobody polls, idle dimming
-still drives the backlight.
+still drives the backlight, an app launch lights a dimmed screen.
 The simulator has no keyboard bus (simulator/stubs/keyboard_stub.c).
 
 KBD_SOAK_S=<seconds> runs the long soak; KBD_MANUAL=1 runs the keys-held
@@ -395,6 +395,92 @@ def test_idle_dim_drives_the_backlight(target):
     woke = kbdstat(target)
     assert woke["bl_writes"] >= dimmed["bl_writes"] + 1, woke
     assert woke["errors"] == 0, woke
+
+
+FIRST_KEY = """
+local T = picocalc.sys.loadlib("picotest")
+T.case("first_key_reaches_the_app", function()
+  local input = picocalc.input
+  local t_end = picocalc.sys.getTimeMs() + 15000
+  local got = false
+  while not got and picocalc.sys.getTimeMs() < t_end do
+    input.update()
+    got = input.getButtonsPressed() & input.BTN_UP ~= 0
+    picocalc.sys.sleep(10)
+  end
+  T.ok(got, "the first key after the launch did not arrive")
+end)
+T.done()
+"""
+
+
+# Issue #72: the dev `launch` lights a screen that dimmed at the launcher, so
+# the app's first injected key is not spent waking it. The simulator's version
+# is tests/e2e/test_idle_dim.py.
+def test_launch_lights_a_dimmed_screen(target):
+    app_id = "com.test.kbd_first_key"
+    target.stage_lua_app("kbd_first_key", FIRST_KEY, id=app_id)
+    target.ensure_launcher()
+    try:
+        cfg = json.loads(target.read_file("/system/config.json"))
+    except Exception:
+        cfg = {}
+    timeout_s = int(cfg.get("dim_timeout_s", 60))
+    if timeout_s == 0 or timeout_s > 120:
+        pytest.skip(f"dim_timeout_s={timeout_s}")
+    target.delete_file(f"/data/{app_id}/test_results.json")
+    target.keypress("down")  # activity: wakes a dimmed screen, restarts the timer
+    time.sleep(1)
+    kbdstat(target, "reset")
+    time.sleep(timeout_s + 5)
+    dimmed = kbdstat(target)
+    assert dimmed["bl_writes"] >= 1, dimmed  # it did dim, at the launcher
+    target.launch_app("kbd_first_key")
+    time.sleep(1)  # the app is up
+    woke = kbdstat(target)  # before the key, which would light it too
+    target.keypress("up")
+    doc = target.wait_for_results(app_id, timeout=30)
+    target.ensure_launcher()
+    print("dimmed:", dimmed, "\nafter the launch:", woke)
+    assert [c["status"] for c in doc["cases"]] == ["PASS"], doc
+    assert woke["bl_writes"] >= dimmed["bl_writes"] + 1, (dimmed, woke)
+    assert woke["errors"] == 0, woke
+
+
+def test_idle_dim_counts_a_moving_stick(target):
+    """A stick or trigger moving is activity: a game driven by one sets no
+    press edge. The same reading sent over and over moves nothing and the
+    screen dims, so it is not the `pad` commands that keep it lit."""
+    target.ensure_launcher()
+    try:
+        cfg = json.loads(target.read_file("/system/config.json"))
+    except Exception:
+        cfg = {}
+    timeout_s = int(cfg.get("dim_timeout_s", 60))
+    if timeout_s == 0 or timeout_s > 120:
+        pytest.skip(f"dim_timeout_s={timeout_s}")
+    target.keypress("down")  # activity: wakes a dimmed screen, restarts the timer
+    time.sleep(1)
+    kbdstat(target, "reset")
+    try:
+        value = 0.4
+        end = time.monotonic() + timeout_s + 5
+        while time.monotonic() < end:
+            target.pad(f"lx={value}")
+            value = -value
+            time.sleep(5)
+        moving = kbdstat(target)
+        assert moving["bl_writes"] == 0, moving
+
+        end = time.monotonic() + timeout_s + 5
+        while time.monotonic() < end:
+            target.pad("lx=0.4")
+            time.sleep(5)
+        still = kbdstat(target)
+        assert still["bl_writes"] >= 1, still
+    finally:
+        target.pad("off")
+    target.keypress("down")  # wakes it
 
 
 @pytest.mark.skipif(SOAK_S <= 0, reason="set KBD_SOAK_S=<seconds> to soak")

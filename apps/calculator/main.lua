@@ -8,22 +8,6 @@ local ui = pc.ui
 local fs = pc.fs
 local sys = pc.sys
 
--- ── Module loader ───────────────────────────────────────────────────────────
-
-local _loaded = {}
-function require(name)
-    if _loaded[name] then return _loaded[name] end
-    local path = APP_DIR .. "/" .. name:gsub("%.", "/") .. ".lua"
-    local src = fs.readFile(path)
-    if not src then error("require: file not found: " .. path) end
-    local fn, err = load(src, "@" .. path)
-    if not fn then error("require: " .. err) end
-    local result = fn()
-    if result == nil then result = true end
-    _loaded[name] = result
-    return result
-end
-
 -- ── Load modules ────────────────────────────────────────────────────────────
 
 local Engine = require("calc_engine")
@@ -879,6 +863,14 @@ load_history()
 
 -- ── Main loop ───────────────────────────────────────────────────────────────
 
+-- Only a key changes this screen, apart from the status bar's clock and battery
+-- and any OS overlay, which a redraw once a second keeps up to date. In between
+-- the app sleeps: redrawing and flushing flat out would hold the CPU and the
+-- panel's bus at full power while it waits for a key.
+local IDLE_REDRAW_MS = 1000
+local needs_draw = true
+local last_draw_ms = 0
+
 while true do
     input.update()
     local pressed = input.getButtonsPressed()
@@ -887,28 +879,38 @@ while true do
     local ch = input.getChar()
     if ch then
         handle_char_input(ch)
+        needs_draw = true
     end
 
     -- Button input
     if pressed ~= 0 then
         local cont = handle_input(pressed)
         if not cont then return end  -- exit app
+        needs_draw = true
     end
 
-    -- ── Draw ────────────────────────────────────────────────────────────
-    disp.clear(BG)
-    if active_tab == 3 and UIGraph.is_fullscreen() then
-        -- Graph view/trace/table: fullscreen rendering
-        draw_status_bar()
-        draw_tabs()
-        UIGraph.draw_fullscreen(disp, engine)
+    local now = sys.getTimeMs()
+    if needs_draw or now - last_draw_ms >= IDLE_REDRAW_MS then
+        needs_draw = false
+        last_draw_ms = now
+
+        -- ── Draw ────────────────────────────────────────────────────────
+        disp.clear(BG)
+        if active_tab == 3 and UIGraph.is_fullscreen() then
+            -- Graph view/trace/table: fullscreen rendering
+            draw_status_bar()
+            draw_tabs()
+            UIGraph.draw_fullscreen(disp, engine)
+        else
+            draw_status_bar()
+            draw_tabs()
+            draw_display()
+            draw_button_grid()
+            draw_footer()
+            draw_history_overlay()
+        end
+        disp.flush()
     else
-        draw_status_bar()
-        draw_tabs()
-        draw_display()
-        draw_button_grid()
-        draw_footer()
-        draw_history_overlay()
+        sys.sleep(16)
     end
-    disp.flush()
 end

@@ -23,6 +23,53 @@
 // freed and are rejected from then on.
 #define PLAYER_UV_SAMPLE 1
 
+// ── Temporary players (sample:play, sample:playAt) ──────────────────────────
+// The obvious way to play a sound effect is to drop what these return. So a
+// temporary player does not depend on the app's reference, in either direction:
+//   - On a voice it is anchored, at [voice + 1] of a registry table, so the
+//     collector cannot cut it off. That holds until it finishes or is stopped;
+//     a looping one lives until stopped.
+//   - Once it is not audible, temp_reap() parks it (sound_player_park): its
+//     state moves into the userdata, the voice is free at once and the anchor
+//     goes, so it is an ordinary object the collector takes when it can. It
+//     stays a working player for an app that kept it: the methods read and
+//     write the parked copy, and play() or setPaused(false) takes a voice again
+//     (temp_attach).
+// The mixer cannot touch Lua (and clearing the anchor allocates nothing, but it
+// is Lua all the same), so only Core 0 parks: the service pass
+// (lua_bridge_sound_poll) and anyone about to need a voice (voice_new).
+// A parked player holds no callback slot either, or the ninth finished player
+// with a callback would have none: its functions wait in user values.
+#define TEMP_UV_FINISH 2
+#define TEMP_UV_LOOP 3
+#define TEMP_UV_COUNT 3
+
+typedef struct {
+    sound_player_t *player;  // first, as in any player userdata: a voice, or &parked
+    sound_player_t parked;
+} temp_player_t;
+
+_Static_assert(SOUND_MAX_PLAYERS <= 8, "s_temp_voices has a bit per voice");
+static uint8_t s_temp_voices;   // voices holding a temporary player; its address keys the table
+
+// A full collection for a voice (voice_new), at most this often.
+#define VOICE_GC_MIN_INTERVAL_MS 1000
+static uint32_t s_voice_gc_ms;
+
+static sound_player_t *voice_new(lua_State *L);
+static bool temp_attach(lua_State *L, int idx, temp_player_t *t);
+static void temp_reap(lua_State *L);
+
+// The temporary player at idx, or NULL for one sound.sampleplayer() made.
+static temp_player_t *temp_of(lua_State *L, int idx) {
+    return lua_rawlen(L, idx) == sizeof(temp_player_t)
+               ? (temp_player_t *)lua_touserdata(L, idx) : NULL;
+}
+
+static bool temp_is_parked(const temp_player_t *t) {
+    return t && t->player == &t->parked;
+}
+
 static sound_sample_t *check_sample(lua_State *L, int idx) {
     sound_sample_t **ud = lb_checkudata(L, idx, SAMPLE_USERDATA);
     if (!*ud)
@@ -34,6 +81,16 @@ static sound_player_t *check_player(lua_State *L, int idx) {
     sound_player_t **ud = lb_checkudata(L, idx, PLAYER_USERDATA);
     if (!*ud)
         luaL_argerror(L, idx, "sampleplayer has been freed");
+    temp_player_t *t = temp_of(L, idx);
+    if (temp_is_parked(t)) {
+        // sound_sample_destroy detaches voices only. The anchored sample
+        // outlives a reachable player, but in one cycle's finalisers the sample
+        // can go first and a later finaliser still reach this player.
+        lua_getiuservalue(L, idx, PLAYER_UV_SAMPLE);
+        sound_sample_t **sample = lb_testudata(L, -1, SAMPLE_USERDATA);
+        t->parked.sample = sample ? *sample : NULL;
+        lua_pop(L, 1);
+    }
     return *ud;
 }
 
@@ -200,22 +257,57 @@ static int l_sound_sample_getSubsample(lua_State *L) {
     return 1;
 }
 
-// sample:play([repeatCount], [rate]) — convenience: create temp player, play, return it
+static int push_no_voice(lua_State *L) {
+    lua_pushnil(L);
+    lua_pushfstring(L, "at most %d sampleplayers can exist at once",
+                    SOUND_MAX_PLAYERS);
+    return 2;
+}
+
+// Records the temporary player at idx, just put on a voice. The table's array
+// part is sized up front (lua_bridge_sound_init), so this cannot raise.
+static void temp_anchor(lua_State *L, int idx, const temp_player_t *t) {
+    int voice = sound_player_voice(t->player);
+    idx = lua_absindex(L, idx);
+    lua_rawgetp(L, LUA_REGISTRYINDEX, &s_temp_voices);
+    lua_pushvalue(L, idx);
+    lua_rawseti(L, -2, voice + 1);
+    lua_pop(L, 1);
+    s_temp_voices |= (uint8_t)(1u << voice);
+}
+
+// Plays the sample userdata at index 1 on a new temporary player and returns
+// it, or nil and the reason: running out of voices is no error to die of.
+static int temp_play(lua_State *L, sound_sample_t *sample, uint8_t repeat,
+                     uint8_t vol, float rate) {
+    if (!sample->loaded) {
+        lua_pushnil(L);
+        lua_pushstring(L, "sample has no data");
+        return 2;
+    }
+    temp_player_t *t = lua_newuserdatauv(L, sizeof(*t), TEMP_UV_COUNT);
+    t->player = NULL;
+    luaL_setmetatable(L, PLAYER_USERDATA);
+    sound_player_t *voice = voice_new(L);
+    if (!voice)
+        return push_no_voice(L);
+    t->player = voice;
+    anchor_sample(L, -1, 1);
+    temp_anchor(L, -1, t);
+
+    g_api.soundplayer->playerSetSample(voice, sample);
+    g_api.soundplayer->playerSetVolume(voice, vol);
+    sound_player_set_rate(voice, rate);
+    g_api.soundplayer->playerPlay(voice, repeat);
+    return 1;
+}
+
+// sample:play([repeatCount], [rate])
 static int l_sound_sample_play(lua_State *L) {
     sound_sample_t *sample = check_sample(L, 1);
     uint8_t repeat = (uint8_t)lb_clamp_int(lb_optint(L, 2, 1), 0, 255);
     float rate = (float)luaL_optnumber(L, 3, 1.0);
-
-    sound_player_t **ud = push_player_ud(L);
-    sound_player_t *player = (sound_player_t *)g_api.soundplayer->playerNew();
-    if (!player) return luaL_error(L, "failed to create player");
-    *ud = player;
-    anchor_sample(L, -1, 1);
-
-    g_api.soundplayer->playerSetSample(player, sample);
-    sound_player_set_rate(player, rate);
-    g_api.soundplayer->playerPlay(player, repeat);
-    return 1;
+    return temp_play(L, sample, repeat, 100, rate);
 }
 
 // sample:playAt(when, [vol], [rightvol], [rate])
@@ -223,20 +315,9 @@ static int l_sound_sample_playAt(lua_State *L) {
     sound_sample_t *sample = check_sample(L, 1);
     (void)luaL_checknumber(L, 2); // 'when' — ignored on this hardware (no scheduler)
     uint8_t vol = (uint8_t)lb_clamp_int(lb_optint(L, 3, 100), 0, 100);
-    (void)lb_optint(L, 4, vol); // rightvol — mono PWM, use left
+    (void)lb_optint(L, 4, vol); // rightvol — a player has one volume: no panning
     float rate = (float)luaL_optnumber(L, 5, 1.0);
-
-    sound_player_t **ud = push_player_ud(L);
-    sound_player_t *player = (sound_player_t *)g_api.soundplayer->playerNew();
-    if (!player) return luaL_error(L, "failed to create player");
-    *ud = player;
-    anchor_sample(L, -1, 1);
-
-    g_api.soundplayer->playerSetSample(player, sample);
-    g_api.soundplayer->playerSetVolume(player, vol);
-    sound_player_set_rate(player, rate);
-    g_api.soundplayer->playerPlay(player, 1);
-    return 1;
+    return temp_play(L, sample, 1, vol, rate);
 }
 
 // sample:save(filename) — write WAV file to SD card
@@ -344,13 +425,9 @@ static int l_sound_sampleplayer_new(lua_State *L) {
     }
 
     sound_player_t **ud = push_player_ud(L);
-    *ud = (sound_player_t *)g_api.soundplayer->playerNew();
-    if (!*ud) {
-        lua_pushnil(L);
-        lua_pushfstring(L, "at most %d sampleplayers can exist at once",
-                        SOUND_MAX_PLAYERS);
-        return 2;
-    }
+    *ud = voice_new(L);
+    if (!*ud)
+        return push_no_voice(L);
     if (sample) {
         anchor_sample(L, -1, sample_idx);
         g_api.soundplayer->playerSetSample(*ud, sample);
@@ -372,6 +449,17 @@ static int l_sound_sampleplayer_setSample(lua_State *L) {
 static int l_sound_sampleplayer_play(lua_State *L) {
     sound_player_t *player = check_player(L, 1);
     uint8_t repeat = (uint8_t)lb_clamp_int(lb_optint(L, 2, 1), 0, 255);
+    if (!player->sample || !player->sample->loaded) {
+        lua_pushnil(L);
+        lua_pushstring(L, "no sample to play");
+        return 2;
+    }
+    temp_player_t *t = temp_of(L, 1);
+    if (temp_is_parked(t)) {
+        if (!temp_attach(L, 1, t))
+            return push_no_voice(L);
+        player = t->player;
+    }
     g_api.soundplayer->playerPlay(player, repeat);
     lua_pushboolean(L, true);
     return 1;
@@ -404,7 +492,14 @@ static int l_sound_sampleplayer_getVolume(lua_State *L) {
 
 static int l_sound_sampleplayer_setPaused(lua_State *L) {
     sound_player_t *player = check_player(L, 1);
-    player->paused = lua_toboolean(L, 2);
+    bool paused = lua_toboolean(L, 2);
+    temp_player_t *t = temp_of(L, 1);
+    if (!paused && temp_is_parked(t) && player->playing) {
+        if (!temp_attach(L, 1, t))
+            return push_no_voice(L);  // still paused, position kept
+        player = t->player;
+    }
+    player->paused = paused;
     return 0;
 }
 
@@ -483,7 +578,13 @@ static void release_player_cbs(lua_State *L, sound_player_t *player);
 
 static int l_sound_sampleplayer_gc(lua_State *L) {
     sound_player_t **ud = lb_checkudata(L, 1, PLAYER_USERDATA);
-    if (*ud) {
+    temp_player_t *t = *ud ? temp_of(L, 1) : NULL;
+    if (temp_is_parked(t)) {
+        *ud = NULL;  // no voice and no callback slot: its user values go with it
+    } else if (*ud) {
+        // On a voice a temporary player is anchored, so this is lua_close.
+        if (t)
+            s_temp_voices &= (uint8_t)~(1u << sound_player_voice(t->player));
         // Free first (detaches the player's callbacks under the mixer lock,
         // so Core 1 stops firing them), then give the slots back: releasing
         // first left a window for a callback into a slot being reused.
@@ -534,7 +635,12 @@ static int l_sound_fileplayer_load(lua_State *L) {
 static int l_sound_fileplayer_play(lua_State *L) {
     fileplayer_t *player = check_fileplayer(L, 1);
     uint8_t repeat = (uint8_t)lb_clamp_int(lb_optint(L, 2, 1), 0, 255);
-    g_api.soundplayer->filePlayerPlay(player, repeat);
+    // Not through the void native filePlayerPlay: Lua gets the result.
+    if (!fileplayer_play(player, repeat)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "no file loaded");
+        return 2;
+    }
     lua_pushboolean(L, true);
     return 1;
 }
@@ -661,17 +767,16 @@ static sound_lua_cb_t *find_or_alloc_cb(sound_lua_cb_t *arr, int count,
     return NULL;
 }
 
-// Helper: register a Lua callback into a slot array.
+// Helper: register the Lua function at fn_idx into a slot array.
 // Returns the slot pointer (for wiring the C callback), or NULL on failure.
 static sound_lua_cb_t *register_lua_cb(lua_State *L, sound_lua_cb_t *arr,
-                                        int count, void *match_arg) {
-    luaL_checktype(L, 2, LUA_TFUNCTION);
+                                        int count, void *match_arg, int fn_idx) {
     sound_lua_cb_t *cb = find_or_alloc_cb(arr, count, match_arg);
     if (!cb)
         return NULL;
     if (cb->ref != 0)
         luaL_unref(L, LUA_REGISTRYINDEX, cb->ref);
-    lua_pushvalue(L, 2);
+    lua_pushvalue(L, fn_idx);
     cb->ref = luaL_ref(L, LUA_REGISTRYINDEX);
     cb->L = L;
     cb->pending = 0;
@@ -711,46 +816,7 @@ void lua_bridge_sound_poll(lua_State *L) {
         fire_sound_cb(L, &s_sp_finish_cbs[i], "sampleplayer finish");
     for (int i = 0; i < MAX_SAMPLEPLAYER_CBS; i++)
         fire_sound_cb(L, &s_sp_loop_cbs[i], "sampleplayer loop");
-}
-
-// ── Fileplayer callbacks ────────────────────────────────────────────────────
-
-static int l_sound_fileplayer_setFinishCallback(lua_State *L) {
-    fileplayer_t *player = check_fileplayer(L, 1);
-    sound_lua_cb_t *cb = register_lua_cb(L, s_fp_finish_cbs, MAX_FILEPLAYER_CBS,
-                                          player->finish_callback_arg);
-    if (!cb) return luaL_error(L, "too many fileplayer finish callbacks");
-    fileplayer_set_finish_callback(player, trampoline_set_pending, cb);
-    return 0;
-}
-
-static int l_sound_fileplayer_setLoopCallback(lua_State *L) {
-    fileplayer_t *player = check_fileplayer(L, 1);
-    sound_lua_cb_t *cb = register_lua_cb(L, s_fp_loop_cbs, MAX_FILEPLAYER_CBS,
-                                          player->loop_callback_arg);
-    if (!cb) return luaL_error(L, "too many fileplayer loop callbacks");
-    fileplayer_set_loop_callback(player, trampoline_set_pending, cb);
-    return 0;
-}
-
-// ── Sampleplayer callbacks ──────────────────────────────────────────────────
-
-static int l_sound_sampleplayer_setFinishCallback(lua_State *L) {
-    sound_player_t *player = check_player(L, 1);
-    sound_lua_cb_t *cb = register_lua_cb(L, s_sp_finish_cbs, MAX_SAMPLEPLAYER_CBS,
-                                          player->finish_callback_arg);
-    if (!cb) return luaL_error(L, "too many sampleplayer finish callbacks");
-    sound_player_set_finish_callback(player, trampoline_set_pending, cb);
-    return 0;
-}
-
-static int l_sound_sampleplayer_setLoopCallback(lua_State *L) {
-    sound_player_t *player = check_player(L, 1);
-    sound_lua_cb_t *cb = register_lua_cb(L, s_sp_loop_cbs, MAX_SAMPLEPLAYER_CBS,
-                                          player->loop_callback_arg);
-    if (!cb) return luaL_error(L, "too many sampleplayer loop callbacks");
-    sound_player_set_loop_callback(player, trampoline_set_pending, cb);
-    return 0;
+    temp_reap(L);  // after the callbacks: a finish callback may play it again
 }
 
 // A collected sampleplayer gives its callback slots back (they used to stay
@@ -765,9 +831,189 @@ static void release_cb(lua_State *L, sound_lua_cb_t *arr, int count, void *arg) 
     }
 }
 
+// ── Fileplayer callbacks ────────────────────────────────────────────────────
+// nil clears a callback, as for HTTP and TCP: detached first, as in __gc.
+
+static int l_sound_fileplayer_setFinishCallback(lua_State *L) {
+    fileplayer_t *player = check_fileplayer(L, 1);
+    if (lua_isnoneornil(L, 2)) {
+        void *old = player->finish_callback_arg;
+        fileplayer_set_finish_callback(player, NULL, NULL);
+        release_cb(L, s_fp_finish_cbs, MAX_FILEPLAYER_CBS, old);
+        return 0;
+    }
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    sound_lua_cb_t *cb = register_lua_cb(L, s_fp_finish_cbs, MAX_FILEPLAYER_CBS,
+                                          player->finish_callback_arg, 2);
+    if (!cb) return luaL_error(L, "too many fileplayer finish callbacks");
+    fileplayer_set_finish_callback(player, trampoline_set_pending, cb);
+    return 0;
+}
+
+static int l_sound_fileplayer_setLoopCallback(lua_State *L) {
+    fileplayer_t *player = check_fileplayer(L, 1);
+    if (lua_isnoneornil(L, 2)) {
+        void *old = player->loop_callback_arg;
+        fileplayer_set_loop_callback(player, NULL, NULL);
+        release_cb(L, s_fp_loop_cbs, MAX_FILEPLAYER_CBS, old);
+        return 0;
+    }
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    sound_lua_cb_t *cb = register_lua_cb(L, s_fp_loop_cbs, MAX_FILEPLAYER_CBS,
+                                          player->loop_callback_arg, 2);
+    if (!cb) return luaL_error(L, "too many fileplayer loop callbacks");
+    fileplayer_set_loop_callback(player, trampoline_set_pending, cb);
+    return 0;
+}
+
+// ── Sampleplayer callbacks ──────────────────────────────────────────────────
+
+typedef void (*player_cb_setter_t)(sound_player_t *, int (*)(void *), void *);
+
+// setFinishCallback / setLoopCallback on the player at index 1. A parked
+// temporary player only keeps the function (temp_attach wires it).
+static int set_player_cb(lua_State *L, sound_player_t *player, sound_lua_cb_t *arr,
+                         void *old_arg, player_cb_setter_t set, int temp_uv,
+                         const char *too_many) {
+    bool clear = lua_isnoneornil(L, 2);
+    if (!clear)
+        luaL_checktype(L, 2, LUA_TFUNCTION);
+    if (temp_is_parked(temp_of(L, 1))) {
+        lua_settop(L, 2);
+        lua_setiuservalue(L, 1, temp_uv);
+        return 0;
+    }
+    if (clear) {
+        set(player, NULL, NULL);
+        release_cb(L, arr, MAX_SAMPLEPLAYER_CBS, old_arg);
+        return 0;
+    }
+    sound_lua_cb_t *cb = register_lua_cb(L, arr, MAX_SAMPLEPLAYER_CBS, old_arg, 2);
+    if (!cb) return luaL_error(L, "%s", too_many);
+    set(player, trampoline_set_pending, cb);
+    return 0;
+}
+
+static int l_sound_sampleplayer_setFinishCallback(lua_State *L) {
+    sound_player_t *player = check_player(L, 1);
+    return set_player_cb(L, player, s_sp_finish_cbs, player->finish_callback_arg,
+                         sound_player_set_finish_callback, TEMP_UV_FINISH,
+                         "too many sampleplayer finish callbacks");
+}
+
+static int l_sound_sampleplayer_setLoopCallback(lua_State *L) {
+    sound_player_t *player = check_player(L, 1);
+    return set_player_cb(L, player, s_sp_loop_cbs, player->loop_callback_arg,
+                         sound_player_set_loop_callback, TEMP_UV_LOOP,
+                         "too many sampleplayer loop callbacks");
+}
+
 static void release_player_cbs(lua_State *L, sound_player_t *player) {
     release_cb(L, s_sp_finish_cbs, MAX_SAMPLEPLAYER_CBS, player->finish_callback_arg);
     release_cb(L, s_sp_loop_cbs, MAX_SAMPLEPLAYER_CBS, player->loop_callback_arg);
+}
+
+// ── Temporary players' voices ───────────────────────────────────────────────
+
+static bool cb_pending(void *arg) {
+    return arg && ((sound_lua_cb_t *)arg)->pending;
+}
+
+// Moves a parked player's callback (the slot `arg`) to its user value, with no
+// allocation: the userdata is on top of the stack.
+static void cb_to_uservalue(lua_State *L, void *arg, int uv) {
+    if (!arg)
+        return;
+    sound_lua_cb_t *cb = arg;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, cb->ref);
+    lua_setiuservalue(L, -2, uv);
+    luaL_unref(L, LUA_REGISTRYINDEX, cb->ref);
+    cb->ref = 0;
+    cb->pending = 0;
+}
+
+// Parks every temporary player that is no longer audible. Runs in the service
+// pass, so it must not raise: nothing here allocates or calls Lua.
+static void temp_reap(lua_State *L) {
+    uint32_t idle = s_temp_voices ? s_temp_voices & sound_voices_parkable() : 0;
+    if (!idle)
+        return;  // the usual case, read without touching Lua or PSRAM
+    lua_rawgetp(L, LUA_REGISTRYINDEX, &s_temp_voices);
+    for (int v = 0; v < SOUND_MAX_PLAYERS; v++) {
+        if (!(idle & (1u << v)))
+            continue;
+        lua_rawgeti(L, -1, v + 1);
+        temp_player_t *t = lb_testudata(L, -1, PLAYER_USERDATA);
+        // A callback the pump has handed over still has to fire: a dropped
+        // player's finaliser would give its slot back first. Checked inside the
+        // park, under the mixer lock: the pump can be between taking the flag and
+        // setting cb->pending, and any time before the park's own check would be
+        // too early.
+        if (t && sound_player_park(t->player, &t->parked, cb_pending)) {
+            t->player = &t->parked;
+            cb_to_uservalue(L, t->parked.finish_callback_arg, TEMP_UV_FINISH);
+            cb_to_uservalue(L, t->parked.loop_callback_arg, TEMP_UV_LOOP);
+            t->parked.finish_callback = t->parked.loop_callback = NULL;
+            t->parked.finish_callback_arg = t->parked.loop_callback_arg = NULL;
+            lua_pushnil(L);
+            lua_rawseti(L, -3, v + 1);
+            s_temp_voices &= (uint8_t)~(1u << v);
+        }
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+}
+
+// A free voice, or NULL with all of them taken. Finished temporary players go
+// first. Then a full collection, since a dropped sampleplayer keeps its voice
+// until it is collected, unless every voice holds a temporary player (those are
+// audible now, so it could free nothing). It can take tens of milliseconds on
+// the device, so an app firing more sounds than there are voices must not run
+// one per shot.
+static sound_player_t *voice_new(lua_State *L) {
+    temp_reap(L);
+    sound_player_t *voice = (sound_player_t *)g_api.soundplayer->playerNew();
+    if (!voice && s_temp_voices != (uint8_t)((1u << SOUND_MAX_PLAYERS) - 1)) {
+        uint32_t now = g_api.sys->getTimeMs();
+        if ((uint32_t)(now - s_voice_gc_ms) >= VOICE_GC_MIN_INTERVAL_MS) {
+            s_voice_gc_ms = now;
+            lua_gc(L, LUA_GCCOLLECT);
+            temp_reap(L);  // the finalisers may have taken some time
+            voice = (sound_player_t *)g_api.soundplayer->playerNew();
+        }
+    }
+    return voice;
+}
+
+// Puts the parked temporary player at idx back on a voice, position, volume and
+// the rest as it left them, its callbacks wired again. False with none free.
+static bool temp_attach(lua_State *L, int idx, temp_player_t *t) {
+    sound_player_t *voice = voice_new(L);
+    if (!voice)
+        return false;
+    sound_player_unpark(voice, &t->parked);
+    t->player = voice;
+    temp_anchor(L, idx, t);
+    // A voice is free, so is its slot: only players on a voice hold one.
+    if (lua_getiuservalue(L, idx, TEMP_UV_FINISH) == LUA_TFUNCTION) {
+        sound_lua_cb_t *cb = register_lua_cb(L, s_sp_finish_cbs, MAX_SAMPLEPLAYER_CBS,
+                                             NULL, lua_gettop(L));
+        if (cb)
+            sound_player_set_finish_callback(voice, trampoline_set_pending, cb);
+    }
+    lua_pop(L, 1);
+    if (lua_getiuservalue(L, idx, TEMP_UV_LOOP) == LUA_TFUNCTION) {
+        sound_lua_cb_t *cb = register_lua_cb(L, s_sp_loop_cbs, MAX_SAMPLEPLAYER_CBS,
+                                             NULL, lua_gettop(L));
+        if (cb)
+            sound_player_set_loop_callback(voice, trampoline_set_pending, cb);
+    }
+    lua_pop(L, 1);
+    lua_pushnil(L);
+    lua_setiuservalue(L, idx, TEMP_UV_FINISH);
+    lua_pushnil(L);
+    lua_setiuservalue(L, idx, TEMP_UV_LOOP);
+    return true;
 }
 
 static int l_sound_fileplayer_didUnderrun(lua_State *L) {
@@ -871,7 +1117,12 @@ static int l_sound_mp3player_play(lua_State *L) {
     mp3_player_t *player = check_mp3player(L, 1);
     uint8_t repeat = (uint8_t)lb_clamp_int(lb_optint(L, 2, 1), 0, 255);
     g_api.soundplayer->mp3PlayerSetLoop(player, repeat == 0);
-    g_api.soundplayer->mp3PlayerPlay(player, repeat);
+    // Not through the void native mp3PlayerPlay: Lua gets the result.
+    if (!mp3_player_play(player, repeat)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "no file loaded");
+        return 2;
+    }
     lua_pushboolean(L, true);
     return 1;
 }
@@ -1090,6 +1341,12 @@ void lua_bridge_sound_init(lua_State *L) {
     lua_setfield(L, -2, "__mode");
     lua_setmetatable(L, -2);
     lua_rawsetp(L, LUA_REGISTRYINDEX, &s_mp3_owner);
+
+    // Temporary players on a voice: one array slot each, never reallocated.
+    s_temp_voices = 0;
+    s_voice_gc_ms = g_api.sys->getTimeMs() - VOICE_GC_MIN_INTERVAL_MS;
+    lua_createtable(L, SOUND_MAX_PLAYERS, 0);
+    lua_rawsetp(L, LUA_REGISTRYINDEX, &s_temp_voices);
 
     register_subtable(L, "sound", sound_funcs);
 }

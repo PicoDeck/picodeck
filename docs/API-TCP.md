@@ -1,8 +1,10 @@
 ---
-title: "API — TCP Sockets"
+title: "API TCP"
 ---
 
 Raw non-blocking TCP/TLS client sockets. Connections are handled cross-core by the Core 1 network stack. A static pool supports up to 4 simultaneous connections.
+
+**Requirements:** declare `"http"` in your `app.json` `requirements` for TCP too. It makes the OS connect to the saved network when your app launches and keep the connection up while it runs. Without it nothing refuses your calls, but WiFi may well be off, and a connect then fails. The simulator is always online, so a missing requirement shows only on the device.
 
 ## picocalc.tcp
 
@@ -15,7 +17,7 @@ Open a new TCP connection to a host.
 
 - **Parameters:**
   - `host` (string): Hostname or IP address
-  - `port` (number, optional): Port number. Default 80.
+  - `port` (number, optional): Port number. Default 80, with or without TLS. To pass `use_ssl` without a port, give `nil`: `new(host, nil, true)` (`new(host, true)` raises).
   - `use_ssl` (boolean, optional): `true` for a TLS connection. Default `false`. TLS verifies the server certificate (OS root bundle + host name); a TLS connect before SNTP has set the clock fails with "clock not set". The socket counts as connected only after the TLS handshake.
 - **Returns:** a connection object, or `nil, err` when the 4-socket pool is full. Nothing is sent until `conn:connect()`.
 
@@ -72,11 +74,24 @@ Write data to the connection.
 
 - **Parameters:**
   - `data` (string): Data to send
-- **Returns:** (number) Number of bytes written, or -1 on error
+- **Returns:** (number) Number of bytes queued (all of them), or -1 if nothing was queued
+
+-1 is usually not a failure. Each `write` is one request to the network core, and at most 8 can wait, so a tight loop gets -1 once they are queued, with the connection fine and `conn:error()` still `nil`. Send data in one call where you can (a single large write is fine), and retry the rest while the socket is connected:
 
 ```lua
-conn:write("GET / HTTP/1.0\r\n\r\n")
+local function write_all(conn, data)
+    while true do
+        local n = conn:write(data)
+        if n >= 0 then return true end
+        if not conn:isConnected() then return false, conn:error() end
+        picocalc.sys.sleep(5)   -- the queue drains within a few milliseconds
+    end
+end
+
+local ok, err = write_all(conn, "GET / HTTP/1.0\r\n\r\n")
 ```
+
+**A lost frame stalls the socket.** The device's TCP stack does not resend what it sends, so if WiFi loses a frame, the server receives nothing more from that socket, with no error on either side. HTTP and TLS run over the same stack. Data coming from the server is not affected, because the server resends it. On one home network, about 1 frame in 500 was lost: 200 one-byte writes stalled in 15-28% of runs, and a single 200-byte write never did (0 of 48). So send a message in one write rather than many, and if your protocol can, use a reply timeout and reconnect.
 
 ---
 
@@ -84,7 +99,7 @@ conn:write("GET / HTTP/1.0\r\n\r\n")
 Read available data from the connection.
 
 - **Parameters:**
-  - `max_len` (number, optional): Maximum number of bytes to read
+  - `max_len` (number, optional): Maximum number of bytes to read. Default 4096, so `conn:read()` can leave data behind: loop while `conn:available() > 0`.
 - **Returns:** (string or nil) Data read, or `nil` if no data is available
 
 Read as data arrives: the device has no TCP flow control, so a connection whose unread data passes 32 KB fails with `receive overflow (the app is not reading fast enough)` (`conn:error()`). Data already received stays readable after the peer closes, however much of it there is. A TLS server's close_notify ends the connection like a plain close (`isConnected()` false, no error).
@@ -116,7 +131,7 @@ Get the number of bytes available to read.
 - **Returns:** (number) Bytes available
 
 ```lua
-if conn:available() > 0 then
+while conn:available() > 0 do
     local data = conn:read()
 end
 ```
@@ -127,7 +142,7 @@ end
 Get the last connection error.
 
 - **Parameters:** None
-- **Returns:** (string or nil) Error string, or `nil` if there is no error
+- **Returns:** (string or nil) Error string, or `nil` if there is no error. It stays `nil` while the socket is connecting or connected.
 
 ---
 
@@ -142,10 +157,10 @@ Check whether the connection is established.
 #### `conn:setConnectTimeout(seconds)`
 Set the connection timeout.
 
-Applies to the next connect; default 15 s (covers the TLS handshake).
+Applies to the next connect; default 15 s (covers the TLS handshake). On a device, an address that never answers fails after 15 s even with a longer timeout, because the network stack stops trying then. A slow TLS handshake to a server that did answer gets the whole timeout.
 
 - **Parameters:**
-  - `seconds` (number): Timeout in seconds
+  - `seconds` (number): Timeout in seconds. Fractions are allowed. `0` turns it off.
 - **Returns:** None
 
 ```lua
@@ -155,18 +170,18 @@ conn:setConnectTimeout(10)
 ---
 
 #### `conn:setReadTimeout(seconds)`
-Set the read timeout.
+Fail a connected socket that receives nothing for this long. Every byte that arrives starts it over.
 
 Off by default; 0 disables it.
 
 - **Parameters:**
-  - `seconds` (number): Timeout in seconds
+  - `seconds` (number): Timeout in seconds. Fractions are allowed.
 - **Returns:** None
 
 ---
 
 #### `conn:setConnectCallback(fn)`
-Set a callback fired when the connection is established (or fails). The callback receives the connection object.
+Set a callback fired when the connection is established. The callback receives the connection object. It does not fire when the connection fails: that is the [close callback](#connsetclosecallbackfn).
 
 Callbacks receive the socket and are never nested.
 
@@ -199,7 +214,7 @@ end)
 ---
 
 #### `conn:setCloseCallback(fn)`
-Set a callback fired when the connection closes. The callback receives the connection object.
+Set a callback fired when the connection ends: the peer closed it, or the connection failed (including a connect that never succeeded and a timeout; `c:error()` says why, and is `nil` after a clean close). It does not fire after your own `conn:close()`. The callback receives the connection object.
 
 - **Parameters:**
   - `fn` (function): `function(conn) ... end`
@@ -211,15 +226,15 @@ Set a callback fired when the connection closes. The callback receives the conne
 Get pending connection events.
 
 - **Parameters:** None
-- **Returns:** (number) the pending events that have **no callback registered**, cleared by the call: `picocalc.tcp.CB_CONNECT` (1), `CB_READ` (2), `CB_WRITE` (4), `CB_CLOSED` (8), `CB_FAILED` (16).
+- **Returns:** (number) the pending events that have **no callback registered**, cleared by the call: `picocalc.tcp.CB_CONNECT` (1), `CB_READ` (2), `CB_CLOSED` (8), `CB_FAILED` (16). `CB_WRITE` (4) is reserved: it is never set.
 
 ---
 
 #### `conn:waitConnected([timeout_seconds])`
-Block until the connection is established.
+Block until the connection is established. Your callbacks fire during the wait, the system menu can open, and an exit request ends it, as in `picocalc.sys.sleep`, so a long timeout is safe.
 
 - **Parameters:**
-  - `timeout_seconds` (number, optional): Maximum time to wait
+  - `timeout_seconds` (number, optional): Maximum time to wait. Default 10. Fractions are allowed.
 - **Returns:** (boolean) `true` if connected, `false` on timeout or failure
 
 ```lua
@@ -231,11 +246,11 @@ end
 ---
 
 #### `conn:waitData([timeout_seconds])`
-Block until data is available to read.
+Block until data is available to read. Callbacks, the system menu and exit work during the wait, as for `waitConnected`.
 
 - **Parameters:**
-  - `timeout_seconds` (number, optional): Maximum time to wait
-- **Returns:** (boolean) `true` if data arrived, `false` on timeout
+  - `timeout_seconds` (number, optional): Maximum time to wait. Default 10. Fractions are allowed.
+- **Returns:** (boolean) `true` if data arrived, `false` on timeout or when the connection ended with nothing left to read
 
 ```lua
 if conn:waitData(2) then

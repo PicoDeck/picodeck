@@ -115,6 +115,9 @@ int zip_reader_read_to_buf(zip_reader_t *zr, int idx, void *buf,
 
 // Stream one entry to dest_path on the SD card (constant memory). Parent
 // directories are created as needed. Directory entries just create the dir.
+// A destination that will not open fails as "cannot open <path>" and is left
+// as it was; a short write ("write failed") or bad data ("extract failed")
+// removes the file, whose old contents the open already truncated.
 // NOTE: does not validate the entry name — callers extracting untrusted
 // archives should use zip_reader_extract_all() or check zip_entry_name_valid().
 bool zip_reader_extract_entry(zip_reader_t *zr, int idx, const char *dest_path,
@@ -124,7 +127,9 @@ bool zip_reader_extract_entry(zip_reader_t *zr, int idx, const char *dest_path,
 // uncompressed size caps (fails fast, before writing anything), skips —
 // and counts — entries with unsafe names, and calls progress after each
 // file (abort by returning false). opts/progress/user/result/err may all
-// be NULL.
+// be NULL. Stops at the first failure with no rollback: files already written
+// stay and later entries are not touched, so dest_dir can end up partly
+// updated; result->files_done says how far it got.
 bool zip_reader_extract_all(zip_reader_t *zr, const char *dest_dir,
                             const zip_extract_opts_t *opts,
                             zip_progress_fn progress, void *user,

@@ -102,7 +102,7 @@ void kbd_set_backlight(uint8_t brightness);
 
 void kbd_apply_clock(void);
 
-// Returns true (once) when F10 (the system menu key) was pressed since last call,
+// Returns true (once) when the system menu key (Shift+F5, reported as F10) was pressed since last call,
 // or a pad source's Home button (pad_source.h). The press is consumed and
 // will not appear in kbd_get_buttons() — the OS intercepts BTN_MENU before
 // apps can see it.
@@ -117,6 +117,14 @@ bool kbd_consume_screenshot_press(void);
 // the launcher from being "inherited" by the next app. A key still physically
 // held afterwards is picked up by its next HOLD report without a press edge.
 void kbd_clear_state(void);
+
+// Clear the state like kbd_clear_state, and hide whatever is down now, each key
+// and gamepad button from every source, from all of the input and gamepad reads
+// (held levels, edges, isKeyDown, events, chars) until it is released; pressed
+// again, it reads normally. Its repeats do not end that. The system menu calls
+// this as it opens and as it closes: a game that compares held levels from
+// frame to frame would read the key that closed it as a fresh press.
+void kbd_hide_held(void);
 
 // Drop all queued input (the STM32 key FIFO, pending injected keys and
 // chars) and clear the state. Non-blocking; items the STM32 queued before the
@@ -186,7 +194,7 @@ void kbd_inject_char(char c);
 #define KBD_MOD_CTRL 0x02
 #define KBD_MOD_ALT 0x04
 #define KBD_MOD_FN 0x08
-#define KBD_EVF_REPEAT 0x80 // down/char produced by the STM32's HOLD report
+#define KBD_EVF_REPEAT 0x80 // down/char of a key already down (HOLD or PRESSED)
 
 typedef struct kbd_event_s {
   uint8_t type;  // KBD_EV_*
@@ -206,7 +214,7 @@ bool kbd_poll_event(kbd_event_t *out);
 bool kbd_is_key_down(uint8_t keycode);
 
 // Read pending key input without starting a new app-facing poll (used by
-// sys.sleep, which must see the Sym key): events and chars queue up and
+// sys.sleep, which must see the system menu key): events and chars queue up and
 // press edges accumulate, so the app's next kbd_poll() still delivers what
 // arrived meanwhile. Sets the menu/screenshot flags at once.
 void kbd_poll_background(void);
@@ -249,6 +257,10 @@ typedef struct {
 uint32_t kbd_get_pad(void);
 uint32_t kbd_get_pad_pressed(void);
 uint32_t kbd_get_pad_released(void);
+// One AXIS_* as of the last poll: the sources' sticks and triggers, the D-pad
+// (these held buttons, the keyboard's aliases included) with no stick in use
+// (pad_source.h).
+float kbd_get_pad_axis(int axis);
 
 // The OS's own menus (launcher, system menu): the BTN_* navigation that the
 // pad sources' presses of this poll stand for (D-pad = arrows, A = Enter,

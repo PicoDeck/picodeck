@@ -52,6 +52,7 @@ struct small_heap {
   small_slab_t *partial[SMALL_CLASS_COUNT];
   small_slab_t *spare;
   small_slab_t **dir;   // every slab, ascending address
+  small_slab_t *hint;   // the slab that last owned a pointer (slab_of_hint)
   uint32_t dir_len, dir_cap;
   uint32_t objects;
   uint32_t object_bytes;
@@ -102,6 +103,19 @@ static small_slab_t *slab_of(const small_heap_t *h, const void *p) {
   if ((uintptr_t)p >= (uintptr_t)s + SMALL_SLAB_BYTES) return NULL;
   // Inside the slab: only its slots are objects (the header never is).
   if ((uint8_t *)p < s->slots) return NULL;
+  return s;
+}
+
+// slab_of for a pointer being freed or resized, which is mostly in the slab of
+// the one before it (97.7% of the calls on a host run of Nova Rail's heap under
+// churn, against 6.4 steps of the search over 40 slabs): one compare instead of
+// the search's PSRAM reads. Sweeping frees one object at a time.
+static small_slab_t *slab_of_hint(small_heap_t *h, const void *p) {
+  small_slab_t *s = h->hint;
+  if (s && (uintptr_t)p - (uintptr_t)s < SMALL_SLAB_BYTES && (uint8_t *)p >= s->slots)
+    return s;
+  s = slab_of(h, p);
+  if (s) h->hint = s;
   return s;
 }
 
@@ -165,6 +179,7 @@ static void slab_format(small_slab_t *s, int cls) {
 }
 
 static void slab_release(small_heap_t *h, small_slab_t *s) {
+  if (h->hint == s) h->hint = NULL;
   dir_remove(h, s);
   UNPOISON(s, SMALL_SLAB_BYTES);
   h->backing.free(s);
@@ -274,7 +289,7 @@ void *small_alloc(small_heap_t *h, size_t size) {
 void small_free(small_heap_t *h, void *ptr, size_t osize) {
   (void)osize;
   if (!ptr) return;
-  small_slab_t *s = slab_of(h, ptr);
+  small_slab_t *s = slab_of_hint(h, ptr);
   if (s) slot_give(h, s, ptr);
   else h->backing.free(ptr);
 }
@@ -287,7 +302,7 @@ void *small_realloc(small_heap_t *h, void *ptr, size_t osize, size_t nsize) {
     return NULL;
   }
   if (!ptr) return small_alloc(h, nsize);
-  small_slab_t *s = slab_of(h, ptr);
+  small_slab_t *s = slab_of_hint(h, ptr);
   int ncls = small_class_of(nsize);
 
   if (!s) {

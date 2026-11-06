@@ -169,50 +169,81 @@ static http_ud_t *check_http_open(lua_State *L, int idx) {
   return ud;
 }
 
+// A request's extra headers in the Lua forms are built in one buffer: at most
+// this many bytes, line ends included (docs/API-Network-and-WiFi.md).
+#define HTTP_LUA_HEADERS_MAX 4095
+#define HTTP_LUA_HEADERS_CAP (HTTP_LUA_HEADERS_MAX + 1)
+
+// Counts what an snprintf at buf + *n wrote; false if it did not all fit. n must
+// never take the untruncated length: the next write's size would go negative.
+static bool hdr_fits(int *n, int wrote) {
+  if (wrote < 0 || wrote > HTTP_LUA_HEADERS_MAX - *n)
+    return false;
+  *n += wrote;
+  return true;
+}
+
+// Ends the line just added with CRLF unless it has one.
+static bool hdr_end_line(char *buf, int *n) {
+  if (*n >= 2 && (buf[*n - 2] != '\r' || buf[*n - 1] != '\n'))
+    return hdr_fits(n, snprintf(buf + *n, HTTP_LUA_HEADERS_CAP - *n, "\r\n"));
+  return true;
+}
+
 // Convert a Lua headers argument (string / array / kv-table) at stack index
-// `idx` to a malloc'd "Key: Value\r\n..." string, or NULL if nil/absent.
-static char *lua_headers_to_str(lua_State *L, int idx) {
+// `idx` to a umm_malloc'd "Key: Value\r\n..." string, or NULL if nil/absent or
+// nothing to send. Sets *err, and returns NULL, if they cannot be built.
+static char *lua_headers_to_str(lua_State *L, int idx, const char **err) {
+  *err = NULL;
   if (lua_isnoneornil(L, idx))
     return NULL;
 
-  char *buf = umm_malloc(4096);
-  if (!buf)
+  char *buf = umm_malloc(HTTP_LUA_HEADERS_CAP);
+  if (!buf) {
+    *err = "out of memory for the request headers";
     return NULL;
+  }
   int n = 0;
+  bool fits = true;
+  int top = lua_gettop(L);
 
   if (lua_isstring(L, idx)) {
     const char *s = lua_tostring(L, idx);
-    n = snprintf(buf, 4096, "%s", s);
-    if (n >= 2 && (buf[n - 2] != '\r' || buf[n - 1] != '\n'))
-      n += snprintf(buf + n, 4096 - n, "\r\n");
+    fits = hdr_fits(&n, snprintf(buf, HTTP_LUA_HEADERS_CAP, "%s", s)) &&
+           hdr_end_line(buf, &n);
 
   } else if (lua_istable(L, idx)) {
     int arr_len = (int)lua_rawlen(L, idx);
     if (arr_len > 0) {
       // Array of "Key: Value" strings
-      for (int i = 1; i <= arr_len && n < 4080; i++) {
+      for (int i = 1; i <= arr_len && fits; i++) {
         lua_rawgeti(L, idx, i);
         const char *s = lua_tostring(L, -1);
-        if (s) {
-          n += snprintf(buf + n, 4096 - n, "%s", s);
-          if (n >= 2 && (buf[n - 2] != '\r' || buf[n - 1] != '\n'))
-            n += snprintf(buf + n, 4096 - n, "\r\n");
-        }
+        if (s)
+          fits = hdr_fits(&n, snprintf(buf + n, HTTP_LUA_HEADERS_CAP - n, "%s", s)) &&
+                 hdr_end_line(buf, &n);
         lua_pop(L, 1);
       }
     } else {
       // Key/value table
       lua_pushnil(L);
-      while (lua_next(L, idx) != 0 && n < 4080) {
+      while (fits && lua_next(L, idx) != 0) {
         const char *k = lua_tostring(L, -2);
         const char *v = lua_tostring(L, -1);
         if (k && v)
-          n += snprintf(buf + n, 4096 - n, "%s: %s\r\n", k, v);
+          fits = hdr_fits(&n, snprintf(buf + n, HTTP_LUA_HEADERS_CAP - n,
+                                       "%s: %s\r\n", k, v));
         lua_pop(L, 1);
       }
     }
   }
+  lua_settop(L, top);
 
+  if (!fits) {
+    umm_free(buf);
+    *err = "request headers too long (the limit is 4095 bytes)";
+    return NULL;
+  }
   if (n == 0) {
     umm_free(buf);
     return NULL;
@@ -326,17 +357,18 @@ static int l_http_setByteRange(lua_State *L) {
   return 0;
 }
 
-// conn:setConnectTimeout(seconds)
+// conn:setConnectTimeout(seconds): fractions allowed, 0 turns it off.  Written
+// to the slot in ms: the native setter takes whole seconds (fixed by the ABI).
 static int l_http_setConnectTimeout(lua_State *L) {
   http_ud_t *ud = check_http_open(L, 1);
-  g_api.http->setConnectTimeout(ud->conn, (int)luaL_checknumber(L, 2));
+  ud->conn->connect_timeout_ms = lb_secs_to_ms(luaL_checknumber(L, 2));
   return 0;
 }
 
-// conn:setReadTimeout(seconds)
+// conn:setReadTimeout(seconds): as setConnectTimeout.
 static int l_http_setReadTimeout(lua_State *L) {
   http_ud_t *ud = check_http_open(L, 1);
-  g_api.http->setReadTimeout(ud->conn, (int)luaL_checknumber(L, 2));
+  ud->conn->read_timeout_ms = lb_secs_to_ms(luaL_checknumber(L, 2));
   return 0;
 }
 
@@ -360,6 +392,7 @@ static int do_request(lua_State *L, bool has_body) {
   const char *path = luaL_checkstring(L, 2);
 
   char *hdrs = NULL;
+  const char *hdrs_err = NULL;
   const char *body = NULL;
   size_t body_len = 0;
   int nargs = lua_gettop(L);
@@ -370,14 +403,20 @@ static int do_request(lua_State *L, bool has_body) {
       body = lua_tolstring(L, 3, &body_len);
     } else if (nargs >= 4) {
       // (self, path, headers, data)
-      hdrs = lua_headers_to_str(L, 3);
+      hdrs = lua_headers_to_str(L, 3, &hdrs_err);
       if (!lua_isnoneornil(L, 4))
         body = lua_tolstring(L, 4, &body_len);
     }
   } else {
     // GET: (self, path, [headers])
     if (nargs >= 3)
-      hdrs = lua_headers_to_str(L, 3);
+      hdrs = lua_headers_to_str(L, 3, &hdrs_err);
+  }
+
+  if (hdrs_err) {
+    lua_pushboolean(L, false);
+    lua_pushstring(L, hdrs_err);
+    return 2;
   }
 
   bool ok = has_body ? http_post(ud->conn, path, hdrs, body, body_len)
@@ -457,18 +496,24 @@ static int l_http_read(lua_State *L) {
   if (want > 131072)
     want = 131072;
 
-  uint8_t *tmp = umm_malloc(want);
-  if (!tmp) {
+  // Straight into the result string: a chunk used to be written to a scratch
+  // block and then again to the string, twice the PSRAM lines and two blocks
+  // of the heap at once. No room for it stays a nil, not a Lua error, and the
+  // data stays in the ring. The probe allows for the string's header.
+  void *probe = umm_malloc(want + 32);
+  if (!probe) {
     lua_pushnil(L);
     return 1;
   }
+  umm_free(probe);
 
-  uint32_t n = (uint32_t)g_api.http->read(ud->conn, tmp, want);
+  picodeck_lua_strbuf_t sb;
+  char *buf = picodeck_lua_strbuf_init(L, &sb, want);
+  uint32_t n = (uint32_t)g_api.http->read(ud->conn, buf, want);
   if (n > 0)
-    lua_pushlstring(L, (char *)tmp, n);
+    picodeck_lua_strbuf_push(L, &sb, n);
   else
     lua_pushnil(L);
-  umm_free(tmp);
   return 1;
 }
 

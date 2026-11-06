@@ -19,6 +19,7 @@ extern "C" {
 #include <atomic>
 #include <pico/time.h>
 #include <pico/multicore.h>
+#include <hardware/clocks.h>
 #include <hardware/watchdog.h>
 
 #include <JPEGDEC.h>
@@ -66,8 +67,7 @@ typedef struct {
     uint16_t flush_y0;
     uint16_t flush_y1;
 
-    bool     overclocked;       // True if we boosted the clock for playback
-    bool     wifi_was_connected; // True if WiFi was connected before overclock
+    bool     overclocked;       // True if this player holds the clock boost
 
     // Audio track info (parsed from AVI headers)
     bool     has_audio;
@@ -110,15 +110,20 @@ typedef struct {
 // the 16KB XIP cache (which thrashes against 24KB of JPEGDEC flash code).
 static JPEGDEC s_jpeg_sram;
 // Players alive (created, not yet destroyed): while there are none,
-// s_jpeg_sram is lent to chargrid shader runs. JPEGDEC holds only its
-// JPEGIMAGE, which openRAM clears before every frame, so what a run leaves
-// there does no harm. Create, destroy and runs are all on Core 0.
+// s_jpeg_sram is lent to chargrid shader runs and gfx3d draw calls, each for
+// that one C call. JPEGDEC holds only its JPEGIMAGE, which openRAM clears
+// before every frame, so what they leave there does no harm. Create, destroy
+// and the borrowers are all on Core 0.
 static int s_players;
 
 extern "C" void *charshader_sram(size_t *bytes) {
     if (s_players) return NULL;
     *bytes = sizeof(s_jpeg_sram);
     return &s_jpeg_sram;
+}
+
+extern "C" void *gfx3d_sram_scratch(size_t *bytes) {
+    return charshader_sram(bytes);
 }
 
 // --- Adaptive quality: 2x nearest-neighbor upscale callback ---
@@ -275,6 +280,11 @@ static void video_prefetch_cancel(video_priv_t *priv) {
         // VPF_CANCELLED: Core 1 will store IDLE when its read finishes.
         tight_loop_contents();
     }
+}
+
+// Core 1's tick gate: no request waiting. Runs from RAM.
+extern "C" bool __time_critical_func(video_prefetch_core1_idle)(void) {
+    return s_vpf_state.load() != VPF_REQUESTED;
 }
 
 // Core 1 (called from the core1 tick loop): service a pending request.
@@ -1010,18 +1020,28 @@ bool video_player_load(video_player_t *player, const char *path) {
     return true;
 }
 
+// The boost is shared: the first player to play takes it and the last to stop
+// gives it back, so a second player neither records 300 MHz as "the clock
+// before" nor loses the first's. The clock goes back to what it was: an app can
+// run at its own (system_clock_khz), which a literal 200 MHz used to take away.
+static uint8_t  s_boost_players;
+static uint32_t s_boost_prev_khz;        // sysclk before the boost
+static bool     s_boost_wifi_was_connected;
+
 static void video_boost_clock(video_priv_t *priv) {
     if (priv->overclocked) return;
+    priv->overclocked = true;
+    if (s_boost_players++ > 0) return;
 
     // WiFi is disconnected for the boost: the radio's traffic and power are
     // not wanted during playback. (launcher_apply_clock retunes the CYW43's
     // PIO SPI divider for 300 MHz, so a live link would stay in spec.)
-    priv->wifi_was_connected = false;
+    s_boost_wifi_was_connected = false;
     if (wifi_is_available()) {
         wifi_status_t wst = wifi_get_status();
         if (wst == WIFI_STATUS_CONNECTED || wst == WIFI_STATUS_CONNECTING ||
             wst == WIFI_STATUS_ONLINE) {
-            priv->wifi_was_connected = true;
+            s_boost_wifi_was_connected = true;
             wifi_disconnect();
         }
         // Wait for Core 1 to actually finish the hardware disconnect (bounded):
@@ -1044,24 +1064,29 @@ static void video_boost_clock(video_priv_t *priv) {
     }
 
     // Boost to 300 MHz for video playback
+    s_boost_prev_khz = clock_get_hz(clk_sys) / 1000;
     launcher_apply_clock(300000);
-    priv->overclocked = true;
 }
 
 static void video_restore_clock(video_priv_t *priv) {
     if (!priv->overclocked) return;
-
-    launcher_apply_clock(200000);
     priv->overclocked = false;
-    wifi_resume_radio();
+    if (--s_boost_players > 0) return;
+
+    launcher_apply_clock(s_boost_prev_khz);
+    // Only at the clock the radio's driver is set up for (wifi.h). At an app's
+    // own clock the radio stays as the boost left it, as the launcher left it
+    // for such an app: the launcher resumes it on exit, a connect before that.
+    if (s_boost_prev_khz == 200000)
+        wifi_resume_radio();
 
     // Reconnect WiFi if it was connected before
-    if (priv->wifi_was_connected && wifi_is_available()) {
+    if (s_boost_wifi_was_connected && wifi_is_available()) {
         const char *ssid = config_get("wifi_ssid");
         const char *pass = config_get("wifi_pass");
         if (ssid && ssid[0])
             wifi_connect(ssid, pass ? pass : "");
-        priv->wifi_was_connected = false;
+        s_boost_wifi_was_connected = false;
     }
 }
 

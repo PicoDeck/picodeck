@@ -78,7 +78,7 @@ typedef struct {
 #define BTN_RIGHT     (1 << 3)
 #define BTN_ENTER     (1 << 4)    // Enter key
 #define BTN_ESC       (1 << 5)    // Escape key
-#define BTN_MENU      (1 << 6)    // System menu trigger (F10 key)
+#define BTN_MENU      (1 << 6)    // The system menu key: Shift+F5, reported as F10
 #define BTN_F1        (1 << 7)
 #define BTN_F2        (1 << 8)
 #define BTN_F3        (1 << 9)
@@ -113,6 +113,15 @@ typedef struct {
 #define PAD_START     (1 << 10)
 #define PAD_SELECT    (1 << 11)
 
+// Gamepad axes for picocalc_gamepad_t.getAxis (API version 10). Sticks read
+// -1.0 to 1.0, right and down positive; triggers 0.0 to 1.0.
+#define AXIS_LX       0
+#define AXIS_LY       1
+#define AXIS_RX       2
+#define AXIS_RY       3
+#define AXIS_LT       4
+#define AXIS_RT       5
+
 // Built-in font ids for display->setFont (API version 6)
 #define PC_FONT_6X8               0
 #define PC_FONT_8X12              1
@@ -127,7 +136,8 @@ typedef struct {
     // Returns bitmask of buttons released THIS frame
     uint32_t (*getButtonsReleased)(void);
     // Returns the last ASCII character typed (0 if none this frame)
-    // Includes full keyboard; use this for text input
+    // Includes full keyboard; use this for text input. It stays until the
+    // next poll, so call it once per frame: a loop until 0 never ends.
     char (*getChar)(void);
 } picocalc_input_t;
 
@@ -135,6 +145,7 @@ typedef struct {
 // A logical gamepad read like the input masks (after sys->poll()). Players
 // rebind it; the keys stay readable through picocalc_input_t. Only present
 // when api->version >= 9: the pointer sits after `version` in PicoCalcAPI.
+// Pad sources (a Bluetooth pad, the simulator's controller) drive it too.
 
 typedef struct {
     uint32_t (*getButtons)(void);          // PAD_* held
@@ -143,6 +154,12 @@ typedef struct {
     // Name of the key bound to one PAD_* button ("F4", "Del", "W"), for
     // on-screen hints. slot 0 = primary, 1 = alternate. NULL if unbound.
     const char *(*getLabel)(uint32_t pad_button, int slot);
+    // --- API version 10 (check api->version before calling it) ---
+    // One AXIS_* now, 0.0 for anything else, read like the masks (after
+    // sys->poll()). The dead zone is applied. With no stick in use AXIS_LX and
+    // AXIS_LY read the D-pad (-1, 0 or +1: the keyboard's aliases or a pad's
+    // hat), so a game can read only these and still work on the keyboard.
+    float (*getAxis)(int axis);
 } picocalc_gamepad_t;
 
 // --- Display ----------------------------------------------------------------
@@ -304,7 +321,7 @@ typedef struct {
     void     (*log)(const char *fmt, ...);
     // Single OS tick for native apps: polls the keyboard, feeds the watchdog,
     // reclaims released HTTP/TCP slots and serves dev commands.  Also checks
-    // for the Sym (Menu) key and shows the system menu overlay automatically.
+    // for the system menu key (Shift+F5, reported as F10) and shows the system menu overlay automatically.
     // It fires no HTTP callbacks (native apps poll http->isComplete()).
     // Call in your main loop.
     void     (*poll)(void);
@@ -557,8 +574,10 @@ typedef struct {
 // --- App Config -------------------------------------------------------------
 // Per-app key/value config persisted at /data/<APP_ID>/config.json.
 // Nothing loads it for a native app: the store is unbound at every app start
-// and exit, so call load() with your own id first. Max 4 keys, 32-char keys,
-// 256-char values.
+// and exit, so call load() with your own id first. At most 32 keys, keys up to
+// 31 bytes, values up to 255. Over a limit set() stores nothing (it returns
+// nothing either: read the key back with get() if it matters) and the serial
+// log says why. The store takes ~9 KB of PSRAM once it holds a key.
 
 typedef struct {
     // Bind and load the running app's own config. Only the running app's id
@@ -567,9 +586,10 @@ typedef struct {
     bool        (*load)(const char *app_id);
     // Save in-memory config to /data/<APP_ID>/config.json.
     bool        (*save)(void);
-    // Get value for key. Returns fallback (may be NULL) if key not found.
+    // Get value for key. Returns fallback (may be NULL) if key not found. The
+    // pointer stays good until the key is deleted or the store cleared.
     const char* (*get)(const char *key, const char *fallback);
-    // Set value for key.
+    // Set value for key; an empty value deletes it. See the limits above.
     void        (*set)(const char *key, const char *value);
     // Clear all in-memory entries (does not delete the file).
     void        (*clear)(void);
@@ -801,6 +821,7 @@ typedef struct PicoCalcAPI {
                                              // 8=TLS verification: http->setInsecure,
                                              //   tcp->connectEx
                                              // 9=gamepad
+                                             // 10=gamepad->getAxis (AXIS_*)
     // --- API version 9: fields after `version` (check it first) ---
     const picocalc_gamepad_t     *gamepad;     // logical gamepad (PAD_*)
 } PicoCalcAPI;

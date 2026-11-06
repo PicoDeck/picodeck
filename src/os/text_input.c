@@ -176,6 +176,7 @@ bool text_input_show(const char *title, const char *prompt,
     int saved_font = display_get_font();
     display_set_font(0);
     bool ok = text_input_run(title, prompt, initial, out, out_len);
+    kbd_hide_held();  // the answering key and what was typed are not the app's
     display_set_font(saved_font);
     return ok;
 }

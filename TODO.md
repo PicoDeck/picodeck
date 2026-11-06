@@ -6,7 +6,6 @@ Most of this file is the history of the Lua API's build-out (the sections below 
 
 - **`graphics.animator`** — the line-segment, arc, polygon and multi-part constructors, and the examples for animation loops and animators (see "Sprites" below).
 - **`sound.fileplayer:setBufferSize`** — deferred on purpose (reallocating the shared buffer during streaming is risky).
-- **Lua docs** — `docs_coverage.md` lists the functions and constants still undocumented (about 40 in `graphics`).
 
 Shipped since v0.5.0 and tracked in the docs rather than here: `picocalc.chargrid` and `picocalc.noise`, the Core 1 boot animation and faster boot, Bluetooth gamepads, hidden dev apps, and native apps in the simulator. Subsystem notes live in the nested `CLAUDE.md` files; larger features have a design note and plan in `specs/`.
 
@@ -171,7 +170,7 @@ Must use `display_spi_lock()` / `display_spi_unlock()` around all CYW43 SPI acce
 
 ## System menu overlay — implemented
 
-The Menu/Sym key (`BTN_MENU`) pauses the running app and shows an OS-level overlay.
+The system menu key (`BTN_MENU`: Shift+F5, reported as F10) pauses the running app and shows an OS-level overlay.
 
 - [x] Create `src/os/system_menu.c` / `system_menu.h`
 - [x] Intercept `BTN_MENU` via Lua instruction-count hook (fires every 256 opcodes) + `kbd_consume_menu_press()` edge-detect in `keyboard.c`

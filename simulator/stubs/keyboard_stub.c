@@ -7,6 +7,7 @@
 #include "../hal/hal_input.h"
 #include "../hal/hal_timing.h"
 #include "../hal/web_platform.h"  // web_yield_if_due (web build)
+#include "../../src/os/idle_dim.h"
 #include "../../src/os/os.h"
 #include <SDL2/SDL.h>
 #include <string.h>
@@ -32,6 +33,7 @@ static uint32_t s_buttons = 0;
 static uint32_t s_buttons_pressed = 0;
 static uint32_t s_buttons_released = 0;
 static char s_last_char = 0;
+static char s_injected_char = 0;  // until getChar reads it, as keyboard.c's s_inj.ch
 static uint8_t s_raw_key = 0;
 static bool s_screenshot_pressed = false;
 // The firmware's event queue + key-down set (kbd_event_queue.h). The HAL
@@ -42,31 +44,29 @@ static kbd_input_t s_in;
 // events (kbd_pad_event), so it resolves keys exactly as the device does.
 static kbd_pad_t s_pad;
 static kbd_padmap_t s_padmap = KBD_PAD_DEFAULT_MAP;
-
-// Key mapping from SDL to keyboard keycodes
-static struct {
-    uint32_t btn_mask;
-    uint8_t keycode;
-} btn_to_keycode[] = {
-    {BTN_UP, KEY_UP},
-    {BTN_DOWN, KEY_DOWN},
-    {BTN_LEFT, KEY_LEFT},
-    {BTN_RIGHT, KEY_RIGHT},
-    {BTN_ENTER, KEY_ENTER},
-    {BTN_ESC, KEY_ESC},
-    {BTN_F1, KEY_F1},
-    {BTN_F2, KEY_F2},
-    {BTN_F3, KEY_F3},
-    {BTN_F4, KEY_F4},
-    {BTN_TAB, KEY_TAB},
-    {BTN_BACKSPACE, KEY_BKSPC},
-    {BTN_FN, KEY_MOD_SYM},
-    {0, 0}
-};
+// Keys down when the system menu opened or closed, hidden until released
+// (kbd_event_queue.h, "Hidden keys"). The HAL's staged events go through the
+// same filter as the device's FIFO items; button masks are masked by it below.
+static kbd_hide_t s_hide;
 
 bool kbd_init(void) {
     printf("[KBD] Keyboard initialized (simulator)\n");
     return true;
+}
+
+// The buttons of the hidden keys, to take out of the HAL's masks. The HAL knows
+// their level, so one that is up ends here too: a discard drops staged "up"
+// events, so this is what the device's quiet timer is for its FIFO.
+static uint32_t hide_buttons(uint32_t level) {
+    uint32_t hidden = 0;
+    for (int i = s_hide.count - 1; i >= 0; i--) {
+        uint32_t btn = kbd_keycode_to_button(s_hide.key[i]);
+        if (btn & level)
+            hidden |= btn;
+        else if (btn)
+            kbd_hide_remove_at(&s_hide, i);
+    }
+    return hidden;
 }
 
 void kbd_poll(void) {
@@ -75,6 +75,9 @@ void kbd_poll(void) {
     web_yield_if_due();
 #endif
     kbd_pad_begin_poll(&s_pad);
+    kbd_pad_t pad_before = s_pad;
+    kbd_keyset_t down_before = s_in.down;
+    s_in.ev_pushed = 0;
 
     // Pull pending events from the Wayland socket into SDL's internal queue.
     // Must be called before SDL_PollEvent to avoid blocking on compositor I/O.
@@ -99,7 +102,39 @@ void kbd_poll(void) {
     // read, so RPC-injected presses can't be dropped mid-poll)
     uint32_t new_buttons = 0, new_pressed = 0;
     hal_input_read_buttons(&new_buttons, &new_pressed);
-    
+
+    // Staged key events, in order, into the app-facing queue and the gamepad.
+    // First, since an "up" ends a hidden key: one released and pressed again
+    // since the last poll reads as the press it is.
+    //
+    // The HAL's press edges and chars are not in order with these events, and a
+    // repeat makes both (an arrow's edge, Enter's or a letter's char). So a
+    // repeat and the release that ends the hiding can land in one poll (always
+    // possible, as sys.sleep's background polls gather them for the next
+    // kbd_poll) and the repeat's edge must still go: of the keys hidden when
+    // this poll began, only a down that passes the filter is a press. Its char
+    // goes as its event does. The device has none of this: kbd_hide_item drops
+    // the item before anything is made of it.
+    uint32_t hidden_before = hide_buttons(UINT32_MAX);
+    uint32_t fresh = 0;
+    kbd_event_t ev;
+    s_raw_key = 0;  // getRawKey: the last key to go down or repeat in this poll
+    while (hal_input_pop_event(&ev)) {
+        if (kbd_hide_event(&s_hide, &s_pad, &s_padmap, ev)) {
+            if (ev.type == KBD_EV_CHAR)
+                hal_input_drop_host_char((char)ev.ch);
+            continue;
+        }
+        kbd_input_accept(&s_in, ev);
+        kbd_pad_event(&s_pad, &s_padmap, ev);
+        if (ev.type == KBD_EV_DOWN) {
+            s_raw_key = ev.key;
+            fresh |= kbd_keycode_to_button(ev.key);
+        }
+    }
+    new_buttons &= ~hide_buttons(new_buttons);
+    new_pressed &= ~(hidden_before & ~fresh);
+
     // Calculate released buttons
     s_buttons_released = s_buttons & ~new_buttons;
     
@@ -108,7 +143,8 @@ void kbd_poll(void) {
     s_buttons_pressed = new_pressed;
     
     // Check for menu key (F10 or BTN_MENU)
-    if (s_buttons_pressed & BTN_MENU) {
+    bool menu_key = (s_buttons_pressed & BTN_MENU) != 0;
+    if (menu_key) {
         hal_input_raise_menu(false);
         // Hide MENU from apps, matching the hardware driver's intercept
         s_buttons &= ~BTN_MENU;
@@ -120,38 +156,51 @@ void kbd_poll(void) {
         s_screenshot_pressed = true;
     }
     
-    // Staged key events, in order, into the app-facing queue and the gamepad.
-    kbd_event_t ev;
-    while (hal_input_pop_event(&ev)) {
-        kbd_input_accept(&s_in, ev);
-        kbd_pad_event(&s_pad, &s_padmap, ev);
-    }
-
     // The other gamepad sources (the `pad` dev command, the host's game
     // controllers), as keyboard.c does; a source's Home raises the menu.
-    if (pad_sources_poll(false, hal_get_time_ms()))
+    bool pad_home = pad_sources_poll(false, hal_get_time_ms());
+    if (pad_home)
         hal_input_raise_menu(false);
 
-    // Get character input
-    s_last_char = hal_input_get_char();
-    if (s_last_char) {
-        s_raw_key = (uint8_t)s_last_char;
-    } else if (s_buttons_pressed) {
-        // Map button to keycode for raw key
-        for (int i = 0; btn_to_keycode[i].btn_mask != 0; i++) {
-            if (s_buttons_pressed & btn_to_keycode[i].btn_mask) {
-                s_raw_key = btn_to_keycode[i].keycode;
-                break;
-            }
-        }
-    } else {
+    // Get character input (a hidden key's chars have left the queue already)
+    bool injected;
+    s_last_char = hal_input_get_char_ex(&injected);
+    if (injected) {
+        s_injected_char = s_last_char;
+        s_last_char = 0;
+    }
+
+    // Idle screen dimming, as keyboard.c's kbd_poll_impl: fresh input is
+    // activity, and the input that wakes a dimmed screen never reaches the
+    // app. An injected char is not activity there either: kbd_inject_char
+    // queues it outside the poll. Off unless --idle-dim (main.c): with a
+    // timeout of 0 the screen never dims, so nothing is ever swallowed.
+    bool activity = s_buttons_pressed || menu_key || hal_input_take_host_key() ||
+                    pad_sources_fresh() || pad_home;
+    if (activity && idle_dim_note_activity()) {
+        s_buttons &= ~s_buttons_pressed;
+        s_buttons_pressed = 0;
+        kbd_pad_swallow(&s_pad, false, pad_before);
+        pad_sources_swallow();
+        // This poll's presses and chars; a key the app saw go down still
+        // comes up.
+        kbd_evq_drop_newest_keep_ups(&s_in.q, s_in.ev_pushed, &down_before);
+        kbd_hide_swallowed(&s_hide, &s_pad, &pad_before, &s_in.down, &down_before,
+                           hal_input_injected_down());
+        for (int i = 0; i < 8; i++)
+            s_in.down.bits[i] &= down_before.bits[i];
+        // The waking click is retired for good (kbd_inject_drop_oneshots):
+        // its hold would otherwise read as held on the next polls.
+        hal_input_discard_pending();
+        s_last_char = 0;
         s_raw_key = 0;
     }
+    idle_dim_poll();
 }
 
 // sys.sleep's poll: keep SDL (window events, quit) serviced. Key edges stay
 // in the HAL until the app's next kbd_poll(), as on the device; injected
-// Sym presses set the menu flag directly (kbd_inject_buttons), and a host
+// Menu key presses set the menu flag directly (kbd_inject_buttons), and a host
 // F10 during a sleep takes effect at the next kbd_poll().
 void kbd_poll_background(void) {
     SDL_PumpEvents();
@@ -168,20 +217,27 @@ void kbd_poll_background(void) {
     }
     // A source's Home acts at once (as the device's background poll sets the
     // menu flag); its buttons wait for the app's next kbd_poll().
-    if (pad_sources_poll(true, hal_get_time_ms()))
+    bool pad_home = pad_sources_poll(true, hal_get_time_ms());
+    if (pad_home)
         hal_input_raise_menu(false);
+    // Idle dim runs here too, so an app that only sleeps still dims (keys
+    // count at the next kbd_poll(), where they are decoded here).
+    if ((pad_sources_fresh() || pad_home) && idle_dim_note_activity())
+        pad_sources_swallow();
+    idle_dim_poll();
 }
 
+// As in keyboard.c: both keep their value until the next kbd_poll, so a loop
+// that reads until nil never ends there and must not end here. Only an injected
+// char is read once.
 char kbd_get_char(void) {
-    char c = s_last_char;
-    s_last_char = 0;
+    char c = s_last_char ? s_last_char : s_injected_char;
+    s_injected_char = 0;
     return c;
 }
 
 uint8_t kbd_get_raw_key(void) {
-    uint8_t k = s_raw_key;
-    s_raw_key = 0;
-    return k;
+    return s_raw_key;
 }
 
 uint32_t kbd_get_buttons(void) {
@@ -207,6 +263,10 @@ uint32_t kbd_get_pad_pressed(void) {
 
 uint32_t kbd_get_pad_released(void) {
     return pad_sources_combine_released(s_pad.curr, s_pad.prev);
+}
+
+float kbd_get_pad_axis(int axis) {
+    return pad_sources_axis(axis, kbd_get_pad());
 }
 
 uint32_t kbd_get_pad_nav_pressed(void) {
@@ -252,8 +312,16 @@ bool kbd_is_charging(void) {
     return __atomic_load_n(&s_sim_charging, __ATOMIC_RELAXED);
 }
 
+// What the panel's backlight was last set to (nothing draws with it): the
+// get_backlight RPC. Written by Core 0, read by the socket thread.
+static int s_sim_backlight = 0;
+
+int sim_kbd_get_backlight(void) {
+    return __atomic_load_n(&s_sim_backlight, __ATOMIC_RELAXED);
+}
+
 void kbd_set_backlight(uint8_t brightness) {
-    (void)brightness;
+    __atomic_store_n(&s_sim_backlight, brightness, __ATOMIC_RELAXED);
 }
 
 void kbd_apply_clock(void) {
@@ -285,20 +353,42 @@ void kbd_clear_state(void) {
     s_buttons_pressed = 0;
     s_buttons_released = 0;
     s_last_char = 0;
+    s_injected_char = 0;
     s_raw_key = 0;
     kbd_input_clear(&s_in);
     // An injected key still down keeps its gamepad button held, without a
     // press edge; its retire/keyup event releases it (as on the device).
     memset(&s_pad, 0, sizeof(s_pad));
-    s_pad.down = kbd_pad_slots_from_buttons(&s_padmap, hal_input_injected_down());
+    uint32_t down = hal_input_injected_down() & ~hide_buttons(UINT32_MAX);
+    s_pad.down = kbd_pad_slots_from_buttons(&s_padmap, down);
     s_pad.curr = s_pad.prev = kbd_pad_buttons_of(s_pad.down);
     pad_sources_clear();
 }
 
 void kbd_discard_pending(void) {
     hal_input_discard_pending();
+    // Its staged "up" may have gone with the rest, and a key with no button
+    // has no level to tell (hide_buttons has the others).
+    for (int i = s_hide.count - 1; i >= 0; i--)
+        if (!kbd_keycode_to_button(s_hide.key[i]))
+            kbd_hide_remove_at(&s_hide, i);
     kbd_clear_state();
     pad_sources_discard();
+}
+
+void kbd_hide_held(void) {
+    kbd_hide_add_down(&s_hide, &s_in.down, 0);
+    uint32_t down = hal_input_read_down();
+    for (uint32_t b = 1; b && b <= down; b <<= 1)
+        if (down & b)
+            kbd_hide_add(&s_hide, kbd_button_to_keycode(b));
+    // Chars of theirs not read yet go too, as the device's clear drops its
+    // backlog (the other keys' stay, as across any clear here).
+    for (int i = 0; i < s_hide.count; i++)
+        while (hal_input_drop_host_char((char)s_hide.key[i]))
+            ;
+    kbd_clear_state();
+    pad_sources_hide_held();
 }
 
 void kbd_recover_i2c_bus(void) {

@@ -49,12 +49,6 @@
 #define PSRAM_CS1_CACHED_END     0x12000000u
 #define PSRAM_CACHED_TO_UNCACHED 0x04000000u  // add to get uncached alias
 
-// Maximum virtual address range accepted for a native app image.
-// Rejects malformed or malicious ELFs before attempting a heap allocation.
-// 7 MB covers apps like TIC-80 (~5.4 MB with 4 MB sbrk heap in BSS).
-// The real limit is available PSRAM (6 MB on Pimoroni Pico Plus 2 W).
-#define NATIVE_MAX_IMAGE_SIZE (7u * 1024u * 1024u)
-
 // =============================================================================
 // ELF validation and relocation live in elf_plan.c (pure, host-tested and
 // fuzzed under tests/unit and tests/fuzz); this file does the I/O, placement
@@ -240,6 +234,7 @@ static bool native_run_app(const app_entry_t *app) {
   printf("[NATIVE] Loading '%s' via Unicorn Engine\n", app->name);
   char elf_path[256];
   snprintf(elf_path, sizeof(elf_path), "%s/main.elf", app->path);
+  kbd_hide_held();  // a key held through the launch is not the app's
   bool ok = unicorn_run_app(elf_path, app->path, app->id, app->name);
   // Same teardown as firmware (below), minus the Core 1 pause.
   atomic_store(&g_native_audio_callback, NULL);
@@ -759,7 +754,7 @@ static bool native_run_app(const app_entry_t *app) {
     }
   }
 
-  kbd_clear_state();
+  kbd_hide_held();  // a key held through the launch is not the app's
 
   // ── 8. Launch app ─────────────────────────────────────────────────────────
   display_clear(C_BG);

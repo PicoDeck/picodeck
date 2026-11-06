@@ -10,6 +10,9 @@ decoded in Core 0's idle windows) and unpaced (none are), at 44.1 kHz stereo
 and 22.05 kHz mono. The timing itself (what it saves the app) is hardware
 only: tests/e2e/test_mp3_contention_hw.py.
 
+Tags after the audio or between two streams (issue #63) cost nothing either:
+a 300 KB tag, walked at 32 bytes an update, would stall the decoder for ~10 s.
+
 The app is the hardware test's (tests/e2e/hw_apps/mp3_bench), staged at
 runtime with silent MP3s; `get_mp3_stats` is the simulator's RPC.
 """
@@ -33,11 +36,21 @@ FRAMES = {
 }
 
 
-def stage(sd, fmt, fps):
+def id3v2(body):
+    """An ID3v2.3 tag of `body` bytes, no sync word in them."""
+    size = bytes((body >> s) & 0x7f for s in (21, 14, 7, 0))
+    return b"ID3\x03\x00\x00" + size + bytes(i % 26 + 97 for i in range(body))
+
+
+def stage(sd, fmt, fps, tag=None):
     app = sd / "apps" / APP
     shutil.copytree(HW_APPS_DIR / APP, app, dirs_exist_ok=True)
     header, size, _, count = FRAMES[fmt]
-    (app / "music.mp3").write_bytes((header + bytes(size - 4)) * count)  # ~2 s
+    frames = (header + bytes(size - 4)) * count  # ~2 s
+    music = {None: frames,
+             "end": frames + id3v2(300000),
+             "between": frames + id3v2(300000) + frames}[tag]
+    (app / "music.mp3").write_bytes(music)
     data = sd / "data" / APP_ID
     data.mkdir(parents=True, exist_ok=True)
     (data / "bench.json").write_text(json.dumps(
@@ -77,3 +90,20 @@ def test_mp3_plays_without_underruns(simulator, fmt, paced):
         assert delta["idle_windows"] == 0, delta
         assert delta["idle_frames"] == 0, delta
         assert delta["low_frames"] > 0, delta
+
+
+@pytest.mark.sd(fixtures=[], reserve=1)
+@pytest.mark.parametrize("fmt", ["stereo44", "mono22"])
+@pytest.mark.parametrize("tag", ["end", "between"])
+def test_a_big_tag_in_the_file_costs_nothing(simulator, fmt, tag):
+    result_file = stage(Path(simulator.sd_card_path), fmt, 0, tag)
+    before = simulator.call("get_mp3_stats")
+    simulator.launch_app(APP)
+    outcome = simulator.wait_for_exit(timeout=SECONDS + 60)
+    assert outcome.get("result") == "returned", outcome
+    after = simulator.call("get_mp3_stats")
+    result = json.loads(result_file.read_text())
+    print(f"{fmt} tag {tag}: {result}")
+    assert result["mp3_playing"], result
+    assert result["mp3_position"] >= FRAMES[fmt][2] * (SECONDS - 2), result
+    assert after["underruns"] - before["underruns"] == 0

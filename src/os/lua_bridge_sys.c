@@ -49,7 +49,7 @@ static int l_sys_log(lua_State *L) {
 
 static int l_sys_sleep(lua_State *L) {
   int ms = (int)lb_checkint(L, 1);
-  // Every 10 ms: a background keyboard poll, so a physical Sym press is seen
+  // Every 10 ms: a background keyboard poll, so a physical menu key press is seen
   // during the sleep (it queues events and chars and accumulates press
   // edges without starting a new app-facing poll, so the app's next
   // input.update() still delivers them), then the same service pass as the
@@ -71,6 +71,13 @@ static int l_sys_sleep(lua_State *L) {
 }
 
 static int l_sys_reboot(lua_State *L) {
+#ifdef PICODECK_SIMULATOR
+  // No reset to model and no watchdog to fire: the app ends, as the native
+  // sys->reboot does there, and the launcher takes over.
+  printf("[SIM] sys.reboot(): back to the launcher\n");
+  lua_bridge_raise_exit(L);
+  return 0;
+#else
   (void)L;
   crashlog_clear_running(); // intentional — not an unclean exit
   kbd_prepare_reset();
@@ -78,6 +85,7 @@ static int l_sys_reboot(lua_State *L) {
   for (;;)
     tight_loop_contents();
   return 0;
+#endif
 }
 
 // Pause Core 1 (WiFi, audio, HTTP) for safe batch SD writes.
@@ -115,7 +123,7 @@ static int l_sys_isUSBPowered(lua_State *L) {
 
 static int l_sys_getPowerStatus(lua_State *L) {
   lua_createtable(L, 0, 2);
-  lua_pushboolean(L, gpio_get(USB_VBUS_PIN));
+  lua_pushboolean(L, kbd_is_charging());  // as the header's bolt (ui.c)
   lua_setfield(L, -2, "charging");
   lua_pushinteger(L, kbd_get_battery_percent());
   lua_setfield(L, -2, "percent");

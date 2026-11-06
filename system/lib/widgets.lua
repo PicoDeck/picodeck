@@ -1,6 +1,7 @@
 -- PicoDeck Widget Toolkit
--- Composable, non-blocking UI widgets for Lua apps.
+-- Composable, non-blocking UI widgets for Lua apps, on top of picocalc.ui.
 -- Load with: local W = picocalc.sys.loadlib("widgets")
+-- Reference: docs/Library-Widgets.md
 
 local pc    = picocalc
 local disp  = pc.display
@@ -9,6 +10,11 @@ local ui    = pc.ui
 local sys   = pc.sys
 
 local W = {}
+
+local KEY_HOME = 0xD2  -- Shift+Tab: see FocusGroup:_shiftTabPressed
+
+local function display_draw_rect(x, y, w, h, c) disp.drawRect(x, y, w, h, c) end
+local function display_fill_rect(x, y, w, h, c) disp.fillRect(x, y, w, h, c) end
 
 -- ── Theme ────────────────────────────────────────────────────────────────────
 
@@ -47,6 +53,14 @@ local function find_word_boundary(text, pos, direction)
     end
 end
 
+-- The scroll position that keeps row `index` (1-based) in a view of `visible`
+-- rows, moving as little as it can. The rows wrap, so it can be any distance away.
+local function scroll_to_show(scroll, index, visible)
+    if index <= scroll then return index - 1 end
+    if index > scroll + visible then return index - visible end
+    return scroll
+end
+
 -- ── Label ────────────────────────────────────────────────────────────────────
 
 local Label = {}
@@ -77,7 +91,7 @@ function Label:draw()
             x = self.x + self.w - tw
         end
     end
-    disp.drawText(x, self.y, self.text, self.color)
+    disp.drawText(x, self.y, self.text, self.color, false)
 end
 
 -- ── Button ───────────────────────────────────────────────────────────────────
@@ -193,7 +207,7 @@ function Checkbox:draw()
     ui.drawCheckbox(self.x, self.y, self.checked, self.focused)
     local label_x = self.x + 14  -- 10px box + 4px gap
     local color = self.focused and W.theme.text or W.theme.text_dim
-    disp.drawText(label_x, self.y + 1, self.label, color)
+    disp.drawText(label_x, self.y + 1, self.label, color, false)
 end
 
 -- ── RadioGroup ───────────────────────────────────────────────────────────────
@@ -246,7 +260,7 @@ function RadioGroup:draw()
         local is_hl  = self.focused and (i == self.highlight)
         ui.drawRadio(self.x, ry, is_sel, is_hl)
         local color = (self.focused and is_hl) and W.theme.text or W.theme.text_dim
-        disp.drawText(self.x + 14, ry + 1, opt, color)
+        disp.drawText(self.x + 14, ry + 1, opt, color, false)
     end
 end
 
@@ -728,17 +742,12 @@ function Select:handleInput(btns, ch)
     if btns & input.BTN_UP ~= 0 then
         self.highlight = self.highlight - 1
         if self.highlight < 1 then self.highlight = #self.filtered end
-        -- Adjust scroll
-        if self.highlight <= self.scroll then
-            self.scroll = self.highlight - 1
-        end
+        self.scroll = scroll_to_show(self.scroll, self.highlight, self.maxVisible)
         return true
     elseif btns & input.BTN_DOWN ~= 0 then
         self.highlight = self.highlight + 1
         if self.highlight > #self.filtered then self.highlight = 1 end
-        if self.highlight > self.scroll + self.maxVisible then
-            self.scroll = self.highlight - self.maxVisible
-        end
+        self.scroll = scroll_to_show(self.scroll, self.highlight, self.maxVisible)
         return true
     end
 
@@ -866,19 +875,13 @@ function ListView:handleInput(btns, ch)
         self.selected = self.selected - 1
         if self.selected < 1 then self.selected = n end
         if self.onSelect then self.onSelect(self.selected, self.items[self.selected]) end
-        -- Scroll
-        if self.selected <= self.scroll then
-            self.scroll = self.selected - 1
-        end
+        self.scroll = scroll_to_show(self.scroll, self.selected, self:_visibleCount())
         return true
     elseif btns & input.BTN_DOWN ~= 0 then
         self.selected = self.selected + 1
         if self.selected > n then self.selected = 1 end
         if self.onSelect then self.onSelect(self.selected, self.items[self.selected]) end
-        local vis = self:_visibleCount()
-        if self.selected > self.scroll + vis then
-            self.scroll = self.selected - vis
-        end
+        self.scroll = scroll_to_show(self.scroll, self.selected, self:_visibleCount())
         return true
     elseif btns & input.BTN_ENTER ~= 0 then
         if self.onActivate then self.onActivate(self.selected, self.items[self.selected]) end
@@ -1022,6 +1025,7 @@ function W.FocusGroup(widgets)
     local self = setmetatable({
         widgets     = widgets or {},
         focus_index = 0,
+        _home_down = input.isKeyDown(KEY_HOME),
     }, FocusGroup)
     -- Find first focusable widget
     for i, w in ipairs(self.widgets) do
@@ -1068,10 +1072,23 @@ function FocusGroup:_findNext(from, dir)
     return from
 end
 
+-- The device's Shift+Tab. The keyboard names a key by what it makes at that moment,
+-- so Tab under Shift reports as Home, which has no BTN_* bit and never reaches btns.
+-- It takes both readings. getRawKey alone misses a press when Shift's own repeat (every
+-- 100 ms) lands after it in the same poll; the key-down edge alone misses the press after
+-- Shift was let go before Tab, which leaves Home in the set. Held, it repeats.
+function FocusGroup:_shiftTabPressed()
+    local down = input.isKeyDown(KEY_HOME)
+    local pressed = input.getRawKey() == KEY_HOME or (down and not self._home_down)
+    self._home_down = down
+    return pressed
+end
+
 function FocusGroup:handleInput(btns, ch)
     -- Tab / Shift+Tab
-    if btns & input.BTN_TAB ~= 0 then
-        local dir = (btns & input.BTN_SHIFT ~= 0) and -1 or 1
+    local back = self:_shiftTabPressed()
+    if back or btns & input.BTN_TAB ~= 0 then
+        local dir = (back or btns & input.BTN_SHIFT ~= 0) and -1 or 1
         local next_idx = self:_findNext(self.focus_index, dir)
         if next_idx ~= self.focus_index then
             self:setFocus(next_idx)
@@ -1086,10 +1103,5 @@ function FocusGroup:handleInput(btns, ch)
     end
     return false
 end
-
--- ── Aliases for display functions used directly in widgets ───────────────────
--- These are used by Select, ListView, etc. that call display functions directly
-display_draw_rect = function(x, y, w, h, c) disp.drawRect(x, y, w, h, c) end
-display_fill_rect = function(x, y, w, h, c) disp.fillRect(x, y, w, h, c) end
 
 return W

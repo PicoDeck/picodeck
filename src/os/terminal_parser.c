@@ -1,56 +1,17 @@
 #include "terminal_parser.h"
 #include "terminal.h"
 #include "terminal_render.h"
+#include "color256.h"
 #include <string.h>
 #include <stdio.h>
 
 #define RGB565(r, g, b) (((uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3))))
-
-static const uint16_t TERM_PALETTE[] = {
-    RGB565(0, 0, 0),         // 0: Black
-    RGB565(170, 0, 0),       // 1: Red
-    RGB565(0, 170, 0),       // 2: Green
-    RGB565(170, 85, 0),     // 3: Yellow
-    RGB565(0, 0, 170),      // 4: Blue
-    RGB565(170, 0, 170),    // 5: Magenta
-    RGB565(0, 170, 170),    // 6: Cyan
-    RGB565(170, 170, 170),  // 7: White
-    RGB565(85, 85, 85),     // 8: Bright Black (Gray)
-    RGB565(255, 85, 85),    // 9: Bright Red
-    RGB565(85, 255, 85),    // 10: Bright Green
-    RGB565(255, 255, 85),   // 11: Bright Yellow
-    RGB565(85, 85, 255),    // 12: Bright Blue
-    RGB565(255, 85, 255),   // 13: Bright Magenta
-    RGB565(85, 255, 255),   // 14: Bright Cyan
-    RGB565(255, 255, 255),  // 15: Bright White
-};
 
 static uint16_t s_default_fg = RGB565(255, 255, 255);
 static uint16_t s_default_bg = RGB565(0, 0, 0);
 
 static uint16_t rgb888_to_rgb565(uint8_t r, uint8_t g, uint8_t b) {
     return RGB565(r, g, b);
-}
-
-// Convert 256-color index to RGB565 (colors 16-255)
-static uint16_t color256_to_rgb565(int idx) {
-    if (idx < 16) {
-        return TERM_PALETTE[idx];
-    } else if (idx < 232) {
-        // 6x6x6 color cube (indices 16-231)
-        int ci = idx - 16;
-        int b = ci % 6;
-        int g = (ci / 6) % 6;
-        int r = ci / 36;
-        // Map 0-5 to 0,95,135,175,215,255
-        static const uint8_t cube[] = {0, 95, 135, 175, 215, 255};
-        return rgb888_to_rgb565(cube[r], cube[g], cube[b]);
-    } else if (idx < 256) {
-        // Grayscale ramp (indices 232-255): 8,18,28,...,238
-        uint8_t v = 8 + (idx - 232) * 10;
-        return rgb888_to_rgb565(v, v, v);
-    }
-    return s_default_fg;
 }
 
 void terminal_parser_init(terminal_parser_t* parser, terminal_t* term) {
@@ -207,7 +168,7 @@ static void terminal_parser_process_csi(terminal_parser_t* parser, char cmd) {
                 case 34: case 35: case 36: case 37: {
                     uint16_t cur_fg, cur_bg;
                     terminal_getColors(term, &cur_fg, &cur_bg);
-                    terminal_setColors(term, TERM_PALETTE[param - 30], cur_bg);
+                    terminal_setColors(term, color256_palette[param - 30], cur_bg);
                     break;
                 }
                 case 38: {
@@ -227,7 +188,7 @@ static void terminal_parser_process_csi(terminal_parser_t* parser, char cmd) {
                         // 256 color: 38;5;N
                         int color_idx = parser->params[i + 2];
                         if (color_idx >= 0 && color_idx < 256) {
-                            terminal_setColors(term, color256_to_rgb565(color_idx), cur_bg);
+                            terminal_setColors(term, color256_palette[color_idx], cur_bg);
                         }
                         i += 2;
                     }
@@ -243,7 +204,7 @@ static void terminal_parser_process_csi(terminal_parser_t* parser, char cmd) {
                 case 44: case 45: case 46: case 47: {
                     uint16_t cur_fg, cur_bg;
                     terminal_getColors(term, &cur_fg, &cur_bg);
-                    terminal_setColors(term, cur_fg, TERM_PALETTE[param - 40]);
+                    terminal_setColors(term, cur_fg, color256_palette[param - 40]);
                     break;
                 }
                 case 48: {
@@ -263,7 +224,7 @@ static void terminal_parser_process_csi(terminal_parser_t* parser, char cmd) {
                         // 256 color: 48;5;N
                         int color_idx = parser->params[i + 2];
                         if (color_idx >= 0 && color_idx < 256) {
-                            terminal_setColors(term, cur_fg, color256_to_rgb565(color_idx));
+                            terminal_setColors(term, cur_fg, color256_palette[color_idx]);
                         }
                         i += 2;
                     }
@@ -279,14 +240,14 @@ static void terminal_parser_process_csi(terminal_parser_t* parser, char cmd) {
                 case 94: case 95: case 96: case 97: {
                     uint16_t cur_fg, cur_bg;
                     terminal_getColors(term, &cur_fg, &cur_bg);
-                    terminal_setColors(term, TERM_PALETTE[param - 90 + 8], cur_bg);
+                    terminal_setColors(term, color256_palette[param - 90 + 8], cur_bg);
                     break;
                 }
                 case 100: case 101: case 102: case 103:
                 case 104: case 105: case 106: case 107: {
                     uint16_t cur_fg, cur_bg;
                     terminal_getColors(term, &cur_fg, &cur_bg);
-                    terminal_setColors(term, cur_fg, TERM_PALETTE[param - 100 + 8]);
+                    terminal_setColors(term, cur_fg, color256_palette[param - 100 + 8]);
                     break;
                 }
             }
@@ -436,6 +397,10 @@ void terminal_parser_parse(terminal_parser_t* parser, const char* data, int len)
 
     for (int i = 0; i < len; i++) {
         uint8_t c = (uint8_t)data[i];
+
+        // A NUL does nothing, in any state: a terminal ignores it, even inside an
+        // escape sequence.
+        if (c == 0) continue;
 
         switch (parser->state) {
             case TERM_STATE_NORMAL:

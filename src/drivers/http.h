@@ -96,10 +96,10 @@ typedef struct {
     bool     use_ssl;
     bool     keep_alive;
     bool     insecure;           // TLS without certificate checks (opt-in)
-    int32_t  range_from;         // -1 = not set
-    int32_t  range_to;           // -1 = not set
-    uint32_t connect_timeout_ms;
-    uint32_t read_timeout_ms;
+    int32_t  range_from;         // -1 = not set; the next request sends it
+    int32_t  range_to;           // < 0 = to the end
+    uint32_t connect_timeout_ms; // 0 = off
+    uint32_t read_timeout_ms;    // 0 = off
     uint32_t max_transfer_ms;    // 0 = disabled (default)
 
     // Snapshot of the configuration taken by start_request: the only copy
@@ -191,7 +191,8 @@ void http_close(http_conn_t *c);
 void http_reap(void);
 
 // Resize the receive ring buffer. Must be called before issuing a request.
-// Clamps to HTTP_RECV_BUF_MAX. Returns false on OOM (the old buffer stays).
+// Returns false for 0, over HTTP_RECV_BUF_MAX or out of memory (the old
+// buffer stays).
 bool http_set_recv_buf(http_conn_t *c, uint32_t bytes);
 
 // Issue an HTTP GET request. extra_hdr: optional "Key: Value\r\n..." string.
@@ -202,6 +203,12 @@ bool http_get(http_conn_t *c, const char *path, const char *extra_hdr);
 // Issue an HTTP POST request with a body (binary safe: body_len bytes).
 bool http_post(http_conn_t *c, const char *path, const char *extra_hdr,
                const char *body, size_t body_len);
+
+// For a caller that cannot report http_get/http_post returning false (the native
+// API's void get/post, polled with isComplete): a request that never started
+// becomes a finished, failed one, with http_get_error saying why. A request
+// already running (what the call was refused for) is left alone: it will finish.
+void http_fail_unstarted(http_conn_t *c);
 
 // Read up to `len` bytes of body into `out`.  Returns bytes copied.
 uint32_t http_read(http_conn_t *c, uint8_t *out, uint32_t len);

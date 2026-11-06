@@ -5,6 +5,9 @@ over its JSON-RPC control channel.
 
 ## Running
 
+The simulator needs a clone with its submodules: `git clone --recurse-submodules`, or
+`git submodule update --init --recursive` afterwards.
+
 ```bash
 pip install -r tests/e2e/requirements.txt
 make simulator
@@ -59,17 +62,20 @@ PICODECK_SIM_BINARY=build_sim_net/picodeck_simulator SDL_VIDEODRIVER=dummy \
 `make simulator-net` runs the firmware's own `src/drivers/wifi.c`, `http.c` and
 `tcp.c` on Mongoose/POSIX (TLS off) instead of the sim's libcurl layer, with
 Core 0 and Core 1 as two host threads (`simulator/net/`). The `firmware_net`
-tests (`test_network_firmware.py`) run only against it (`--build-info` says
-`firmware_net=1`) and skip, allow-listed, elsewhere;
+tests (`test_network_firmware.py`, and the boot cases of `test_wifi_clock.py`)
+run only against it (`--build-info` says `firmware_net=1`) and skip,
+allow-listed, elsewhere;
 `PICODECK_SIM_EXPECT_FIRMWARE_NET=1` makes the run refuse to start without it.
 Each case runs in its own simulator against local servers
 (`net_servers.py`: HTTP on 127.0.0.1 with `/ok`, `/big`, `/chunked`, `/close`,
 `/drip`, `/hang`, `/reset`, `/echo`; a TCP echo/flood server; a black-hole
-port). The app `net_fw/main.lua` is staged per test and runs the one case
+port; an SNTP server, through `PICODECK_SIM_NET_SNTP_URL`). The app `net_fw/main.lua` is staged per test and runs the one case
 named in `/data/com.test.net_fw/servers.json`, so a case that crashes the
 simulator fails alone. They include regression tests for the fixed Core 0/
 Core 1 close races from the code review (`KNOWN_BUGS` is empty). The whole
-E2E suite also passes against this build.
+E2E suite also passes against this build. `test_network_contract.py` runs the
+same app's cases that state the documented behaviour on the default libcurl
+layer as well, so the two stacks cannot drift apart unnoticed.
 
 Paths are absolute, so any working directory inside the repo works. The config
 is the repo-level `pytest.ini`: 60 s per-test timeout (`pytest-timeout`), strict
@@ -104,6 +110,13 @@ own card to run the same app in the simulator).
 `HwTarget` drives the device through `tools/picodeck_mcp.py`'s serial helpers
 and builds the device's traps in:
 
+- **Transfers are checked.** A screenshot or a file read is checked against the
+  device's FNV-1a, retried, and raises `HwTargetError` rather than return a
+  transfer that failed (a screenshot from firmware before #61 has no checksum:
+  it comes back unverified, with a warning on stderr). While a transfer runs the
+  device drops other log output (`src/console_gate.h`), which is one more reason
+  the log is advisory. A hardware test that must see a tear, not a retry, calls
+  the helper's `_once` form (`test_screenshot_integrity.py`).
 - **Results come from files.** The serial capture drops `[APP]` lines, so a
   Lua app's verdict is its picotest `/data/<APP_ID>/test_results.json`, read
   back with `getb64`; the outcome of a launch is `status` polling plus
@@ -139,7 +152,14 @@ and builds the device's traps in:
   running`). `usb` waits for the launcher. So `reboot()` exits the app first
   (or refuses) and `flash()` refuses while an app runs. A reboot is proven
   by uptime going back, never by `ver` (its timestamp lies after
-  incremental builds).
+  incremental builds). `unzip` runs mid-app, except over the app's own
+  directory (`Error: unzip: an app is running from <dir>: exit it first`).
+- **A push stops for an app started during it.** A large upload takes minutes,
+  and someone can launch an app on the device meanwhile. `push_app` exits a
+  running app when it starts, but one that has started by the end of the upload
+  is left alone: the MCP `push_app` re-checks `status` right before its `unzip`
+  and stops, so the push raises with `an app is running (<name>)` and the app's
+  directory stays as it was.
 - **One reader per port.** Before opening the port the run refuses one that
   another process holds (stop the MCP server's `stop_log_capture` first), a
   path that is not a serial tty, and a device that does not answer `ping`
@@ -301,6 +321,7 @@ Prefer these over `time.sleep`:
 | injected key consumed | `seq = sim.keypress(k)["input_seq"]; sim.wait_input_consumed(seq)` |
 | app staged after boot | `stage_lua_app(sd, name, code, requirements=[...])` then `launch_app` (the sim rescans on a miss) |
 | app running | `sim.call("get_running_app")` → always `{running, name}` |
+| idle dim, the wake swallow | `sim_factory(sd, virtual_time=True, extra_args=["--idle-dim"])`, `sim.call("get_backlight")` → `{level, dimmed}` (`test_idle_dim.py`) |
 | timed behaviour (animations, sleeps, repeat) | a `virtual_time=True` sim: `sys.sleep` runs at 50x and reads back exact; `sim.set_time_multiplier(0)` pauses, `sim.step_time(ms)` advances |
 
 Virtual time (`sim_factory(sd, virtual_time=True)`) is opt-in. Only the

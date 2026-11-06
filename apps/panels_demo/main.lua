@@ -7,32 +7,20 @@
 local pc  = picocalc
 local sys = pc.sys
 
--- require/dofile/package are blocked in the sandbox; standard in-tree shim
--- (see apps/nonogram/main.lua). Global so submodules could require each other.
-local _loaded = {}
-function require(name)
-    if _loaded[name] then return _loaded[name] end
-    local path = APP_DIR .. "/" .. name:gsub("%.", "/") .. ".lua"
-    local src = pc.fs.readFile(path)
-    if not src then error("require: file not found: " .. path) end
-    local fn, err = load(src, "@" .. path)
-    if not fn then error("require: " .. err) end
-    local result = fn()
-    if result == nil then result = true end
-    _loaded[name] = result
-    return result
-end
-
 local ok, Panels = pcall(sys.loadlib, "panels")
 if not ok or type(Panels) ~= "table" then
-    -- Firmware predates the library: say so instead of a blank screen.
+    -- /system/lib is a folder on the card that nothing installs (a published
+    -- app would ship panels.lua itself and require it). Say so instead of a
+    -- blank screen.
     local disp = pc.display
     while true do
         pc.input.update()
         if pc.input.getButtonsPressed() & pc.input.BTN_ESC ~= 0 then return end
         disp.clear(disp.rgb(20, 0, 0))
         disp.drawText(20, 140, "panels library not found", disp.rgb(255, 255, 255))
-        disp.drawText(20, 156, "update firmware (needs /system/lib/panels.lua)",
+        disp.drawText(20, 156, "copy system/lib to the SD card",
+                      disp.rgb(200, 200, 200))
+        disp.drawText(20, 172, "(needs /system/lib/panels.lua)",
                       disp.rgb(200, 200, 200))
         disp.drawText(20, 300, "ESC exit", disp.rgb(160, 160, 160))
         disp.flush()

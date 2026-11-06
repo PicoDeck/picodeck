@@ -44,6 +44,23 @@ static int l_terminal_gc(lua_State* L) {
 #define TERM_MAX_COLS (320 / FONT_SCI_WIDTH)   // 53
 #define TERM_MAX_ROWS (320 / FONT_SCI_HEIGHT)  // 26
 
+// The widget's default origin and bounds (x 4, y 28..302: under a native app's
+// own 28 px header) hold 22 rows of 52 columns. A Lua terminal starts there
+// when it fits, and moves just far enough for what it asked for when it does
+// not, so its bottom rows, which are its newest, and its last column show.
+// setRenderBounds overrides this.
+static void terminal_fit_panel(terminal_t* term) {
+    int height = term->rows * FONT_SCI_HEIGHT;
+    if (term->render_y_start + height > term->render_y_end) {
+        int y_start = 320 - height;
+        if (y_start > term->render_y_start) y_start = term->render_y_start;
+        terminal_setRenderBounds(term, y_start, 320);
+    }
+    int width = term->cols * FONT_SCI_WIDTH;
+    if (term->render_x_start + width > 320)
+        term->render_x_start = 320 - width;
+}
+
 static int l_terminal_new(lua_State* L) {
     lua_Integer cols = lb_optint(L, 1, TERM_DEFAULT_COLS);
     lua_Integer rows = lb_optint(L, 2, TERM_DEFAULT_ROWS);
@@ -69,6 +86,7 @@ static int l_terminal_new(lua_State* L) {
         return luaL_error(L, "failed to create terminal (out of memory)");
     }
     t->term = term;
+    terminal_fit_panel(term);
     terminal_parser_init(&t->parser, term);
 
 #ifdef PICODECK_SIMULATOR
@@ -80,9 +98,11 @@ static int l_terminal_new(lua_State* L) {
 
 static int l_terminal_write(lua_State* L) {
     lua_terminal_t* t = check_terminal(L, 1);
-    const char* str = luaL_checkstring(L, 2);
-    
-    terminal_parser_write(&t->parser, str);
+    size_t len;
+    const char* str = luaL_checklstring(L, 2, &len);
+
+    // By length: a server's output (apps/ssh) can hold NUL bytes.
+    terminal_parser_parse(&t->parser, str, (int)len);
     return 0;
 }
 
@@ -175,7 +195,8 @@ static int l_terminal_setFont(lua_State* L) {
     
     if (strcmp(font_name, "scientifica") == 0) {
         terminal_setFont(t->term, TERM_FONT_SCIENTIFICA);
-    } else if (strcmp(font_name, "scientifica_bold") == 0) {
+    } else if (strcmp(font_name, "scientifica_bold") == 0 ||
+               strcmp(font_name, "scientifica-bold") == 0) {
         terminal_setFont(t->term, TERM_FONT_SCIENTIFICA_BOLD);
     } else {
         return luaL_error(L, "unknown font: %s (use 'scientifica' or 'scientifica_bold')", font_name);

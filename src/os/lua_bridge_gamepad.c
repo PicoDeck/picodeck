@@ -3,9 +3,10 @@
 #include "../drivers/keyboard.h"
 
 // ── picocalc.gamepad.* ───────────────────────────────────────────────────────
-// The logical gamepad (PAD_* buttons aliased to keys; kbd_event_queue.h). Its
-// masks are updated by input.update(), like getButtons*, and the keys behind
-// it keep reporting through picocalc.input.
+// The logical gamepad (PAD_* buttons aliased to keys; kbd_event_queue.h; AXIS_*
+// sticks and triggers, drivers/pad_source.h). Its masks and axes are updated by
+// input.update(), like getButtons*, and the keys behind it keep reporting
+// through picocalc.input.
 
 static int l_gamepad_getButtons(lua_State *L) {
   lua_pushinteger(L, kbd_get_pad());
@@ -40,11 +41,22 @@ static int l_gamepad_getLabel(lua_State *L) {
   return 1;
 }
 
+// getAxis(axis) -> -1.0 to 1.0 (triggers 0.0 to 1.0), as of the last
+// input.update(). axis is one AXIS_* constant: an exact integer.
+static int l_gamepad_getAxis(lua_State *L) {
+  lua_Integer axis = luaL_checkinteger(L, 1);
+  luaL_argcheck(L, axis >= AXIS_LX && axis <= AXIS_RT, 1,
+                "expected one AXIS_* constant");
+  lua_pushnumber(L, (lua_Number)kbd_get_pad_axis((int)axis));
+  return 1;
+}
+
 static const luaL_Reg l_gamepad_lib[] = {
     {"getButtons", l_gamepad_getButtons},
     {"getButtonsPressed", l_gamepad_getButtonsPressed},
     {"getButtonsReleased", l_gamepad_getButtonsReleased},
     {"getLabel", l_gamepad_getLabel},
+    {"getAxis", l_gamepad_getAxis},
     {NULL, NULL}};
 
 void lua_bridge_gamepad_init(lua_State *L) {
@@ -62,5 +74,11 @@ void lua_bridge_gamepad_init(lua_State *L) {
   lua_pushinteger(L, PAD_R); lua_setfield(L, -2, "PAD_R");
   lua_pushinteger(L, PAD_START); lua_setfield(L, -2, "PAD_START");
   lua_pushinteger(L, PAD_SELECT); lua_setfield(L, -2, "PAD_SELECT");
+  lua_pushinteger(L, AXIS_LX); lua_setfield(L, -2, "AXIS_LX");
+  lua_pushinteger(L, AXIS_LY); lua_setfield(L, -2, "AXIS_LY");
+  lua_pushinteger(L, AXIS_RX); lua_setfield(L, -2, "AXIS_RX");
+  lua_pushinteger(L, AXIS_RY); lua_setfield(L, -2, "AXIS_RY");
+  lua_pushinteger(L, AXIS_LT); lua_setfield(L, -2, "AXIS_LT");
+  lua_pushinteger(L, AXIS_RT); lua_setfield(L, -2, "AXIS_RT");
   lua_pop(L, 1);
 }

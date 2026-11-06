@@ -79,6 +79,10 @@ static inline uint32_t now_ms(void) {
 static inline bool deadline_passed(uint32_t now, uint32_t deadline) {
   return deadline != 0 && (int32_t)(now - deadline) > 0;
 }
+// A deadline `ms` from now; 0 (never fires) when the timeout is off.
+static inline uint32_t deadline_after(uint32_t ms) {
+  return ms ? now_ms() + ms : 0;
+}
 
 // Atomically set pending callback bits (Core 1), unless being released
 static inline void pending_set(http_conn_t *c, uint8_t bits) {
@@ -247,13 +251,18 @@ void http_c1_send_request(struct mg_connection *nc, http_conn_t *c) {
       (strstr(c->extra_hdrs, "Accept-Encoding:") != NULL ||
        strstr(c->extra_hdrs, "accept-encoding:") != NULL);
 
+  // Host carries the port unless it is the scheme's default (RFC 9110 7.2).
+  char port_suffix[8] = "";
+  if (c->port != (c->use_ssl ? 443 : 80))
+    snprintf(port_suffix, sizeof(port_suffix), ":%u", (unsigned)c->port);
+
   int off = snprintf(buf, need,
       "%s %s HTTP/1.1\r\n"
-      "Host: %s\r\n"
+      "Host: %s%s\r\n"
       "%s"
       "%s"
       "Connection: %s\r\n",
-      c->method, c->path ? c->path : "/", c->server,
+      c->method, c->path ? c->path : "/", c->server, port_suffix,
       has_ua ? "" : "User-Agent: PicoDeck/1.0\r\n",
       has_ae ? "" : "Accept-Encoding: identity\r\n",
       c->req_keep_alive ? "keep-alive" : "close");
@@ -281,7 +290,7 @@ void http_c1_send_request(struct mg_connection *nc, http_conn_t *c) {
   http_state_t st = st_get(c);
   if (st == HTTP_STATE_CONNECTING || st == HTTP_STATE_SENDING) {
     c->deadline_connect = 0;
-    c->deadline_read = now_ms() + c->req_read_timeout_ms;
+    c->deadline_read = deadline_after(c->req_read_timeout_ms);
     st_put(c, HTTP_STATE_HEADERS);
   }
   spin_unlock(s_lock, irq);
@@ -384,7 +393,7 @@ static bool c1_parse_head(struct mg_connection *nc, http_conn_t *c) {
     if (ok) {
       __atomic_store_n(&c->headers_done, true, __ATOMIC_RELEASE);
       c->deadline_connect = 0;
-      c->deadline_read = now_ms() + c->req_read_timeout_ms;
+      c->deadline_read = deadline_after(c->req_read_timeout_ms);
       st_put(c, HTTP_STATE_BODY);
       c->pending |= HTTP_CB_HEADERS;
     }
@@ -489,7 +498,7 @@ static bool c1_feed_body(struct mg_connection *nc, http_conn_t *c,
       c->pending |= HTTP_CB_REQUEST;
     // Bytes arrived or are waiting for ring space: the transfer is not idle.
     if (used || nc->recv.len)
-      c->deadline_read = now_ms() + c->req_read_timeout_ms;
+      c->deadline_read = deadline_after(c->req_read_timeout_ms);
   }
   spin_unlock(s_lock, irq);
 
@@ -853,6 +862,22 @@ bool http_set_recv_buf(http_conn_t *c, uint32_t bytes) {
   return true;
 }
 
+// The extra headers plus `Range: bytes=from-to` (`to` < 0: to the end).
+static char *headers_with_range(const char *extra_hdr, int32_t from,
+                                int32_t to) {
+  size_t cap = (extra_hdr ? strlen(extra_hdr) : 0) + 48;
+  char *h = umm_malloc(cap);
+  if (!h)
+    return NULL;
+  int off = snprintf(h, cap, "%s", extra_hdr ? extra_hdr : "");
+  if (to >= 0)
+    snprintf(h + off, cap - off, "Range: bytes=%ld-%ld\r\n", (long)from,
+             (long)to);
+  else
+    snprintf(h + off, cap - off, "Range: bytes=%ld-\r\n", (long)from);
+  return h;
+}
+
 static bool start_request(http_conn_t *c, const char *method, const char *path,
                           const char *extra_hdr, const char *body,
                           size_t body_len) {
@@ -871,15 +896,19 @@ static bool start_request(http_conn_t *c, const char *method, const char *path,
 
   // Request buffers: Core 0 allocates and frees them; Core 1 only reads
   // them between CONN_REQ_HTTP_START and sending.  The body is binary.
+  // setByteRange's range goes out as one more extra header, for this request.
+  bool has_range = c->range_from >= 0;
   char *new_path = http_strdup(path);
-  char *new_hdrs = extra_hdr ? http_strdup(extra_hdr) : NULL;
+  char *new_hdrs = has_range ? headers_with_range(extra_hdr, c->range_from,
+                                                  c->range_to)
+                             : http_strdup(extra_hdr);
   char *new_tx = NULL;
   if (body && body_len > 0) {
     new_tx = umm_malloc(body_len);
     if (new_tx)
       memcpy(new_tx, body, body_len);
   }
-  if (!new_path || (extra_hdr && !new_hdrs) ||
+  if (!new_path || ((extra_hdr || has_range) && !new_hdrs) ||
       (body && body_len > 0 && !new_tx)) {
     umm_free(new_path);
     umm_free(new_hdrs);
@@ -896,6 +925,7 @@ static bool start_request(http_conn_t *c, const char *method, const char *path,
   c->extra_hdrs = new_hdrs;
   c->tx_buf = new_tx;
   c->tx_len = new_tx ? (uint32_t)body_len : 0;
+  c->range_from = c->range_to = -1;  // setByteRange is for the next request
   strncpy(c->method, method, sizeof(c->method) - 1);
   c->method[sizeof(c->method) - 1] = '\0';
 
@@ -918,7 +948,7 @@ static bool start_request(http_conn_t *c, const char *method, const char *path,
   c->req_connect_timeout_ms = c->connect_timeout_ms;
   c->req_read_timeout_ms = c->read_timeout_ms;
   c->req_max_transfer_ms = c->max_transfer_ms;
-  c->deadline_connect = now + c->req_connect_timeout_ms;
+  c->deadline_connect = deadline_after(c->req_connect_timeout_ms);
   c->deadline_read = 0;
   c->deadline_transfer =
       c->req_max_transfer_ms > 0 ? now + c->req_max_transfer_ms : 0;
@@ -946,6 +976,20 @@ bool http_get(http_conn_t *c, const char *path, const char *extra_hdr) {
 bool http_post(http_conn_t *c, const char *path, const char *extra_hdr,
                const char *body, size_t body_len) {
   return start_request(c, "POST", path, extra_hdr, body, body_len);
+}
+
+void http_fail_unstarted(http_conn_t *c) {
+  if (!c)
+    return;
+  uint32_t irq = spin_lock_blocking(s_lock);
+  http_state_t st = st_get(c);
+  if (st == HTTP_STATE_IDLE || st == HTTP_STATE_DONE) {
+    if (!c->err[0])  // out of memory has said so already
+      snprintf(c->err, sizeof(c->err), "WiFi not available");
+    c->status_code = 0;
+    st_put(c, HTTP_STATE_FAILED);
+  }
+  spin_unlock(s_lock, irq);
 }
 
 uint32_t http_read(http_conn_t *c, uint8_t *out, uint32_t len) {

@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <strings.h>
 #include <dirent.h>
 #include <stdatomic.h>
 #include <time.h>
@@ -17,6 +18,7 @@
 #include "../hal/hal_display.h"
 #include "../sim_socket.h"
 #include "umm_malloc.h"
+#include "idle_dim.h"
 // Real driver header — pulled in so the stub definitions below are checked
 // against the hardware signatures at compile time (any drift is an error).
 // "pico/mutex.h" inside it resolves to the simulator stub in stubs/pico/.
@@ -271,7 +273,8 @@ void display_clear(uint16_t color) {
     for (int i = 0; i < 320 * 320; i++) fb[i] = color;
 }
 
-void display_set_brightness(uint8_t brightness) { (void)brightness; }
+// As firmware (nothing here shows it; the get_backlight RPC reports the level).
+void display_set_brightness(uint8_t brightness) { idle_dim_set_app_brightness(brightness); }
 
 void display_set_pixel(int x, int y, uint16_t color) {
     if (x >= s_clip_x0 && x <= s_clip_x1 && y >= s_clip_y0 && y <= s_clip_y1) {
@@ -416,8 +419,9 @@ void display_fill_vline(int x, int y0, int y1, uint16_t color) {
     display_draw_line(x, y0, x, y1, color);
 }
 void display_fill_vline_gradient(int x, int y0, int y1, uint16_t color_top, uint16_t color_bottom) {
-    (void)color_bottom;
-    display_draw_line(x, y0, x, y1, color_top);
+    disp_clip_t c = cur_clip();
+    disp_fill_vline_gradient(display_get_back_buffer(), 320, &c, x, y0, y1,
+                             color_top, color_bottom, false);
 }
 // ── Clip rect API (state declared at top of file) ────────────────────────────
 
@@ -519,8 +523,10 @@ void display_set_scroll_offset(int offset) {
 }
 int display_get_scroll_offset(void) { return s_scroll_offset; }
 uint32_t display_get_scroll_offset_writes(void) { return s_scroll_offset_writes; }
-void display_set_transparent_color(uint16_t color) { (void)color; }
-uint16_t display_get_transparent_color(void) { return 0; }
+// The global colour key: a draw whose key is 0 uses it, as in the firmware.
+static uint16_t s_transparent_color = 0;
+void display_set_transparent_color(uint16_t color) { s_transparent_color = color; }
+uint16_t display_get_transparent_color(void) { return s_transparent_color; }
 uint16_t* display_get_framebuffer(void) { return display_get_back_buffer(); }
 uint16_t* display_get_screen_buffer(void) {
     // Return the buffer most recently presented — after display_flush() that
@@ -565,7 +571,8 @@ void display_draw_image_partial(int x, int y, int img_w, int img_h,
     // Clip once, specialised loops (shared with the firmware, no swap).
     disp_clip_t c = cur_clip();
     disp_blit(display_get_back_buffer(), 320, &c, x, y, data, img_w, img_h, sx,
-              sy, sw, sh, flip_x, flip_y, transparent_color, false);
+              sy, sw, sh, flip_x, flip_y,
+              transparent_color ? transparent_color : s_transparent_color, false);
 }
 
 void display_draw_image_scaled_nn(int x, int y, const uint16_t *data,
@@ -573,7 +580,9 @@ void display_draw_image_scaled_nn(int x, int y, const uint16_t *data,
                                   uint16_t transparent_color) {
     disp_clip_t c = cur_clip();
     disp_blit_scaled(display_get_back_buffer(), 320, &c, x, y, data, src_w,
-                     src_h, dst_w, dst_h, transparent_color, false);
+                     src_h, dst_w, dst_h,
+                     transparent_color ? transparent_color : s_transparent_color,
+                     false);
 }
 
 void display_draw_image_stretched(int x, int y, int dst_w, int dst_h,
@@ -587,16 +596,34 @@ void display_draw_image_stretched(int x, int y, int dst_w, int dst_h,
     if (sw <= 0 || sh <= 0) return;
     disp_clip_t c = cur_clip();
     disp_blit_scaled_rect(display_get_back_buffer(), 320, &c, x, y, data, img_w,
-                          sx, sy, sw, sh, dst_w, dst_h, transparent_color, false);
+                          sx, sy, sw, sh, dst_w, dst_h,
+                          transparent_color ? transparent_color : s_transparent_color,
+                          false);
 }
+
+// The firmware's path (src/drivers/display.c) without its byte swaps: TGX, in the
+// host byte order this framebuffer already has. (x, y) is the top-left corner of
+// the unrotated result.
+#include "../../src/os/image_decoders.h"
 
 void display_draw_image_scaled(int x, int y, int img_w, int img_h,
                                const uint16_t *data, float scale, float angle,
                                uint16_t transparent_color) {
     if (!data || img_w <= 0 || img_h <= 0) return;
-    int dst_w = (int)(img_w * scale);
-    int dst_h = (int)(img_h * scale);
-    display_draw_image_scaled_nn(x, y, data, img_w, img_h, dst_w, dst_h, transparent_color);
+    if (transparent_color == 0) transparent_color = s_transparent_color;
+    const float cx = x + img_w * scale * 0.5f;
+    const float cy = y + img_h * scale * 0.5f;
+    const float angle_deg = angle * (180.0f / (float)M_PI);
+    uint16_t *fb = display_get_back_buffer();
+    if (transparent_color != 0) {
+        tgx_draw_image_scaled_masked(fb, 320, 320, s_clip_x0, s_clip_y0,
+                                     s_clip_x1 + 1, s_clip_y1 + 1, data, img_w, img_h,
+                                     cx, cy, scale, angle_deg, transparent_color);
+    } else {
+        tgx_draw_image_scaled(fb, 320, 320, s_clip_x0, s_clip_y0, s_clip_x1 + 1,
+                              s_clip_y1 + 1, data, img_w, img_h, cx, cy, scale,
+                              angle_deg);
+    }
 }
 
 // Keyboard stubs are now in keyboard_stub.c
@@ -612,7 +639,10 @@ void usb_msc_enter_mode(void) {
 bool sdcard_remount(void) { return true; }
 void sdcard_apply_clock(void) {}
 bool sdcard_ensure_ready(void) { return true; }
-void sd_set_slow_mode(bool slow) { (void)slow; }
+// Nothing to slow down here; recorded for the get_sd_slow_mode RPC.
+static atomic_bool s_sd_slow_mode = false;
+void sd_set_slow_mode(bool slow) { atomic_store(&s_sd_slow_mode, slow); }
+bool sim_sd_slow_mode(void) { return atomic_load(&s_sd_slow_mode); }
 
 bool sdcard_fexists(const char* path) {
     char full_path[1024];
@@ -656,6 +686,16 @@ char* sdcard_read_file(const char* path, int* out_len) {
     if (out_len) *out_len = (int)got;
     return buf;
 }
+// A host timestamp in FAT's packed date and time, as FatFS gives them.
+static void sim_fat_time(time_t t, uint16_t* fdate, uint16_t* ftime) {
+    struct tm tm;
+    localtime_r(&t, &tm);
+    int year = tm.tm_year + 1900;
+    if (year < 1980) year = 1980;
+    *fdate = (uint16_t)(((year - 1980) << 9) | ((tm.tm_mon + 1) << 5) | tm.tm_mday);
+    *ftime = (uint16_t)((tm.tm_hour << 11) | (tm.tm_min << 5) | (tm.tm_sec / 2));
+}
+
 int sdcard_list_dir(const char* path,
                     void (*callback)(const sdcard_entry_t* entry, void* user),
                     void* user) {
@@ -696,10 +736,8 @@ int sdcard_list_dir(const char* path,
         struct stat st;
         if (stat(entry_path, &st) == 0) {
             sdc_entry.is_dir = S_ISDIR(st.st_mode);
-            sdc_entry.size = (uint32_t)st.st_size;
-            // Set default date/time (Jan 1, 2020)
-            sdc_entry.fdate = (2020 - 1980) << 9 | 1 << 5 | 1;
-            sdc_entry.ftime = 0;
+            sdc_entry.size = sdc_entry.is_dir ? 0 : (uint32_t)st.st_size;  // as FatFS
+            sim_fat_time(st.st_mtime, &sdc_entry.fdate, &sdc_entry.ftime);
         } else {
             sdc_entry.is_dir = false;
             sdc_entry.size = 0;
@@ -730,7 +768,7 @@ int sdcard_list_dir(const char* path,
 //   sdcard_fsize_handle → int, -1 on error
 sdfile_t sdcard_fopen(const char* path, const char* mode) { return hal_sdcard_open(path, mode); }
 void sdcard_fclose(sdfile_t f) { hal_sdcard_close(f); }
-int sdcard_fread(sdfile_t f, void* buf, int len) { return (int)hal_sdcard_read(f, buf, (size_t)len); }
+int sdcard_fread(sdfile_t f, void* buf, int len) { return hal_sdcard_read_checked(f, buf, (size_t)len); }
 // No cross-core SD mutex in the simulator: the try-read finds the card busy
 // only when a test asks (the `set_sd_busy` RPC: for `ms` once `after_reads`
 // more try-reads have gone through, as if Core 0 then held the card that
@@ -789,8 +827,11 @@ int sdcard_fsize_handle(sdfile_t f) {
     fseek(fp, pos, SEEK_SET);
     return size >= 0 ? (int)size : -1;
 }
-int sdcard_fwrite(sdfile_t f, const void* buf, int len) { return (int)hal_sdcard_write(f, buf, (size_t)len); }
-int sdcard_fsize(const char* path) { return hal_sdcard_size(path); }
+int sdcard_fwrite(sdfile_t f, const void* buf, int len) { return hal_sdcard_write_checked(f, buf, (size_t)len); }
+int sdcard_fsize(const char* path) {
+    // f_stat gives a directory a size of 0, the host its own figure.
+    return hal_sdcard_isdir(path) ? 0 : hal_sdcard_size(path);
+}
 bool sdcard_mkdir(const char* path) {
     // Match hardware semantics: f_mkdir is single-level (no parent creation)
     // and FR_EXIST counts as success.
@@ -852,13 +893,20 @@ bool sdcard_rename(const char* oldpath, const char* newpath) {
     if (!hal_sdcard_resolve(oldpath, full_old, sizeof(full_old)) ||
         !hal_sdcard_resolve(newpath, full_new, sizeof(full_new)))
         return false;
+    // FatFS parity: f_rename refuses an existing target (FR_EXIST), where
+    // POSIX rename would replace it, and FAT names are case-insensitive, so a
+    // change of case alone is a rename onto itself and refused too. A save that
+    // writes a temp file and renames it over the old one fails on the device.
+    struct stat st;
+    if (lstat(full_new, &st) == 0 || strcasecmp(full_old, full_new) == 0)
+        return false;
     return rename(full_old, full_new) == 0;
 }
 bool sdcard_copy(const char* src, const char* dst,
-                 void (*progress_cb)(uint32_t done, uint32_t total, void* user),
+                 bool (*progress_cb)(uint32_t done, uint32_t total, void* user),
                  void* user) {
     // Mirrors src/drivers/sdcard.c: chunked copy, progress callback per
-    // chunk, dst removed on failure.
+    // chunk (false stops the copy), dst removed on failure.
     char full_src[1024], full_dst[1024];
     if (!hal_sdcard_resolve(src, full_src, sizeof(full_src)) ||
         !hal_sdcard_resolve(dst, full_dst, sizeof(full_dst)))
@@ -876,7 +924,7 @@ bool sdcard_copy(const char* src, const char* dst,
     while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
         if (fwrite(buf, 1, n, out) != n) { ok = false; break; }
         done += (uint32_t)n;
-        if (progress_cb) progress_cb(done, total, user);
+        if (progress_cb && !progress_cb(done, total, user)) { ok = false; break; }
     }
     if (ferror(in)) ok = false;
     fclose(in);
@@ -889,10 +937,9 @@ bool sdcard_stat(const char* path, sdcard_stat_t* out) {
     if (!hal_sdcard_resolve(path, full_path, sizeof(full_path))) return false;
     struct stat host_st;
     if (stat(full_path, &host_st) != 0) return false;
-    out->size = (uint32_t)host_st.st_size;
     out->is_dir = S_ISDIR(host_st.st_mode);
-    out->fdate = 0;
-    out->ftime = 0;
+    out->size = out->is_dir ? 0 : (uint32_t)host_st.st_size;  // as f_stat
+    sim_fat_time(host_st.st_mtime, &out->fdate, &out->ftime);
     return true;
 }
 bool sdcard_disk_info(uint32_t* out_free_kb, uint32_t* out_total_kb) {
@@ -978,6 +1025,8 @@ void display_effect_brighten(uint8_t factor) {
     uint16_t *fb = display_get_back_buffer();
     size_t n = SIM_FB_W * SIM_FB_H;
 
+    if (factor == 255) { memset(fb, 0xFF, n * sizeof(uint16_t)); return; }
+
     for (size_t i = 0; i < n; i++) {
         uint16_t p = fb[i];
         uint8_t r = blend8((p >> 11) & 0x1F, 31, factor);  // max 5-bit
@@ -997,6 +1046,11 @@ void display_effect_tint(uint8_t r_tint, uint8_t g_tint, uint8_t b_tint,
     uint8_t tr = r_tint >> 3;  // 5-bit
     uint8_t tg = g_tint >> 2;  // 6-bit
     uint8_t tb = b_tint >> 3;  // 5-bit
+
+    if (strength == 255) {
+        display_clear((uint16_t)((tr << 11) | (tg << 5) | tb));
+        return;
+    }
 
     for (size_t i = 0; i < n; i++) {
         uint16_t p = fb[i];
@@ -1034,6 +1088,12 @@ void display_effect_blend(const uint16_t *src, int w, int h, uint8_t alpha) {
 
     int max_h = (h < SIM_FB_H) ? h : SIM_FB_H;
     int max_w = (w < SIM_FB_W) ? w : SIM_FB_W;
+
+    if (alpha == 255) {
+        for (int y = 0; y < max_h; y++)
+            memcpy(&fb[y * SIM_FB_W], &src[y * w], (size_t)max_w * sizeof(uint16_t));
+        return;
+    }
 
     for (int y = 0; y < max_h; y++) {
         for (int x = 0; x < max_w; x++) {
@@ -1424,10 +1484,41 @@ void pio_psram_debug_test(bool full) { (void)full; }
 
 // --- Image preload stubs ---
 #include "../../src/drivers/image_api.h"
-void image_preload_init(void) {}
-bool image_preload_start(const char *path) { (void)path; return false; }
-pc_image_t *image_preload_poll(bool *ready) { if (ready) *ready = false; return NULL; }
-void image_preload_cancel(void) {}
+// image_preload.c's state machine without Core 1: the decode runs on the app's
+// thread, in the poll after the one that "picks it up", so an app sees one poll
+// of (nil, false) as it would while Core 1 decodes. As in the firmware, a second
+// start while one is in flight cancels it and returns false.
+enum { SIM_PRELOAD_IDLE, SIM_PRELOAD_REQUESTED, SIM_PRELOAD_DECODING };
+static int s_sim_preload_state = SIM_PRELOAD_IDLE;
+static char s_sim_preload_path[256];
+
+void image_preload_init(void) { s_sim_preload_state = SIM_PRELOAD_IDLE; }
+
+bool image_preload_start(const char *path) {
+    if (!path) return false;
+    if (s_sim_preload_state != SIM_PRELOAD_IDLE) {
+        s_sim_preload_state = SIM_PRELOAD_IDLE;
+        return false;
+    }
+    strncpy(s_sim_preload_path, path, sizeof(s_sim_preload_path) - 1);
+    s_sim_preload_path[sizeof(s_sim_preload_path) - 1] = '\0';
+    s_sim_preload_state = SIM_PRELOAD_REQUESTED;
+    return true;
+}
+
+pc_image_t *image_preload_poll(bool *ready) {
+    if (ready) *ready = false;
+    if (s_sim_preload_state == SIM_PRELOAD_REQUESTED) {
+        s_sim_preload_state = SIM_PRELOAD_DECODING;
+    } else if (s_sim_preload_state == SIM_PRELOAD_DECODING) {
+        s_sim_preload_state = SIM_PRELOAD_IDLE;
+        if (ready) *ready = true;
+        return image_load(s_sim_preload_path);
+    }
+    return NULL;
+}
+
+void image_preload_cancel(void) { s_sim_preload_state = SIM_PRELOAD_IDLE; }
 void image_preload_update(void) {}
 
 // --- display_draw_text_to_buffer (host-order offscreen buffer) ---

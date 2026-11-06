@@ -266,6 +266,7 @@ pico_generate_pio_header(pio_psram_lib ${PIO_PSRAM_DIR}/psram_spi.pio)
 
 add_executable(picodeck
     src/main.c
+    src/console_gate.c
     src/dev_commands.c
     src/dev_ops.c
     src/os/mv_op.c
@@ -302,6 +303,7 @@ add_executable(picodeck
     src/os/lua_bridge_3d.c
     src/os/gfx3d.c
     src/os/lua_bridge_gfx3d.c
+    src/os/color256.c
     src/os/chargrid.c
     src/os/chargrid_shapes.c
     src/os/chargrid_text.c
@@ -471,6 +473,9 @@ set_source_files_properties(
 # Text rendering (drawText, the HUD of every game): -O2 like the blitters.
 set_source_files_properties(src/fonts/font.c PROPERTIES COMPILE_OPTIONS "-O2")
 
+# Terminal cell rendering (editor, ssh, every terminal app): -O2 like font.c.
+set_source_files_properties(src/os/terminal_render.c PROPERTIES COMPILE_OPTIONS "-O2")
+
 # gfx3d: -O2 like the display blitters (DISP_HOT), and no FMA contraction so a
 # triangle edge shared by two triangles evaluates bit-identically in both.
 set_source_files_properties(src/os/gfx3d.c PROPERTIES
@@ -566,6 +571,8 @@ endif()
 # Enable USB serial for stdio (printf goes to USB-C serial — handy for debug)
 pico_enable_stdio_usb(picodeck 1)
 pico_enable_stdio_uart(picodeck 1)
+# panic() opens the console gate before it prints (src/console_gate.c).
+target_link_options(picodeck PRIVATE "LINKER:--wrap=panic")
 
 pico_generate_pio_header(picodeck ${CMAKE_CURRENT_SOURCE_DIR}/src/drivers/lcd_spi.pio)
 
@@ -587,6 +594,9 @@ target_compile_definitions(picodeck PRIVATE
     PICODECK_VERSION="${PICODECK_VERSION}"
     PICO_RP2350=1
     PICO_MALLOC_PANIC=0   # Return NULL on SRAM OOM instead of HardFault
+    # A log line waits for the UART's FIFO: 2.4 ms for 60 bytes at 115200, on
+    # whichever core logged. The USB port is virtual and has no baud rate.
+    PICO_DEFAULT_UART_BAUD_RATE=921600
     PICO_STACK_SIZE=4096  # Reduced to 4KB to fit in SCRATCH_X/Y
     # MSPLIM on both cores; main.c supplies the hook to add a margin.
     PICO_USE_STACK_GUARDS=1
@@ -621,6 +631,11 @@ add_custom_command(TARGET picodeck POST_BUILD
 set(_hot_ld ${CMAKE_SOURCE_DIR}/src/hot_text.ld)
 target_link_options(picodeck PRIVATE "LINKER:-T,${_hot_ld}")
 set_property(TARGET picodeck APPEND PROPERTY LINK_DEPENDS ${_hot_ld})
+# After hot_text.ld on the link line: its INSERT names a section from there, and
+# with that section missing ld silently puts this one at the start of flash.
+# gfx3d, display and fonts at their own fixed cache sets (src/hot_gfx.ld).
+target_link_options(picodeck PRIVATE "LINKER:-T,${CMAKE_SOURCE_DIR}/src/hot_gfx.ld")
+set_property(TARGET picodeck APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/src/hot_gfx.ld)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_custom_command(TARGET picodeck POST_BUILD
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_hot_text.py

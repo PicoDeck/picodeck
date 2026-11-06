@@ -4,8 +4,8 @@
 // 256-entry RGB565 palette, a glyph mask cache, ramps, UTF-8 text and a
 // renderer. Pure C (no display, SD card or Lua), so the firmware, the
 // simulator and the host unit tests compile chargrid.c, chargrid_shapes.c,
-// chargrid_text.c and chargrid_render.c unchanged; chargrid_display.c is the
-// one display-facing file.
+// chargrid_text.c, chargrid_render.c and color256.c unchanged;
+// chargrid_display.c is the one display-facing file.
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -18,7 +18,7 @@
 #define CG_MAX_CELL_H 32
 #define CG_RAMP_MAX 256
 #define CG_KEEP (-1)        // as a glyph or colour argument: leave that plane alone
-#define CG_DEFAULT_FG 15    // xterm-256 white
+#define CG_DEFAULT_FG 15    // bright white
 #define CG_DEFAULT_BG 0     // black
 #ifndef CG_NEAREST_BITS
 #define CG_NEAREST_BITS 4   // per channel: the nearest-palette table has 2^(3*bits) entries (4 KB)
@@ -72,12 +72,11 @@ typedef struct {
 
 // NULL when the sizes are valid, else a static message naming the limit.
 const char *chargrid_check_size(int cols, int rows, int cell_w, int cell_h);
-// A grid of empty cells (glyph 0, fg 15, bg 0) with the xterm-256 palette and
-// the generated shapes; one allocation. NULL on bad sizes or no memory.
+// A grid of empty cells (glyph 0, fg 15, bg 0) with its own copy of the shared
+// 256 colours (color256.h) and the generated shapes; one allocation. NULL on
+// bad sizes or no memory.
 chargrid_t *chargrid_create(int cols, int rows, int cell_w, int cell_h);
 void chargrid_free(chargrid_t *g);  // NULL is fine
-// The xterm-256 palette as RGB565.
-void chargrid_default_palette(uint16_t pal[256]);
 
 static inline uint8_t *chargrid_plane(chargrid_t *g, int plane) {
   return plane == CG_PLANE_GLYPH ? g->glyph : plane == CG_PLANE_FG ? g->fg : g->bg;

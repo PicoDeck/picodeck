@@ -45,15 +45,22 @@ function input_map.translate_buttons(buttons, decckm)
     return table.concat(seqs)
 end
 
+-- The cursor key mode (DECCKM) after this output from the server: true when a program has
+-- asked for application cursor keys with ESC [ ? 1 h, as ncurses programs do. A sequence
+-- split across two reads goes unnoticed; the terminal's own parser does not expose its copy.
+function input_map.track_cursor_keys(data, decckm)
+    for modes, action in data:gmatch("\27%[%?([%d;]+)([hl])") do
+        for mode in modes:gmatch("%d+") do
+            if mode == "1" then decckm = (action == "h") end
+        end
+    end
+    return decckm
+end
+
 -- Translate a character from kbd_get_char() to what SSH expects
 function input_map.translate_char(c)
     if not c then return nil end
     local b = string.byte(c)
-
-    -- Control characters (Ctrl+A through Ctrl+Z) pass through as-is
-    if b >= 1 and b <= 26 then
-        return c
-    end
 
     -- Backspace key sends 0x08, but SSH expects 0x7F (DEL)
     if b == 0x08 then
@@ -63,6 +70,11 @@ function input_map.translate_char(c)
     -- Enter sends \n, but SSH expects \r
     if b == 0x0A then
         return "\r"
+    end
+
+    -- Control characters (Ctrl+A through Ctrl+Z) pass through as-is
+    if b >= 1 and b <= 26 then
+        return c
     end
 
     -- Regular printable characters

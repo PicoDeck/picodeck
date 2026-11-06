@@ -146,6 +146,18 @@ void lua_bridge_chargrid_init(lua_State *L);
 // Clamps v to [lo, hi]. The +-2^24 bound above does not protect sinks
 // narrower than that: uint8_t volumes/colour channels and unsigned
 // positions clamp instead of wrapping.
+// A timeout argument in seconds (fractions allowed) as milliseconds. 0, a
+// negative value and NaN are 0 ("off"); any other value is at least 1 ms and
+// at most what a deadline in wrapping 32-bit ms can span.
+static inline uint32_t lb_secs_to_ms(lua_Number s) {
+  if (!(s > 0))
+    return 0;
+  if (s >= (lua_Number)2147483)
+    return 2147483000u;
+  uint32_t ms = (uint32_t)(s * (lua_Number)1000 + (lua_Number)0.5);
+  return ms ? ms : 1;
+}
+
 static inline lua_Integer lb_clamp_int(lua_Integer v, lua_Integer lo,
                                        lua_Integer hi) {
   return v < lo ? lo : (v > hi ? hi : v);

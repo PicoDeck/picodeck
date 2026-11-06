@@ -40,6 +40,12 @@ static inline uint16_t byte_swap(uint16_t val) {
     return (val >> 8) | ((val & 0xFF) << 8);
 }
 
+// Whether a text row starting at pixel y lies inside the render bounds: every
+// draw path drops a row that does not fully fit.
+static inline bool row_fits(const terminal_t* term, int y) {
+    return y + FONT_SCI_HEIGHT <= term->render_y_end;
+}
+
 void terminal_render_init(void) {
     s_last_blink_time = 0;
     s_blink_state = false;
@@ -132,21 +138,25 @@ static int build_logical_lines(terminal_t* term, int* logical_starts, int max_li
     return count;
 }
 
+// Every terminal cell comes through here (1,590 of them for a full 53x30 render),
+// so it clips once and walks the framebuffer by pointer instead of testing and
+// multiplying per pixel.
 static void terminal_render_glyph(int x, int y, uint16_t fg, uint16_t bg,
                                    const uint8_t *glyph, int font_w, int font_h) {
-    uint16_t* fb = display_get_back_buffer();
+    int row0 = y < 0 ? -y : 0;
+    int row1 = y + font_h > 320 ? 320 - y : font_h;
+    int col0 = x < 0 ? -x : 0;
+    int col1 = x + font_w > 320 ? 320 - x : font_w;
+    if (col0 >= col1) return;
+
     uint16_t fg_be = byte_swap(fg);
     uint16_t bg_be = byte_swap(bg);
+    uint16_t* line = display_get_back_buffer() + (y + row0) * 320 + x;
 
-    for (int row = 0; row < font_h; row++) {
-        uint8_t rowdata = glyph[row];
-        int py = y + row;
-        if (py < 0 || py >= 320) continue;
-        for (int col = 0; col < font_w; col++) {
-            int px = x + col;
-            if (px >= 0 && px < 320) {
-                fb[py * 320 + px] = (rowdata & (0x80 >> col)) ? fg_be : bg_be;
-            }
+    for (int row = row0; row < row1; row++, line += 320) {
+        uint32_t bits = (uint32_t)glyph[row] << col0;  // bit 7: this pixel
+        for (int col = col0; col < col1; col++, bits <<= 1) {
+            line[col] = (bits & 0x80) ? fg_be : bg_be;
         }
     }
 }
@@ -168,6 +178,7 @@ static void terminal_renderLineNumbers(terminal_t* term) {
 
     for (int row = 0; row < term->rows; row++) {
         int y = term->render_y_start + row * FONT_H;
+        if (!row_fits(term, y)) break;
         int x = term->render_x_start;
         bool is_continuation = false;
         int logical_line_idx = 0;
@@ -308,6 +319,7 @@ void terminal_renderScrollback(terminal_t* term) {
     }
 
     for (int row = 0; row < visible_rows; row++) {
+        if (!row_fits(term, term->render_y_start + row * FONT_H)) break;
         int vline = top_virtual + row;
 
         if (vline < 0) {
@@ -393,6 +405,8 @@ void terminal_render(terminal_t* term) {
         return;
     }
 
+    term->last_render_fb = display_get_back_buffer();
+
     // Calculate content area (accounts for line numbers and scrollbar)
     int content_offset_cols = 0;
     if (term->line_numbers_enabled) {
@@ -423,7 +437,7 @@ void terminal_render(terminal_t* term) {
     // Render each display row
     for (int row = 0; row < term->rows; row++) {
         int y = term->render_y_start + row * FONT_H;
-        if (y + FONT_H > term->render_y_end) break;
+        if (!row_fits(term, y)) break;
 
         if (term->word_wrap_enabled) {
 
@@ -582,9 +596,9 @@ void terminal_render(terminal_t* term) {
                 draw_cursor = !s_blink_state;
             }
 
-            if (draw_cursor) {
+            int cy = term->render_y_start + cursor_vis_y * FONT_H;
+            if (draw_cursor && row_fits(term, cy)) {
                 int cx = x_offset + cursor_vis_x * FONT_W;
-                int cy = term->render_y_start + cursor_vis_y * FONT_H;
 
                 int cursor_idx = term->cursor_y * term->cols + term->cursor_x;
                 uint16_t cell = term->cells[cursor_idx];
@@ -622,6 +636,13 @@ void terminal_renderDirty(terminal_t* term) {
         return;
     }
 
+    // A flush() since the last render swapped the buffers: this one holds an
+    // older frame, not the rows already drawn. Draw it whole. Partial redraws
+    // are for a loop that presents with flushRows, which does not swap.
+    if (display_get_back_buffer() != term->last_render_fb) {
+        terminal_markAllDirty(term);
+    }
+
     int first_dirty, last_dirty;
     terminal_getDirtyRange(term, &first_dirty, &last_dirty);
 
@@ -654,6 +675,10 @@ void terminal_renderDirty(terminal_t* term) {
         if (!terminal_isRowDirty(term, row)) continue;
 
         int y = term->render_y_start + row * FONT_H;
+        if (!row_fits(term, y)) {
+            terminal_clearRowDirty(term, row);
+            continue;
+        }
 
         for (int col = 0; col < content_cols; col++) {
             int x = x_offset + col * FONT_W;
@@ -693,9 +718,9 @@ void terminal_renderDirty(terminal_t* term) {
             draw_cursor = !s_blink_state;
         }
 
-        if (draw_cursor) {
+        int cy = term->render_y_start + term->cursor_y * FONT_H;
+        if (draw_cursor && row_fits(term, cy)) {
             int cx = x_offset + term->cursor_x * FONT_W;
-            int cy = term->render_y_start + term->cursor_y * FONT_H;
 
             int cursor_idx = term->cursor_y * term->cols + term->cursor_x;
             uint16_t cell = term->cells[cursor_idx];
@@ -723,6 +748,10 @@ void terminal_renderRow(terminal_t* term, int row) {
     if (!term || row < 0 || row >= term->rows) return;
 
     int y = term->render_y_start + row * FONT_H;
+    if (!row_fits(term, y)) {
+        terminal_clearRowDirty(term, row);
+        return;
+    }
 
     for (int col = 0; col < term->cols; col++) {
         int x = term->render_x_start + col * FONT_W;

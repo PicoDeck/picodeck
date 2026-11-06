@@ -7,6 +7,7 @@ local connection = {}
 connection.__index = connection
 
 local MSG = {
+    UNIMPLEMENTED         = 3,
     CHANNEL_OPEN          = 90,
     CHANNEL_OPEN_CONFIRM  = 91,
     CHANNEL_OPEN_FAILURE  = 92,
@@ -20,9 +21,24 @@ local MSG = {
     CHANNEL_FAILURE       = 100,
 }
 
-local INITIAL_WINDOW = 64 * 1024    -- 64KB
-local MAX_PACKET     = 32 * 1024    -- 32KB
-local WINDOW_THRESHOLD = 32 * 1024  -- replenish at 32KB consumed
+-- The window is the only brake on the server: the device's TCP layer fails the socket once
+-- a reader is ~40 KB behind (its 8 KB ring + TCP_RECV_OVERFLOW, src/drivers/tcp.h), and its
+-- stack advertises a fixed window however much is unread. A window counts channel data, not
+-- bytes on the wire, and OpenSSH sends a tty's lines in small packets with about 70 bytes of
+-- framing each: into a stalled reader, 32 KB left 48 KB unread on a real sshd, 16 KB 35 KB,
+-- 12 KB 27 KB (tests/unit/test_ssh_transport.lua). Nothing is given up for the margin: a
+-- terminal loop reads 8 KB a pass, and the TCP window, 6000 bytes, sets the pace on a slow link.
+local INITIAL_WINDOW = 12 * 1024
+local MAX_PACKET     = 12 * 1024
+local WINDOW_THRESHOLD = 6 * 1024   -- replenish at half of it consumed
+-- A window is a uint32, but a read past 2^31 is negative on the device's 32-bit
+-- integers, and no keyboard needs that much: stop there.
+local MAX_REMOTE_WINDOW = 0x7FFFFFFF
+
+local function grow_window(window, n)
+    if n < 0 or n > MAX_REMOTE_WINDOW - window then return MAX_REMOTE_WINDOW end
+    return window + n
+end
 
 function connection.new(transport)
     local self = setmetatable({}, connection)
@@ -56,7 +72,7 @@ function connection:open_session()
 
     local msg_type = string.byte(reply, 1)
     if msg_type == MSG.CHANNEL_OPEN_FAILURE then
-        local _, reason_code = wire.read_uint32(reply, 6)
+        local reason_code = wire.read_uint32(reply, 6)
         local desc = wire.read_string(reply, 10) or "unknown"
         self.error = "channel open failed: " .. desc .. " (code=" .. (reason_code or 0) .. ")"
         return false
@@ -68,14 +84,45 @@ function connection:open_session()
     end
 
     local pos = 2
-    local recipient_channel
+    local recipient_channel, remote_channel, remote_window, remote_max_packet
     recipient_channel, pos = wire.read_uint32(reply, pos)  -- our channel
-    self.remote_channel, pos = wire.read_uint32(reply, pos)
-    self.remote_window, pos = wire.read_uint32(reply, pos)
-    local remote_max_packet
+    remote_channel, pos = wire.read_uint32(reply, pos)
+    remote_window, pos = wire.read_uint32(reply, pos)
     remote_max_packet, pos = wire.read_uint32(reply, pos)
+    if not remote_max_packet or recipient_channel ~= self.local_channel then
+        self.error = "malformed CHANNEL_OPEN_CONFIRM"
+        return false
+    end
+    self.remote_channel = remote_channel
+    self.remote_window = grow_window(0, remote_window)
 
     return true
+end
+
+-- Wait for the reply to a channel request. A window adjust or output can come first
+-- (OpenSSH grants its window just before replying to "shell"): act on those as usual.
+function connection:wait_for_reply(what)
+    while true do
+        local reply = self.transport:recv_packet_skip(10000)
+        if not reply then
+            self.error = self.transport.error
+            return false
+        end
+
+        local msg_type = string.byte(reply, 1)
+        if msg_type == MSG.CHANNEL_SUCCESS then
+            return true
+        elseif msg_type == MSG.CHANNEL_FAILURE then
+            self.error = what .. " failed"
+            return false
+        end
+
+        self:process_packet(reply)
+        if self.closed then
+            self.error = "channel closed before the reply to " .. what
+            return false
+        end
+    end
 end
 
 -- Request a pseudo-terminal
@@ -98,22 +145,7 @@ function connection:request_pty(term_type, cols, rows)
                  .. modes
     self.transport:send_packet(payload)
 
-    local reply = self.transport:recv_packet_skip(10000)
-    if not reply then
-        self.error = self.transport.error
-        return false
-    end
-
-    local msg_type = string.byte(reply, 1)
-    if msg_type == MSG.CHANNEL_SUCCESS then
-        return true
-    elseif msg_type == MSG.CHANNEL_FAILURE then
-        self.error = "pty-req failed"
-        return false
-    else
-        self.error = "unexpected reply to pty-req: " .. msg_type
-        return false
-    end
+    return self:wait_for_reply("pty-req")
 end
 
 -- Request shell
@@ -124,38 +156,7 @@ function connection:request_shell()
                  .. wire.boolean(true)  -- want reply
     self.transport:send_packet(payload)
 
-    local reply = self.transport:recv_packet_skip(10000)
-    if not reply then
-        self.error = self.transport.error
-        return false
-    end
-
-    local msg_type = string.byte(reply, 1)
-    if msg_type == MSG.CHANNEL_SUCCESS then
-        return true
-    elseif msg_type == MSG.CHANNEL_FAILURE then
-        self.error = "shell request failed"
-        return false
-    else
-        -- Some servers send window adjust before shell reply
-        -- Buffer it and continue waiting
-        if msg_type == MSG.CHANNEL_WINDOW_ADJUST then
-            local _, adjust_amount = wire.read_uint32(reply, 6)
-            if adjust_amount then
-                self.remote_window = self.remote_window + adjust_amount
-            end
-            -- Read the actual reply
-            reply = self.transport:recv_packet_skip(10000)
-            if not reply then
-                self.error = self.transport.error
-                return false
-            end
-            msg_type = string.byte(reply, 1)
-            if msg_type == MSG.CHANNEL_SUCCESS then return true end
-        end
-        self.error = "unexpected reply to shell: " .. msg_type
-        return false
-    end
+    return self:wait_for_reply("shell request")
 end
 
 -- Send data to the channel
@@ -217,7 +218,7 @@ function connection:process_packet(payload)
         local _, pos = wire.read_uint32(payload, 2)
         local bytes_to_add = wire.read_uint32(payload, pos)
         if bytes_to_add then
-            self.remote_window = self.remote_window + bytes_to_add
+            self.remote_window = grow_window(self.remote_window, bytes_to_add)
         end
 
     elseif msg_type == MSG.CHANNEL_EOF then
@@ -231,20 +232,34 @@ function connection:process_packet(payload)
         self.transport:send_packet(close_payload)
 
     elseif msg_type == MSG.CHANNEL_REQUEST then
-        -- Server-initiated requests (e.g. exit-status, exit-signal)
-        -- Just acknowledge them
+        -- Server-initiated requests: exit-status and exit-signal want no reply. Any
+        -- that does (keepalive@openssh.com) is not one this client supports: refuse it.
         local _, pos = wire.read_uint32(payload, 2)
         local req_type
         req_type, pos = wire.read_string(payload, pos)
         local want_reply = wire.read_boolean(payload, pos)
         if want_reply then
-            local success_payload = string.char(MSG.CHANNEL_SUCCESS)
-                                 .. wire.uint32(self.remote_channel)
-            self.transport:send_packet(success_payload)
+            self.transport:send_packet(string.char(MSG.CHANNEL_FAILURE)
+                                       .. wire.uint32(self.remote_channel))
         end
 
+    elseif msg_type == MSG.CHANNEL_OPEN then
+        -- RFC 4254 section 5.1: 1 = SSH_OPEN_ADMINISTRATIVELY_PROHIBITED
+        local _, pos = wire.read_string(payload, 2)  -- channel type
+        local sender_channel = wire.read_uint32(payload, pos)
+        if sender_channel then
+            self.transport:send_packet(string.char(MSG.CHANNEL_OPEN_FAILURE)
+                                       .. wire.uint32(sender_channel) .. wire.uint32(1)
+                                       .. wire.string("not supported") .. wire.string(""))
+        end
+
+    elseif msg_type == MSG.CHANNEL_SUCCESS or msg_type == MSG.CHANNEL_FAILURE then
+        -- The reply to a request nothing is still waiting on
+
     else
-        -- Unknown channel message — ignore
+        -- RFC 4253 section 11.4: answer anything unknown, with its sequence number
+        self.transport:send_packet(string.char(MSG.UNIMPLEMENTED)
+                                   .. wire.uint32(self.transport.recv_seq - 1))
     end
 
     -- Replenish window if we've consumed enough
@@ -260,22 +275,27 @@ function connection:process_packet(payload)
     return true
 end
 
--- Poll for incoming data (non-blocking, returns quickly if nothing available)
+-- Poll for incoming data (non-blocking, returns quickly if nothing available).
+-- If the connection has gone, self.closed is set and self.error says why.
 function connection:poll(timeout_ms)
     timeout_ms = timeout_ms or 0
-
-    -- Try to fill TCP buffer
-    self.transport:fill_buf()
+    local transport = self.transport
 
     local start = picocalc.sys.getTimeMs()
     while true do
-        -- Try to receive a packet without blocking long
-        if #self.transport.recv_buf >= 4 then
-            -- There's data — try to read a full packet
-            local payload = self.transport:recv_packet(100)
-            if payload then
-                self:process_packet(payload)
-            end
+        local alive = transport:fill_buf()
+
+        -- Whole packets only: one still arriving stays buffered for the next poll.
+        local payload = transport:take_message()
+        while payload do
+            self:process_packet(payload)
+            payload = transport:take_message()
+        end
+
+        if not alive and not self.closed then transport:connection_closed() end
+        if transport.dead and not self.closed then
+            self.closed = true
+            self.error = transport.error
         end
 
         if #self.data_buf > 0 then return end  -- have data to deliver
@@ -285,7 +305,6 @@ function connection:poll(timeout_ms)
         if picocalc.sys.getTimeMs() - start > timeout_ms then return end
 
         picocalc.sys.sleep(5)
-        self.transport:fill_buf()
     end
 end
 
@@ -299,7 +318,7 @@ end
 
 -- Send disconnect and close
 function connection:close()
-    if not self.closed then
+    if not self.closed and self.remote_channel then
         local payload = string.char(MSG.CHANNEL_CLOSE)
                      .. wire.uint32(self.remote_channel)
         self.transport:send_packet(payload)

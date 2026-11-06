@@ -8,13 +8,13 @@ An app platform for the ClockworkPi PicoCalc, built around a resident Lua runtim
 > **Target hardware:** [Pimoroni Pico Plus 2 W](https://shop.pimoroni.com/products/pimoroni-pico-plus-2-w) in the [PicoCalc](https://www.clockworkpi.com/picocalc) device.
 > PicoDeck relies heavily on the PSRAM being accessible via XIP, other hardware support is untested currently.
 
-📖 **Documentation:** Full SDK reference and guides are available on the [PicoDeck Wiki](https://picodeck.net/docs/).
+**New here?** [Getting started on a device](https://picodeck.net/docs/getting-started-on-a-device/) goes from a PicoCalc to a running app, and [Creating your first app](https://picodeck.net/docs/creating-your-first-app/) writes one. The full SDK reference is on the [docs site](https://picodeck.net/docs/).
 
 ## Features
 
 - **Apps in Lua or native C/C++.** Lua 5.4 apps get a `picocalc.*` API; native apps are position-independent ELF binaries using the same API through a C table (see [Native Loading](https://picodeck.net/docs/native-loading/)). The first-party emulators (C64, Game Boy Color, DOS/86, TIC-80) are native.
 - **Graphics.** Double-buffered 60 FPS display, images (BMP, JPEG, PNG, GIF), sprites and tilemaps, flat-shaded 3D (`gfx3d`), MJPEG video, and `picocalc.chargrid`, a character-cell grid with text, shapes, palettes and a small shader language (plus `picocalc.noise`).
-- **Audio.** WAV, MP3, QOA and tracker modules (MOD, XM, S3M), tones, and raw sample streaming.
+- **Audio.** WAV, MP3, QOA and MOD tracker modules, tones, and raw sample streaming.
 - **Input.** The built-in keyboard, a rebindable gamepad layer, and Bluetooth gamepads (Classic HID), paired from Settings.
 - **Networking.** WiFi, an HTTP/HTTPS client, TCP sockets, crypto primitives, and an SSH client app.
 - **System.** A launcher and system menu, an app store, signed over-the-air firmware updates, crash logging with a watchdog, and per-app config and save data.
@@ -65,93 +65,39 @@ pc.ui.drawHeader("My App")
 pc.ui.drawFooter("Press Esc to exit", "Bat: 85%")
 
 -- Graphics (image loading)
-local img = pc.graphics.image.load("/apps/myapp/sprite.bmp")
+local img = pc.graphics.image.load(APP_DIR .. "/sprite.bmp")
 img:draw(100, 100)
 
 -- System
-pc.sys.sleep(16)                 -- sleep ms (~60fps)
+pc.sys.sleep(500)                -- wait half a second (flush() already paces a frame)
 pc.sys.log("debug message")
-local bat = pc.sys.getBattery()  -- 0-100
+local bat = pc.sys.getBattery()  -- 0-100, -1 before the first reading
 
 -- Filesystem (SD card)
-local data = pc.fs.readFile("/data/mygame/save.json")
+local data = pc.fs.readFile(pc.fs.appPath("save.json"))  -- /data/<APP_ID>/save.json
 ```
 
 ---
 
 ## Memory Architecture
 
-The RP2350 has a small amount of on-chip SRAM supplemented by two independent 8MB PSRAM banks accessed over different buses (One on the PicoCalc mainboard, slower with no XIP, and the other on the Pico Plus 2 W). Understanding which memory is used for what is critical — mixing allocators or DMA sources causes hard-to-debug crashes.
+The RP2350 has a small amount of on-chip SRAM supplemented by two independent 8MB PSRAM banks accessed over different buses (one on the PicoCalc mainboard, slower with no XIP, and the other on the Pico Plus 2 W). Understanding which memory is used for what is critical: mixing allocators or DMA sources causes hard-to-debug crashes.
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         RP2350 SoC                                  │
-│                                                                     │
-│  ┌───────────────────────────────────────┐                          │
-│  │           SRAM  (~520KB)              │                          │
-│  │                                       │                          │
-│  │  BSS/Data ──────────── ~491KB         │  ◄── Framebuffers live   │
-│  │    s_framebuffers[2][320×320]         │      here (400KB)        │
-│  │    libmad synth.c (.time_critical)    │                          │
-│  │    DMA ISR staging buffers            │                          │
-│  │                                       │                          │
-│  │  Heap (malloc/free) ── ~29KB          │  ◄── Tiny! Free promptly │
-│  │    Temp buffers, FatFS workarea       │                          │
-│  │                                       │                          │
-│  │  Stack (MSP) ────────── 4KB           │  ◄── SCRATCH memory      │
-│  │    OS + ISR context                   │      0x20081000-20082000 │
-│  │                                       │                          │
-│  │  Native app stack (PSP) ── 8KB        │  ◄── Static SRAM buffer  │
-│  │    ELF apps run on Process SP         │      (s_native_stack)    │
-│  └───────────────────────────────────────┘                          │
-│           │ AHB bus (fast, single-cycle)                            │
-│           ▼                                                         │
-│  ┌─────────────────┐                                                │
-│  │   DMA engine    │  Reads SRAM framebuffers for display flush     │
-│  └─────────────────┘  (independent of PSRAM — no bus contention)    │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-          │                                    │
-          │ QMI bus (XIP cache)                │ PIO1 SPI
-          ▼                                    ▼
-┌────────────────────────────┐    ┌───────────────────────────┐
-│  QMI PSRAM  (on-module)    │    │  PIO PSRAM  (mainboard)   │
-│  8MB — Pico Plus 2 W       │    │  8MB — PicoCalc v2.0      │
-│                            │    │                           │
-│  0x11000000 (cached)       │    │  Accessed via             │
-│  0x15000000 (uncached)     │    │  pio_psram_read/write()   │
-│                            │    │                           │
-│  ┌──────────────────────┐  │    │  ┌────────────────────┐    │
-│  │ Lua heap (umm_malloc)│  │    │  │ 0x0000: MP3 PCM    │    │
-│  │ Base: 0x11200000     │  │    │  │ ring buffer (32KB) │    │
-│  │ ~6MB for Lua VM      │  │    │  ├────────────────────┤    │
-│  │                      │  │    │  │ 0x8000: Reserved   │    │
-│  │ ⚠ umm_malloc/free   │  │    │  │ (currently unused) │    │
-│  │   only! Never use    │  │    │  │                    │    │
-│  │   standard malloc.   │  │    │  │                    │    │
-│  ├──────────────────────┤  │    │  │                    │    │
-│  │ ELF app data/BSS     │  │    │  └────────────────────┘    │
-│  │ (umm_malloc'd)       │  │    │                           │
-│  ├──────────────────────┤  │    │  Non-fatal if absent —    │
-│  │ ELF app code         │  │    │  MP3 degrades             │
-│  │ (SRAM preferred,     │  │    │  gracefully               │
-│  │  PSRAM fallback)     │  │    │                           │
-│  └──────────────────────┘  │    └───────────────────────────┘
-│                            │
-│  XIP cache (16KB) serves   │
-│  most instruction fetches  │
-│  from PSRAM — avoids       │
-│  hammering QMI on every    │
-│  CPU fetch cycle           │
-└────────────────────────────┘
-```
+| Memory | Holds | Limits |
+|---|---|---|
+| SRAM (~520 KB) | The two 200 KB framebuffers and other static data | The heap is effectively nil (a few KB after the SDK's share): scratch buffers go through `umm_malloc` |
+| SCRATCH | The 4 KB main stack: boot, the launcher, every interrupt | |
+| QMI PSRAM (8 MB, on the Pico Plus 2 W) | Lua heap, native apps' image, data and stack (`umm_malloc`, 6 MB less the 128 KB Core 1 pool) | Cached at `0x11000000`, uncached at `0x15000000` |
+| PIO PSRAM (8 MB, on the mainboard) | The OS's MP3 ring below `0x48000`; apps get the rest through `pio_psram_read`/`write` | No XIP. Non-fatal if absent |
+
+Root [`CLAUDE.md`](CLAUDE.md) (Memory Map) has the exact addresses and sizes, kept current.
 
 ### Key rules
 
-- **Never mix allocators.** `malloc()`/`free()` → SRAM heap. `umm_malloc()`/`umm_free()` → QMI PSRAM heap. Crossing them corrupts both heaps.
+- **Never mix allocators.** `malloc()` pairs with `free()`, `umm_malloc()` with `umm_free()`. Crossing them corrupts both heaps.
 - **DMA reads SRAM only.** Framebuffers are in SRAM so DMA flush is on the AHB bus, completely independent of PSRAM access. This is why `display_flush()` is non-blocking even while CPU fetches code from PSRAM.
 - **ELF code uses XIP cache.** Native app code is written through the uncached alias (`0x15xxxxxx`), then executed from the cached alias (`0x11xxxxxx`). The 16KB XIP cache eliminates most QMI bus traffic.
-- **PIO PSRAM is a separate bus.** The mainboard's second PSRAM bank uses PIO1 SPI on its own pins — no contention with QMI PSRAM, flash, or the display's PIO0 SPI.
+- **PIO PSRAM is a separate bus.** The mainboard's second PSRAM bank uses PIO1 SPI on its own pins, so there is no contention with QMI PSRAM, flash, or the display's PIO0 SPI.
 
 ---
 
@@ -165,38 +111,45 @@ All pins are defined in `src/hardware.h`. Verify against [clockwork_Mainboard_V2
 | Keyboard (STM32) | I2C1 | SDA=6, SCL=7, addr=0x1F |
 | Audio L/R | PWM | GP26 (L), GP27 (R) |
 
-**Note:** Backlight is controlled by the STM32 keyboard MCU over I2C, not a direct GPIO. Use `picocalc.display.setBrightness()` in Lua or `kbd_set_backlight()` in C.
+**Note:** Backlight is controlled by the STM32 keyboard MCU over I2C, not a direct GPIO (`kbd_set_backlight()` in the firmware).
 
-**Note:** The LCD uses a dedicated PIO SPI master, freeing up hardware SPI1 entirely. WiFi (CYW43 on Pico 2W) uses its own internal bus.
+**Note:** The LCD uses a dedicated PIO SPI master, freeing up hardware SPI1 entirely. WiFi (CYW43 on the Pico Plus 2 W) uses its own internal bus.
 
 ---
 
 ## Build Setup
 
+Only needed to build the firmware or simulator yourself: released firmware and a Linux simulator are on the [download page](https://picodeck.net/download/). To write apps you need neither a toolchain nor this repository's build; see [Getting started on a device](https://picodeck.net/docs/getting-started-on-a-device/).
+
 **Quick Start (recommended):**
 
 ```bash
-# Install ARM toolchain
-sudo dnf install cmake gcc-arm-none-eabi newlib-arm-none-eabi  # Fedora
-# sudo apt install cmake gcc-arm-none-eabi libnewlib-arm-none-eabi  # Debian/Ubuntu
+# Clone with the submodules (third_party/ is empty without them;
+# in an existing clone: git submodule update --init --recursive)
+git clone --recurse-submodules https://github.com/PicoDeck/picodeck.git
+cd picodeck
 
-# Get Pico SDK
-git clone https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk
-cd ~/pico-sdk && git submodule update --init
+# Install the ARM toolchain
+sudo dnf install cmake curl unzip arm-none-eabi-gcc-cs arm-none-eabi-gcc-cs-c++ arm-none-eabi-newlib  # Fedora
+# sudo apt install cmake curl unzip gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib  # Debian/Ubuntu
+
+# Get the Pico SDK (2.2.0 is what release builds use)
+git clone --branch 2.2.0 https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk
+git -C ~/pico-sdk submodule update --init
 export PICO_SDK_PATH=~/pico-sdk
 
-# Setup dependencies and build
+# Fetch Lua and FatFS, then build
 make setup
 make build
 ```
 
-Output: `build/picodeck.uf2` — drag-and-drop to Pico in BOOTSEL mode.
+Output: `build/picodeck.uf2`. [Getting started on a device](https://picodeck.net/docs/getting-started-on-a-device/) shows how to flash it and prepare the card. Lua and FatFS are not in the repository: `make setup` downloads them, and `make build` does too if you skip it. A source archive from GitHub has no submodules and will not build: clone with git.
 
 **Available Make targets** (`make help` lists them all):
-- `make setup` — Download Lua/FatFS, verify environment
+- `make setup` — Verify the environment, download Lua and FatFS
 - `make build` — Compile firmware
 - `make clean` / `make rebuild` — Remove the build directory / clean and rebuild
-- `make flash` — Show flashing instructions (auto-detects RPI-RP2 on Linux)
+- `make flash` — Show flashing instructions (auto-detects the BOOTSEL drive on Linux)
 - `make flash-ota` — Build and push the firmware to a USB-connected device over the air
 - `make simulator` / `make simulator-run` — Build / run the PC simulator (also `simulator-asan`, `simulator-tsan`, `simulator-net`)
 - `make test-lua` — Test all Lua apps for syntax errors before deployment
@@ -237,8 +190,6 @@ Catches common errors before deployment:
 - Unclosed functions, loops, or conditionals
 - String/syntax errors
 
-**Note:** `make build` automatically runs tests. To skip: `make build -o test-lua`
-
 ---
 
 ### Simulator and test suites
@@ -246,8 +197,9 @@ Catches common errors before deployment:
 The PC simulator runs Lua and native apps in an SDL2 window, with no device needed:
 
 ```bash
-make simulator-run                       # needs SDL2 (see simulator/README.md)
+make simulator-run                       # needs SDL2, SDL2_image and libcurl (see simulator/README.md)
 make test-unit                           # host unit tests
+pip install -r tests/e2e/requirements.txt
 SDL_VIDEODRIVER=dummy pytest tests/e2e -n auto   # E2E suite against the simulator
 ```
 
@@ -255,58 +207,22 @@ The E2E suite can also run against a real device (`--target hw:<serial port>`). 
 
 ---
 
-### Manual Setup
-
-<details>
-<summary>Click to expand manual build instructions</summary>
-
-### 1. Install prerequisites
+### Without Make
 
 ```bash
-# Fedora
-sudo dnf install cmake gcc-arm-none-eabi-cs gcc-arm-none-eabi-cs-c++ newlib-arm-none-eabi
-
-# Or use the Raspberry Pi Pico toolchain installer:
-# https://github.com/raspberrypi/pico-setup-windows (Windows)
-# https://datasheets.raspberrypi.com/pico/getting-started-with-pico.pdf (Linux)
-```
-
-### 2. Get the Pico SDK
-
-```bash
-git clone https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk
-cd ~/pico-sdk && git submodule update --init
-echo 'export PICO_SDK_PATH=~/pico-sdk' >> ~/.bashrc
-source ~/.bashrc
-```
-
-### 3. Copy `pico_sdk_import.cmake`
-
-```bash
-cp $PICO_SDK_PATH/external/pico_sdk_import.cmake .
-```
-
-Lua 5.4 and FatFS (including the RP2350 SPI port) are already vendored in `third_party/` — no download needed.
-
-### 4. Build
-
-```bash
-mkdir build && cd build
+make setup    # still the way to fetch Lua and FatFS
+mkdir -p build && cd build
 cmake .. -DPICO_BOARD=pimoroni_pico_plus2_w_rp2350
 make -j4
 ```
 
-This produces `build/picodeck.uf2`. Flash it by holding BOOTSEL on your Pico while plugging in USB, then drag the UF2 to the mounted drive.
-
-Other board values: `pico2` (no PSRAM/WiFi), `pico_w`, `pico`.
-
-</details>
+This produces `build/picodeck.uf2`.
 
 ---
 
 ## Prepare your SD card
 
-Format the SD card as FAT32. Copy the `apps/` folder to the root:
+Format the SD card as FAT32 and copy this repository's `apps/` and `system/` folders to its root. Flashing puts nothing on the card, and a blank card shows an empty launcher, with no App Store: the store is an app in `apps/`. The libraries in `system/lib/` are what `picocalc.sys.loadlib` loads; nothing else installs them.
 
 ```
 SD:/
@@ -314,12 +230,15 @@ SD:/
 │   ├── hello/
 │   │   ├── app.json
 │   │   └── main.lua
-│   └── snake/
+│   └── store/
 │       ├── app.json
 │       └── main.lua
-├── data/     (created automatically)
-└── system/   (created automatically)
+├── system/
+│   └── lib/    (download.lua, panels.lua, widgets.lua, fonts/)
+└── data/       (created automatically)
 ```
+
+[Getting started on a device](https://picodeck.net/docs/getting-started-on-a-device/) has the rest: which board, flashing, USB Disk Mode.
 
 ### Upgrading from v0.2.0 or earlier
 
@@ -329,11 +248,12 @@ Flashing the firmware does not update the SD card. Follow "Upgrading a device" i
 
 ## Writing Apps
 
-Every app is a directory in `/apps/` containing at minimum:
+Every app is a directory in `/apps/` containing at minimum (the [`app.json` reference](https://picodeck.net/docs/app-json-reference/) has every field):
 
 **`app.json`**
 ```json
 {
+    "id": "com.example.myapp",
     "name": "My App",
     "description": "What it does",
     "version": "1.0"
@@ -365,21 +285,7 @@ while true do
 end
 ```
 
-### Full Lua API reference
-
-Moved to the [Wiki](https://picodeck.net/docs/lua-sdk-reference/).
-
-**Example:**
-```lua
-while true do
-    pc.perf.beginFrame()
-    -- ... your rendering code ...
-    pc.perf.drawFPS()  -- Easy!
-    pc.display.flush()
-    pc.perf.endFrame()
-    pc.sys.sleep(16)
-end
-```
+The [Lua SDK Reference](https://picodeck.net/docs/lua-sdk-reference/) lists every API.
 
 ---
 
@@ -388,11 +294,10 @@ end
 ```
 picodeck/
 ├── CMakeLists.txt, Makefile    ← firmware build and the top-level targets
-├── pico_sdk_import.cmake       ← copy from $PICO_SDK_PATH/external/
+├── pico_sdk_import.cmake       ← finds the Pico SDK (tracked; PICO_SDK_PATH points at the SDK)
 ├── README.md, CLAUDE.md        ← CLAUDE.md is the contributor guide (nested ones sit beside the code)
 ├── TODO.md                     ← roadmap and open API gaps
 ├── docs/                       ← app-facing SDK reference, published at picodeck.net/docs
-├── docs_coverage.md            ← which Lua functions the docs cover (scripts/list_lua_api)
 ├── src/
 │   ├── hardware.h              ← ALL pin definitions here
 │   ├── main.c                  ← boot, init, calls launcher_run()
@@ -402,7 +307,7 @@ picodeck/
 │   ├── usb/                    ← USB mass-storage mode
 │   └── fonts/
 ├── apps/                       ← first-party apps (Lua and native), each with an app.json
-├── sdk/                        ← app-author kit: Lua stub for editors, native app template and ABI header, fonts
+├── sdk/                        ← app-author kit (sdk/README.md): Lua stub for editors, native app template and ABI header, fonts
 ├── system/                     ← files for SD:/system/ (shared Lua libraries such as panels and widgets, fonts)
 ├── simulator/                  ← PC simulator (SDL2 + Unicorn); see simulator/README.md
 ├── tests/
@@ -411,8 +316,7 @@ picodeck/
 │   └── fuzz/                   ← libFuzzer targets (make fuzz)
 ├── tools/                      ← build, asset and device tooling (OTA flash, profiler, MCP server)
 ├── scripts/                    ← CI helpers and the Lua API coverage generator
-├── specs/                      ← design notes and plans for larger features
-└── third_party/                ← vendored and submoduled dependencies
+└── third_party/                ← dependencies: vendored, submodules, and Lua and most of FatFS (make setup downloads them)
     ├── lua-5.4/, fatfs/, umm_malloc/, rp2040-psram/, mongoose/, wolfssl/, miniz/
     ├── tgx/, JPEGDEC/, PNGdec/, AnimatedGIF/, stb/        (graphics, image decoding)
     └── libmad/, BackgroundAudio/, pocketmod/, qoa/        (audio)

@@ -5,6 +5,7 @@
 #include "http.h"
 #include "tcp.h"
 #include "wifi.h"
+#include "wifi_rejoin.h"
 #include "os.h"
 
 #include <stdio.h>
@@ -17,6 +18,9 @@ static wifi_status_t s_status = WIFI_STATUS_DISCONNECTED;
 static char s_ssid[64] = "";
 static char s_ip[16] = "";
 static bool s_http_required = false;
+// What wifi_leave_for_clock took down; s_ssid keeps its name while owed. The
+// mock has no boot auto-connect or time sync, so no auto_sync here.
+static wifi_rejoin_t s_rejoin;
 
 // ── IPC ring buffer (Core 0 → Core 1) ──────────────────────────────────────
 
@@ -57,6 +61,7 @@ bool wifi_is_available(void) {
 
 void wifi_connect(const char *ssid, const char *password) {
     (void)password;
+    wifi_rejoin_cancel(&s_rejoin);
     strncpy(s_ssid, ssid, sizeof(s_ssid) - 1);
     s_ssid[sizeof(s_ssid) - 1] = '\0';
     s_status = WIFI_STATUS_ONLINE;
@@ -64,9 +69,25 @@ void wifi_connect(const char *ssid, const char *password) {
 }
 
 void wifi_disconnect(void) {
+    wifi_rejoin_cancel(&s_rejoin);
     s_status = WIFI_STATUS_DISCONNECTED;
     s_ssid[0] = '\0';
     printf("[WiFi] Mock disconnect\n");
+}
+
+void wifi_leave_for_clock(void) {
+    wifi_status_t st = wifi_get_status();
+    wifi_rejoin_note_leave(&s_rejoin, st, s_ssid[0] != '\0', false, true);
+    if (wifi_rejoin_status_up(st)) {
+        s_status = WIFI_STATUS_DISCONNECTED;
+        printf("[WiFi] Mock disconnect for an app's own clock\n");
+    }
+}
+
+void wifi_rejoin_after_clock(void) {
+    if (!wifi_rejoin_take(&s_rejoin)) return;
+    s_status = WIFI_STATUS_ONLINE;
+    printf("[WiFi] Mock rejoin of '%s' — instant success\n", s_ssid);
 }
 
 extern int sim_wifi_forced_status(void);
@@ -86,7 +107,7 @@ bool wifi_has_internet(void) {
 }
 
 const char *wifi_get_ssid(void) {
-    return s_ssid[0] ? s_ssid : NULL;
+    return (s_ssid[0] && !s_rejoin.owed) ? s_ssid : NULL;
 }
 
 void wifi_set_http_required(bool required) {

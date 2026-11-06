@@ -17,6 +17,7 @@
 //  * Colours are host-order RGB565; the target converts on write.
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define GFX3D_MAX_VERTS 4096
@@ -42,6 +43,14 @@ typedef struct {
 } gfx3d_mesh_t;
 
 typedef struct gfx3d gfx3d_t;
+
+// A model -> view transform (v = A p + t), with the eye and the light direction
+// in model space for the face-plane tests. Valid until the camera or the light
+// changes.
+typedef struct {
+  float A[9], t[3], eye[3], light[3];
+  float scale;
+} gfx3d_xform_t;
 
 typedef struct {
   uint32_t tris_in;   // triangles submitted (sum of the meshes' ntris)
@@ -113,6 +122,12 @@ void gfx3d_begin(gfx3d_t *g, bool clear, uint16_t clear_color);
 // faces sorted far to near.
 void gfx3d_draw(gfx3d_t *g, const gfx3d_mesh_t *m, const float rot[9],
                 const float pos[3], float scale, float bias, bool sort_as_one);
+// gfx3d_draw is these two: the same transform for many meshes needs working out
+// only once (gfx3d.drawList).
+void gfx3d_xform(const gfx3d_t *g, const float rot[9], const float pos[3],
+                 float scale, gfx3d_xform_t *xf);
+void gfx3d_draw_xf(gfx3d_t *g, const gfx3d_mesh_t *m, const gfx3d_xform_t *xf,
+                   float bias, bool sort_as_one);
 // Scenery centred on the camera: rotation only, no fog, never far-culled,
 // drawn first, in submission order.
 void gfx3d_draw_background(gfx3d_t *g, const gfx3d_mesh_t *m);
@@ -126,3 +141,15 @@ void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t);
 bool gfx3d_project(const gfx3d_t *g, const float p[3], float *sx, float *sy,
                    float *depth);
 const gfx3d_stats_t *gfx3d_get_stats(const gfx3d_t *g);
+// Fast memory for one mesh's vertices during a draw call, or NULL. Weak in
+// gfx3d.c (none); the firmware lends the video decoder's SRAM while no player
+// exists. Nothing in it outlives the call, so nothing else may run meanwhile.
+void *gfx3d_sram_scratch(size_t *bytes);
+// Fast memory for a whole scene, from gfx3d_begin to the next one, or NULL: a
+// scene's bitmap, buckets and first records, 4-byte aligned. Weak in gfx3d.c
+// (none); the firmware lends the MP3 decoder's SRAM until an MP3 session starts.
+// Lua runs between the calls of a scene, so a lender that wants its block back
+// calls gfx3d_sram_take_back, mid-scene or not, and stops returning it. Both on
+// the core that runs gfx3d, never during a gfx3d call.
+void *gfx3d_sram_tier(size_t *bytes);
+void gfx3d_sram_take_back(void);

@@ -11,7 +11,7 @@ The grid keeps its cells in memory, and `grid:draw()` renders its window in C: a
 ### Cells, glyphs and colours
 
 - **Coordinates** are 0-based cells: column `x`, row `y`. Writes outside the grid are dropped; reads outside return `0, 0, 0`.
-- **Colours** are indices into the grid's own 256-entry palette of RGB565 values. The default is the xterm-256 layout: 0-15 the classic colours, 16-231 a 6×6×6 colour cube (`16 + 36r + 6g + b`), 232-255 greys. New cells are glyph 0 (empty), fg 15 (white), bg 0 (black). Change an entry with `grid:setColor()` and every cell using it changes at the next draw (palette cycling).
+- **Colours** are indices into the grid's own 256-entry palette of RGB565 values. A new grid starts with the 256 colours of `picocalc.terminal`'s ANSI codes ([API Terminal](API-Terminal.md)), so a colour number means the same colour in both: 0-15 from the [table below](#colours-0-15), 16-231 a 6×6×6 colour cube (`16 + 36r + 6g + b`, where 0-5 stand for the levels 0, 95, 135, 175, 215, 255), 232-255 greys (8, 18, ... 238). New cells are glyph 0 (empty), fg 15 (white), bg 0 (black). Change an entry with `grid:setColor()` and every cell using it changes at the next draw (palette cycling).
 - **Glyph codes** are one byte per cell:
 
 | Codes | Constants | Glyph |
@@ -28,6 +28,29 @@ The grid keeps its cells in memory, and `grid:draw()` renders its window in C: a
 Codes `0x01-0x1B` are drawn at the grid's own cell size, so every grid has them, with or without a font. `grid:defineGlyph()` replaces any code from `0x01` up with your own bitmap (a tree, a door, a potion).
 
 A grid shows at most 256 different glyphs; it is not general Unicode (no CJK or emoji).
+
+### Colours 0-15
+
+The VGA colours. Colours 16-255 follow xterm's 256-colour layout; these 16 do not.
+
+| Index | Colour | RGB | RGB565 |
+|---|---|---|---|
+| 0 | Black | 0, 0, 0 | `0x0000` |
+| 1 | Red | 170, 0, 0 | `0xA800` |
+| 2 | Green | 0, 170, 0 | `0x0540` |
+| 3 | Yellow | 170, 85, 0 | `0xAAA0` |
+| 4 | Blue | 0, 0, 170 | `0x0015` |
+| 5 | Magenta | 170, 0, 170 | `0xA815` |
+| 6 | Cyan | 0, 170, 170 | `0x0555` |
+| 7 | White | 170, 170, 170 | `0xAD55` |
+| 8 | Grey | 85, 85, 85 | `0x52AA` |
+| 9 | Bright red | 255, 85, 85 | `0xFAAA` |
+| 10 | Bright green | 85, 255, 85 | `0x57EA` |
+| 11 | Bright yellow | 255, 255, 85 | `0xFFEA` |
+| 12 | Bright blue | 85, 85, 255 | `0x52BF` |
+| 13 | Bright magenta | 255, 85, 255 | `0xFABF` |
+| 14 | Bright cyan | 85, 255, 255 | `0x57FF` |
+| 15 | Bright white | 255, 255, 255 | `0xFFFF` |
 
 ### Text
 
@@ -52,7 +75,7 @@ A grid's cell size comes from its font (`max width × height`), or is given expl
 | `/system/lib/fonts/spleen-5x8.pfn` via `picocalc.display.loadFont` | 5×8 | 64×40 |
 | No font, 4×4 cells | 4×4 | 80×80 (shapes and defined glyphs only) |
 
-Spleen 5×8 (BSD 2-Clause, Frederic Cambus; source and licence in the repo's `sdk/fonts/spleen/`) gives 64-column grids. Release packaging does not install `/system/lib` (see [API System and Config](API-System-and-Config.md)): copy `system/lib/fonts/spleen-5x8.pfn` to the SD card, or ship a copy in your app directory and load it from `APP_DIR`. The font is BSD 2-Clause: copies distributed on SD cards or in app directories must ship `sdk/fonts/spleen/LICENSE` alongside the `.pfn`.
+Spleen 5×8 (BSD 2-Clause, Frederic Cambus; source and licence in the repo's [`sdk/fonts/spleen/`](https://github.com/PicoDeck/picodeck/tree/master/sdk/fonts/spleen)) gives 64-column grids. Release packaging does not install `/system/lib` (see [API System and Config](API-System-and-Config.md)): copy [`system/lib/fonts/spleen-5x8.pfn`](https://github.com/PicoDeck/picodeck/blob/master/system/lib/fonts/spleen-5x8.pfn) to the SD card, or ship a copy in your app directory and load it from `APP_DIR`. The font is BSD 2-Clause: copies distributed on SD cards or in app directories must ship [`sdk/fonts/spleen/LICENSE`](https://github.com/PicoDeck/picodeck/blob/master/sdk/fonts/spleen/LICENSE) alongside the `.pfn`.
 
 ```lua
 local id = picocalc.display.loadFont("/system/lib/fonts/spleen-5x8.pfn")

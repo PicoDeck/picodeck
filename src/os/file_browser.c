@@ -63,6 +63,11 @@ static int entry_cmp(const void *a, const void *b) {
   return strcmp(ea->name, eb->name);
 }
 
+// What goes before "/<name>" to name an entry of dir: "/" itself adds nothing.
+static const char *join_prefix(const char *dir) {
+  return strcmp(dir, "/") == 0 ? "" : dir;
+}
+
 static void load_dir(const char *path) {
   if (!s_entries) {
     s_entries = (fb_entry_t *)umm_malloc(sizeof(fb_entry_t) * MAX_ENTRIES);
@@ -213,13 +218,11 @@ static bool file_browser_run(const char *start_path, const char *root_path,
     dev_commands_process();
     // Let a dev "exit" unwind this modal (cancel; the Lua hook handles exit).
     if (dev_commands_wants_exit()) {
-      kbd_clear_state();
       display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false;
     }
     // The menu key cancels the browser, like Esc (and takes the latch, so it
     // cannot open the system menu once the browser has returned).
     if (kbd_consume_menu_press()) {
-      kbd_clear_state();
       display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false;
     }
     uint32_t pressed = kbd_get_buttons_pressed();
@@ -247,7 +250,7 @@ static bool file_browser_run(const char *start_path, const char *root_path,
         if (s_entries[sel].is_dir) {
           // Navigate into the selected directory
           char new_path[256];
-          snprintf(new_path, sizeof(new_path), "%s/%s", cur_path,
+          snprintf(new_path, sizeof(new_path), "%s/%s", join_prefix(cur_path),
                    s_entries[sel].name);
           strncpy(cur_path, new_path, sizeof(cur_path) - 1);
           cur_path[sizeof(cur_path) - 1] = '\0';
@@ -257,11 +260,8 @@ static bool file_browser_run(const char *start_path, const char *root_path,
           need_redraw = true;
         } else {
           // File selected — return the full path
-          snprintf(out_path, out_len, "%s/%s", cur_path, s_entries[sel].name);
-          // Clear the button edge-latch before returning (matches
-          // system_menu.c) so the caller's own button checks don't see a
-          // stale Enter/Esc edge from this modal's input handling.
-          kbd_clear_state();
+          snprintf(out_path, out_len, "%s/%s", join_prefix(cur_path),
+                   s_entries[sel].name);
           display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return true;
         }
       }
@@ -270,14 +270,17 @@ static bool file_browser_run(const char *start_path, const char *root_path,
     if (pressed & BTN_ESC) {
       // Go up one directory; cancel if already at (or above) root_path
       if (strcmp(cur_path, root_path) == 0) {
-        // Clear the button edge-latch before returning (matches
-        // system_menu.c) so the caller's own button checks don't see a
-        // stale Esc edge from this modal's input handling.
-        kbd_clear_state();
         display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false; // already at the sandbox root — cancel
       }
       char *last_slash = strrchr(cur_path, '/');
-      if (last_slash && last_slash != cur_path) {
+      // The volume root is one up from a top-level directory, if it is allowed.
+      if (last_slash == cur_path && strcmp(root_path, "/") == 0) {
+        cur_path[1] = '\0';
+        load_dir(cur_path);
+        sel = 0;
+        scroll = 0;
+        need_redraw = true;
+      } else if (last_slash && last_slash != cur_path) {
         *last_slash = '\0';
         // Don't let navigation go above root_path
         if (strlen(cur_path) < strlen(root_path))
@@ -287,10 +290,6 @@ static bool file_browser_run(const char *start_path, const char *root_path,
         scroll = 0;
         need_redraw = true;
       } else {
-        // Clear the button edge-latch before returning (matches
-        // system_menu.c) so the caller's own button checks don't see a
-        // stale Esc edge from this modal's input handling.
-        kbd_clear_state();
         display_set_clip_rect(saved_cx, saved_cy, saved_cw, saved_ch); return false;
       }
     }
@@ -307,6 +306,10 @@ bool file_browser_show(const char *start_path, const char *root_path,
   int saved_font = display_get_font();
   display_set_font(0);
   bool ok = file_browser_run(start_path, root_path, out_path, out_len);
+  // What is down, the answering key first of all, stays out of the caller's
+  // reads until it is released; the runner's exits leave the key-down set for
+  // this, so they must not clear it.
+  kbd_hide_held();
   display_set_font(saved_font);
   return ok;
 }

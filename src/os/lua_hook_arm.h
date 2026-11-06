@@ -1,13 +1,13 @@
 // Arming the Lua service hook from an interrupt, in constant time.
 //
-// Firmware runs the Lua VM hook-free; a 1 ms Core 0 timer arms a count-1
+// Firmware runs the Lua VM hook-free; a 5 ms Core 0 timer arms a count-1
 // hook on the running thread (src/os/lua_bridge.c, lua_bridge_arm_cb), and
 // the hook disarms itself after servicing. Stock lua_sethook() cannot do
 // that arming: besides setting the hook, it walks the thread's whole
 // CallInfo chain (ldebug.c settraps) to set every Lua frame's trap flag.
 // In deep recursion that is ~1000 frames of QMI PSRAM, a few cache misses
-// each, on every tick: the walk outlasts the 1 ms period and the timer IRQ
-// never returns, so the VM never runs again and the watchdog resets the
+// each, on every tick: the walk outlasted the then 1 ms period and the timer
+// IRQ never returned, so the VM never ran again and the watchdog reset the
 // device (GitHub issue #21).
 //
 // picodeck_lua_arm_hook() sets the hook exactly as lua_sethook(L, hook,

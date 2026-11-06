@@ -75,10 +75,14 @@ static uint8_t spi_byte(uint8_t out) {
   return in;
 }
 
-/* Receive len bytes into buf (sends 0xFF on MOSI). */
+/* Receive len bytes into buf (sends 0xFF on MOSI). Not a memset + full-duplex
+ * transfer over buf: buf is usually in QMI PSRAM (a FIL's sector buffer, a Lua
+ * string), where the memset alone fills ~64 cache lines with the bus idle, and
+ * the same fills during the transfer overlap the wire time, in the RX FIFO's
+ * slack. spi_read_blocking paces itself like spi_write_read_blocking (never
+ * more than the FIFO's depth ahead of RX), so the FIFO still cannot overrun. */
 static void spi_recv_buf(uint8_t *buf, size_t len) {
-  memset(buf, 0xFF, len);
-  spi_write_read_blocking(SD_SPI_PORT, buf, buf, len);
+  spi_read_blocking(SD_SPI_PORT, 0xFF, buf, len);
 }
 
 /* Send len bytes from buf (discard MISO). */
@@ -744,17 +748,4 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void *buff) {
   default:
     return RES_PARERR;
   }
-}
-
-/* ─── SPI speed control ────────────────────────────────────────────────────
- *
- * CYW43 radio EMI corrupts SPI0 at 25 MHz (see hardware.h SD_SPI_BAUD).
- * Callers that write to SD while the CYW43 may still be active can drop
- * to a safe speed (1 MHz) where the noise margin is large enough.
- */
-
-#define SD_SAFE_BAUD (1000 * 1000) /* 1 MHz — immune to CYW43 EMI */
-
-void sd_set_slow_mode(bool slow) {
-  spi_set_baudrate(SD_SPI_PORT, slow ? SD_SAFE_BAUD : SD_SPI_BAUD);
 }

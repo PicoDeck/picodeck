@@ -4,7 +4,5 @@
     "description": "Exercises screen pixels to reduce LCD burn-in and stuck pixels",
     "version": "1.0",
     "author": "PicoDeck",
-    "category": "system",
-    "repo": "PicoDeck/picodeck",
-    "min_firmware": "1.0.0"
+    "category": "system"
 }

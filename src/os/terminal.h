@@ -85,6 +85,10 @@ struct terminal {
     int render_y_start;   // Top pixel Y (default 28, below header)
     int render_y_end;     // Bottom pixel Y exclusive (default 302, above footer)
     int render_x_start;   // Left pixel X (default 4, padding)
+
+    // The back buffer the last render drew into: flush() swaps without copying,
+    // so a dirty-row redraw is only partial while this is still the back buffer.
+    const uint16_t* last_render_fb;
 };
 
 typedef struct terminal terminal_t;

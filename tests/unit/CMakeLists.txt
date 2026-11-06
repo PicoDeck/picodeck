@@ -82,6 +82,8 @@ picodeck_unit_test(test_avi_index INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_event_queue INCLUDES ${SRC}/drivers)
 # The gamepad layer of the same decode (keys -> PAD_* through the pad map).
 picodeck_unit_test(test_kbd_pad INCLUDES ${SRC}/drivers)
+# The keys hidden from the app after the system menu, until they are released.
+picodeck_unit_test(test_kbd_hide INCLUDES ${SRC}/drivers)
 # Pad sources (the `pad` dev command, the simulator's controller, later a BT
 # or USB pad) ORed into the same gamepad.
 picodeck_unit_test(test_pad_source SOURCES ${SRC}/drivers/pad_source.c INCLUDES ${SRC}/drivers)
@@ -90,6 +92,14 @@ picodeck_unit_test(test_hid_pad SOURCES ${SRC}/drivers/hid_pad.c INCLUDES ${SRC}
 # The Bluetooth pads' bonding store (link keys + paired pads, on the SD card).
 picodeck_unit_test(test_bt_pad_store SOURCES ${SRC}/drivers/bt_pad_store.c INCLUDES ${SRC}/drivers)
 picodeck_unit_test(test_kbd_bus SOURCES ${SRC}/drivers/kbd_bus.c INCLUDES ${SRC}/drivers)
+# What the launcher owes back after WiFi's disconnect around an app's own clock
+# (header-only).
+picodeck_unit_test(test_wifi_rejoin INCLUDES ${SRC}/drivers)
+picodeck_unit_test(test_serial_frame)
+find_package(Threads REQUIRED)
+picodeck_unit_test(test_console_gate SOURCES ${SRC}/console_gate.c
+                   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/fakes/console_gate ${SRC})
+target_link_libraries(test_console_gate PRIVATE Threads::Threads)
 # The default alarm pool fix (cmake/picodeck_pico_time.cmake, #58): the
 # cancellation pass cut out of the patched pico_time the firmware build
 # generates, from the SDK's time.c when PICO_SDK_PATH has one the patch
@@ -145,7 +155,7 @@ target_link_libraries(test_gfx3d PRIVATE m)
 target_compile_options(test_gfx3d PRIVATE -ffp-contract=off -Wdouble-promotion)
 # picocalc.chargrid core (src/os/chargrid*.c) over host malloc.
 picodeck_unit_test(test_chargrid SOURCES ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c
-                   ${SRC}/os/chargrid_text.c ${SRC}/os/text_wrap.c
+                   ${SRC}/os/color256.c ${SRC}/os/chargrid_text.c ${SRC}/os/text_wrap.c
                    ${SRC}/fonts/font_6x8.c ${SRC}/fonts/font.c
                    INCLUDES ${SRC}/fonts
                    DEFINES CG_MALLOC=malloc CG_FREE=free)
@@ -153,7 +163,25 @@ target_compile_options(test_chargrid PRIVATE -ffp-contract=off -Wdouble-promotio
 # The chargrid renderer: fast pair stores and the per-pixel path vs a reference.
 picodeck_unit_test(test_chargrid_render
                    SOURCES ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c ${SRC}/os/chargrid_render.c
+                   ${SRC}/os/color256.c
                    DEFINES CG_MALLOC=malloc CG_FREE=free)
+# The 256-colour table through its two readers: a new grid's palette and the
+# terminal's ANSI codes (simulator/stubs first: umm_malloc.h for terminal.c).
+picodeck_unit_test(test_color256
+                   SOURCES ${SRC}/os/color256.c ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c
+                   ${SRC}/os/terminal.c ${SRC}/os/terminal_parser.c
+                   ${CMAKE_CURRENT_SOURCE_DIR}/fakes/umm_fake.c
+                   INCLUDES ${PICODECK_ROOT}/simulator/stubs
+                   DEFINES CG_MALLOC=malloc CG_FREE=free)
+target_compile_options(test_color256 PRIVATE -Wno-unused-parameter)  # terminal.c
+# The terminal's ANSI parser, over the real terminal.
+picodeck_unit_test(test_terminal_parser
+                   SOURCES ${SRC}/os/color256.c ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c
+                   ${SRC}/os/terminal.c ${SRC}/os/terminal_parser.c
+                   ${CMAKE_CURRENT_SOURCE_DIR}/fakes/umm_fake.c
+                   INCLUDES ${PICODECK_ROOT}/simulator/stubs
+                   DEFINES CG_MALLOC=malloc CG_FREE=free)
+target_compile_options(test_terminal_parser PRIVATE -Wno-unused-parameter)  # terminal.c
 # Lattice hash, value noise and fBm (src/os/noise.h, header-only).
 picodeck_unit_test(test_noise)
 target_compile_options(test_noise PRIVATE -ffp-contract=off -Wdouble-promotion)
@@ -212,6 +240,17 @@ picodeck_unit_test(test_mv_op SOURCES ${SRC}/os/mv_op.c ${SRC}/os/mv_path.c
 set_source_files_properties(${FATFS_DIR}/ff.c ${FATFS_DIR}/ffunicode.c
                 PROPERTIES COMPILE_OPTIONS "-w")
 
+# The firmware's SD driver over the vendored FatFS on a RAM disk: the watchdog
+# feeds of long transfers (counted by fakes/feedcount), short writes, copy stop.
+set(FEEDCOUNT ${CMAKE_CURRENT_SOURCE_DIR}/fakes/feedcount)
+picodeck_unit_test(test_sdcard_driver SOURCES ${SRC}/drivers/sdcard.c
+                ${SRC}/drivers/fat_within.c ${FATFS_DIR}/ff.c
+                ${FATFS_DIR}/ffunicode.c
+                ${CMAKE_CURRENT_SOURCE_DIR}/fakes/umm_fake.c
+                INCLUDES ${FEEDCOUNT} ${PICODECK_ROOT}/simulator/stubs ${FATFS_DIR}
+                ${SRC} ${SRC}/drivers)
+target_link_libraries(test_sdcard_driver PRIVATE Threads::Threads)
+
 # The simulator's SD-root containment (host filesystem; sim_log_err faked).
 picodeck_unit_test(test_sim_sdcard SOURCES ${PICODECK_ROOT}/simulator/hal/hal_sdcard.c
                 INCLUDES ${PICODECK_ROOT}/simulator/hal ${SRC}
@@ -247,7 +286,7 @@ picodeck_unit_test(test_zip_archive SOURCES ${SRC}/os/zip_archive.c
                 ${PICODECK_ROOT}/third_party/miniz/miniz_tdef.c
                 ${PICODECK_ROOT}/third_party/miniz/miniz_zip.c
                 ${SD_FAKE}
-                INCLUDES ${SD_INCLUDES} ${PICODECK_ROOT}/third_party/miniz
+                INCLUDES ${FEEDCOUNT} ${SD_INCLUDES} ${PICODECK_ROOT}/third_party/miniz
                 ${CMAKE_BINARY_DIR}/generated/miniz
                 DEFINES PICODECK_SIMULATOR MINIZ_NO_STDIO MINIZ_NO_ARCHIVE_WRITING_APIS
                 MINIZ_NO_ZLIB_COMPATIBLE_NAMES)
@@ -292,7 +331,7 @@ target_compile_definitions(libmad_host PRIVATE FPM_64BIT HAVE_STDINT_H=1
             NDEBUG=1 OPT_SPEED=1 OPT_SSO=1 PROGMEM=)
 target_compile_options(libmad_host PRIVATE -O2 -w)
 picodeck_unit_test(test_mp3_fed SOURCES ${SRC}/drivers/mp3_player.c
-                ${SRC}/os/core0_idle.c ${SD_FAKE}
+                ${SRC}/os/core0_idle.c ${SD_FAKE} fake_gfx3d_lend.c
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_fed PRIVATE libmad_host)
 # The pico/critical_section.h stub leaves a parameter unused.
@@ -303,18 +342,19 @@ target_link_options(test_mp3_fed PRIVATE -Wl,--wrap=mad_synth_granule)
 # ...and its decode loop at the ends of the input buffer (no frame lost
 # where a refill ends), from a file (the SD fake) and fed.
 picodeck_unit_test(test_mp3_refill SOURCES ${SRC}/drivers/mp3_player.c
-                ${SRC}/os/core0_idle.c ${SD_FAKE}
+                ${SRC}/os/core0_idle.c ${SD_FAKE} fake_gfx3d_lend.c
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_refill PRIVATE libmad_host)
 target_compile_options(test_mp3_refill PRIVATE -Wno-unused-parameter)
 # ...and what its decoder writes (a mono frame's samples, in order) and when
 # (ahead, in Core 0's idle windows).
 picodeck_unit_test(test_mp3_decode SOURCES ${SRC}/drivers/mp3_player.c
-                ${SRC}/os/core0_idle.c ${SD_FAKE}
+                ${SRC}/os/core0_idle.c ${SD_FAKE} fake_gfx3d_lend.c
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_mp3_decode PRIVATE libmad_host)
 target_compile_options(test_mp3_decode PRIVATE -Wno-unused-parameter)
-# The ID3v2 tags an MP3 file's audio starts after (header-only).
+# The ID3 tags in an MP3 file (header-only): those its audio starts after, and
+# what counts as one further on.
 picodeck_unit_test(test_mp3_id3 INCLUDES ${SRC}/drivers)
 # libmad a granule at a time (mp3_player.c's half frames) against the
 # whole-frame decode: the same PCM.
@@ -351,6 +391,19 @@ picodeck_unit_test(test_crypto_verify
                 SOURCES ${SRC}/os/crypto.c ${SRC}/os/ssh_blob.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
 target_link_libraries(test_crypto_verify PRIVATE picodeck_host_mbedtls)
+# apps/ssh's key exchange: its Lua on the device's VM configuration over the real
+# crypto bridge, crypto.c and mbedTLS, with recorded OpenSSH handshakes and, where
+# the machine has sshd (it is skipped otherwise), against the real thing.
+if(TARGET lua_host)
+    picodeck_unit_test(test_ssh_transport
+                    SOURCES ${SRC}/os/crypto.c ${SRC}/os/ssh_blob.c
+                            ${SRC}/os/lua_bridge_crypto.c ${SD_FAKE}
+                    INCLUDES ${SD_INCLUDES})
+    target_link_libraries(test_ssh_transport PRIVATE lua_host picodeck_host_mbedtls)
+    add_test(NAME test_ssh_transport_live COMMAND test_ssh_transport --live)
+    set_tests_properties(test_ssh_transport_live PROPERTIES SKIP_RETURN_CODE 77
+        ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:abort_on_error=0;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
+endif()
 
 picodeck_unit_test(test_small_alloc SOURCES ${SRC}/os/small_alloc.c)
 
@@ -361,7 +414,7 @@ endif()
 # The chargrid shader: compiler (Task 4), VM and outputs (Tasks 5-6). Its
 # allocations go through cg_test_alloc.h, so a test can refuse them.
 picodeck_unit_test(test_charshader SOURCES ${SRC}/os/charshader_compile.c ${SRC}/os/charshader_vm.c
-                   ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c)
+                   ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c ${SRC}/os/color256.c)
 target_compile_options(test_charshader PRIVATE -ffp-contract=off -Wdouble-promotion
                        -include ${CMAKE_CURRENT_SOURCE_DIR}/cg_test_alloc.h)
 target_link_libraries(test_charshader PRIVATE m)
@@ -382,7 +435,7 @@ target_link_libraries(test_splash_render PRIVATE m)
 # arm-none-eabi-gcc (with newlib's rdimon) or qemu-arm.
 set(XCHECK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/charshader_xcheck.c
     ${SRC}/os/charshader_compile.c ${SRC}/os/charshader_vm.c
-    ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c)
+    ${SRC}/os/chargrid.c ${SRC}/os/chargrid_shapes.c ${SRC}/os/color256.c)
 add_executable(charshader_xcheck ${XCHECK_SOURCES})
 target_include_directories(charshader_xcheck PRIVATE ${SRC}/os)
 target_compile_definitions(charshader_xcheck PRIVATE CG_MALLOC=malloc CG_FREE=free)
@@ -410,7 +463,7 @@ if(XCHECK_SKIP)
     add_test(NAME test_charshader_m33 COMMAND ${CMAKE_COMMAND} -E echo "SKIPPED: ${XCHECK_SKIP}")
     set_tests_properties(test_charshader_m33 PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
 else()
-    file(GLOB XCHECK_HEADERS ${SRC}/os/charshader*.h ${SRC}/os/chargrid.h ${SRC}/os/noise.h
+    file(GLOB XCHECK_HEADERS ${SRC}/os/charshader*.h ${SRC}/os/chargrid.h ${SRC}/os/color256.h ${SRC}/os/noise.h
          ${SRC}/fonts/font.h)
     set(XCHECK_ELFS "")
     foreach(opt O2 Os)

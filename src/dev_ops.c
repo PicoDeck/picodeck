@@ -8,9 +8,11 @@
 #include "drivers/pad_source.h"
 #include "drivers/sdcard.h"
 #include "drivers/sound.h"
+#include "os/app_identity.h"
 #include "os/gamepad_map.h"
 #include "os/launcher.h"
 #include "os/mv_op.h"
+#include "os/os.h" // AXIS_*
 #include "os/zip_util.h"
 #include "hardware/clocks.h"
 #include "hardware/watchdog.h"
@@ -44,6 +46,34 @@ static bool dev_unzip_progress(int done, int total, const char *name,
     return true;
 }
 
+// Extracting over the running app's own directory fails on any file it holds
+// open (FatFS's file lock) and swaps the rest under a live app (issue #65).
+// Only that overlap is refused: `unzip` elsewhere while an app runs is fine,
+// as it always was. By FatFS identity, as in mv_op.c, and for the same reason:
+// the spelling proves nothing. An identity test that could not look (the
+// open-file table is full, which would stop the extraction too) is a refusal.
+static bool dev_unzip_dest_allowed(const char *dest, char *reply, size_t n) {
+    const app_identity_t *me = app_identity_current();
+    if (!me || !me->dir[0])
+        return true;
+    sdcard_within_t in_app = sdcard_path_within(me->dir, dest);
+    // The root holds every app, and has no cluster for the test to compare.
+    sdcard_within_t holds_app = strspn(dest, "/\\") == strlen(dest)
+                                    ? SDCARD_WITHIN_YES
+                                    : sdcard_path_within(dest, me->dir);
+    if (in_app == SDCARD_WITHIN_YES || holds_app == SDCARD_WITHIN_YES) {
+        snprintf(reply, n, "Error: unzip: an app is running from %s: exit it "
+                           "first", me->dir);
+        return false;
+    }
+    if (in_app == SDCARD_WITHIN_UNKNOWN || holds_app == SDCARD_WITHIN_UNKNOWN) {
+        snprintf(reply, n, "Error: unzip: cannot verify the destination (too "
+                           "many open files?): close files and retry");
+        return false;
+    }
+    return true;
+}
+
 bool dev_op_unzip(char *args, char *reply, size_t n) {
     // Blocks Core 0 for the duration (same contract as putb64: audio decoded
     // on Core 1 will starve). The engine validates entry names.
@@ -54,6 +84,8 @@ bool dev_op_unzip(char *args, char *reply, size_t n) {
         return false;
     }
     *dest++ = '\0';
+    if (!dev_unzip_dest_allowed(dest, reply, n))
+        return false;
     zip_reader_t zr;
     char err[ZIP_ERR_MAX];
     if (!zip_reader_open(&zr, zip_path, err)) {
@@ -90,20 +122,94 @@ bool dev_op_mv(char *args, char *reply, size_t n) {
     return mv_op(args, reply, n);
 }
 
-// "up+a" -> PAD_UP | PAD_A; false (with *bad set) on an unknown or empty
-// name ("a+", "+").
-static bool pad_parse(char *spec, uint32_t *state, const char **bad) {
+// A pad spec's axes, by AXIS_*, in thousandths of full deflection.
+static const char k_pad_axis_names[][3] = {"lx", "ly", "rx", "ry", "lt", "rt"};
+
+typedef struct {
+  int16_t milli[6];
+} pad_axis_spec_t;
+
+// "-0.5" -> -500, to three decimal places (the rest is ignored). Written here
+// so the command does not pull in strtof (newlib's allocates from the SRAM
+// heap). False on anything else, or past 1 either way.
+static bool pad_axis_value(const char *s, int *milli) {
+  bool neg = *s == '-';
+  if (neg)
+    s++;
+  bool digits = false;
+  long whole = 0;
+  while (*s >= '0' && *s <= '9') {
+    if (whole < 10)
+      whole = whole * 10 + (*s - '0');
+    digits = true;
+    s++;
+  }
+  long frac = 0, unit = 100;
+  if (*s == '.') {
+    s++;
+    while (*s >= '0' && *s <= '9') {
+      frac += (*s - '0') * unit;
+      unit /= 10;
+      digits = true;
+      s++;
+    }
+  }
+  long v = whole * 1000 + frac;
+  if (!digits || *s || v > 1000)
+    return false;
+  *milli = (int)(neg ? -v : v);
+  return true;
+}
+
+// One "name=value" token. On false, *bad_value says which error it is (a bad
+// value, or an unknown axis).
+static bool pad_parse_axis(char *tok, char *eq, pad_axis_spec_t *axes,
+                           bool *bad_value) {
+  *eq = '\0';
+  int axis = -1;
+  for (int a = AXIS_LX; a <= AXIS_RT; a++)
+    if (strcasecmp(tok, k_pad_axis_names[a]) == 0)
+      axis = a;
+  *eq = '=';
+  if (axis < 0) {
+    *bad_value = false;
+    return false;
+  }
+  int milli;
+  *bad_value = true;
+  // Triggers have no negative side.
+  if (!pad_axis_value(eq + 1, &milli) || (axis >= AXIS_LT && milli < 0))
+    return false;
+  axes->milli[axis] = (int16_t)milli;
+  return true;
+}
+
+// "up+a+lx=-0.5" -> PAD_UP | PAD_A and the axes; false (with *err set to the
+// reply's error, *bad to the token) on an unknown or empty name ("a+", "+") or
+// a bad axis value.
+static bool pad_parse(char *spec, uint32_t *state, pad_axis_spec_t *axes,
+                      const char **err, const char **bad) {
   uint32_t st = 0;
+  memset(axes, 0, sizeof(*axes));
   for (char *tok = spec;;) {
     char *plus = strchr(tok, '+');
     if (plus)
       *plus = '\0';
     int b = gamepad_button_from_name(tok);
+    char *eq = strchr(tok, '=');
     if (b >= 0) {
       st |= 1u << b;
     } else if (strcasecmp(tok, "home") == 0) {
       st |= PAD_SOURCE_HOME;
+    } else if (eq) {
+      bool bad_value;
+      if (!pad_parse_axis(tok, eq, axes, &bad_value)) {
+        *err = bad_value ? "bad pad axis value" : "unknown pad axis";
+        *bad = tok;
+        return false;
+      }
     } else {
+      *err = "unknown pad button";
       *bad = tok;
       return false;
     }
@@ -115,8 +221,21 @@ static bool pad_parse(char *spec, uint32_t *state, const char **bad) {
   return true;
 }
 
-// The state as the command would name it ("up+a+home").
-static void pad_format(uint32_t state, char *out, size_t n) {
+// The axes as a source reports them: full is 127 for a stick, 255 for a trigger.
+static void pad_axes_raw(const pad_axis_spec_t *spec, pad_axes_t *a) {
+  int8_t *const stick[4] = {&a->lx, &a->ly, &a->rx, &a->ry};
+  for (int i = AXIS_LX; i <= AXIS_RY; i++) {
+    int n = spec->milli[i] * 127;
+    *stick[i] = (int8_t)((n >= 0 ? n + 500 : n - 500) / 1000);
+  }
+  a->lt = (uint8_t)((spec->milli[AXIS_LT] * 255 + 500) / 1000);
+  a->rt = (uint8_t)((spec->milli[AXIS_RT] * 255 + 500) / 1000);
+}
+
+// The state as the command would name it ("up+a+home+lx=-0.500"; an axis at 0
+// is left out).
+static void pad_format(uint32_t state, const pad_axis_spec_t *axes, char *out,
+                       size_t n) {
   size_t len = 0;
   out[0] = '\0';
   for (int b = 0; b < KBD_PAD_BUTTONS; b++)
@@ -124,13 +243,23 @@ static void pad_format(uint32_t state, char *out, size_t n) {
       len += (size_t)snprintf(out + len, len < n ? n - len : 0, "%s%s",
                               len ? "+" : "", gamepad_button_name(b));
   if (state & PAD_SOURCE_HOME)
-    snprintf(out + len, len < n ? n - len : 0, "%shome", len ? "+" : "");
+    len += (size_t)snprintf(out + len, len < n ? n - len : 0, "%shome",
+                            len ? "+" : "");
+  for (int a = AXIS_LX; a <= AXIS_RT; a++) {
+    int m = axes->milli[a];
+    if (m)
+      len += (size_t)snprintf(out + len, len < n ? n - len : 0,
+                              "%s%s=%s%d.%03d", len ? "+" : "",
+                              k_pad_axis_names[a], m < 0 ? "-" : "",
+                              abs(m) / 1000, abs(m) % 1000);
+  }
 }
 
 bool dev_op_pad(char *args, char *reply, size_t n) {
   static const char usage[] =
-      "Usage: pad <none|off|buttons> [hold_ms] (buttons: up down left right "
-      "a b x y l r start select home, joined by '+')";
+      "Usage: pad <none|off|buttons> [hold_ms] (joined by '+', buttons: up "
+      "down left right a b x y l r start select home, axes: lx ly rx ry=-1..1 "
+      "lt rt=0..1)";
   while (*args == ' ')
     args++;
   char *spec = args;
@@ -160,21 +289,26 @@ bool dev_op_pad(char *args, char *reply, size_t n) {
     return true;
   }
   uint32_t state = 0;
+  pad_axis_spec_t spec_axes;
+  memset(&spec_axes, 0, sizeof(spec_axes));
   if (strcasecmp(spec, "none") != 0) {
-    const char *bad = NULL;
-    if (!pad_parse(spec, &state, &bad)) {
-      snprintf(reply, n, "Error: unknown pad button: %s", bad);
+    const char *err = NULL, *bad = NULL;
+    if (!pad_parse(spec, &state, &spec_axes, &err, &bad)) {
+      snprintf(reply, n, "Error: %s: %s", err, bad);
       return false;
     }
   }
+  pad_axes_t axes;
+  pad_axes_raw(&spec_axes, &axes);
+  pad_source_publish_axes(PAD_SOURCE_TEST, &axes);
   pad_source_test_set(state, hold_ms);
-  char names[96];
-  pad_format(state, names, sizeof(names));
+  char names[128];
+  pad_format(state, &spec_axes, names, sizeof(names));
+  const char *shown = names[0] ? names : "none";
   if (hold_ms)
-    snprintf(reply, n, "Pad: %s for %lu ms", state ? names : "none",
-             (unsigned long)hold_ms);
+    snprintf(reply, n, "Pad: %s for %lu ms", shown, (unsigned long)hold_ms);
   else
-    snprintf(reply, n, "Pad: %s", state ? names : "none");
+    snprintf(reply, n, "Pad: %s", shown);
   return true;
 }
 
@@ -223,17 +357,17 @@ bool dev_op_audiostat(bool reset, char *reply, size_t n) {
 // The simulator's scripted radio (simulator/sim_bt.c).
 bool bt_pad_sim_add(const uint8_t addr[6], uint32_t cod, const char *name);
 void bt_pad_sim_clear(void);
-bool bt_pad_sim_report(uint32_t state);
+bool bt_pad_sim_report(uint32_t state, const pad_axes_t *axes);
 bool bt_pad_sim_drop(void);
 bool bt_pad_sim_wake(const uint8_t addr[6]);
 bool bt_pad_sim_spoof(const uint8_t addr[6]);
 
 // "bt sim add <addr> <cod hex> <name>" (a device in pairing mode in range),
-// "bt sim clear", "bt sim press <buttons|none>" (the connected pad's state,
+// "bt sim clear", "bt sim press <buttons|none>" (the connected pad's state and
+// axes,
 // as `pad` names it), "bt sim drop" (link loss), "bt sim wake <addr>" (a
 // bonded pad reconnects), "bt sim spoof <addr>" (a device with that address
 // and no link key asks to pair: replies "refused" or "bonded").
-static bool pad_parse(char *spec, uint32_t *state, const char **bad);
 
 static bool dev_op_bt_sim(char *args, char *reply, size_t n) {
   uint8_t addr[6];
@@ -260,12 +394,17 @@ static bool dev_op_bt_sim(char *args, char *reply, size_t n) {
   }
   if (strncmp(args, "press ", 6) == 0) {
     uint32_t st = 0;
-    const char *bad = NULL;
-    if (strcasecmp(args + 6, "none") != 0 && !pad_parse(args + 6, &st, &bad)) {
-      snprintf(reply, n, "Error: unknown pad button: %s", bad);
+    pad_axis_spec_t spec_axes;
+    memset(&spec_axes, 0, sizeof(spec_axes));
+    const char *err = NULL, *bad = NULL;
+    if (strcasecmp(args + 6, "none") != 0 &&
+        !pad_parse(args + 6, &st, &spec_axes, &err, &bad)) {
+      snprintf(reply, n, "Error: %s: %s", err, bad);
       return false;
     }
-    bool ok = bt_pad_sim_report(st);
+    pad_axes_t axes;
+    pad_axes_raw(&spec_axes, &axes);
+    bool ok = bt_pad_sim_report(st, &axes);
     snprintf(reply, n, ok ? "BT sim: report" : "Error: bt sim: no pad");
     return ok;
   }

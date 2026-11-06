@@ -85,10 +85,10 @@ local FOOTER_Y  = 302
 local FOOTER_H  = 18
 local CONTENT_H = FOOTER_Y - CONTENT_Y  -- 269
 
--- Terminal dimensions: 269px / 11px = 24 rows; 23 leaves a margin
+-- Terminal dimensions: 269px / 12px = 22 rows
 -- With line numbers (4 cols) and scrollbar (1 col): (320-24-6)/6 = 48 cols
 local TERM_COLS = 48
-local TERM_ROWS = 23
+local TERM_ROWS = 22
 
 ------------------------------------------------------------
 -- State

@@ -56,6 +56,11 @@ void     sdcard_fclose(sdfile_t f);
 bool     sdcard_fexists(const char *path);
 int      sdcard_fsize(const char *path);   // Returns -1 on error
 int      sdcard_fsize_handle(sdfile_t f);  // Returns -1 on error
+
+// Moves whenever something asks to write a path that may lie under /apps, through
+// any sdcard_* call, and at every sdcard_remount (USB mass storage writes sectors
+// past this layer and remounts when the host lets go).
+uint32_t sdcard_apps_generation(void);
 bool     sdcard_fseek(sdfile_t f, uint32_t offset);
 uint32_t sdcard_ftell(sdfile_t f);
 
@@ -99,10 +104,10 @@ sdcard_within_t sdcard_path_within(const char *root, const char *path);
 // Rename or move a file/directory. Both paths must be on the same volume.
 bool sdcard_rename(const char *src, const char *dst);
 
-// Copy src to dst. Optional progress callback: cb(bytes_done, total, user).
-// Returns false and removes dst on error.
+// Copy src to dst. Optional progress callback: cb(bytes_done, total, user),
+// whose false stops the copy. Returns false and removes dst on error or stop.
 bool sdcard_copy(const char *src, const char *dst,
-                 void (*progress_cb)(uint32_t done, uint32_t total, void *user),
+                 bool (*progress_cb)(uint32_t done, uint32_t total, void *user),
                  void *user);
 
 // ── Metadata ─────────────────────────────────────────────────────────────────
@@ -125,7 +130,9 @@ bool sdcard_disk_info(uint32_t *out_free_kb, uint32_t *out_total_kb);
 
 // Drop SPI0 to 1 MHz (slow=true) for writes during CYW43 radio activity,
 // or restore full speed (slow=false). CYW43 EMI corrupts SPI0 at 25 MHz;
-// 1 MHz has enough noise margin to be immune.
+// 1 MHz has enough noise margin to be immune. Core 0 thread context only: a
+// change waits for the read Core 1 has in flight (g_sdcard_mutex); a call that
+// finds the bus as asked touches nothing.
 void sd_set_slow_mode(bool slow);
 
 // ── Convenience: read entire file into a heap-allocated buffer ─────────────-

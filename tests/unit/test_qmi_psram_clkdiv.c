@@ -134,6 +134,41 @@ static void test_every_clock_pair_is_safe_at_both_ends(void) {
   }
 }
 
+// ── qmi_psram_rxdelay(): the boot RXDELAY kept as long in time ─────────────
+// RXDELAY counts half clk_sys cycles. At 300 MHz the boot's rxdelay=1 (from
+// 200 MHz) was too short: TIC-80 read bad XIP cache lines every few minutes
+// and hardfaulted on instruction fetches; rxdelay=2 ran clean.
+
+static void test_rxdelay_rises_with_the_clock_from_a_200mhz_boot(void) {
+  CHECK_EQ_U32(qmi_psram_rxdelay(1, 200000000u, 300000000u), 2);
+  CHECK_EQ_U32(qmi_psram_rxdelay(1, 200000000u, 250000000u), 2);
+  CHECK_EQ_U32(qmi_psram_rxdelay(1, 200000000u, 200000000u), 1);
+  CHECK_EQ_U32(qmi_psram_rxdelay(2, 200000000u, 300000000u), 3);
+}
+
+static void test_rxdelay_never_drops_below_the_boot_value(void) {
+  CHECK_EQ_U32(qmi_psram_rxdelay(1, 200000000u, 150000000u), 1);
+  CHECK_EQ_U32(qmi_psram_rxdelay(1, 200000000u, 125000000u), 1);
+  CHECK_EQ_U32(qmi_psram_rxdelay(3, 200000000u, 125000000u), 3);
+}
+
+static void test_rxdelay_keeps_at_least_the_boot_delay_in_time(void) {
+  // rxdelay * (1/2 cycle) at sys_hz >= boot_rxdelay * (1/2 cycle) at boot.
+  for (uint32_t boot = 1; boot <= 4; boot++)
+    for (size_t i = 0; i < sizeof(k_app_clocks_khz) / sizeof(k_app_clocks_khz[0]);
+         i++) {
+      uint32_t hz = k_app_clocks_khz[i] * 1000u;
+      uint32_t r = qmi_psram_rxdelay(boot, 200000000u, hz);
+      CHECK((uint64_t)r * 200000000u >= (uint64_t)boot * hz);
+      CHECK(r <= 7);
+    }
+}
+
+static void test_rxdelay_caps_at_the_field_width_and_needs_a_boot_clock(void) {
+  CHECK_EQ_U32(qmi_psram_rxdelay(4, 100000000u, 400000000u), 7);
+  CHECK_EQ_U32(qmi_psram_rxdelay(2, 0u, 300000000u), 2);
+}
+
 int main(void) {
   test_every_supported_clock_keeps_sck_at_or_below_75mhz();
   test_existing_operating_points_keep_their_dividers();
@@ -142,5 +177,9 @@ int main(void) {
   test_steady_state_matches_the_original_math();
   test_200_to_300_transition_takes_the_safe_field_from_each_end();
   test_every_clock_pair_is_safe_at_both_ends();
+  test_rxdelay_rises_with_the_clock_from_a_200mhz_boot();
+  test_rxdelay_never_drops_below_the_boot_value();
+  test_rxdelay_keeps_at_least_the_boot_delay_in_time();
+  test_rxdelay_caps_at_the_field_width_and_needs_a_boot_clock();
   return check_report("test_qmi_psram_clkdiv");
 }

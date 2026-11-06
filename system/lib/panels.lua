@@ -106,6 +106,7 @@ Panels.Settings = {
     choiceColor      = disp.rgb(255, 210, 80),
     transitionMs     = 450,
     idleSkip         = true,       -- skip draw+flush on provably static frames
+    idleSleepMs      = 16,         -- Panels.start: sleep this long on such a frame
     useHwScroll      = true,       -- LCD-register scrolling for rigid vertical
                                    -- scroll sequences (see Comic:hwEligible)
     volume           = nil,        -- nil = leave system volume alone
@@ -224,6 +225,9 @@ function Panels.validate(comicData)
                                  or not comicData.sequences[seq.nextSequence]) then
             vfail(spath, "nextSequence must index an existing sequence")
         end
+        if seq.choices then
+            vfail(spath, "choices belongs on a panel, not on a sequence")
+        end
         for pi, p in ipairs(seq.panels) do
             validatePanel(p, spath .. ".panels[" .. pi .. "]")
             if p.choices then
@@ -282,6 +286,7 @@ function Cache.new(source)
     return setmetatable({
         source    = source,
         images    = {},   -- path -> image userdata
+        missing   = {},   -- path -> true: failed to load, logged; not tried again until images are freed
         panelSets = {},   -- panel -> { paths... }
         pending   = nil,  -- path currently preloading on Core 1
     }, Cache)
@@ -306,6 +311,7 @@ end
 function Cache:get(path)
     local img = self.images[path]
     if img then return img end
+    if self.missing[path] then return nil end
     -- If Core 1 happens to be preloading exactly this image, collect it now
     -- rather than decoding twice.
     self:pollPreload()
@@ -313,6 +319,7 @@ function Cache:get(path)
     if img then return img end
     local ok, loaded = pcall(gfx.image.load, path)
     if not ok then
+        self.missing[path] = true
         sys.log("PANELS:ERR image load failed: " .. path)
         return nil
     end
@@ -322,7 +329,7 @@ end
 
 function Cache:ensurePanel(panel)
     for _, path in ipairs(panelImagePaths(self, panel)) do
-        if not self.images[path] then self:get(path) end
+        if not self.images[path] and not self.missing[path] then self:get(path) end
     end
 end
 
@@ -343,7 +350,7 @@ function Cache:prefetchPanel(panel)
     if not CAP.preload or self.pending then return end
     if psramFree() < Panels.Settings.minFreeBytes then return end
     for _, path in ipairs(panelImagePaths(self, panel)) do
-        if not self.images[path] then
+        if not self.images[path] and not self.missing[path] then
             local ok, started = pcall(gfx.image.preload, path)
             if ok and started then self.pending = path end
             return
@@ -366,11 +373,20 @@ function Cache:evictOutside(keep)
             dropped = true
         end
     end
-    if dropped then collectgarbage("step") end
+    if dropped then
+        self.missing = {}   -- a load that failed for memory may work now
+        -- Free the dropped images now, so the next prefetch sees the memory.
+        -- One basic step is small (the OS sets a 128 B step), so run them to
+        -- the end of the cycle, at most what one 8 KB step did.
+        for _ = 1, 64 do
+            if collectgarbage("step") then break end
+        end
+    end
 end
 
 function Cache:dropAll()
     self.images = {}
+    self.missing = {}
     if CAP.preload and self.pending then
         pcall(gfx.image.cancelPreload)
         self.pending = nil
@@ -1147,6 +1163,7 @@ end
 
 function Comic:update()
     local S = Panels.Settings
+    self.idleThisFrame = false
     self.cache:pollPreload()
     self.audio:update()
 
@@ -1274,6 +1291,8 @@ function Comic:update()
         self:hwAudioTriggers()
         self.dirty = false
         self.drewThisFrame = false
+        -- At rest unless a key is scrolling it: this path has no live motion.
+        self.idleThisFrame = input.getButtons() == 0 and not self.scrollAnim
         return
     end
 
@@ -1287,6 +1306,7 @@ function Comic:update()
         self.drewThisFrame = true
     else
         self.drewThisFrame = false
+        self.idleThisFrame = true
     end
 end
 
@@ -1398,6 +1418,9 @@ function Panels.start(comicData, opts)
                 break
             elseif comic.drewThisFrame ~= false then
                 disp.flush()
+            elseif comic.idleThisFrame and Panels.Settings.idleSleepMs > 0 then
+                -- Nothing is moving: don't spin the CPU until a key comes.
+                sys.sleep(Panels.Settings.idleSleepMs)
             end
         end
     end

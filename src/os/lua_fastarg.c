@@ -35,6 +35,20 @@ int picodeck_lua_tointeger_strict(lua_State *L, int idx, lua_Integer *out) {
   return 1;
 }
 
+int picodeck_lua_tonumber_strict(lua_State *L, int idx, lua_Number *out) {
+  const TValue *o = arg_value(L, idx);
+  if (o == NULL) return 0;
+  if (ttisfloat(o)) {
+    *out = fltvalue(o);
+    return 1;
+  }
+  if (ttisinteger(o)) {
+    *out = cast_num(ivalue(o));
+    return 1;
+  }
+  return 0;
+}
+
 void picodeck_lua_array_of(lua_State *L, int idx, picodeck_lua_array_t *a) {
   const TValue *o = arg_value(L, idx);
   if (o != NULL && ttistable(o)) {

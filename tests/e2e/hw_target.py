@@ -48,6 +48,10 @@ device's known traps (see the task-27 report and CLAUDE.md "Debug"):
     launcher first (or refuses) and flash() refuses while an app runs.
   - `ver`'s timestamp comes from main.c and lies after incremental builds:
     nothing here trusts it; a reboot is proven by uptime going back.
+  - Serial transfers can arrive damaged (they share the port with the log), so
+    screenshot() and read_file() check the device's FNV-1a, retry, and raise
+    rather than return a transfer that failed the check (screenshots from
+    firmware before #61 carry no checksum: unverified, with a warning).
   - Two readers split the device's output: preflight refuses a port another
     process holds (stop the MCP server's log capture first).
   - Every wait is bounded; a device that does not answer fails fast.
@@ -727,7 +731,8 @@ class HwTarget(Target):
     def screenshot(self) -> bytes:
         """PNG of the framebuffer the panel shows (RGB565 as display.c
         stores it, decoded big-endian). CDC ports use the binary transfer,
-        UART adapters the base64 one."""
+        UART adapters the base64 one; both are integrity-checked and retried,
+        and a transfer that keeps failing raises HwTargetError."""
         real = os.path.realpath(self.port)
         try:
             if "ttyUSB" in real or "usbserial" in real:
@@ -788,7 +793,10 @@ class HwTarget(Target):
         device); no reboot, since the dev `launch` reads a hidden app fresh.
         hidden=False pushes to /apps/<name>, which the launcher lists: it
         reboots when the launcher's boot-time cache cannot know the app as
-        pushed (a new or changed manifest, or an id `list` does not show)."""
+        pushed (a new or changed manifest, or an id `list` does not show).
+        Raises if an app has started by the end of the upload (the MCP
+        push_app checks again before its unzip): it is someone's, so it is not
+        exited here."""
         src = Path(local_dir)
         name = name or src.name
         man_path = src / "app.json"

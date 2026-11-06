@@ -4,7 +4,5 @@
   "description": "Spinning 3D icosahedron with FPS counter",
   "version": "1.0.0",
   "author": "PicoDeck",
-  "category": "demos",
-  "repo": "PicoDeck/picodeck",
-  "min_firmware": "1.0.0"
+  "category": "demos"
 }

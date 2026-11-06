@@ -1,4 +1,6 @@
 #include "wifi.h"
+#include "pico/platform.h"
+#include "wifi_rejoin.h"
 #include "tcp.h"
 #include "../dev_commands.h"
 #include "../os/clock.h"
@@ -49,6 +51,9 @@ static _Atomic bool s_link_ready = false;
 static bool s_http_required = false;
 static volatile bool s_disconnect_pending = false; // deferred disconnect from SNTP callback
 static bool s_auto_connected = false;    // true only for boot auto-connect
+// What wifi_leave_for_clock took down (Core 0). While owed, s_ssid and s_pass
+// still hold that connection, for wifi_rejoin_after_clock.
+static wifi_rejoin_t s_rejoin;
 
 // Connect timeout / retry
 static uint32_t s_connect_start_ms = 0;
@@ -573,9 +578,10 @@ static void drain_requests(void) {
 // ─────────────────────────────────────────────────────────────────
 
 // Mongoose log sink.  The vendored mongoose defaults to MG_LL_DEBUG, so
-// Core 1 floods the shared serial console with ARP/IP-proto chatter; a log
-// line landing mid-payload corrupts dev-command bulk transfers (b64
-// screenshots and file transfers).  Runs on Core 1.
+// Core 1 floods the shared serial console with ARP/IP-proto chatter.  It logs
+// one character at a time, and each putchar takes the print mutex just to be
+// dropped by the console gate during a transfer (console_gate.h): stop here
+// instead.  Runs on Core 1.
 static void wifi_mg_log_sink(char c, void *param) {
   (void)param;
   if (dev_commands_transfer_active()) return;
@@ -632,10 +638,26 @@ void wifi_init(void) {
 
 bool wifi_is_available(void) { return s_available; }
 
+// s_ssid and s_pass are set: start the join, without waiting for it.
+static void connect_queue(bool auto_connected) {
+  s_status = WIFI_STATUS_CONNECTING;
+  s_connect_start_ms = to_ms_since_boot(get_absolute_time());
+  s_connect_retries = 0;
+  s_auto_connected = auto_connected;
+
+  printf("WiFi: connecting to '%s'...\n", s_ssid);
+
+  // Queue the mg_wifi_connect() for Core 1 to execute
+  conn_req_t req = {.type = CONN_REQ_WIFI_CONNECT};
+  wifi_req_push(&req);
+}
+
 void wifi_connect(const char *ssid, const char *password) {
   wifi_resume_radio();  // a connect needs the driver polling again
   if (!s_available || !ssid || !ssid[0])
     return;
+
+  wifi_rejoin_cancel(&s_rejoin);
 
   { uint32_t save = spin_lock_blocking(s_state_lock);
     strncpy(s_ssid, ssid, sizeof(s_ssid) - 1);
@@ -651,15 +673,18 @@ void wifi_connect(const char *ssid, const char *password) {
     s_ip[0] = '\0';
     spin_unlock(s_state_lock, save);
   }
-  s_status = WIFI_STATUS_CONNECTING;
-  s_connect_start_ms = to_ms_since_boot(get_absolute_time());
-  s_connect_retries = 0;
-  s_auto_connected = false; // user/app-initiated, don't auto-disconnect after SNTP
+  connect_queue(false); // user/app-initiated, don't auto-disconnect after SNTP
+}
 
-  printf("WiFi: connecting to '%s'...\n", s_ssid);
+static void disconnect_queue(void) {
+  // Update status immediately so callers see DISCONNECTED right away
+  s_status = WIFI_STATUS_DISCONNECTED;
+  atomic_store_explicit(&s_hw_disconnected, false, memory_order_release);
+  s_ip[0] = '\0';
+  printf("WiFi: disconnect queued\n");
 
-  // Queue the mg_wifi_connect() for Core 1 to execute
-  conn_req_t req = {.type = CONN_REQ_WIFI_CONNECT};
+  // Queue the mg_wifi_disconnect() for Core 1 to execute
+  conn_req_t req = {.type = CONN_REQ_WIFI_DISCONNECT};
   wifi_req_push(&req);
 }
 
@@ -667,16 +692,31 @@ void wifi_disconnect(void) {
   if (!s_available)
     return;
 
-  // Update status immediately so callers see DISCONNECTED right away
-  s_status = WIFI_STATUS_DISCONNECTED;
-  atomic_store_explicit(&s_hw_disconnected, false, memory_order_release);
+  wifi_rejoin_cancel(&s_rejoin);
   s_ssid[0] = '\0';
-  s_ip[0] = '\0';
-  printf("WiFi: disconnect queued\n");
+  disconnect_queue();
+}
 
-  // Queue the mg_wifi_disconnect() for Core 1 to execute
-  conn_req_t req = {.type = CONN_REQ_WIFI_DISCONNECT};
-  wifi_req_push(&req);
+void wifi_leave_for_clock(void) {
+  if (!s_available)
+    return;
+
+  wifi_status_t st = wifi_get_status();
+  wifi_rejoin_note_leave(&s_rejoin, st, s_ssid[0] != '\0', s_auto_connected,
+                         clock_is_set());
+  if (wifi_rejoin_status_up(st))
+    disconnect_queue();  // s_ssid and s_pass stay, for the rejoin
+}
+
+void wifi_rejoin_after_clock(void) {
+  if (!wifi_rejoin_take(&s_rejoin) || !s_available)
+    return;
+
+  wifi_resume_radio();  // a connect needs the driver polling again
+  // Gone only if the boot's own disconnect after its time sync (Core 1) got
+  // there just as the launch read the status: off is where it was going.
+  if (s_ssid[0])
+    connect_queue(s_rejoin.auto_sync);
 }
 
 wifi_status_t wifi_get_status(void) {
@@ -860,11 +900,31 @@ const char *wifi_get_ssid(void) {
   uint32_t save = spin_lock_blocking(s_state_lock);
   memcpy(s_ssid_copy, s_ssid, sizeof(s_ssid_copy));
   spin_unlock(s_state_lock, save);
-  return s_ssid_copy[0] ? s_ssid_copy : NULL;
+  // The name a connection owed back keeps is neither current nor pending.
+  return (s_ssid_copy[0] && !s_rejoin.owed) ? s_ssid_copy : NULL;
 }
 
 void wifi_set_http_required(bool required) { s_http_required = required; }
 bool wifi_get_http_required(void) { return s_http_required; }
+
+// Core 1's tick gate: no request queued and wifi_poll would not poll the link
+// (the same test, with wifi_get_status() spelled out: it is in flash). What
+// wifi_poll still does then, the timeouts of a slot queued with the link down
+// and the RNG pool's top-up, waits for the next full tick.
+bool __time_critical_func(wifi_core1_idle)(void) {
+  if (!s_available)
+    return true;
+  if (atomic_load_explicit(&s_req_head, memory_order_relaxed) !=
+      atomic_load_explicit(&s_req_tail, memory_order_relaxed))
+    return false;
+  if (s_radio_quiet)
+    return true;
+  if (atomic_load_explicit(&s_link_ready, memory_order_relaxed))
+    return false;
+  wifi_status_t st = s_status;
+  return st != WIFI_STATUS_CONNECTED && st != WIFI_STATUS_CONNECTING &&
+         st != WIFI_STATUS_ONLINE;
+}
 
 void wifi_poll(void) {
   if (!s_available)

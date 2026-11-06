@@ -31,11 +31,12 @@ static tcp_ud_t *check_tcp_open(lua_State *L, int idx) {
 }
 
 static int set_tcp_cb(lua_State *L, int idx, int *ref_ptr) {
-    if (lua_isnoneornil(L, idx)) {
-        *ref_ptr = LUA_NOREF;
+    if (!lua_isnoneornil(L, idx))
+        luaL_checktype(L, idx, LUA_TFUNCTION);
+    luaL_unref(L, LUA_REGISTRYINDEX, *ref_ptr);  // the one it replaces
+    *ref_ptr = LUA_NOREF;
+    if (lua_isnoneornil(L, idx))
         return 0;
-    }
-    luaL_checktype(L, idx, LUA_TFUNCTION);
     lua_settop(L, idx);
     *ref_ptr = luaL_ref(L, LUA_REGISTRYINDEX);
     return 0;
@@ -141,27 +142,32 @@ static int l_tcp_read(lua_State *L) {
     int max_len = (int)luaL_optinteger(L, 2, 4096);
 
     // Data the peer sent before closing stays readable.
-    if (max_len <= 0 || tcp_bytes_available(ud->conn) == 0) {
+    uint32_t avail = max_len > 0 ? tcp_bytes_available(ud->conn) : 0;
+    if (avail == 0) {
         lua_pushnil(L);
         return 1;
     }
-
-    uint8_t *buf = umm_malloc((size_t)max_len + 1);
-    if (!buf) {
+    // What is there, straight into the result string: a scratch block of the
+    // whole max_len (4 KB for every 100-byte message), then a second copy,
+    // cost a heap search and twice the PSRAM lines. No room for it stays a
+    // nil, not a Lua error, and the data stays in the ring. The probe allows
+    // for the string's header.
+    size_t want = avail < (uint32_t)max_len ? avail : (size_t)max_len;
+    void *probe = umm_malloc(want + 32);
+    if (!probe) {
         lua_pushnil(L);
         return 1;
     }
+    umm_free(probe);
 
-    int n = tcp_read(ud->conn, buf, max_len);
+    picodeck_lua_strbuf_t sb;
+    char *buf = picodeck_lua_strbuf_init(L, &sb, want);
+    int n = tcp_read(ud->conn, buf, (int)want);
     if (n <= 0) {
-        umm_free(buf);
         lua_pushnil(L);
         return 1;
     }
-
-    buf[n] = '\0';
-    lua_pushlstring(L, (const char *)buf, (size_t)n);
-    umm_free(buf);
+    picodeck_lua_strbuf_push(L, &sb, (size_t)n);
     return 1;
 }
 
@@ -201,16 +207,10 @@ static int l_tcp_isConnected(lua_State *L) {
     return 1;
 }
 
-// Seconds (fractions allowed) → ms; negative counts as 0.
-static uint32_t tcp_secs_to_ms(lua_State *L, int idx) {
-    lua_Number s = luaL_checknumber(L, idx);
-    return s > 0 ? (uint32_t)(s * 1000.0) : 0;
-}
-
 // sock:setConnectTimeout(seconds) — applies to the next connect().
 static int l_tcp_setConnectTimeout(lua_State *L) {
     tcp_ud_t *ud = check_tcp(L, 1);
-    uint32_t ms = tcp_secs_to_ms(L, 2);
+    uint32_t ms = lb_secs_to_ms(luaL_checknumber(L, 2));
     if (ud->conn) tcp_set_connect_timeout(ud->conn, ms);
     return 0;
 }
@@ -247,7 +247,7 @@ static int l_tcp_peerFingerprint(lua_State *L) {
 // nothing for that long; 0 turns it off (the default).
 static int l_tcp_setReadTimeout(lua_State *L) {
     tcp_ud_t *ud = check_tcp(L, 1);
-    uint32_t ms = tcp_secs_to_ms(L, 2);
+    uint32_t ms = lb_secs_to_ms(luaL_checknumber(L, 2));
     if (ud->conn) tcp_set_read_timeout(ud->conn, ms);
     return 0;
 }
@@ -278,9 +278,20 @@ static int l_tcp_getEvents(lua_State *L) {
     return 1;
 }
 
+// What a blocking wait does every 10 ms, as sys.sleep does: a background
+// keyboard poll, then the full service pass. So the wait feeds the watchdog
+// (its 10 s would otherwise outlast a long wait), fires callbacks, opens the
+// system menu and ends at an exit request. A callback may close this socket:
+// the callers re-read ud->conn after every pass.
+static void tcp_wait_service(lua_State *L) {
+    kbd_poll_background();
+    lua_bridge_service(L);
+}
+
+// conn:waitConnected([seconds]) -> bool.  Default 10 s.
 static int l_tcp_waitConnected(lua_State *L) {
     tcp_ud_t *ud = check_tcp(L, 1);
-    uint32_t timeout_ms = (uint32_t)(luaL_optnumber(L, 2, 10.0) * 1000.0);
+    uint32_t timeout_ms = lb_secs_to_ms(luaL_optnumber(L, 2, 10.0));
     uint32_t start = to_ms_since_boot(get_absolute_time());
 
     while (ud->conn && tcp_get_state(ud->conn) != TCP_STATE_CONNECTED) {
@@ -288,10 +299,11 @@ static int l_tcp_waitConnected(lua_State *L) {
         if (st == TCP_STATE_FAILED || st == TCP_STATE_CLOSED) {
             break;
         }
-        if (to_ms_since_boot(get_absolute_time()) - start > timeout_ms) {
+        if (to_ms_since_boot(get_absolute_time()) - start >= timeout_ms) {
             break;
         }
         sleep_ms(10);
+        tcp_wait_service(L);
     }
 
     lua_pushboolean(L, ud->conn &&
@@ -299,22 +311,29 @@ static int l_tcp_waitConnected(lua_State *L) {
     return 1;
 }
 
+// conn:waitData([seconds]) -> bool.  Default 10 s.
 static int l_tcp_waitData(lua_State *L) {
     tcp_ud_t *ud = check_tcp_open(L, 1);
-    uint32_t timeout_ms = (uint32_t)(luaL_optnumber(L, 2, 10.0) * 1000.0);
+    uint32_t timeout_ms = lb_secs_to_ms(luaL_optnumber(L, 2, 10.0));
     uint32_t start = to_ms_since_boot(get_absolute_time());
 
     while (ud->conn && tcp_get_state(ud->conn) == TCP_STATE_CONNECTED) {
         if (tcp_bytes_available(ud->conn) > 0) {
             break;
         }
-        if (to_ms_since_boot(get_absolute_time()) - start > timeout_ms) {
+        if (to_ms_since_boot(get_absolute_time()) - start >= timeout_ms) {
             break;
         }
         sleep_ms(10);
+        // Before the pass: a read callback in it may take what just arrived,
+        // and this call would then wait on for data it has already seen.
+        if (tcp_bytes_available(ud->conn) > 0) {
+            break;
+        }
+        tcp_wait_service(L);
     }
 
-    lua_pushboolean(L, tcp_bytes_available(ud->conn) > 0);
+    lua_pushboolean(L, ud->conn && tcp_bytes_available(ud->conn) > 0);
     return 1;
 }
 

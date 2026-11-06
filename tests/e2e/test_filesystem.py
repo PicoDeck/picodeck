@@ -7,10 +7,11 @@ Regression targets:
 """
 
 import base64
+from pathlib import Path
 
 import pytest
 
-from helpers import lua_case_names, run_lua_app
+from helpers import lua_case_names, run_lua_app, stage_lua_app
 
 
 FS_CASES = lua_case_names("fs_test")
@@ -36,6 +37,95 @@ class TestFilesystemLua:
         FAIL exists/mkdir because its files persisted)."""
         for i in range(2):
             run_lua_app(simulator, "fs_test", timeout=15).assert_all_passed(FS_CASES)
+
+
+DATA_DIR_APP = """
+local fs = picocalc.fs
+local dir = "/data/" .. APP_ID
+local existed = fs.isDir(dir)
+-- The first thing the app does, before appPath, a config save or a save slot.
+local f, err = fs.open(dir .. "/first.txt", "w")
+local T = picocalc.sys.loadlib("picotest")
+T.case("data_dir_exists_at_launch", function()
+    T.ok(existed, "no data directory at launch")
+    T.ok(f, "first open failed: " .. tostring(err))
+    T.eq(f:write("x"), 1, "write")
+    f:close()
+end)
+T.done()
+"""
+
+
+@pytest.mark.parametrize("requirements", [(), ("root-filesystem",)],
+                         ids=["default", "root_filesystem"])
+def test_data_dir_exists_at_launch(simulator, requirements):
+    """The docs promise /data/<APP_ID> exists: a first fs.open there works
+    without appPath or mkdir."""
+    app_id = "com.test.first_run_" + str(len(requirements))
+    data = Path(simulator.sd_card_path) / "data" / app_id
+    assert not data.exists()
+    stage_lua_app(simulator.sd_card_path, "first_run", DATA_DIR_APP,
+                  requirements=requirements, id=app_id)
+    run_lua_app(simulator, "first_run").check_case("data_dir_exists_at_launch")
+    assert (data / "first.txt").read_text() == "x"
+
+
+SLOW_MODE_APP = """
+picocalc.fs.setSlowMode(true)
+picocalc.sys.log("SLOW_ON")
+while true do picocalc.sys.sleep(10) end
+"""
+
+
+@pytest.mark.parametrize("how", ["exit", "error"])
+def test_slow_mode_does_not_outlive_the_app(simulator, how):
+    """setSlowMode drops the SD bus to 1 MHz for the whole device: it must not
+    stay on for the next app when an app leaves mid-download."""
+    code = SLOW_MODE_APP
+    if how == "error":
+        code = code.replace("while true do picocalc.sys.sleep(10) end",
+                            'picocalc.sys.sleep(200)\nerror("gone")')
+    stage_lua_app(simulator.sd_card_path, "slow_app", code)
+    assert simulator.call("get_sd_slow_mode")["slow"] is False
+    simulator.launch_app("slow_app")
+    simulator.wait_for_log("SLOW_ON", timeout=10)
+    assert simulator.call("get_sd_slow_mode")["slow"] is True
+    if how == "exit":
+        simulator.exit_app()
+    simulator.wait_for_exit(timeout=10)
+    assert simulator.call("get_sd_slow_mode")["slow"] is False
+
+
+COPY_EXIT_APP = """
+local fs = picocalc.fs
+local src, dst = fs.appPath("src.bin"), fs.appPath("dst.bin")
+local f = fs.open(src, "w")
+f:write(string.rep("x", 100000))
+f:close()
+local calls = 0
+fs.copy(src, dst, function()
+    calls = calls + 1
+    picocalc.sys.log("COPY " .. calls)
+    picocalc.sys.exit()
+end)
+picocalc.sys.log("NOT_REACHED")
+"""
+
+
+def test_exit_from_a_copy_progress_function_stops_the_copy(simulator):
+    stage_lua_app(simulator.sd_card_path, "copy_exit", COPY_EXIT_APP,
+                  id="com.test.copy_exit")
+    seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+    simulator.launch_app("copy_exit")
+    out = simulator.wait_for_exit(timeout=10)
+    assert out.get("result") in ("returned", "exit_sentinel"), out
+    texts = [e["text"] for e in simulator.get_log_lines(seq)]
+    assert "COPY 1" in texts, texts
+    assert "COPY 2" not in texts, texts
+    assert "NOT_REACHED" not in texts, texts
+    data = Path(simulator.sd_card_path) / "data" / "com.test.copy_exit"
+    assert (data / "src.bin").exists()
+    assert not (data / "dst.bin").exists(), "the partial copy stayed"
 
 
 class TestFilesystemRPC:

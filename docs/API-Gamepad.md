@@ -2,7 +2,7 @@
 title: "API Gamepad"
 ---
 
-A logical gamepad with 12 buttons. Read it instead of raw keys and your game gets rebinding without writing any code for it: each button is an alias for keys, and players choose those keys in the system menu ([Controls](#controls-settings), below).
+A logical gamepad with 12 buttons, two analog sticks and two analog triggers. Read it instead of raw keys and your game gets rebinding without writing any code for it: each button is an alias for keys, and players choose those keys in the system menu ([Controls](#controls-settings), below). A driving game can [read the sticks and triggers](#analog-sticks-and-triggers) alone and still work on the keyboard.
 
 ## How it works
 
@@ -11,6 +11,7 @@ A logical gamepad with 12 buttons. Read it instead of raw keys and your game get
 - **One button per key.** Within one map a key drives at most one button.
 - **Same polling as the input masks.** `picocalc.input.update()` updates the gamepad too. A tap shorter than one frame still gives one press edge and, on the next frame, one release edge.
 - **Esc is not a gamepad button.** Keep Esc as back/quit.
+- **What is down at the system menu stays hidden.** A button down when the menu opens or closes (B closing it, a direction held on through it), when an OS dialog returns, or when your app starts, from a key or a controller, reads as not held, with no edges, until it is released; pressed again it reads normally. Other buttons are not affected. See [`update()`](API-Input.md).
 - **A connected controller drives the same buttons.** A game controller and the keyboard work together: a button is held while either holds it, with one press edge and one release edge, and your game cannot tell which one pressed it, so it needs no code for controllers. `getLabel()` still names the keyboard key. A controller's Home button opens the system menu (and closes it again when pressed while it is open, like the menu key), and the D-pad and A/B move through it and the launcher, so a player with only a controller can leave a game. The header shows a gamepad icon while one is connected. On the device that is a [Bluetooth controller](#bluetooth-controllers); in the simulator, a controller plugged into the computer.
 
 ### Default bindings
@@ -37,7 +38,7 @@ Arrows, Enter, Esc, Tab, Backspace, Delete, Space, F1–F5, the letters A–Z, a
 
 The keyboard reports some keys differently while Shift or Alt is held, and the gamepad allows for it:
 
-- **Shift** turns F1–F5 into F6–F10, Delete into End, Tab into Home, Enter into Insert, Esc into Brk and Up/Down into PgUp/PgDn. The gamepad reads these as the original key, so a button held while Shift goes down still releases. Shift+F5 (F10) and Shift+Esc (Brk) keep their system meaning (system menu, screenshot) and never press a button.
+- **Shift** turns F1–F5 into F6–F10, Delete into End, Tab into Home, Enter into Insert, Esc into Brk and Up/Down into PgUp/PgDn. The gamepad reads these as the original key, so a button held while Shift goes down still releases. Shift+F5 (reported as F10) and Shift+Esc (Brk) keep their system meaning (system menu, screenshot) and never press a button.
 - **Shift** silences Left, Right, Backspace and Space, and **Alt** silences B and Space and turns I into Insert. If Shift or Alt goes down while one of these is held, its button is released at once, and while Alt is held B, I and Space do not press their button; keep holding the key and the button comes back at the key's next repeat after the modifier is up.
 - Enter pressed while Shift is held gives a short press, then reads as held from its first repeat.
 - A key pressed within a few milliseconds after Shift comes up may miss its press (Left, Right, Backspace, Space, Enter).
@@ -47,7 +48,7 @@ A button can stay held in two cases, until the system menu opens, the app exits 
 - Enter released at the same moment as Shift while Alt is still held.
 - B, I or Space held while the keyboard's num lock is on. Pressing Left Shift and Alt together turns num lock on; it then acts as if Alt were held, and it stays on until Shift is pressed on its own. The gamepad cannot see it.
 
-Not bindable: the system menu key (F10) and Brk, which belong to the OS; F6–F9, which are Shift+F1–F4; digits and symbols, which Shift turns into other symbols; Shift, Alt and Sym, which change the other keys.
+Not bindable: the system menu key (Shift+F5, reported as F10) and Brk, which belong to the OS; F6–F9, which are Shift+F1–F4; digits and symbols, which Shift turns into other symbols; Shift, Alt and Sym, which change the other keys.
 
 ## Controls (Settings)
 
@@ -74,9 +75,31 @@ Each button has a row with a **Primary** and an **Alt** cell. Each cell shows it
 - A bindings file that is there but cannot be read (a read error, or too little free memory) keeps the page shut with "Could not read the bindings", so its bindings are never replaced by what the page could not see. A corrupt file, which launches ignore too, opens as the defaults ("Ignored a corrupt bindings file"), and saving replaces it.
 - The global file lists only the buttons that differ from the defaults (with none it is deleted); the override lists the buttons it overrides.
 
+## Analog sticks and triggers
+
+`getAxis` reads a stick as `-1.0` to `1.0`, right and down positive like screen coordinates, and a trigger as `0.0` to `1.0`. They are separate from the `PAD_*` buttons, which behave as they always have. API version 10.
+
+```lua
+local gp = picocalc.gamepad
+picocalc.input.update()
+local steer = gp.getAxis(gp.AXIS_LX)
+local throttle = gp.getAxis(gp.AXIS_RT)
+if gp.getButtons() & gp.PAD_A ~= 0 then throttle = 1 end -- for the keyboard
+```
+
+- **It works without a controller.** With no stick in use, `AXIS_LX` and `AXIS_LY` read the D-pad, `-1`, `0` or `+1`, whether that is the keyboard's bound keys or the controller's own D-pad. So a game can read only the axes for movement and still work on the keyboard. The right stick and the triggers have no such fallback: they read `0`, so a game with a trigger for the throttle needs a button as well, as above.
+- **A stick in use wins over the D-pad.** A stick past half way also holds `PAD_LEFT` and the rest, so a game reading buttons can use it as a D-pad, but `getAxis` still reads how far it is pushed, not `-1`. While the left stick is in use both of its axes read the stick, whatever the D-pad holds.
+- **The dead zone is done for you.** A stick within about 12% of its centre reads `0` on both axes (the distance counts, not each axis on its own), and the rest of the travel is rescaled to start at `0`, so there is no jump as the stick leaves the middle. From about 95% it reads full, so a worn stick still reaches `1`. Past the dead zone the direction is kept, so a square-gated stick pushed into a corner reads about `0.7` on each axis. A trigger reads `0` under about 3% and full from about 97%.
+- **Several controllers.** Each axis reads the largest value among the controllers connected.
+- **Same polling as the buttons.** `picocalc.input.update()` updates the axes too, and every read until the next one gives the same value. An axis is a level, not an event: nothing latches a short movement. Moving a stick or trigger keeps the screen from dimming, as a key does, but a stick or trigger held dead still does not.
+- **Resolution.** 127 steps each side of a stick's centre and 255 along a trigger, whatever the controller sends.
+- **The keyboard has no analog input.** There the left stick's axes are only ever `-1`, `0` or `+1`.
+
+Which controllers have what is under [Bluetooth controllers](#bluetooth-controllers). In the simulator a controller plugged into the computer gives all six axes. In the browser demo at [picodeck.net/try](https://picodeck.net/try/) the sticks are analog, but the browser's triggers reach the game as `0` or `1`.
+
 ## Bluetooth controllers
 
-A Bluetooth game controller drives the same 12 buttons, so every game that reads `picocalc.gamepad` or `api->gamepad` works with one and needs no code for it. One controller at a time; the keyboard keeps working alongside it.
+A Bluetooth game controller drives the same 12 buttons and the analog axes, so every game that reads `picocalc.gamepad` or `api->gamepad` works with one and needs no code for it. One controller at a time; the keyboard keeps working alongside it.
 
 ### Turning it on
 
@@ -106,13 +129,16 @@ The controller is remembered (up to 4; pairing a fifth forgets the oldest). Next
 | Start / Select | Options / Share (Create) | + / − (Start / Select) | Start / Back |
 | Up/Down/Left/Right | D-pad, left stick | D-pad, left stick | D-pad, left stick |
 | System menu | PS | Home | Home / Guide |
+| `AXIS_LX` / `AXIS_LY` | Left stick | Left stick | Left stick |
+| `AXIS_RX` / `AXIS_RY` | Right stick | Right stick | Right stick |
+| `AXIS_LT` / `AXIS_RT` | L2 / R2 | 8BitDo: its triggers. Switch Pro: none, read `0` | LT / RT |
 
 - **By position, not by label.** A is always the bottom face button and B the right one, as on an Xbox pad. On a Nintendo-style pad (Switch Pro, 8BitDo) that means A is the button labelled **B**.
-- The left stick works as the D-pad once pushed past half way. Triggers, the right stick and the stick clicks are not used.
+- The left stick works as the D-pad once pushed past half way, and [`getAxis`](#analog-sticks-and-triggers) reads how far. The stick clicks are not used, and neither are the buttons that stand in for a trigger: the Switch Pro's ZL and ZR are digital, so they do nothing, and its triggers read `0`. A controller without a right stick reads `0` there.
 - **Home (or PS) opens the system menu**, where the D-pad and A/B move: a player with only a controller can always leave a game.
 - A controller that drops (switched off, out of range, flat battery) releases every button it held: nothing stays stuck.
 
-Supported: Bluetooth Classic HID controllers. PicoDeck has a button layout for the DualShock 4, DualSense, Switch Pro Controller (in its simple mode) and 8BitDo pads; any other gamepad is read with the common Android/Xbox numbering, which most Bluetooth "Android" pads use. Not supported: Bluetooth LE-only controllers (the Xbox Wireless Controller with current firmware, Stadia, Steam), a single Joy-Con, and Wii remotes. If a controller pairs but its buttons come out wrong, [tell us](https://github.com/PicoDeck/picodeck/issues/26) which one.
+Supported: Bluetooth Classic HID controllers. PicoDeck has a button layout for the DualShock 4, DualSense, Switch Pro Controller (in its simple mode) and 8BitDo pads; any other gamepad is read with the common Android/Xbox numbering, which most Bluetooth "Android" pads use. Not supported: Bluetooth LE-only controllers (the Xbox Wireless Controller with current firmware, Stadia, Steam), a single Joy-Con, and Wii remotes. If a controller pairs but its buttons come out wrong, [open an issue](https://github.com/PicoDeck/picodeck/issues) saying which one.
 
 ## picocalc.gamepad
 
@@ -124,6 +150,10 @@ if not gp then
     -- older firmware: read picocalc.input instead
 end
 ```
+
+`getAxis` and the `AXIS_*` constants are `nil` on firmware older than API version 10: check `gp.getAxis` before use.
+
+**`PAD_*` and `BTN_*` share their numbers.** `PAD_A` is `BTN_ENTER`, `PAD_B` is `BTN_ESC`, `PAD_START` is `BTN_F4`, and so on: only the directions mean the same thing. So `picocalc.input.getButtonsPressed() & gp.PAD_A` raises no error, and reads Enter. Test `PAD_*` only against `picocalc.gamepad`'s calls, and `BTN_*` only against `picocalc.input`'s.
 
 ### Functions
 
@@ -179,6 +209,30 @@ picocalc.display.drawText(10, 300, "Press " .. key .. " to jump", picocalc.displ
 
 Key names: `Up`, `Down`, `Left`, `Right`, `Enter`, `Esc`, `Tab`, `Bksp`, `Del`, `Space`, `F1`–`F5`, `A`–`Z`, `Ctrl`.
 
+---
+
+#### `picocalc.gamepad.getAxis(axis)`
+One analog axis as of the last `picocalc.input.update()`, with the dead zone applied. With no stick in use, `AXIS_LX` and `AXIS_LY` read the D-pad ([Analog sticks and triggers](#analog-sticks-and-triggers), above). API version 10.
+
+- **Parameters:**
+  - `axis` (number): One `AXIS_*` constant
+- **Returns:** (number) `-1.0` to `1.0` for a stick, right and down positive; `0.0` to `1.0` for a trigger
+
+Raises an error when `axis` is not an `AXIS_*` constant.
+
+```lua
+local gp = picocalc.gamepad
+local x, y = 160, 160
+while true do
+    picocalc.input.update()
+    x = x + gp.getAxis(gp.AXIS_LX) * 3
+    y = y + gp.getAxis(gp.AXIS_LY) * 3
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
+    draw(x, y)
+    picocalc.display.flush()
+end
+```
+
 ### Button Constants
 
 | Constant | Button |
@@ -195,6 +249,17 @@ Key names: `Up`, `Down`, `Left`, `Right`, `Enter`, `Esc`, `Tab`, `Bksp`, `Del`, 
 | `picocalc.gamepad.PAD_R` | R |
 | `picocalc.gamepad.PAD_START` | Start |
 | `picocalc.gamepad.PAD_SELECT` | Select |
+
+### Axis Constants
+
+| Constant | Axis | Reads |
+|----------|------|-------|
+| `picocalc.gamepad.AXIS_LX` | Left stick, left to right | `-1.0` to `1.0` |
+| `picocalc.gamepad.AXIS_LY` | Left stick, up to down | `-1.0` to `1.0` |
+| `picocalc.gamepad.AXIS_RX` | Right stick, left to right | `-1.0` to `1.0` |
+| `picocalc.gamepad.AXIS_RY` | Right stick, up to down | `-1.0` to `1.0` |
+| `picocalc.gamepad.AXIS_LT` | Left trigger | `0.0` to `1.0` |
+| `picocalc.gamepad.AXIS_RT` | Right trigger | `0.0` to `1.0` |
 
 ## Bindings files
 
@@ -214,11 +279,13 @@ Both are plain JSON you can edit by hand. Each button lists its primary key, the
 }
 ```
 
-Button names are `up`, `down`, `left`, `right`, `a`, `b`, `x`, `y`, `l`, `r`, `start`, `select`; key names are those above. Both ignore case. A missing or corrupt file means the defaults (or no override), never a failed launch. Unknown button and key names are ignored and logged on the serial console as `[GAMEPAD]` lines.
+Button names are `up`, `down`, `left`, `right`, `a`, `b`, `x`, `y`, `l`, `r`, `start`, `select`; key names are those above. Both ignore case. A missing or corrupt file, or one over 2 KB, means the defaults (or no override), never a failed launch.
+
+An unknown button name is ignored. An unknown key name leaves that slot unbound, and it does not bring back the button's default: `{"b":["Delete"]}` leaves B with no key, since the key's name is `Del`. Both are logged on the serial console as `[GAMEPAD]` lines.
 
 ## Native API (C)
 
-`api->gamepad` (`picocalc_gamepad_t` in `sdk/native/os.h`), API version 9. The pointer sits after `version` in `PicoCalcAPI`, so on older firmware the field does not exist: check the version first.
+`api->gamepad` (`picocalc_gamepad_t` in [`sdk/native/os.h`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/os.h)), API version 9. The pointer sits after `version` in `PicoCalcAPI`, so on older firmware the field does not exist: check the version first.
 
 ```c
 if (api->version >= 9) {
@@ -236,5 +303,16 @@ if (api->version >= 9) {
 | `uint32_t getButtonsPressed(void)` | `PAD_*` pressed this frame |
 | `uint32_t getButtonsReleased(void)` | `PAD_*` released this frame |
 | `const char *getLabel(uint32_t pad_button, int slot)` | The key's name; `NULL` when unbound, or when `pad_button` is not one `PAD_*` bit or `slot` is not 0 or 1 |
+| `float getAxis(int axis)` | API version 10: one `AXIS_*`, as [above](#analog-sticks-and-triggers); `0.0` for anything else |
 
-The masks update when `api->sys->poll()` runs, like `api->input`'s.
+The masks and axes update when `api->sys->poll()` runs, like `api->input`'s.
+
+`getAxis` is at the end of the table, so older firmware does not have it: check for version 10, not 9. It returns the float the way the rest of the API does, in `r0` (the base AAPCS, which `-mcpu=cortex-m33 -mthumb` and `-mfloat-abi=softfp` both use; never build an app with `-mfloat-abi=hard`).
+
+```c
+if (api->version >= 10) {
+    api->sys->poll();
+    float steer = api->gamepad->getAxis(AXIS_LX);
+    float throttle = api->gamepad->getAxis(AXIS_RT);
+}
+```

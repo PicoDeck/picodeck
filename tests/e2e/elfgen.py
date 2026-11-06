@@ -60,6 +60,7 @@ def build_elf(*,
               e_type: int = ET_DYN,
               e_machine: int = EM_ARM,
               e_entry: int = CODE_OFF | 1,
+              e_flags: int = 0x05000000,  # EABI5, no float-ABI flag
               e_phoff: int = PHOFF,
               e_phentsize: int = PHDR_SIZE,
               e_phnum: int = 2,
@@ -88,7 +89,7 @@ def build_elf(*,
     ident[6] = 1  # EV_CURRENT
     struct.pack_into("<16sHHIIIIIHHHHHH", img, 0,
                      bytes(ident), e_type, e_machine, 1, _u32(e_entry),
-                     _u32(e_phoff), 0, 0x05000000, EHDR_SIZE,
+                     _u32(e_phoff), 0, _u32(e_flags), EHDR_SIZE,
                      e_phentsize & 0xFFFF, e_phnum & 0xFFFF, 40, 0, 0)
 
     ph_load = dict(p_type=PT_LOAD, p_offset=0, p_vaddr=0, p_paddr=0,

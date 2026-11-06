@@ -9,6 +9,8 @@
 #include <unistd.h>
 #ifndef __EMSCRIPTEN__
 #include <execinfo.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #endif
 #include "hal/web_platform.h"  // sim_core1_service(); the web build's hooks
 #include <fcntl.h>
@@ -73,12 +75,14 @@
 // can extern it for shutdown propagation during Lua app execution.
 volatile int g_running = 1;
 static char g_sd_card_path[512] = SIM_DEFAULT_SD_CARD;
+static int g_sd_card_given = 0;      // --sd-card on the command line
 static char g_launch_app[128] = "";  // App to auto-launch
 static int g_auto_launch_done = 0;   // Flag to track if auto-launch was attempted
 static int g_show_splash = 0;        // Show boot splash screen
 static int g_virtual_time = 0;       // --virtual-time (needs --test-mode)
 static int g_host_gamepad = -1;      // --gamepad 1 / --no-gamepad 0; -1: on
                                      // unless --test-mode
+static int g_idle_dim = 0;           // --idle-dim: idle dim as on the device
 static int g_tcp_port = 7878;        // TCP port for RPC socket
 static char g_instance_id[64] = "";  // Instance ID for unique socket paths
 static char g_unix_socket[256] = ""; // --unix-socket PATH|none ("" = default)
@@ -162,22 +166,99 @@ static void crash_handler(int sig) {
     _exit(128 + sig);
 }
 
+#ifndef __EMSCRIPTEN__
+static bool path_is_dir(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+// Does a folder directly under `path` hold an app's files?
+static bool holds_app_folders(const char *path) {
+    static const char *const k_app_files[] = {"app.json", "main.lua", "main.elf"};
+    DIR *dir = opendir(path);
+    if (!dir)
+        return false;
+    bool found = false;
+    struct dirent *e;
+    while (!found && (e = readdir(dir)) != NULL) {
+        if (e->d_name[0] == '.')
+            continue;
+        for (size_t i = 0; i < sizeof(k_app_files) / sizeof(k_app_files[0]); i++) {
+            char file[1024];
+            struct stat st;
+            snprintf(file, sizeof(file), "%s/%s/%s", path, e->d_name, k_app_files[i]);
+            if (stat(file, &st) == 0 && S_ISREG(st.st_mode))
+                found = true;
+        }
+    }
+    closedir(dir);
+    return found;
+}
+
+// The card folder, checked before anything is created in it. hal_sdcard_init
+// makes apps/, data/ and system/ in whatever it is given and ignores a failure,
+// so the mistakes below used to end in an empty launcher with no message: the
+// apps folder passed for the card (apps/ inside apps/), a mistyped path, and a
+// published binary with no flag, whose default is the CI runner's checkout.
+static void check_sd_card_path(void) {
+    if (!g_sd_card_given) {
+        if (path_is_dir(g_sd_card_path))
+            return;
+        fprintf(stderr,
+                "No SD card folder: this build's default, the source tree it was\n"
+                "built from (%s), is not on this computer.\n"
+                "Make a folder for the card, put each app in <folder>/apps/<name>/\n"
+                "and run with --sd-card <folder>.\n",
+                g_sd_card_path);
+        exit(2);
+    }
+    if (!path_is_dir(g_sd_card_path)) {
+        fprintf(stderr,
+                "--sd-card %s: not a folder. Create it first, or fix the path.\n"
+                "--sd-card takes the card's root, with each app in <root>/apps/<name>/.\n",
+                g_sd_card_path);
+        exit(2);
+    }
+    char apps[600];
+    snprintf(apps, sizeof(apps), "%s/apps", g_sd_card_path);
+    if (!path_is_dir(apps) && holds_app_folders(g_sd_card_path)) {
+        fprintf(stderr,
+                "--sd-card %s: this holds app folders but no apps/ folder.\n"
+                "--sd-card takes the card's root, with each app in <root>/apps/<name>/.\n"
+                "If this is your apps folder, pass the folder that contains it.\n",
+                g_sd_card_path);
+        exit(2);
+    }
+}
+#endif
+
 // Print usage
 static void print_usage(const char* program) {
     printf("Usage: %s [options]\n", program);
     printf("Options:\n");
-    printf("  --sd-card PATH       Path to simulated SD card (default: %s)\n", SIM_DEFAULT_SD_CARD);
+    printf("  --sd-card PATH       The card's root folder: apps are in PATH/apps/<name>/\n");
+#ifndef __EMSCRIPTEN__
+    if (path_is_dir(SIM_DEFAULT_SD_CARD))
+        printf("                       (default: the source tree it was built from: %s)\n",
+               SIM_DEFAULT_SD_CARD);
+    else
+        printf("                       (required: the source tree it was built from is not\n"
+               "                       on this computer)\n");
+#endif
     printf("  --launch APP         Auto-launch app on startup\n");
     printf("  --port PORT          TCP port for RPC socket (default: 7878, 0=auto)\n");
     printf("  --instance-id ID     Unique instance ID (for parallel simulators)\n");
     printf("  --unix-socket PATH   UNIX control socket path, or 'none' to disable\n");
     printf("  --crash-log PATH     Crash log file path (default: /tmp/picodeck_sim_crash_<pid>.log)\n");
     printf("  --show-splash        Show boot splash screen with delays\n");
-    printf("  --test-mode          Error screens return at once; idle dim off;\n"
-           "                       math.random seeded and the clock pinned to\n"
+    printf("  --test-mode          Error screens return at once; math.random\n"
+           "                       seeded and the clock pinned to\n"
            "                       2026-01-01T00:00:00Z at boot\n");
     printf("  --virtual-time       (with --test-mode) virtual clock: Core 0 sleeps\n"
            "                       advance it instead of waiting (step_time RPC)\n");
+    printf("  --idle-dim           Idle dim as on the device (dim_timeout_s, default\n"
+           "                       60 s): the key that wakes the screen is swallowed.\n"
+           "                       Nothing shows it dim: see the get_backlight RPC\n");
     printf("  --gamepad            Read the host's game controllers (the default,\n"
            "                       except under --test-mode)\n");
     printf("  --no-gamepad         Ignore the host's game controllers\n");
@@ -207,6 +288,7 @@ static void parse_args(int argc, char** argv) {
         } else if (strcmp(argv[i], "--sd-card") == 0 && i + 1 < argc) {
             strncpy(g_sd_card_path, argv[i + 1], sizeof(g_sd_card_path) - 1);
             g_sd_card_path[sizeof(g_sd_card_path) - 1] = '\0';
+            g_sd_card_given = 1;
             i++;
         } else if (strcmp(argv[i], "--launch") == 0 && i + 1 < argc) {
             strncpy(g_launch_app, argv[i + 1], sizeof(g_launch_app) - 1);
@@ -231,6 +313,8 @@ static void parse_args(int argc, char** argv) {
             sim_set_test_mode(true);
         } else if (strcmp(argv[i], "--virtual-time") == 0) {
             g_virtual_time = 1;
+        } else if (strcmp(argv[i], "--idle-dim") == 0) {
+            g_idle_dim = 1;
         } else if (strcmp(argv[i], "--gamepad") == 0) {
             g_host_gamepad = 1;
         } else if (strcmp(argv[i], "--no-gamepad") == 0) {
@@ -430,7 +514,7 @@ static void sp_playerStop(pcsound_player_t p) { sound_player_stop((sound_player_
 static bool sp_playerIsPlaying(pcsound_player_t p) { return sound_player_is_playing((const sound_player_t *)p); }
 static uint8_t sp_playerGetVolume(pcsound_player_t p) { return sound_player_get_volume((const sound_player_t *)p); }
 static void sp_playerSetVolume(pcsound_player_t p, uint8_t vol) { sound_player_set_volume((sound_player_t *)p, vol); }
-static void sp_playerSetLoop(pcsound_player_t p, bool loop) { ((sound_player_t *)p)->repeat_count = loop ? 255 : 0; }
+static void sp_playerSetLoop(pcsound_player_t p, bool loop) { sound_player_set_loop((sound_player_t *)p, loop); }
 static void sp_playerFree(pcsound_player_t p) { sound_player_destroy((sound_player_t *)p); }
 
 static pcfileplayer_t sp_filePlayerNew(void) { return (pcfileplayer_t)fileplayer_create(); }
@@ -506,8 +590,8 @@ static const char *http_getError_w(pchttp_t c) { return http_get_error((http_con
 static int http_getProgress_w(pchttp_t c, int *received, int *total) { int r, t; http_get_progress((http_conn_t *)c, &r, &t); if (received) *received = r; if (total) *total = t; return t; }
 static void http_setKeepAlive_w(pchttp_t c, bool ka) { ((http_conn_t *)c)->keep_alive = ka; }
 static void http_setByteRange_w(pchttp_t c, int from, int to) { ((http_conn_t *)c)->range_from = from; ((http_conn_t *)c)->range_to = to; }
-static void http_setConnectTimeout_w(pchttp_t c, int s) { ((http_conn_t *)c)->connect_timeout_ms = (uint32_t)(s * 1000); }
-static void http_setReadTimeout_w(pchttp_t c, int s) { ((http_conn_t *)c)->read_timeout_ms = (uint32_t)(s * 1000); }
+static void http_setConnectTimeout_w(pchttp_t c, int s) { ((http_conn_t *)c)->connect_timeout_ms = s > 0 ? (uint32_t)s * 1000u : 0; }
+static void http_setReadTimeout_w(pchttp_t c, int s) { ((http_conn_t *)c)->read_timeout_ms = s > 0 ? (uint32_t)s * 1000u : 0; }
 static bool http_setReadBufferSize_w(pchttp_t c, int bytes) { return http_set_recv_buf((http_conn_t *)c, (uint32_t)bytes); }
 static bool http_isComplete_w(pchttp_t c) { return http_is_complete((http_conn_t *)c); }
 // The simulator's libcurl transport keeps its own TLS policy; the flag is
@@ -538,6 +622,7 @@ static const picocalc_appconfig_t s_appconfig_impl = {
 static const picocalc_gamepad_t s_gamepad_impl = {
     .getButtons = kbd_get_pad, .getButtonsPressed = kbd_get_pad_pressed,
     .getButtonsReleased = kbd_get_pad_released, .getLabel = gamepad_get_label,
+    .getAxis = kbd_get_pad_axis,
 };
 
 static void sim_wire_g_api(void) {
@@ -546,7 +631,7 @@ static void sim_wire_g_api(void) {
     g_api.soundplayer = &s_soundplayer_impl;
     g_api.http        = &s_http_impl;
     g_api.appconfig   = &s_appconfig_impl;
-    g_api.version     = 9;  // 9 = gamepad; 8 = http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts (matches src/main.c)
+    g_api.version     = 10; // 10 = gamepad->getAxis; 9 = gamepad; 8 = http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts (matches src/main.c)
     g_api.gamepad     = &s_gamepad_impl;
 }
 
@@ -556,7 +641,10 @@ int main(int argc, char** argv) {
     
     // Parse arguments
     parse_args(argc, argv);
-    
+#ifndef __EMSCRIPTEN__
+    check_sd_card_path();
+#endif
+
     printf("Configuration:\n");
     printf("  SD Card: %s\n", g_sd_card_path);
     printf("  Display: 960x960 (3x scale)\n");
@@ -663,14 +751,15 @@ int main(int argc, char** argv) {
     // Load persisted settings from /system/config.json
     config_load();
 
-    // Idle screen dimming. The keyboard stub never polls it, so it stays
-    // inert in the simulator; --test-mode disables it outright.
+    // Idle screen dimming. No panel here shows a dim backlight, so a swallowed
+    // wake key would just be a lost key: a timeout of 0 leaves it inert unless
+    // --idle-dim asks for the device's behaviour (keyboard_stub.c).
     {
         uint32_t dim_timeout_s = 60;
         const char *dt = config_get("dim_timeout_s");
         if (dt)
             dim_timeout_s = (uint32_t)atoi(dt);
-        if (sim_test_mode())
+        if (!g_idle_dim)
             dim_timeout_s = 0;
         uint8_t brightness = config_parse_brightness(config_get("brightness"));
         kbd_set_backlight(brightness);

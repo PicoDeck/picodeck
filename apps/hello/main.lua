@@ -19,7 +19,9 @@ local ACC  = disp.CYAN
 -- ── Main loop ─────────────────────────────────────────────────────────────────
 -- Your app owns the screen until it returns (exits to launcher).
 -- Call input.update() once per frame to read key state.
--- No sleep needed — display_flush() at 100 MHz SPI naturally limits to ~40-50 fps.
+-- No sleep needed for a demo that animates every frame: flush() limits it to ~40-60 fps.
+-- It does keep the CPU busy, so an app waiting for a key should sleep: see
+-- docs/Writing-Fast-Apps.md.
 
 while true do
     perf.beginFrame()  -- Start FPS timing
@@ -63,7 +65,7 @@ while true do
     local by = 100
     disp.fillRect(bx, by, 20, 20, ACC)
 
-    disp.flush()   -- DMA flush at 100 MHz SPI takes ~16 ms — no extra sleep needed
+    disp.flush()   -- waits for the previous frame's transfer (~16 ms)
 
     perf.endFrame()
     frame = frame + 1

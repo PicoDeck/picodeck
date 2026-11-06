@@ -110,7 +110,7 @@ static void display_register_fb(lua_State *L) {
 }
 
 static int l_display_clear(lua_State *L) {
-  uint16_t color = (lua_gettop(L) >= 1) ? l_checkcolor(L, 1) : COLOR_BLACK;
+  uint16_t color = lua_isnoneornil(L, 1) ? COLOR_BLACK : l_checkcolor(L, 1);
   display_clear(color);
   return 0;
 }
@@ -214,7 +214,7 @@ static int l_display_drawText(lua_State *L) {
     return 1;
   }
 
-  uint16_t bg = (lua_gettop(L) >= 5) ? l_checkcolor(L, 5) : COLOR_BLACK;
+  uint16_t bg = lua_isnoneornil(L, 5) ? COLOR_BLACK : l_checkcolor(L, 5);
   int width = display_draw_text(x, y, text, fg, bg);
   lua_pushinteger(L, width);
   return 1;

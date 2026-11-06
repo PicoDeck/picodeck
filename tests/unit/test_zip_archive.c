@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+int g_watchdog_feeds;  // fakes/feedcount/hardware/watchdog.h
+
 // zip_util.c also calls these; the tests never reach them.
 bool sdcard_stat(const char *path, sdcard_stat_t *out) {
   (void)path; (void)out;
@@ -104,8 +106,178 @@ static void test_extract_entry_bad_index_keeps_dest(void) {
   zip_reader_close(&zr);
 }
 
+// A destination that cannot be opened is not a failed write: FatFS's file lock
+// refusing a file someone holds open read as a full card (issue #65). The file
+// is left as it was; a short write removes the partial file.
+static void test_extract_open_failure_is_not_a_write_failure(void) {
+  static const char dest[] = "/apps/a/hello.txt";
+  sdfake_reset();
+  sdfake_put("/t.zip", (const char *)k_zip, sizeof(k_zip));
+  sdfake_put(dest, "old", 3);
+  sdfake_lock_file(dest);
+  zip_reader_t zr;
+  char err[ZIP_ERR_MAX] = "";
+  CHECK(zip_reader_open(&zr, "/t.zip", err));
+  int idx = zip_reader_locate(&zr, "hello.txt");
+  CHECK(!zip_reader_extract_entry(&zr, idx, dest, err));
+  CHECK_STR(err, "cannot open /apps/a/hello.txt");
+  size_t len = 0;
+  const char *d = sdfake_get(dest, &len);
+  CHECK(d && len == 3 && memcmp(d, "old", 3) == 0);
+
+  sdfake_lock_file(NULL);
+  sdfake_limit_writes(0);
+  CHECK(!zip_reader_extract_entry(&zr, idx, dest, err));
+  CHECK_STR(err, "write failed");
+  CHECK(sdfake_get(dest, NULL) == NULL);
+  sdfake_limit_writes(-1);
+  zip_reader_close(&zr);
+}
+
+// The error buffer is short and the file name is the useful end of the path.
+static void test_open_failure_keeps_the_end_of_a_long_path(void) {
+  static const char dest[] =
+      "/data/com.example.a.rather.long.application.id/assets/levels/world1/"
+      "stage3/background/music/intro/track01.qoa";
+  CHECK(strlen(dest) > ZIP_ERR_MAX);
+  sdfake_reset();
+  sdfake_put("/t.zip", (const char *)k_zip, sizeof(k_zip));
+  sdfake_lock_file(dest);
+  zip_reader_t zr;
+  char err[ZIP_ERR_MAX] = "";
+  CHECK(zip_reader_open(&zr, "/t.zip", err));
+  CHECK(!zip_reader_extract_entry(&zr, zip_reader_locate(&zr, "hello.txt"),
+                                  dest, err));
+  CHECK(strncmp(err, "cannot open ...", 15) == 0);
+  CHECK(strlen(err) == ZIP_ERR_MAX - 1);
+  CHECK(strcmp(err + strlen(err) - strlen("/intro/track01.qoa"),
+               "/intro/track01.qoa") == 0);
+  zip_reader_close(&zr);
+}
+
+// extract_all stops at the first failure with no rollback: what was already
+// written stays, the blocked file and the entries after it keep their old
+// contents (docs/API-Zip.md).
+static void test_extract_all_stops_at_the_first_failure(void) {
+  sdfake_reset();
+  sdfake_put("/t.zip", (const char *)k_zip, sizeof(k_zip));
+  sdfake_put("/d/empty.txt", "old", 3);
+  sdfake_lock_file("/d/empty.txt");
+  zip_reader_t zr;
+  char err[ZIP_ERR_MAX] = "";
+  zip_extract_result_t res;
+  CHECK(zip_reader_open(&zr, "/t.zip", err));
+  CHECK(!zip_reader_extract_all(&zr, "/d", NULL, NULL, NULL, &res, err));
+  CHECK_STR(err, "cannot open /d/empty.txt");
+  CHECK_EQ_INT(res.files_done, 1);
+  CHECK_EQ_INT(res.files_total, 2);
+  size_t len = 0;
+  const char *d = sdfake_get("/d/hello.txt", &len);
+  CHECK(d && len == 11 && memcmp(d, "hello world", 11) == 0);
+  d = sdfake_get("/d/empty.txt", &len);
+  CHECK(d && len == 3 && memcmp(d, "old", 3) == 0);
+
+  sdfake_reset();
+  sdfake_put("/t.zip", (const char *)k_zip, sizeof(k_zip));
+  sdfake_lock_file("/d/hello.txt");
+  CHECK(!zip_reader_extract_all(&zr, "/d", NULL, NULL, NULL, &res, err));
+  CHECK_STR(err, "cannot open /d/hello.txt");
+  CHECK_EQ_INT(res.files_done, 0);
+  CHECK(sdfake_get("/d/empty.txt", NULL) == NULL);
+  zip_reader_close(&zr);
+}
+
+static void put16(unsigned char **p, unsigned v) {
+  *(*p)++ = (unsigned char)v;
+  *(*p)++ = (unsigned char)(v >> 8);
+}
+static void put32(unsigned char **p, uint32_t v) {
+  put16(p, v & 0xFFFF);
+  put16(p, v >> 16);
+}
+
+// A one-entry stored archive of `len` bytes, built by hand (miniz's writer is
+// compiled out).
+static unsigned char *stored_zip(const char *name, const unsigned char *data,
+                                 uint32_t len, size_t *out_len) {
+  size_t nlen = strlen(name);
+  unsigned char *z = malloc(30 + nlen + len + 46 + nlen + 22);
+  unsigned char *p = z;
+  uint32_t crc = (uint32_t)mz_crc32(MZ_CRC32_INIT, data, len);
+  put32(&p, 0x04034b50);  // local header
+  put16(&p, 20); put16(&p, 0); put16(&p, 0); put16(&p, 0); put16(&p, 0x21);
+  put32(&p, crc); put32(&p, len); put32(&p, len);
+  put16(&p, (unsigned)nlen); put16(&p, 0);
+  memcpy(p, name, nlen); p += nlen;
+  memcpy(p, data, len); p += len;
+  uint32_t cd = (uint32_t)(p - z);
+  put32(&p, 0x02014b50);  // central directory
+  put16(&p, 20); put16(&p, 20); put16(&p, 0); put16(&p, 0); put16(&p, 0); put16(&p, 0x21);
+  put32(&p, crc); put32(&p, len); put32(&p, len);
+  put16(&p, (unsigned)nlen); put16(&p, 0); put16(&p, 0); put16(&p, 0); put16(&p, 0);
+  put32(&p, 0); put32(&p, 0);
+  memcpy(p, name, nlen); p += nlen;
+  uint32_t cd_len = (uint32_t)(p - z) - cd;
+  put32(&p, 0x06054b50);  // end of central directory
+  put16(&p, 0); put16(&p, 0); put16(&p, 1); put16(&p, 1);
+  put32(&p, cd_len); put32(&p, cd); put16(&p, 0);
+  *out_len = (size_t)(p - z);
+  return z;
+}
+
+// One large entry can outlast the 10 s watchdog, and nothing else runs during
+// the C call: reading or extracting it has to feed as it goes.
+static void test_one_large_entry_feeds_the_watchdog(void) {
+  enum { LEN = 300 * 1024 };
+  unsigned char *data = malloc(LEN);
+  for (int i = 0; i < LEN; i++) data[i] = (unsigned char)(i * 13 + (i >> 8));
+  size_t zlen = 0;
+  unsigned char *z = stored_zip("big.bin", data, LEN, &zlen);
+  sdfake_reset();
+  sdfake_put("/b.zip", (const char *)z, zlen);
+
+  zip_reader_t zr;
+  char err[ZIP_ERR_MAX];
+  CHECK(zip_reader_open(&zr, "/b.zip", err));
+  int idx = zip_reader_locate(&zr, "big.bin");
+  CHECK_EQ_INT(idx, 0);
+
+  g_watchdog_feeds = 0;
+  void *out = NULL;
+  size_t out_len = 0;
+  CHECK(zip_reader_read_to_heap(&zr, idx, &out, &out_len, 0, err));
+  CHECK_EQ_INT((int)out_len, LEN);
+  CHECK(out && memcmp(out, data, LEN) == 0);
+  zip_reader_free(out);
+  CHECK(g_watchdog_feeds >= 10);
+
+  g_watchdog_feeds = 0;
+  unsigned char *buf = malloc(LEN);
+  CHECK_EQ_INT(zip_reader_read_to_buf(&zr, idx, buf, LEN, err), LEN);
+  CHECK(memcmp(buf, data, LEN) == 0);
+  free(buf);
+  CHECK(g_watchdog_feeds >= 10);
+
+  g_watchdog_feeds = 0;
+  CHECK(zip_reader_extract_entry(&zr, idx, "/out.bin", err));
+  CHECK(g_watchdog_feeds >= 10);
+  size_t got_len = 0;
+  const char *got = sdfake_get("/out.bin", &got_len);
+  CHECK(got != NULL);
+  CHECK_EQ_INT((int)got_len, LEN);
+  CHECK(got && memcmp(got, data, LEN) == 0);
+
+  zip_reader_close(&zr);
+  free(z);
+  free(data);
+}
+
 int main(void) {
   test_read();
+  test_one_large_entry_feeds_the_watchdog();
   test_extract_entry_bad_index_keeps_dest();
+  test_extract_open_failure_is_not_a_write_failure();
+  test_open_failure_keeps_the_end_of_a_long_path();
+  test_extract_all_stops_at_the_first_failure();
   return check_report("test_zip_archive");
 }

@@ -1,3 +1,4 @@
+#include "console_gate.h"
 #include "core1_stats.h"
 #include "dev_commands.h"
 #include "dev_ops.h"
@@ -16,8 +17,11 @@
 #include "os/core0_idle.h"
 #include "os/xip_stats.h"
 #include "os/pc_prof.h"
+#include "os/serial_frame.h"
 #include "os/splash.h"
 #include "tusb.h"
+#include "pico/stdio/driver.h"
+#include "pico/stdio_usb.h"
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
 #include "hardware/watchdog.h"
@@ -60,24 +64,20 @@ static char s_b64_group[4];
 static uint32_t s_b64_group_len = 0;
 static uint8_t s_b64_writebuf[B64_WRITE_BUF_SIZE];
 static uint32_t s_b64_writelen = 0;
-static uint32_t s_b64_hash = 2166136261u; // FNV-1a running hash
+static uint32_t s_b64_hash = SERIAL_FNV1A_INIT; // running hash of a receive
 static uint64_t s_b64_last_rx_us = 0;
 
-// True while a bulk transfer is streaming over serial.  Core 1's log sink
-// (wifi.c) checks this and drops its output: an async log line landing
-// mid-payload-line defeats the '~' line framing and corrupts the transfer.
-// volatile: written on Core 0, read on Core 1.
-static volatile bool s_transfer_quiet = false;
-
 bool dev_commands_transfer_active(void) {
-    return s_transfer_quiet;
+    return console_gate_is_closed();
 }
 
-// FNV-1a 32-bit — cheap integrity check for serial transfers (not
-// cryptographic; OTA does its own SHA-256 before touching flash).
-static inline uint32_t fnv1a_update(uint32_t h, const uint8_t *p, uint32_t n) {
-    while (n--) { h ^= *p++; h *= 16777619u; }
-    return h;
+// The end of a transfer: the console is everyone's again, and a gap the gate
+// left in the log is on record (console_gate.h).
+static void transfer_end(void) {
+    uint32_t dropped = console_gate_open();
+    if (dropped)
+        printf("[DEV] Console: %lu bytes of log output dropped during a "
+               "transfer\n", (unsigned long)dropped);
 }
 
 static const char s_b64_enc[] =
@@ -166,7 +166,6 @@ void dev_commands_init(void) {
     s_b64_recv_active = false;
     s_b64_group_len = 0;
     s_b64_writelen = 0;
-    s_transfer_quiet = false;
 }
 
 const char* dev_commands_get_device(void) {
@@ -190,30 +189,36 @@ void dev_commands_poll(void) {
     if (s_file_recv_handle) {
         uint8_t buf[FILE_RECEIVE_CHUNK_SIZE];
         while (s_file_recv_received < s_file_recv_expected) {
-            uint32_t got = tud_cdc_read(buf, FILE_RECEIVE_CHUNK_SIZE);
-            if (got == 0) break;
+            // Through the driver: it holds stdio_usb_mutex for the read, which
+            // keeps TinyUSB's background task out (console_gate.h has the hazard
+            // for the write side). No data, or the mutex busy, reads as < 0.
+            int got = stdio_usb.in_chars((char *)buf, FILE_RECEIVE_CHUNK_SIZE);
+            if (got <= 0) break;
             s_b64_last_rx_us = time_us_64();
             int written = sdcard_fwrite(s_file_recv_handle, buf, got);
             if (written < 0) {
                 printf("[DEV] Error writing file\n");
                 sdcard_fclose(s_file_recv_handle);
                 s_file_recv_handle = NULL;
-                s_transfer_quiet = false;
+                transfer_end();
                 return;
             }
+            s_b64_hash = serial_fnv1a_update(s_b64_hash, buf, got);
             s_file_recv_received += written;
         }
         if (s_file_recv_received >= s_file_recv_expected) {
             sdcard_fclose(s_file_recv_handle);
             s_file_recv_handle = NULL;
-            s_transfer_quiet = false;
-            printf("[DEV] File received: %s (%lu bytes)\n", s_file_recv_path, (unsigned long)s_file_recv_received);
+            transfer_end();
+            printf("[DEV] File received: %s (%lu bytes) fnv1a=%08lx\n",
+                   s_file_recv_path, (unsigned long)s_file_recv_received,
+                   (unsigned long)s_b64_hash);
         } else if (time_us_64() - s_b64_last_rx_us > B64_RECV_TIMEOUT_US) {
             // Stalled CDC transfer (e.g. host went away): abort so the console
             // does not stay captured in receive mode forever.
             sdcard_fclose(s_file_recv_handle);
             s_file_recv_handle = NULL;
-            s_transfer_quiet = false;
+            transfer_end();
             printf("[DEV] Error: put timed out at %lu/%lu bytes\n",
                    (unsigned long)s_file_recv_received,
                    (unsigned long)s_file_recv_expected);
@@ -241,32 +246,25 @@ void dev_commands_poll(void) {
     }
 }
 
-// Write binary data over CDC, bypassing stdio (for screenshot bulk transfer).
-// Caller must call stdio_flush() / fflush(stdout) before this.
-// Returns false if CDC is not mounted or the host stops draining: spinning
-// unconditionally here starves the watchdog and resets the device when the
-// only connection is UART (no CDC host to drain the FIFO).
-static bool cdc_write_all(const uint8_t *data, uint32_t len) {
-    if (!tud_cdc_connected()) return false;
-    uint64_t last_progress_us = time_us_64();
+// Write binary data over CDC for a transfer under CONSOLE_GATE_RAW. If hash is
+// not NULL, the FNV-1a of what is sent is added to it. Returns false if the
+// host has closed the port or stopped reading, which ends the transfer at once
+// or within the driver's give-up time (console_gate_raw_write): an abandoned
+// transfer must not hold the device, which then answers no dev command.
+#define CDC_WRITE_CHUNK 1024u
+static bool cdc_write_all(const uint8_t *data, uint32_t len, uint32_t *hash) {
     while (len > 0) {
-        uint32_t avail = tud_cdc_write_available();
-        if (avail == 0) {
-            tud_cdc_write_flush();
-            tud_task();
-            if (time_us_64() - last_progress_us > 2000000u) return false;
-            continue;
-        }
-        uint32_t chunk = (len < avail) ? len : avail;
-        uint32_t written = tud_cdc_write(data, chunk);
-        data += written;
-        len -= written;
-        if (written > 0) {
-            last_progress_us = time_us_64();
-            watchdog_update();
-        }
+        if (!tud_cdc_connected()) return false;
+        uint32_t chunk = len < CDC_WRITE_CHUNK ? len : CDC_WRITE_CHUNK;
+        if (hash) *hash = serial_fnv1a_update(*hash, data, chunk);
+        uint64_t t0 = time_us_64();
+        console_gate_raw_write(data, chunk);
+        // A chunk this slow is one the driver gave up on and did not finish.
+        if (time_us_64() - t0 >= PICO_STDIO_USB_STDOUT_TIMEOUT_US) return false;
+        data += chunk;
+        len -= chunk;
+        watchdog_update();
     }
-    tud_cdc_write_flush();
     return true;
 }
 
@@ -276,7 +274,7 @@ static void b64_recv_abort(const char *why) {
         s_file_recv_handle = NULL;
     }
     s_b64_recv_active = false;
-    s_transfer_quiet = false;
+    transfer_end();
     printf("[DEV] Error: b64 receive aborted (%s) at %lu/%lu bytes\n",
            why, (unsigned long)s_file_recv_received,
            (unsigned long)s_file_recv_expected);
@@ -289,7 +287,7 @@ static void b64_recv_flush(void) {
         b64_recv_abort("SD write failed");
         return;
     }
-    s_b64_hash = fnv1a_update(s_b64_hash, s_b64_writebuf, s_b64_writelen);
+    s_b64_hash = serial_fnv1a_update(s_b64_hash, s_b64_writebuf, s_b64_writelen);
     s_file_recv_received += (uint32_t)written;
     s_b64_writelen = 0;
 }
@@ -308,7 +306,7 @@ static void b64_recv_char(int c) {
                 sdcard_fclose(s_file_recv_handle);
                 s_file_recv_handle = NULL;
                 s_b64_recv_active = false;
-                s_transfer_quiet = false;
+                transfer_end();
                 printf("[DEV] File received: %s (%lu bytes) fnv1a=%08lx\n",
                        s_file_recv_path, (unsigned long)s_file_recv_received,
                        (unsigned long)s_b64_hash);
@@ -362,29 +360,33 @@ void dev_commands_send_screenshot(void) {
     }
     const uint16_t *fb = display_get_screen_buffer();
 
-    // Header: "SCRN" + width(u16 LE) + height(u16 LE) + format(u16 LE) + pad(2)
-    uint8_t header[12];
-    header[0] = 'S'; header[1] = 'C'; header[2] = 'R'; header[3] = 'N';
-    uint16_t w = FB_WIDTH, h = FB_HEIGHT, fmt = 565;
-    memcpy(&header[4], &w, 2);
-    memcpy(&header[6], &h, 2);
-    memcpy(&header[8], &fmt, 2);
-    header[10] = 0; header[11] = 0;
+    uint8_t header[SCRN_HEADER_LEN];
+    scrn_frame_header(header, FB_WIDTH, FB_HEIGHT, SCRN_FORMAT_RGB565,
+                      SCRN_FLAG_TRAILER);
 
-    // Flush stdio so our raw CDC writes don't interleave with printf output
+    // Flush stdio so our raw CDC writes follow what printf has queued
     stdio_flush();
 
-    s_transfer_quiet = true;
-    bool ok = cdc_write_all(header, sizeof(header)) &&
-              cdc_write_all((const uint8_t *)fb, FB_WIDTH * FB_HEIGHT * sizeof(uint16_t));
-    s_transfer_quiet = false;
+    console_gate_close(CONSOLE_GATE_RAW);
+    uint32_t hash = SERIAL_FNV1A_INIT;
+    bool ok = cdc_write_all(header, sizeof(header), NULL) &&
+              cdc_write_all((const uint8_t *)fb,
+                            FB_WIDTH * FB_HEIGHT * sizeof(uint16_t), &hash);
+    if (ok) {
+        char trailer[SCRN_TRAILER_LEN + 1];
+        scrn_frame_trailer(trailer, hash);
+        ok = cdc_write_all((const uint8_t *)trailer, SCRN_TRAILER_LEN, NULL);
+    }
+    console_gate_raw_flush();
+    transfer_end();
     if (!ok)
         printf("[DEV] Error: CDC write stalled\n");
 }
 
-// Stream a memory buffer as '~'-prefixed base64 lines over stdio.  The '~'
-// prefix lets the host discard any log lines Core 1 interleaves into the
-// stream; the FNV-1a in the caller's footer catches mid-line interleaving.
+// Stream a memory buffer as '~'-prefixed base64 lines over stdio, under
+// CONSOLE_GATE_LINES. The '~' prefix lets the host discard any other line that
+// reaches it; the FNV-1a in the caller's footer catches what the gate cannot
+// stop (a crash report).
 #define B64_LINE_RAW 72 // 96 base64 chars per line
 static uint32_t b64_send_buf(const uint8_t *data, uint32_t len, uint32_t hash) {
     char line[(B64_LINE_RAW / 3) * 4 + 1];
@@ -398,7 +400,7 @@ static uint32_t b64_send_buf(const uint8_t *data, uint32_t len, uint32_t hash) {
         }
         line[li] = '\0';
         printf("~%s\n", line);
-        hash = fnv1a_update(hash, data + off, n);
+        hash = serial_fnv1a_update(hash, data + off, n);
         watchdog_update();
     }
     return hash;
@@ -412,17 +414,68 @@ static void dev_send_file_b64(const char *path) {
         printf("[DEV] Failed to open file: %s\n", path);
         return;
     }
-    s_transfer_quiet = true;
+    console_gate_close(CONSOLE_GATE_LINES);
     int size = sdcard_fsize_handle(f);
     printf("[DEV] B64 size=%d\n", size);
     uint8_t buf[B64_LINE_RAW * 4];
-    uint32_t hash = 2166136261u;
+    uint32_t hash = SERIAL_FNV1A_INIT;
     int nread;
     while ((nread = sdcard_fread(f, buf, sizeof(buf))) > 0)
         hash = b64_send_buf(buf, (uint32_t)nread, hash);
     sdcard_fclose(f);
     printf("[DEV] B64_END fnv1a=%08lx path=%s\n", (unsigned long)hash, path);
-    s_transfer_quiet = false;
+    transfer_end();
+}
+
+// `lognoise <ms>`: log from Core 1 and from a Core 0 interrupt every <ms>, the
+// two places the console gate has to stop (tests/e2e/test_screenshot_integrity.py).
+// `lognoise off` stops it (a reboot does too); a bare `lognoise` reports it and
+// the gate's counts.
+static volatile uint32_t s_noise_ms = 0;
+static repeating_timer_t s_noise_timer;
+static bool s_noise_timer_on = false;
+
+static bool noise_timer_cb(repeating_timer_t *t) {
+    (void)t;
+    printf("[NOISE] core 0 interrupt\n");
+    return true;
+}
+
+bool __time_critical_func(dev_commands_core1_idle)(void) {
+    return s_noise_ms == 0;
+}
+
+void dev_commands_core1_poll(void) {
+    static uint32_t s_last_ms = 0;
+    uint32_t ms = s_noise_ms;
+    if (!ms) return;
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (now - s_last_ms < ms) return;
+    s_last_ms = now;
+    // Two calls, as a line built piecemeal: the print mutex does not hold
+    // across them, so this is what can land inside a line-framed transfer.
+    printf("[NOISE] core 1 ");
+    printf("%lu\n", (unsigned long)now);
+}
+
+static void dev_lognoise(const char *arg) {
+    if (arg[0]) {
+        if (s_noise_timer_on) {
+            cancel_repeating_timer(&s_noise_timer);
+            s_noise_timer_on = false;
+        }
+        uint32_t ms = strcmp(arg, "off") == 0
+                          ? 0u : (uint32_t)strtoul(arg, NULL, 10);
+        s_noise_ms = ms;
+        if (ms)
+            s_noise_timer_on = add_repeating_timer_ms(-(int32_t)ms, noise_timer_cb,
+                                                      NULL, &s_noise_timer);
+    }
+    uint32_t transfers, dropped;
+    console_gate_stats(&transfers, &dropped);
+    printf("[DEV] LogNoise: period_ms=%lu transfers=%lu dropped_bytes=%lu\n",
+           (unsigned long)s_noise_ms, (unsigned long)transfers,
+           (unsigned long)dropped);
 }
 
 // `xipstat [reset|off|prio core0|prio none|mp3idle on|mp3idle off]`: the
@@ -719,6 +772,9 @@ static void dev_command_run(void *arg) {
     } else if (strcmp(s_cmd_buf, "prof") == 0 ||
                strncmp(s_cmd_buf, "prof ", 5) == 0) {
         pc_prof_command(s_cmd_buf + 4);
+    } else if (strcmp(s_cmd_buf, "lognoise") == 0 ||
+               strncmp(s_cmd_buf, "lognoise ", 9) == 0) {
+        dev_lognoise(s_cmd_buf[8] ? s_cmd_buf + 9 : "");
     } else if (strcmp(s_cmd_buf, "xipstat") == 0 ||
                strncmp(s_cmd_buf, "xipstat ", 8) == 0) {
         dev_xipstat(s_cmd_buf[7] ? s_cmd_buf + 8 : "");
@@ -783,8 +839,9 @@ static void dev_command_run(void *arg) {
         }
         s_file_recv_expected = size;
         s_file_recv_received = 0;
+        s_b64_hash = SERIAL_FNV1A_INIT;
         s_b64_last_rx_us = time_us_64();
-        s_transfer_quiet = true;
+        console_gate_close(CONSOLE_GATE_LINES);
         printf("[DEV] Ready to receive %lu bytes for %s\n", (unsigned long)size, args);
     } else if (strncmp(s_cmd_buf, "putb64 ", 7) == 0) {
         char *args = s_cmd_buf + 7;
@@ -810,20 +867,20 @@ static void dev_command_run(void *arg) {
         s_b64_recv_active = true;
         s_b64_group_len = 0;
         s_b64_writelen = 0;
-        s_b64_hash = 2166136261u;
+        s_b64_hash = SERIAL_FNV1A_INIT;
         s_b64_last_rx_us = time_us_64();
-        s_transfer_quiet = true;
+        console_gate_close(CONSOLE_GATE_LINES);
         printf("[DEV] Ready B64 %lu bytes for %s (chunk<=%u raw, newline-terminated, await ACK)\n",
                (unsigned long)size, args, (unsigned)B64_WRITE_BUF_SIZE);
     } else if (strncmp(s_cmd_buf, "getb64 ", 7) == 0) {
         dev_send_file_b64(s_cmd_buf + 7);
     } else if (strcmp(s_cmd_buf, "screenshot64") == 0) {
         const uint8_t *fb = (const uint8_t *)display_get_screen_buffer();
-        s_transfer_quiet = true;
+        console_gate_close(CONSOLE_GATE_LINES);
         printf("[DEV] SCRN64 w=%u h=%u fmt=565\n", (unsigned)FB_WIDTH, (unsigned)FB_HEIGHT);
-        uint32_t hash = b64_send_buf(fb, FB_WIDTH * FB_HEIGHT * 2u, 2166136261u);
+        uint32_t hash = b64_send_buf(fb, FB_WIDTH * FB_HEIGHT * 2u, SERIAL_FNV1A_INIT);
         printf("[DEV] SCRN64_END fnv1a=%08lx\n", (unsigned long)hash);
-        s_transfer_quiet = false;
+        transfer_end();
     } else if (strcmp(s_cmd_buf, "crashlog") == 0) {
         sdfile_t f = sdcard_fopen("/system/crashlog.txt", "rb");
         if (!f) {
@@ -862,18 +919,20 @@ static void dev_command_run(void *arg) {
         printf("FILE_DATA:\nSIZE:%d\n", size);
         stdio_flush();
 
-        s_transfer_quiet = true;
+        console_gate_close(CONSOLE_GATE_RAW);
         uint8_t buf[256];
         int read;
-        while ((read = sdcard_fread(f, buf, sizeof(buf))) > 0) {
-            if (!cdc_write_all(buf, read)) {
-                printf("[DEV] Error: CDC write stalled\n");
-                break;
-            }
-        }
+        bool ok = true;
+        uint32_t hash = SERIAL_FNV1A_INIT;
+        while (ok && (read = sdcard_fread(f, buf, sizeof(buf))) > 0)
+            ok = cdc_write_all(buf, read, &hash);
         sdcard_fclose(f);
-        s_transfer_quiet = false;
-        printf("[DEV] File sent: %s (%d bytes)\n", path, size);
+        console_gate_raw_flush();
+        transfer_end();
+        if (!ok)
+            printf("[DEV] Error: CDC write stalled\n");
+        printf("[DEV] File sent: %s (%d bytes) fnv1a=%08lx\n", path, size,
+               (unsigned long)hash);
     } else if (strncmp(s_cmd_buf, "mkdir ", 6) == 0) {
         const char *path = s_cmd_buf + 6;
         if (path[0] != '/') {
@@ -929,6 +988,7 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   alarmpool      - Default alarm pool: free and lost slots (lost re-read 3x)\n");
         printf("[DEV]   kbdstat [reset|fault|log|hw] - Keyboard bus engine counters\n");
         printf("[DEV]   xipstat [reset|off|prio core0|prio none|mp3idle on|mp3idle off] - XIP cache, bus contention and MP3 decode timing\n");
+        printf("[DEV]   lognoise [<ms>|off] - Log from Core 1 and a Core 0 interrupt every <ms>; console gate counts\n");
         printf("[DEV]   mp3bench <path> [frames] [flags] - MP3 decode cost per frame, by phase (at the launcher)\n");
         printf("[DEV]   exit           - Signal current app to exit (error if none)\n");
         printf("[DEV]   usb            - Enable USB storage mode\n");
@@ -937,10 +997,10 @@ static void dev_command_run(void *arg) {
         printf("[DEV]   reboot-ota     - Apply staged /system/update.bin (needs .sha256 + .sig)\n");
         printf("[DEV]   launch <arg>   - Launch app by ID or name (also hidden apps under /apps/.test, /apps/.dev)\n");
         printf("[DEV]   list [all]     - List installed apps ('all' adds the hidden ones)\n");
-        printf("[DEV]   screenshot     - Capture screen\n");
+        printf("[DEV]   screenshot     - Capture screen (binary, ends with its FNV-1a)\n");
         printf("[DEV]   keypress <key> - Inject keypress\n");
         printf("[DEV]   keydown <key> / keyup <key> - Hold/release a key (chords)\n");
-        printf("[DEV]   pad <btns|none|off> [ms] - Test gamepad: e.g. 'pad up+a', 'pad home 100'\n");
+        printf("[DEV]   pad <btns|none|off> [ms] - Test gamepad: e.g. 'pad up+a', 'pad home 100', 'pad lx=-0.5+rt=1'\n");
         printf("[DEV]   put <path> <size> - Receive file from host (USB CDC only)\n");
         printf("[DEV]   get <path>     - Send file to host (USB CDC only)\n");
         printf("[DEV]   putb64 <path> <size> - Receive file as base64 (any transport)\n");

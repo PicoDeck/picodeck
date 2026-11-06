@@ -5,7 +5,7 @@
 // =============================================================================
 // AppRunner — vtable interface for per-runtime app loaders
 //
-// Each runtime (Lua, native C/TinyGo, …) implements one AppRunner.
+// Each runtime (Lua, native, …) implements one AppRunner.
 // launcher.c iterates the table of known runners and dispatches to the first
 // one whose can_handle() returns true for a given app_entry_t.
 // =============================================================================

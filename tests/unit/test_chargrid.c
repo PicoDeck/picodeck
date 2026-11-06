@@ -1,6 +1,7 @@
 // Host unit tests for the chargrid core (src/os/chargrid*.c).
 #include "check.h"
 #include "chargrid.h"
+#include "color256.h"
 #include "font_6x8.h"
 
 #include <math.h>
@@ -36,25 +37,9 @@ static void test_create_defaults(void) {
   CHECK(g->dirty);
   CHECK_EQ_INT(g->ramp_n, 0);
   CHECK_EQ_INT(g->cramp_n, 0);
-  CHECK_EQ_U32(g->palette[9], 0xF800);
+  CHECK(memcmp(g->palette, color256_palette, sizeof(g->palette)) == 0);
   chargrid_free(g);
   chargrid_free(NULL);
-}
-
-static void test_palette(void) {
-  uint16_t p[256];
-  chargrid_default_palette(p);
-  CHECK_EQ_U32(p[0], 0x0000);
-  CHECK_EQ_U32(p[1], 0x8000);    // maroon 800000
-  CHECK_EQ_U32(p[7], 0xC618);    // silver c0c0c0
-  CHECK_EQ_U32(p[9], 0xF800);    // red
-  CHECK_EQ_U32(p[15], 0xFFFF);   // white
-  CHECK_EQ_U32(p[16], 0x0000);   // cube (0,0,0)
-  CHECK_EQ_U32(p[21], 0x001F);   // cube (0,0,5) = 0000ff
-  CHECK_EQ_U32(p[196], 0xF800);  // cube (5,0,0)
-  CHECK_EQ_U32(p[231], 0xFFFF);  // cube (5,5,5)
-  CHECK_EQ_U32(p[232], 0x0841);  // grey 080808
-  CHECK_EQ_U32(p[255], 0xEF7D);  // grey eeeeee
 }
 
 static void test_set_get_fill(void) {
@@ -524,7 +509,6 @@ static void test_spleen_font_file(void) {
 int main(void) {
   test_sizes();
   test_create_defaults();
-  test_palette();
   test_set_get_fill();
   test_clip_span();
   test_shapes();

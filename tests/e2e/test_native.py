@@ -123,7 +123,34 @@ def test_api_gamepad_table(probe):
     lines = [t for t in probe["lines"] if t.startswith("PROBE gamepad ")]
     assert lines == ["PROBE gamepad buttons=0 pressed=0 label_a=F4 "
                      "label_a_alt=-",
-                     "PROBE gamepad kept label_a=F4"], probe["lines"]
+                     "PROBE gamepad kept label_a=F4",
+                     "PROBE gamepad axes 0 0 0 0 0 0 bad=0"], probe["lines"]
+
+
+def test_api_gamepad_axes_through_the_trampoline(simulator):
+    """API version 10's getAxis: the float comes back in r0, and the `pad`
+    command's axes, the D-pad fallback included, reach a native app. The bits
+    are those of -1.0 (bf800000) and 1.0 (3f800000)."""
+    assert abi.api_version() >= 10
+    simulator.pad("lx=-1+ry=1+rt=1")
+    simulator.launch_app("native_api_probe")
+    outcome = simulator.wait_for_exit(timeout=15)
+    assert outcome.get("result") == "returned", outcome
+    lines = [re.sub(r"^\[APP\] ", "", t)
+             for t in log_texts(simulator.get_log_lines())]
+    assert "PROBE gamepad axes bf800000 0 0 3f800000 0 3f800000 bad=0" in lines, (
+        lines)
+    # A D-pad held as the app starts is hidden from it until released, as any
+    # key or button is (test_modal_key_leak.py), so AXIS_LX's fallback reads 0.
+    # test_gamepad_axes.py has the fallback itself, from a running app.
+    simulator.pad("right")
+    simulator.launch_app("native_api_probe")
+    outcome = simulator.wait_for_exit(timeout=15)
+    assert outcome.get("result") == "returned", outcome
+    lines = [re.sub(r"^\[APP\] ", "", t)
+             for t in log_texts(simulator.get_log_lines())]
+    assert "PROBE gamepad axes 0 0 0 0 0 0 bad=0" in lines, lines
+    simulator.pad("off")
 
 
 @pytest.mark.parametrize("table", [

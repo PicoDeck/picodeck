@@ -4,8 +4,9 @@
 // Every picocalc.* call checks its arguments through the Lua C API, and on
 // the device that is a large share of a short call: luaL_checkudata looks the
 // type name up in the registry (hash the name, strcmp it, a table get, a raw
-// compare: ~8 us of a 28 us fb:getPixels(x, y, 1, 1)), and an integer
-// argument costs lua_isinteger plus lua_tointeger. Code and data share the
+// compare: ~8 us of a 28 us fb:getPixels(x, y, 1, 1)), and a number argument
+// costs lua_isinteger plus lua_tointeger, or luaL_checknumber plus
+// lua_tonumberx plus index2value. Code and data share the
 // 16 KB XIP cache with the Lua heap and stack in PSRAM, so each extra API
 // function walked is mostly instruction-fetch misses. These read the stack
 // slot directly. They answer only the common case and never raise; the
@@ -27,6 +28,11 @@ void *picodeck_lua_udata_with_mt(lua_State *L, int idx, const void *mt);
 // "integer"); 0 for anything else, floats with integral values included, and
 // for pseudo-indices.
 int picodeck_lua_tointeger_strict(lua_State *L, int idx, lua_Integer *out);
+
+// 1 with *out set when the value at `idx` is a Lua float or integer, converted
+// as lua_tonumber does; 0 for anything else, numeric strings included (the
+// caller's standard path converts them), and for pseudo-indices.
+int picodeck_lua_tonumber_strict(lua_State *L, int idx, lua_Number *out);
 
 // A table's array part, for the bridge's bulk loops over number sequences
 // (particles, wireframe vertices): values read and written in place instead

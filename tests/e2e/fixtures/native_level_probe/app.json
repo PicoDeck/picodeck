@@ -1,0 +1,7 @@
+{
+    "id": "com.test.native_level_probe",
+    "name": "Native Level Probe",
+    "description": "E2E fixture: logs every change of the held keys and buttons (source: tests/e2e/native/level_probe.c)",
+    "version": "1.0",
+    "author": "PicoDeck E2E"
+}

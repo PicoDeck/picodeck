@@ -18,7 +18,8 @@ static int l_ui_drawFooter(lua_State *L) {
   const char *left = luaL_optstring(L, 1, NULL);
   const char *right = luaL_optstring(L, 2, NULL);
   ui_draw_footer(left, right);
-  return 0;
+  lua_pushinteger(L, UI_FOOTER_H);
+  return 1;
 }
 
 static int l_ui_drawTabs(lua_State *L) {
@@ -39,17 +40,21 @@ static int l_ui_drawTabs(lua_State *L) {
     return 2;
   }
 
+  // Raises here, before there is a block to leak.
+  luaL_checkstack(L, count, "too many tabs");
+
   // Allocate tab strings array
   const char **tabs = (const char **)umm_malloc(sizeof(char *) * count);
   if (!tabs) {
     return luaL_error(L, "Failed to allocate memory for tabs");
   }
 
-  // Extract tab strings from Lua table
+  // Extract tab strings from Lua table. They stay on the stack until drawn: a
+  // number's string belongs to nothing else, and the next conversion can
+  // collect it.
   for (int i = 0; i < count; i++) {
     lua_rawgeti(L, 2, i + 1);  // Lua arrays are 1-indexed
     tabs[i] = lua_tostring(L, -1);
-    lua_pop(L, 1);
   }
 
   // Check for key presses if keys specified
@@ -116,7 +121,7 @@ static int l_ui_splash(lua_State *L) {
 
 // ── Widget rendering primitives ──────────────────────────────────────────────
 
-// picocalc.ui.drawPanel(x, y, w, h, [title])
+// picocalc.ui.drawPanel(x, y, w, h, [title]) -> content y
 static int l_ui_drawPanel(lua_State *L) {
   int x = (int)lb_checkint(L, 1);
   int y = (int)lb_checkint(L, 2);
@@ -124,10 +129,12 @@ static int l_ui_drawPanel(lua_State *L) {
   int h = (int)lb_checkint(L, 4);
   const char *title = luaL_optstring(L, 5, NULL);
   ui_widget_panel(x, y, w, h, title);
-  return 0;
+  // Where the content starts: below the title bar, or inside the border.
+  lua_pushinteger(L, y + ((title && title[0]) ? UW_PANEL_TITLE_H : 1));
+  return 1;
 }
 
-// picocalc.ui.drawTextField(x, y, w, text, cursor_pos, scroll_offset, focused, show_cursor)
+// picocalc.ui.drawTextField(x, y, w, text, cursor_pos, scroll_offset, focused, show_cursor) -> height
 static int l_ui_drawTextField(lua_State *L) {
   int x = (int)lb_checkint(L, 1);
   int y = (int)lb_checkint(L, 2);
@@ -140,11 +147,12 @@ static int l_ui_drawTextField(lua_State *L) {
   bool show_cursor = lua_toboolean(L, 8);
   ui_widget_textfield(x, y, w, text, (int)text_len, cursor_pos, scroll_off,
                       focused, show_cursor);
-  return 0;
+  lua_pushinteger(L, UW_ROW_H);
+  return 1;
 }
 
 // picocalc.ui.drawTextArea(x, y, w, h, text, segments_table, scroll_y,
-//                          cursor_row, cursor_col, focused, show_cursor)
+//                          cursor_row, cursor_col, focused, show_cursor) -> rows shown
 static int l_ui_drawTextArea(lua_State *L) {
   int x = (int)lb_checkint(L, 1);
   int y = (int)lb_checkint(L, 2);
@@ -182,10 +190,12 @@ static int l_ui_drawTextArea(lua_State *L) {
                      cursor_row, cursor_col, focused, show_cursor);
 
   if (segments != stack_segs) umm_free(segments);
-  return 0;
+  // A row needs 8px between the 3px top padding and the bottom border.
+  lua_pushinteger(L, h < 12 ? 0 : visible_rows);
+  return 1;
 }
 
-// picocalc.ui.drawListItem(x, y, w, text, selected, focused)
+// picocalc.ui.drawListItem(x, y, w, text, selected, focused) -> height
 static int l_ui_drawListItem(lua_State *L) {
   int x = (int)lb_checkint(L, 1);
   int y = (int)lb_checkint(L, 2);
@@ -194,7 +204,8 @@ static int l_ui_drawListItem(lua_State *L) {
   bool selected = lua_toboolean(L, 5);
   bool focused  = lua_toboolean(L, 6);
   ui_widget_list_item(x, y, w, text, selected, focused);
-  return 0;
+  lua_pushinteger(L, UW_ROW_H);
+  return 1;
 }
 
 // picocalc.ui.drawProgress(x, y, w, h, progress, [fill_color])
@@ -209,55 +220,59 @@ static int l_ui_drawProgress(lua_State *L) {
   return 0;
 }
 
-// picocalc.ui.drawCheckbox(x, y, checked, focused)
+// picocalc.ui.drawCheckbox(x, y, checked, focused) -> height
 static int l_ui_drawCheckbox(lua_State *L) {
   int x = (int)lb_checkint(L, 1);
   int y = (int)lb_checkint(L, 2);
   bool checked = lua_toboolean(L, 3);
   bool focused = lua_toboolean(L, 4);
   ui_widget_checkbox(x, y, checked, focused);
-  return 0;
+  lua_pushinteger(L, UW_CHECKBOX_H);
+  return 1;
 }
 
-// picocalc.ui.drawRadio(x, y, selected, focused)
+// picocalc.ui.drawRadio(x, y, selected, focused) -> height
 static int l_ui_drawRadio(lua_State *L) {
   int x = (int)lb_checkint(L, 1);
   int y = (int)lb_checkint(L, 2);
   bool selected = lua_toboolean(L, 3);
   bool focused  = lua_toboolean(L, 4);
   ui_widget_radio(x, y, selected, focused);
-  return 0;
+  lua_pushinteger(L, UW_RADIO_H);
+  return 1;
 }
 
-// picocalc.ui.drawDivider(x, y, w, [color])
+// picocalc.ui.drawDivider(x, y, w, [color]) -> height
 static int l_ui_drawDivider(lua_State *L) {
   int x = (int)lb_checkint(L, 1);
   int y = (int)lb_checkint(L, 2);
   int w = (int)lb_checkint(L, 3);
   uint16_t color = lua_isnoneornil(L, 4) ? UW_BORDER : l_checkcolor(L, 4);
   ui_widget_divider(x, y, w, color);
-  return 0;
+  lua_pushinteger(L, UW_DIVIDER_H);
+  return 1;
 }
 
-// picocalc.ui.drawToast(y, text, [bg_color])
+// picocalc.ui.drawToast(y, text, [bg_color]) -> height
 static int l_ui_drawToast(lua_State *L) {
   int y = (int)lb_checkint(L, 1);
   const char *text = luaL_checkstring(L, 2);
-  uint16_t bg = (lua_gettop(L) >= 3) ? (uint16_t)luaL_checkinteger(L, 3) : 0;
+  uint16_t bg = lua_isnoneornil(L, 3) ? 0 : (uint16_t)luaL_checkinteger(L, 3);
   ui_widget_toast(y, text, bg);
-  return 0;
+  lua_pushinteger(L, UW_TOAST_H);
+  return 1;
 }
 
 // picocalc.ui.toast(text, [style]) — push a system toast notification
 // style: picocalc.ui.TOAST_INFO (default), TOAST_SUCCESS, TOAST_WARNING, TOAST_ERROR
 static int l_ui_toast(lua_State *L) {
   const char *text = luaL_checkstring(L, 1);
-  uint8_t style = (lua_gettop(L) >= 2) ? (uint8_t)luaL_checkinteger(L, 2) : TOAST_STYLE_INFO;
+  uint8_t style = lua_isnoneornil(L, 2) ? TOAST_STYLE_INFO : (uint8_t)luaL_checkinteger(L, 2);
   toast_push(text, style);
   return 0;
 }
 
-// picocalc.ui.drawButton(x, y, w, label, focused, [pressed])
+// picocalc.ui.drawButton(x, y, w, label, focused, [pressed]) -> height
 static int l_ui_drawButton(lua_State *L) {
   int x = (int)lb_checkint(L, 1);
   int y = (int)lb_checkint(L, 2);
@@ -266,7 +281,8 @@ static int l_ui_drawButton(lua_State *L) {
   bool focused = lua_toboolean(L, 5);
   bool pressed = lua_toboolean(L, 6);
   ui_widget_button(x, y, w, label, focused, pressed);
-  return 0;
+  lua_pushinteger(L, UW_BUTTON_H);
+  return 1;
 }
 
 // picocalc.ui.wrapText(text, max_cols) → {segment_offsets...}, num_rows
@@ -275,30 +291,25 @@ static int l_ui_wrapText(lua_State *L) {
   const char *text = luaL_checklstring(L, 1, &text_len);
   int max_cols = (int)lb_checkint(L, 2);
 
-  // Max segments: worst case is 1 segment per character
-  int max_segs = (int)(text_len / (max_cols > 0 ? max_cols : 1)) + 2;
-  if (max_segs > 512) max_segs = 512;
-
-  int stack_segs[128];
-  int *segments = stack_segs;
-  if (max_segs > 128) {
-    segments = (int *)umm_malloc(sizeof(int) * max_segs);
-    if (!segments) return luaL_error(L, "out of memory for wrap segments");
+  // Rows are counted first, so the table is the only memory this takes and
+  // nothing limits how many rows a text can have.
+  int len = (int)text_len;
+  int rows = 1;
+  for (int p = text_wrap_next_row(text, len, 0, max_cols); p >= 0;
+       p = text_wrap_next_row(text, len, p, max_cols)) {
+    rows++;
   }
 
-  int num_rows = text_wrap_segments(text, (int)text_len, max_cols,
-                                    segments, max_segs);
-
-  // Build Lua table of segment offsets (0-based char offsets)
-  lua_createtable(L, num_rows, 0);
-  for (int i = 0; i < num_rows; i++) {
-    lua_pushinteger(L, segments[i]);
-    lua_rawseti(L, -2, i + 1);
+  // Row starts, as 0-based byte offsets.
+  lua_createtable(L, rows, 0);
+  int pos = 0;
+  for (int i = 1; i <= rows; i++) {
+    lua_pushinteger(L, pos);
+    lua_rawseti(L, -2, i);
+    pos = text_wrap_next_row(text, len, pos, max_cols);
   }
 
-  lua_pushinteger(L, num_rows);
-
-  if (segments != stack_segs) umm_free(segments);
+  lua_pushinteger(L, rows);
   return 2;
 }
 

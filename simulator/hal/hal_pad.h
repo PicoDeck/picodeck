@@ -12,7 +12,9 @@
 //   left / right shoulder                   -> L / R
 //   Start / Back                            -> Start / Select
 //   Guide (Home)                            -> the system menu
-// Triggers and the right stick are not mapped (analog input is out of scope).
+//   sticks and triggers                     -> AXIS_* (each axis's largest
+//                                              reading across the controllers;
+//                                              the left stick is the D-pad too)
 
 #ifndef HAL_PAD_H
 #define HAL_PAD_H

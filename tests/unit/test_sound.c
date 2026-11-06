@@ -272,6 +272,231 @@ static void test_sample_structs_come_from_the_umm_heap(void) {
   CHECK_EQ_INT((int)(umm_fake_live() - before), 0);
 }
 
+// A player moved off its voice: the voice is free and the mixer reads no copy.
+static void test_park_frees_the_voice_and_keeps_the_state(void) {
+  sound_init();
+  sound_sample_t *s = blank(0.1f);
+  sound_player_t *p = sound_player_create();
+  CHECK(p && s);
+  sound_player_set_sample(p, s);
+  sound_player_set_volume(p, 40);
+  sound_player_set_rate(p, 2.0f);
+  sound_player_set_play_range(p, 10, 500);
+
+  sound_player_t parked;
+  sound_player_play(p, 0);
+  CHECK(!(sound_voices_parkable() & (1u << sound_player_voice(p))));
+  CHECK(!sound_player_park(p, &parked, NULL));  // audible
+  CHECK(p->in_use && p->playing);
+
+  sound_player_stop(p);
+  CHECK(sound_voices_parkable() & (1u << sound_player_voice(p)));
+  CHECK(sound_player_park(p, &parked, NULL));
+  CHECK(!p->in_use && !p->playing && !p->sample);
+  CHECK(!parked.in_use && !parked.playing);
+  CHECK(parked.sample == s);
+  CHECK_EQ_INT((int)(parked.volume), 40);
+  CHECK(parked.rate == 2.0f);
+  CHECK_EQ_INT((int)(parked.play_start), 10);
+  CHECK_EQ_INT((int)(parked.play_end), 500);
+  CHECK(!(sound_voices_parkable() & (1u << sound_player_voice(p))));
+  mix();  // nothing to read
+
+  // Every voice is free for someone else.
+  sound_player_t *held[SOUND_MAX_PLAYERS];
+  for (int i = 0; i < SOUND_MAX_PLAYERS; i++) {
+    held[i] = sound_player_create();
+    CHECK(held[i] != NULL);
+  }
+  for (int i = 0; i < SOUND_MAX_PLAYERS; i++)
+    sound_player_destroy(held[i]);
+  sound_sample_destroy(s);
+}
+
+static void test_unpark_plays_on_from_where_it_was(void) {
+  sound_init();
+  sound_sample_t *s = blank(0.1f);
+  sound_player_t *p = sound_player_create();
+  sound_player_set_sample(p, s);
+  sound_player_play(p, 0);
+  mix();
+  uint32_t where = p->position;
+  CHECK(where > 0);
+
+  // A paused player parks too, still "playing".
+  sound_player_t parked;
+  p->paused = true;
+  CHECK(sound_voices_parkable() & (1u << sound_player_voice(p)));
+  CHECK(sound_player_park(p, &parked, NULL));
+  CHECK(parked.playing && parked.paused);
+  CHECK_EQ_INT((int)(parked.position), where);
+
+  // Back on another voice: it goes on from there.
+  sound_player_t *voice = sound_player_create();
+  CHECK(voice != NULL);
+  sound_player_unpark(voice, &parked);
+  CHECK(voice->in_use && voice->sample == s);
+  voice->paused = false;
+  memset(s_l, 0, sizeof(s_l));
+  mix();
+  CHECK_EQ_INT((int)(s_l[0]), 1000);  // mixed again
+  CHECK(voice->position > where);
+  // The mixer never read the copy.
+  CHECK_EQ_INT((int)(parked.position), where);
+  sound_player_destroy(voice);
+  sound_sample_destroy(s);
+}
+
+static int s_fired;
+static int count_fired(void *arg) {
+  (void)arg;
+  s_fired++;
+  return 0;
+}
+
+// The callback's flag must reach the pump first; with no callback it can't matter.
+static void test_park_waits_for_a_callback_flag(void) {
+  sound_init();
+  sound_sample_t *s = blank(0.001f);
+  sound_player_t *p = sound_player_create();
+  sound_player_set_sample(p, s);
+  sound_player_set_finish_callback(p, count_fired, NULL);
+  sound_player_play(p, 1);
+  s_fired = 0;
+  for (int i = 0; i < 8 && p->playing; i++)
+    mix();
+  CHECK(!p->playing && p->finish_pending);
+
+  sound_player_t parked;
+  CHECK(!sound_player_park(p, &parked, NULL));
+  sound_pump_callbacks();
+  CHECK_EQ_INT((int)(s_fired), 1);
+  CHECK(sound_player_park(p, &parked, NULL));
+  CHECK(!p->finish_callback && !p->finish_pending);
+  CHECK(parked.finish_callback == count_fired);
+
+  // No callback: the flag holds nothing back, and is not left behind.
+  p = sound_player_create();
+  sound_player_set_sample(p, s);
+  sound_player_play(p, 1);
+  for (int i = 0; i < 8 && p->playing; i++)
+    mix();
+  CHECK(p->finish_pending);
+  CHECK(sound_player_park(p, &parked, NULL));
+  CHECK(!p->finish_pending);
+  sound_sample_destroy(s);
+}
+
+// Core 1's pump clears the flag under the lock and calls the callback outside it. A
+// park landing in that gap would free the voice and move the callback's registration
+// off it, with the callback on its way: it would never fire. The callback runs here
+// exactly where the gap is, so what it does is what Core 0 could do there.
+static sound_player_t *s_gap_voice;
+static int s_gap_parks;
+static bool s_gap_parked;
+static int park_in_the_gap(void *arg) {
+  (void)arg;
+  sound_player_t parked;
+  s_gap_parks++;
+  s_gap_parked = sound_player_park(s_gap_voice, &parked, NULL);
+  return 0;
+}
+
+static void test_park_waits_for_the_pump(void) {
+  sound_init();
+  sound_sample_t *s = blank(0.001f);
+  sound_player_t *p = sound_player_create();
+  sound_player_set_sample(p, s);
+  sound_player_set_finish_callback(p, park_in_the_gap, NULL);
+  sound_player_play(p, 1);
+  for (int i = 0; i < 8 && p->playing; i++)
+    mix();
+  CHECK(!p->playing && p->finish_pending);
+
+  s_gap_voice = p;
+  s_gap_parks = 0;
+  s_gap_parked = true;
+  sound_pump_callbacks();
+  CHECK_EQ_INT(s_gap_parks, 1);
+  CHECK(!s_gap_parked);
+  CHECK(p->in_use && p->finish_callback == park_in_the_gap);
+
+  // The pump is done: the voice can go.
+  sound_player_t parked;
+  CHECK(sound_player_park(p, &parked, NULL));
+  CHECK(!p->in_use);
+  sound_sample_destroy(s);
+}
+
+// What a callback leaves for its owner (the Lua bridge's pending flag) counts until the
+// owner has taken it, and is read in one step with the rest of the park's checks.
+static int s_owner_flag;
+static int s_owner_arg;
+static int leave_work(void *arg) {
+  (void)arg;
+  s_owner_flag = 1;
+  return 0;
+}
+static bool owner_busy(void *arg) { return arg == &s_owner_arg && s_owner_flag; }
+
+static void test_park_waits_for_the_callbacks_owner(void) {
+  sound_init();
+  sound_sample_t *s = blank(0.001f);
+  sound_player_t *p = sound_player_create();
+  sound_player_set_sample(p, s);
+  sound_player_set_finish_callback(p, leave_work, &s_owner_arg);
+  sound_player_play(p, 1);
+  for (int i = 0; i < 8 && p->playing; i++)
+    mix();
+  s_owner_flag = 0;
+  sound_pump_callbacks();
+  CHECK_EQ_INT(s_owner_flag, 1);
+
+  sound_player_t parked;
+  CHECK(!sound_player_park(p, &parked, owner_busy));
+  CHECK(p->in_use);
+  s_owner_flag = 0;  // the owner runs it
+  CHECK(sound_player_park(p, &parked, owner_busy));
+  CHECK(!p->in_use);
+  sound_sample_destroy(s);
+}
+
+static void test_clock_counts_milliseconds_of_output(void) {
+  sound_init();
+  CHECK_EQ_INT((int)(sound_get_current_time()), 0);
+  // 64 frames a mix; 44100 frames is one second, and no chunk's rounding adds up.
+  for (int i = 0; i < 44100 / 64; i++)
+    mix();
+  CHECK(sound_get_current_time() >= 999 && sound_get_current_time() <= 1000);
+  for (int i = 0; i < 9 * 44100 / 64; i++)
+    mix();
+  CHECK(sound_get_current_time() >= 9990 && sound_get_current_time() <= 10000);
+  sound_reset_time();
+  CHECK_EQ_INT((int)(sound_get_current_time()), 0);
+}
+
+static void test_blank_samples_are_silent(void) {
+  sound_init();
+  sound_sample_t *s8 = sound_sample_new_blank(0.01f, 8000, 8, 1);
+  sound_sample_t *s16 = sound_sample_new_blank(0.01f, 8000, 16, 1);
+  CHECK(s8 && s16);
+  CHECK_EQ_INT((int)(s8->data[0]), 0x80);
+  CHECK_EQ_INT((int)(s8->data[s8->length - 1]), 0x80);
+  CHECK_EQ_INT((int)(s16->data[0]), 0);
+  // And the mixer hears silence in both.
+  sound_player_t *p = sound_player_create();
+  sound_player_set_sample(p, s8);
+  sound_player_play(p, 0);
+  mix();
+  CHECK_EQ_INT((int)(s_l[0]), 0);
+  sound_player_set_sample(p, s16);
+  mix();
+  CHECK_EQ_INT((int)(s_l[0]), 0);
+  sound_player_destroy(p);
+  sound_sample_destroy(s8);
+  sound_sample_destroy(s16);
+}
+
 int main(void) {
   test_destroy_detaches_playing_player();
   test_destroy_detaches_every_player();
@@ -284,6 +509,13 @@ int main(void) {
   test_play_range_is_clamped();
   test_samples_have_no_fixed_limit();
   test_sample_structs_come_from_the_umm_heap();
+  test_park_frees_the_voice_and_keeps_the_state();
+  test_unpark_plays_on_from_where_it_was();
+  test_park_waits_for_a_callback_flag();
+  test_park_waits_for_the_pump();
+  test_park_waits_for_the_callbacks_owner();
+  test_clock_counts_milliseconds_of_output();
+  test_blank_samples_are_silent();
   CHECK(s_stream_starts > 0);
   return check_report("test_sound");
 }

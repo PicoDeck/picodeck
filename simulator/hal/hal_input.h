@@ -61,6 +61,10 @@ void hal_input_read_buttons(uint32_t* out_buttons, uint32_t* out_pressed);
 // Get character input (for text entry)
 char hal_input_get_char(void);
 
+// The same; *injected says whether it came from inject_char rather than a host
+// key (the device reads the two differently: kbd_get_char).
+char hal_input_get_char_ex(bool *injected);
+
 // Poll for character (non-blocking)
 bool hal_input_poll_char(char* out_char);
 
@@ -86,12 +90,27 @@ bool hal_input_pop_event(struct kbd_event_s *out);
 // counterpart of keyboard.c's kbd_discard_pending FIFO drain).
 void hal_input_discard_pending(void);
 
+// Test-and-clear: a host key went down since the last call. For the keyboard
+// stub's idle dim: injected chars do not set it (on the device they are not
+// activity either), and buttons, host or injected, show as press edges.
+bool hal_input_take_host_key(void);
+
 // Injected buttons down right now: one-shot clicks a poll has already read
 // (the device's active ones) and keydown latches. kbd_clear_state keeps their
 // gamepad buttons held without an edge, as keyboard.c's
 // kbd_inject_after_clear does; a click not read yet is published, with its
 // edge, by the next poll (the device's pending one).
 uint32_t hal_input_injected_down(void);
+
+// Take the oldest char of a host key out of the queue (letters ignore case), for
+// a hidden key's repeats: the queue is not in step with the staged events, so it
+// would still hold them when the release ends the hiding. An injected char stays.
+// False when there is none.
+bool hal_input_drop_host_char(char c);
+
+// Every button down right now but the menu key and a click no poll has read
+// yet (published with its edge by the next poll): what kbd_hide_held hides.
+uint32_t hal_input_read_down(void);
 
 // ── Injection sequence numbers (test sync) ─────────────────────────────────
 // Every injection (click/press/release/char, and the menu click, which the

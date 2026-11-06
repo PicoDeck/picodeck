@@ -23,6 +23,7 @@
 
 #include "clock.h"
 #include "config.h"
+#include "idle_dim.h"
 #include "lua_psram_alloc.h"
 #include "os_overlay.h"
 #include "screenshot.h"
@@ -190,7 +191,24 @@ static void warn_shared_ids(void) {
   }
 }
 
+// A scan is a listing, app.json and an icon decode per app (~30 sector reads
+// each, plus the PNG): most of a second on a card of 40 apps, after every app's
+// exit. Nothing has changed unless a write named /apps since the last one; a
+// sandboxed game cannot, and the dev file commands and native apps count too.
+// The simulator always scans: the harness stages apps straight in the host's
+// directory, past the SD layer.
+#ifdef PICODECK_SIMULATOR
+#define APPS_CHANGED_SINCE_SCAN() true
+#else
+static uint32_t s_scan_generation;
+#define APPS_CHANGED_SINCE_SCAN() (sdcard_apps_generation() != s_scan_generation)
+#endif
+
 static void scan_apps(void) {
+#ifndef PICODECK_SIMULATOR
+  s_scan_generation = sdcard_apps_generation();  // before the listing: a write
+                                                 // during it scans again
+#endif
   // Free previously loaded icons before rescan
   for (int i = 0; i < s_app_count; i++) {
     if (s_apps[i].icon) {
@@ -735,7 +753,7 @@ void launcher_apply_clock(uint32_t khz) {
 
   // 8. Re-init UART baud rate (depends on clk_peri)
 #if LIB_PICO_STDIO_UART
-  uart_init(uart0, 115200);
+  uart_init(uart0, PICO_DEFAULT_UART_BAUD_RATE);
 #endif
 
   // 9. Down-clocking: Lower voltage AFTER decreasing frequency
@@ -797,6 +815,9 @@ static void launcher_refuse(const app_entry_t *app, const char *title,
       break;
     sleep_ms(100);
   }
+  // Back to the launcher, as at an app's exit (run_app_entry): a held Enter's
+  // repeats are press edges, and each would launch the app again.
+  kbd_hide_held();
 }
 
 // Runs *app (a listed entry, or a hidden one launched from the dev console;
@@ -805,6 +826,14 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   s_running_app_name = app->name;
   s_app_launch_time_ms = to_ms_since_boot(get_absolute_time());
   sim_app_outcome_begin(app->name, app->id);
+
+  // A launch is activity: lights a dimmed panel and restarts the idle timer.
+  // A key or pad launch finds the screen awake already (what woke it was
+  // swallowed), but the dev `launch` does not, and the app's first key would
+  // be spent waking it (keyboard.c swallows the waking input). Here rather
+  // than in the dev command, so that no way in can miss it and a refusal
+  // below shows its reason on a lit panel.
+  idle_dim_note_activity();
 
   // Free any PSRAM used by the MP3 player (from a previous Lua app)
   // so we have maximum memory for the next app.
@@ -825,7 +854,7 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   // else's directory.
   if (!app_manifest_id_valid(app->id)) {
     launcher_refuse(app, "Cannot launch app:", "invalid app id in app.json",
-                    app->id, heap, "Use only A-Z a-z 0-9 . _ - in \"id\".");
+                    app->id, heap, "Use 1-79 of A-Z a-z 0-9 . _ - in \"id\".");
     return false;
   }
 
@@ -855,13 +884,9 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   // PIO SPI divider for the new clock and holds its bus across the switch,
   // so a link left up would stay in spec; before that, the divider fixed at
   // init for 200 MHz ran the bus at 75 MHz at 300 MHz: "hdr mismatch"
-  // errors that stalled Core 1.)
+  // errors that stalled Core 1.) The exit below gives the connection back.
   if (app->system_clock_khz > 0 && !app->has_http && wifi_is_available()) {
-    wifi_status_t wst = wifi_get_status();
-    if (wst == WIFI_STATUS_CONNECTED || wst == WIFI_STATUS_CONNECTING ||
-        wst == WIFI_STATUS_ONLINE) {
-      wifi_disconnect();
-    }
+    wifi_leave_for_clock();
     // Wait for Core 1 to finish the hardware disconnect (bounded) before the
     // clock change: changing sysclk while the driver still talks to the chip
     // triggers an "hdr mismatch" error storm on Core 1.
@@ -898,6 +923,7 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   // hardware-scroll registers can't leak into the next one.
   display_clear_clip_rect();
   display_set_scroll_offset(0);
+  display_set_transparent_color(0);  // nor its global colour key
   display_set_font(0);            // nor the previous app's font selection
   font_registry_unload_all();     // nor its loaded fonts
   perf_init();                    // nor its setTargetFPS pacing and frame history
@@ -923,9 +949,13 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   // ── Shared post-exit cleanup ──────────────────────────────────────────────
   display_clear_clip_rect();      // don't let an app's clip rect leak back to the launcher
   display_set_scroll_offset(0);   // nor its hardware-scroll offset
+  display_set_transparent_color(0);  // nor its global colour key (launcher icons)
   display_set_font(0);            // nor the previous app's font selection
   font_registry_unload_all();     // nor its loaded fonts
   perf_init();                    // nor its perf pacing target
+  sd_set_slow_mode(false);        // nor a slow SD bus (left on by an app that
+                                  // exited mid-download)
+  idle_dim_clear_app_brightness(); // nor its backlight level
 #ifndef PICODECK_SIMULATOR
   // Nor a dev run's `xipstat prio core0`: Core 0 winning every bus
   // arbitration would leave Core 1 and the DMA (audio) the scraps.
@@ -935,6 +965,7 @@ static bool run_app_entry(app_entry_t *app, int idx) {
   if (app->system_clock_khz > 0) {
     launcher_apply_clock(200000); // Reset to system default
     wifi_resume_radio();          // paused above (a no-op if not)
+    wifi_rejoin_after_clock();    // taken down above (only queues the join)
   }
 
   system_menu_clear_items();
@@ -948,6 +979,10 @@ static bool run_app_entry(app_entry_t *app, int idx) {
 
   crashlog_describe_heap(heap, sizeof(heap));
   printf("[LAUNCHER] App '%s' exited (ok=%d), PSRAM %s\n", app->name, ok, heap);
+
+  // The app's quitting key, still down, must not start whatever the launcher
+  // has selected: a held Enter's repeats are press edges.
+  kbd_hide_held();
 
   return ok;
 }
@@ -1020,8 +1055,10 @@ static void handle_input(uint32_t pressed, bool *dirty) {
 
       run_app(app_idx);
       kbd_clear_state();
-      scan_apps();
-      build_category_indices();
+      if (APPS_CHANGED_SINCE_SCAN()) {
+        scan_apps();
+        build_category_indices();
+      }
 
       s_active_tab = saved_tab;
       s_desc_scroll = 0;
@@ -1140,8 +1177,10 @@ void launcher_run(void) {
                "'%s...' not launched\n", LAUNCH_ARG_MAX, name);
       } else if (launcher_launch_by_name(name)) {
         kbd_clear_state();
-        scan_apps();
-        build_category_indices();
+        if (APPS_CHANGED_SINCE_SCAN()) {
+          scan_apps();
+          build_category_indices();
+        }
         dirty = true;
       }
     }

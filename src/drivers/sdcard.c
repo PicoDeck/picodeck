@@ -6,6 +6,7 @@
 #include "pico/time.h"
 #include "hardware/spi.h"
 #include "hardware/gpio.h"
+#include "hardware/watchdog.h"
 
 #include "ff.h"
 #include "diskio.h"
@@ -20,6 +21,9 @@
 
 static FATFS s_fs;
 static bool  s_mounted = false;
+static volatile uint32_t s_apps_generation;  // sdcard_apps_generation()
+
+extern void core0_heartbeat(void);  // main.c
 
 // Protects all FatFS operations from concurrent access across cores.
 // Recursive, so a nested sdcard_* call from a holder cannot deadlock. Callbacks
@@ -200,11 +204,37 @@ bool sdcard_ensure_ready(void) {
 }
 
 void sdcard_apply_clock(void) {
+    // Core 1 is paused between its ticks here (launcher_apply_clock), so no
+    // read of its can be in flight: nothing to wait for under the SD mutex.
     spi_set_baudrate(SD_SPI_PORT, SD_SPI_BAUD);
+}
+
+// CYW43 radio EMI corrupts SPI0 at 25 MHz (hardware.h, SD_SPI_BAUD). Writes made
+// while the radio may be active can drop to a speed with a large noise margin.
+#define SD_SAFE_BAUD (1000 * 1000)  // 1 MHz
+
+void sd_set_slow_mode(bool slow) {
+    // Nearly every call finds the bus as asked (the launcher asks at every app's
+    // exit), and then there is nothing to wait for or to risk. Reading the
+    // divider disturbs no transfer; a card recovery on Core 1 moving it meanwhile
+    // ends at full speed.
+    if ((spi_get_baudrate(SD_SPI_PORT) <= SD_SAFE_BAUD) == slow)
+        return;
+    // spi_set_baudrate clears SSE for a moment, and a read in flight on Core 1
+    // can lose the byte in the shifter: spi_write_read_blocking then waits for it
+    // for good, holding this mutex, and only the watchdog ends it (a reboot, with
+    // no crash record). Core 1 reads under the mutex, one sdcard_fread piece (64
+    // KB) or one try-locked stream read at a time, even to the end of an
+    // image_load nobody wants any more (image_preload_update), so this waits for
+    // at most one piece.
+    recursive_mutex_enter_blocking(&g_sdcard_mutex);
+    spi_set_baudrate(SD_SPI_PORT, slow ? SD_SAFE_BAUD : SD_SPI_BAUD);
+    recursive_mutex_exit(&g_sdcard_mutex);
 }
 
 bool sdcard_remount(void) {
     recursive_mutex_enter_blocking(&g_sdcard_mutex);
+    s_apps_generation++;  // a host may have written the card, or it is another
     f_unmount("");
     s_mounted = false;
     sleep_ms(10);  // Brief delay for card to stabilize after unmount
@@ -234,6 +264,24 @@ static BYTE mode_to_fatfs(const char *mode) {
     return m;
 }
 
+// ── Writes that may touch /apps ──────────────────────────────────────────────
+// The launcher rescans only after one of these (sdcard_apps_generation). A path
+// that can reach /apps names it, whatever else it holds ("//apps", "/x/../APPS"),
+// so this errs towards a rescan and is cheap enough for every write's open.
+static void note_write(const char *path) {
+    for (const char *p = path; *p; p++) {
+        if ((p[0] | 0x20) == 'a' && (p[1] | 0x20) == 'p' &&
+            (p[2] | 0x20) == 'p' && (p[3] | 0x20) == 's') {
+            s_apps_generation++;
+            return;
+        }
+    }
+}
+
+uint32_t sdcard_apps_generation(void) {
+    return s_apps_generation;
+}
+
 // ── File I/O ─────────────────────────────────────────────────────────────────
 
 sdfile_t sdcard_fopen(const char *path, const char *mode) {
@@ -243,6 +291,7 @@ sdfile_t sdcard_fopen(const char *path, const char *mode) {
 
     recursive_mutex_enter_blocking(&g_sdcard_mutex);
     BYTE flags = mode_to_fatfs(mode);
+    if (flags & FA_WRITE) note_write(path);
     FRESULT res = f_open(f, path, flags);
 
     /* If the card went unresponsive (e.g., brownout during WiFi activity),
@@ -250,6 +299,7 @@ sdfile_t sdcard_fopen(const char *path, const char *mode) {
      * runs the full card recovery sequence, then retry the open once. */
     if (res == FR_DISK_ERR || res == FR_NOT_READY) {
         printf("[SD] fopen failed (%d), attempting remount+retry...\n", (int)res);
+        s_apps_generation++;  // this may be another card: the launcher rescans
         f_unmount("");
         s_mounted = false;
         sleep_ms(50);
@@ -272,15 +322,30 @@ sdfile_t sdcard_fopen(const char *path, const char *mode) {
     return (sdfile_t)f;
 }
 
+// A long read or write goes in pieces with the lock released between them, and
+// feeds the watchdog as it goes: at the card's ~300-480 KB/s (~100 KB/s under
+// slow mode) a single f_read of a few MB outlasts the 10 s watchdog, and held
+// the lock against Core 1's audio try-locks for all of it.
+#define SD_RW_PIECE (64u * 1024u)
+
 int sdcard_fread(sdfile_t f, void *buf, int len) {
-    if (!f) return -1;
-    recursive_mutex_enter_blocking(&g_sdcard_mutex);
-    UINT br = 0;
-    FRESULT res = f_read((FIL *)f, buf, (UINT)len, &br);
-    recursive_mutex_exit(&g_sdcard_mutex);
+    if (!f || len < 0) return -1;
+    FRESULT res = FR_OK;
+    int total = 0;
+    do {
+        UINT want = (UINT)(len - total) > SD_RW_PIECE ? SD_RW_PIECE
+                                                      : (UINT)(len - total);
+        UINT br = 0;
+        recursive_mutex_enter_blocking(&g_sdcard_mutex);
+        res = f_read((FIL *)f, (uint8_t *)buf + total, want, &br);
+        recursive_mutex_exit(&g_sdcard_mutex);
+        total += (int)br;
+        if (res != FR_OK || br < want) break;  // an error, or the end of the file
+        if (total < len) watchdog_update();
+    } while (total < len);
     if (res != FR_OK && is_fs_corruption(res))
         sdcard_log_corruption(res, "sdcard_fread", NULL);
-    return (res == FR_OK) ? (int)br : -1;
+    return (res == FR_OK) ? total : -1;
 }
 
 int sdcard_try_fread_at(sdfile_t f, uint32_t offset, void *buf, int len) {
@@ -298,17 +363,26 @@ int sdcard_try_fread_at(sdfile_t f, uint32_t offset, void *buf, int len) {
 }
 
 int sdcard_fwrite(sdfile_t f, const void *buf, int len) {
-    if (!f) return -1;
-    recursive_mutex_enter_blocking(&g_sdcard_mutex);
-    UINT bw = 0;
-    FRESULT res = f_write((FIL *)f, buf, (UINT)len, &bw);
-    recursive_mutex_exit(&g_sdcard_mutex);
+    if (!f || len < 0) return -1;
+    FRESULT res = FR_OK;
+    int total = 0;
+    do {
+        UINT want = (UINT)(len - total) > SD_RW_PIECE ? SD_RW_PIECE
+                                                      : (UINT)(len - total);
+        UINT bw = 0;
+        recursive_mutex_enter_blocking(&g_sdcard_mutex);
+        res = f_write((FIL *)f, (const uint8_t *)buf + total, want, &bw);
+        recursive_mutex_exit(&g_sdcard_mutex);
+        total += (int)bw;
+        if (res != FR_OK || bw < want) break;  // an error, or the card is full
+        if (total < len) watchdog_update();
+    } while (total < len);
     if (res == FR_OK) {
         if (s_corruption_count > 0) s_corruption_count = 0;
     } else if (is_fs_corruption(res)) {
         sdcard_log_corruption(res, "sdcard_fwrite", NULL);
     }
-    return (res == FR_OK) ? (int)bw : -1;
+    return (res == FR_OK) ? total : -1;
 }
 
 void sdcard_fclose(sdfile_t f) {
@@ -372,6 +446,7 @@ int sdcard_fsize_handle(sdfile_t f) {
 bool sdcard_mkdir(const char *path) {
     if (!s_mounted) return false;
     recursive_mutex_enter_blocking(&g_sdcard_mutex);
+    note_write(path);
     // f_mkdir returns FR_OK if successful or FR_EXIST if already exists
     FRESULT res = f_mkdir(path);
     if (res == FR_OK)
@@ -450,6 +525,7 @@ int sdcard_list_dir(const char *path,
         ((char *)(r + 1))[name_len] = '\0';
         used += rec;
         count++;
+        watchdog_update();  // a huge directory takes a while to walk
     }
     f_closedir(dir);
     recursive_mutex_exit(&g_sdcard_mutex);
@@ -486,6 +562,7 @@ int sdcard_list_dir(const char *path,
 bool sdcard_delete(const char *path) {
     if (!s_mounted) return false;
     recursive_mutex_enter_blocking(&g_sdcard_mutex);
+    note_write(path);
     bool ok = f_unlink(path) == FR_OK;
     if (ok)
         disk_ioctl(0, CTRL_SYNC, NULL);  // Flush FAT/directory update to SD
@@ -498,6 +575,7 @@ static void delete_recursive_cb(const sdcard_entry_t *entry, void *user) {
     char *parent = (char *)user;
     char path[512];
     snprintf(path, sizeof(path), "%s/%s", parent, entry->name);
+    watchdog_update();  // deleting a big tree can far outlast the watchdog
     if (entry->is_dir) {
         sdcard_delete_recursive(path);
     } else {
@@ -533,6 +611,8 @@ sdcard_within_t sdcard_path_within(const char *root, const char *path) {
 bool sdcard_rename(const char *src, const char *dst) {
     if (!s_mounted) return false;
     recursive_mutex_enter_blocking(&g_sdcard_mutex);
+    note_write(src);
+    note_write(dst);
     bool ok = f_rename(src, dst) == FR_OK;
     if (ok)
         disk_ioctl(0, CTRL_SYNC, NULL);  // Flush FAT/directory update to SD
@@ -549,7 +629,7 @@ bool sdcard_rename(const char *src, const char *dst) {
 // further. Between chunks other code may use the card; FatFS's file lock
 // (FF_FS_LOCK) keeps anyone from opening dst for writing meanwhile.
 bool sdcard_copy(const char *src, const char *dst,
-                 void (*progress_cb)(uint32_t done, uint32_t total, void *user),
+                 bool (*progress_cb)(uint32_t done, uint32_t total, void *user),
                  void *user) {
     if (!s_mounted) return false;
 
@@ -563,6 +643,7 @@ bool sdcard_copy(const char *src, const char *dst,
 
     if (ok) {
         recursive_mutex_enter_blocking(&g_sdcard_mutex);
+        note_write(dst);
         total = (f_stat(src, fi) == FR_OK) ? fi->fsize : 0;
         src_open = f_open(fsrc, src, FA_READ | FA_OPEN_EXISTING) == FR_OK;
         if (src_open)
@@ -583,8 +664,9 @@ bool sdcard_copy(const char *src, const char *dst,
         if (!ok || br == 0)
             break; // error or EOF
         done += br;
-        if (progress_cb)
-            progress_cb(done, total, user);
+        watchdog_update();  // a large copy far outlasts the watchdog
+        if (progress_cb && !progress_cb(done, total, user))
+            ok = false;  // asked to stop: dst goes, below
     }
 
     if (src_open || dst_open) {
@@ -628,6 +710,9 @@ bool sdcard_stat(const char *path, sdcard_stat_t *out) {
 
 bool sdcard_disk_info(uint32_t *out_free_kb, uint32_t *out_total_kb) {
     if (!s_mounted) return false;
+    // Without a valid free count on the card, f_getfree reads the whole FAT in
+    // one call (megabytes on a large card): Core 1's relay covers it.
+    core0_heartbeat();
     recursive_mutex_enter_blocking(&g_sdcard_mutex);
     FATFS *fs;
     DWORD free_clust;
@@ -643,15 +728,16 @@ bool sdcard_disk_info(uint32_t *out_free_kb, uint32_t *out_total_kb) {
     return true;
 }
 
+// Opens first and takes the size from the handle: a stat before the open walks
+// the path a second time, one sector read per directory sector up to the name
+// (~10 on a card of 40 apps: every app's main.lua, module and app.json paid it).
 char *sdcard_read_file(const char *path, int *out_len) {
-    int size = sdcard_fsize(path);
-    if (size < 0) return NULL;
-
-    char *buf = (char *)umm_malloc(size + 1);
-    if (!buf) return NULL;
-
     sdfile_t f = sdcard_fopen(path, "rb");
-    if (!f) { umm_free(buf); return NULL; }
+    if (!f) return NULL;
+
+    int size = sdcard_fsize_handle(f);
+    char *buf = size < 0 ? NULL : (char *)umm_malloc((size_t)size + 1);
+    if (!buf) { sdcard_fclose(f); return NULL; }
 
     int n = sdcard_fread(f, buf, size);
     sdcard_fclose(f);

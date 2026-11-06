@@ -30,6 +30,8 @@ Starts timing a frame. Call at the **beginning** of your game loop.
 ```lua
 while true do
     picocalc.perf.beginFrame()
+    picocalc.input.update()
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     -- Game logic
     picocalc.perf.endFrame()
 end

@@ -9,7 +9,5 @@
         "filesystem",
         "audio"
     ],
-    "category": "emulators",
-    "repo": "PicoDeck/picodeck",
-    "min_firmware": "1.0.0"
+    "category": "emulators"
 }

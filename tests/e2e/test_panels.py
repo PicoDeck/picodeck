@@ -92,7 +92,12 @@ def _stage_panels_lib(test_sd_card):
     assert src.exists(), "system/lib/panels.lua missing from the repo"
     dest = test_sd_card / "system" / "lib"
     dest.mkdir(parents=True, exist_ok=True)
-    shutil.copy(src, dest / "panels.lua")
+    # These tests keep the clock paused, where a sleep waits for a step, and
+    # drive frames with keys: the idle sleep is off here, and the one test that
+    # needs it stages the library as it is.
+    text = src.read_text()
+    assert "idleSleepMs      = 16," in text
+    (dest / "panels.lua").write_text(text.replace("idleSleepMs      = 16,", "idleSleepMs      = 0,"))
 
 
 def test_panels_full_lifecycle(sim_factory, test_sd_card):
@@ -224,3 +229,191 @@ def test_panels_hw_scroll(sim_factory, test_sd_card):
 
     _tap(simulator, "esc")
     _wait_for(simulator, "PHW EXIT quit")
+
+
+RIGID_COMIC = r"""
+local Panels = picocalc.sys.loadlib("panels")
+local disp = picocalc.display
+local comicData = {
+    name = "EmbedDoc",
+    sequences = {
+        {
+            scrollType = "scroll",
+            nextSequence = 1,
+            transition = "cut",
+            panels = {
+                { frame = { height = 250 }, backgroundColor = disp.rgb(200, 40, 40),
+                  layers = { { text = "TOP", x = 140, y = 20 } } },
+                { frame = { height = 250, marginBefore = 8 }, backgroundColor = disp.rgb(40, 180, 60),
+                  layers = { { text = "MID", x = 140, y = 120 } } },
+                { frame = { height = 250, marginBefore = 8 }, backgroundColor = disp.rgb(40, 80, 200),
+                  layers = { { text = "BOTTOM", x = 130, y = 200 } } },
+            },
+        },
+    },
+}
+local opts = { resume = false }
+"""
+
+
+def _scroll_shots(sim):
+    """The screen at rest, and after scrolling 4 and 8 steps."""
+    _wait_for(sim, "PANELS:HW on")
+    sim.set_time_multiplier(0)
+    _frame_barrier(sim)
+    shots = [sim.screenshot()]
+    for _ in range(2):
+        _scroll(sim, 4)
+        shots.append(sim.screenshot())
+    return shots
+
+
+def test_panels_doc_embed_loop_matches_start(sim_factory, test_sd_card, tmp_path):
+    """The loop on the page, verbatim, on a hardware-scroll sequence: the same
+    pixels as Panels.start, and Esc gets out of it. The unconditional flush the
+    page used to show scrambled this screen."""
+    from helpers import PROJECT_ROOT, stage_lua_app
+    text = (PROJECT_ROOT / "docs" / "Library-Panels.md").read_text()
+    section = text.split("### `Panels.new(comicData [, opts])`", 1)[1]
+    loop = section.split("```lua\n", 1)[1].split("```", 1)[0]
+
+    _stage_panels_lib(test_sd_card)
+    stage_lua_app(test_sd_card, "embed_start",
+                  RIGID_COMIC + 'Panels.start(comicData, opts)\n')
+    stage_lua_app(test_sd_card, "embed_doc", RIGID_COMIC + loop)
+
+    sim = _paused_sim(sim_factory, test_sd_card)
+    sim.clear_log()
+    sim.launch_app("embed_start")
+    want = _scroll_shots(sim)
+    assert want[1] != want[0] and want[2] != want[1]
+    sim.set_time_multiplier(50)
+    sim.keypress("esc")
+    sim.wait_for_exit(timeout=10)
+
+    sim.clear_log()
+    sim.launch_app("embed_doc")
+    got = _scroll_shots(sim)
+    assert got == want
+    sim.set_time_multiplier(50)
+    sim.keypress("esc")
+    out = sim.wait_for_exit(timeout=10)
+    assert out.get("result") == "returned", out
+
+
+def test_panels_logs_a_missing_image_once(simulator, test_sd_card):
+    """The doc says logged and skipped. It was logged, and looked for on the
+    card, every frame the panel was up."""
+    from helpers import stage_lua_app
+    _stage_panels_lib(test_sd_card)
+    code = r"""
+local Panels = picocalc.sys.loadlib("panels")
+local comic = Panels.new({ name = "Missing", sequences = { { panels = {
+    { frame = { height = 320 }, layers = { { image = "nope.png" } } },
+} } } })
+for i = 1, 40 do
+    picocalc.input.update()
+    comic:update()
+    if comic.drewThisFrame ~= false then picocalc.display.flush() end
+end
+comic:teardown()
+"""
+    stage_lua_app(test_sd_card, "missing_img", code)
+    simulator.launch_app("missing_img")
+    out = simulator.wait_for_exit(timeout=20)
+    assert out.get("result") == "returned", out
+    lines = [t for t in _texts(simulator) if "image load failed" in t]
+    assert len(lines) == 1, lines
+
+
+def _doc_choices_snippet():
+    text = (REPO_ROOT / "docs" / "Library-Panels.md").read_text()
+    return text.split("### Choices", 1)[1].split("```lua\n", 1)[1].split("```", 1)[0]
+
+
+def test_panels_validate_rejects_sequence_choices(simulator, test_sd_card):
+    """`choices` belongs to a panel. On a sequence nothing ever read it, so the
+    menu silently never opened: validate has to say so."""
+    from helpers import stage_lua_app
+    _stage_panels_lib(test_sd_card)
+    stage_lua_app(test_sd_card, "seq_choices", r"""
+local Panels = picocalc.sys.loadlib("panels")
+local ok, err = pcall(Panels.validate, { sequences = {
+    { panels = { { frame = { height = 320 } } },
+      choices = { { text = "a", target = 1 } } },
+} })
+picocalc.sys.log("PT ok=" .. tostring(ok) .. " err=" .. tostring(err))
+""")
+    simulator.launch_app("seq_choices")
+    assert simulator.wait_for_exit(timeout=10.0)["result"] == "returned"
+    joined = "\n".join(_texts(simulator))
+    assert ("PT ok=false err=panels: sequences[1]: "
+            "choices belongs on a panel, not on a sequence") in joined, joined
+
+
+def test_panels_doc_choices_snippet_opens_the_menu(sim_factory, test_sd_card):
+    """The Choices section's snippet, as the page has it: it must pass validate
+    and reach a menu, as the text above it says."""
+    from helpers import stage_lua_app
+    _stage_panels_lib(test_sd_card)
+    # The snippet's targets are sequence 5, so give it a comic that has one.
+    stage_lua_app(test_sd_card, "doc_choices", _doc_choices_snippet() + r"""
+local Panels = picocalc.sys.loadlib("panels")
+local plain = { panels = { { frame = { height = 320 } } } }
+Panels.start({ sequences = { sequence, plain, plain, plain, plain } })
+""")
+    simulator = _paused_sim(sim_factory, test_sd_card)
+    simulator.launch_app("doc_choices")
+    _wait_for(simulator, "PANELS:SEQ 1")
+    simulator.set_time_multiplier(0)
+    _advance(simulator, TRANSITION_MS)   # any opening fade has finished
+    _frame_barrier(simulator)            # the choice arms on a frame after it
+    _tap(simulator, "enter")             # the first option: "Stay and fight"
+    simulator.step_time(TRANSITION_MS)
+    joined = _wait_for(simulator, "PANELS:SEQ 5")
+    assert "PANELS:CHOICE 1 -> seq 5" in joined
+    assert "PANELS:ERR" not in joined
+
+
+@pytest.mark.parametrize("hw_scroll", ["true", "false"])
+def test_panels_start_sleeps_on_idle_frames(sim_factory, test_sd_card, hw_scroll):
+    """A comic waiting for a key must not spin, on either scroll path:
+    Panels.start sleeps on an idle frame, and a key still gets through."""
+    from helpers import stage_lua_app
+    dest = test_sd_card / "system" / "lib"
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copy(REPO_ROOT / "system" / "lib" / "panels.lua", dest / "panels.lua")
+    stage_lua_app(test_sd_card, "panels_idle", r"""
+local sys = picocalc.sys
+local Panels = sys.loadlib("panels")
+Panels.Settings.useHwScroll = """ + hw_scroll + r"""
+local real_sleep, sleeps, updates = sys.sleep, 0, 0
+sys.sleep = function(ms) sleeps = sleeps + 1; real_sleep(ms) end
+local started = sys.getTimeMs()
+local comic = { sequences = { { panels = { { frame = { height = 320 } } } } } }
+local real_new = Panels.new
+Panels.new = function(...)
+    local c = real_new(...)
+    local real_update = c.update
+    c.update = function(self)
+        updates = updates + 1
+        if updates % 10 == 0 and sys.getTimeMs() - started > 1500 then
+            sys.log(string.format("IDLE sleeps=%d updates=%d", sleeps, updates))
+            started = sys.getTimeMs() + 100000
+        end
+        return real_update(self)
+    end
+    return c
+end
+print(Panels.start(comic))
+""")
+    simulator = sim_factory(test_sd_card)
+    simulator.launch_app("panels_idle")
+    joined = _wait_for(simulator, "IDLE sleeps=")
+    m = re.search(r"IDLE sleeps=(\d+) updates=(\d+)", joined)
+    sleeps, updates = int(m.group(1)), int(m.group(2))
+    assert sleeps >= updates / 2, joined
+    assert updates < 400, joined   # flat out it runs thousands of frames in 1.5 s
+    _tap(simulator, "esc")
+    _wait_for(simulator, "PANELS:EXIT quit")
+    simulator.wait_for_exit(timeout=10)

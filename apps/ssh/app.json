@@ -7,5 +7,5 @@
     "requirements": ["http", "root-filesystem"],
     "category": "network",
     "repo": "PicoDeck/picodeck",
-    "min_firmware": "1.0.0"
+    "min_firmware": "0.6.0"
 }

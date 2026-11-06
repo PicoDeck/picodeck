@@ -8,10 +8,11 @@ local fs    = pc.fs
 local sys   = pc.sys
 local ui    = pc.ui
 
--- Terminal setup (53 cols x 26 rows, minus 2 rows for status/footer = 24 text rows)
+-- Terminal setup: 53 cols, and the rows that fit between the header and the
+-- footer: (302 - 21) / 12 = 23
 local TERM_COLS = 53
-local TERM_ROWS = 24
-local TEXT_ROWS = 24
+local TERM_ROWS = 23
+local TEXT_ROWS = 23
 
 -- Colors for terminal
 local TEXT_FG          = disp.WHITE
@@ -55,6 +56,12 @@ local repeat_timer = 0
 local repeat_delay = 15
 local repeat_rate  = 3
 local last_key     = 0
+
+-- Idle redraw: just past the terminal cursor's 500 ms blink, so each one moves
+-- the blink on, and it refreshes the header's clock and battery too.
+local IDLE_REDRAW_MS = 520
+local MESSAGE_MS     = 3000  -- how long the footer shows a message
+local last_draw_ms   = 0
 
 -- ── Large-file pager state ────────────────────────────────────────────────────
 local large_file        = false
@@ -187,8 +194,8 @@ end
 
 -- ── Word wrap layout (mirrors src/os/text_wrap.c) ─────────────────────────────
 -- Word wrap is done entirely editor-side: the terminal's own word wrap must
--- stay OFF. Writing 24 full-length logical lines with terminal wrap on
--- overflows the 24-row cell buffer (putChar auto-wraps long lines onto extra
+-- stay OFF. Writing 23 full-length logical lines with terminal wrap on
+-- overflows the 23-row cell buffer (putChar auto-wraps long lines onto extra
 -- rows and scrolls the top of the buffer into scrollback).
 
 local WRAP_BREAK = { [" "]=true, ["\t"]=true, ["-"]=true, [","]=true, ["."]=true,
@@ -590,7 +597,7 @@ local function redraw_screen()
 
     if word_wrap then
         -- Editor-side word wrap: write exactly one wrap segment per terminal
-        -- row so the 24-row cell buffer can never overflow. A row that
+        -- row so the 23-row cell buffer can never overflow. A row that
         -- continues on the next row is padded to the full terminal width so
         -- the next write auto-wraps via putChar, which marks the terminal's
         -- continuation flag (keeps the line-number gutter blank on
@@ -676,7 +683,7 @@ end
 local function draw_command_bar()
     local pos = string.format("L%d C%d", cursor_y, cursor_x)
 
-    if message ~= "" and sys.getTimeMs() - message_time < 3000 then
+    if message ~= "" and sys.getTimeMs() - message_time < MESSAGE_MS then
         ui.drawFooter(message, pos)
     elseif large_file then
         ui.drawFooter("Read-only  F1:Help", pos)
@@ -987,17 +994,27 @@ local function main()
         -- so drawing never reads a stale window
         update_view_cache()
 
-        -- Draw
-        draw_status_bar()
-        redraw_screen()
-        draw_command_bar()
+        -- Draw on input (a key held counts: its repeat is timed in frames) and
+        -- for what changes by itself; otherwise sleep rather than redraw and
+        -- flush flat out while waiting for a key.
+        local now = sys.getTimeMs()
+        if pressed ~= 0 or held ~= 0 or char or now - last_draw_ms >= IDLE_REDRAW_MS or
+           (message ~= "" and now - message_time >= MESSAGE_MS and
+            last_draw_ms - message_time < MESSAGE_MS) then
+            last_draw_ms = now
+            draw_status_bar()
+            redraw_screen()
+            draw_command_bar()
 
-        -- Draw help overlay on top if active
-        if show_help then
-            draw_help_overlay()
+            -- Draw help overlay on top if active
+            if show_help then
+                draw_help_overlay()
+            end
+
+            disp.flush()
+        else
+            sys.sleep(16)
         end
-
-        disp.flush()
     end
 end
 

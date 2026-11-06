@@ -29,7 +29,6 @@ import re
 import signal
 import shutil
 import socket
-import struct
 import subprocess
 import sys
 import tempfile
@@ -52,6 +51,10 @@ if TYPE_CHECKING:
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp import Image as MCPImage
 
+# Next to this file, however it was loaded (a script, ota_flash.py, hw_target).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import scrn_frame  # noqa: E402
+
 mcp = FastMCP("picodeck")
 
 DEFAULT_TIMEOUT = 5
@@ -61,8 +64,8 @@ SIMULATOR_ONLY = False  # --simulator: simulator only, never hardware
 # Default (neither flag): AUTO — use the simulator when reachable, otherwise
 # fall back to a detected serial device.
 
-SCRN_MAGIC = b"SCRN"
-SCRN_HEADER_SIZE = 12
+SCRN_STALL_S = scrn_frame.STALL_S  # silence that ends a binary screenshot
+RETRY_DELAY_S = 0.5                # between attempts at a serial transfer
 
 
 # ── JSON-RPC 2.0 Client ─────────────────────────────────────────────────────────
@@ -543,10 +546,7 @@ def open_serial(port: str, timeout: float = DEFAULT_TIMEOUT):
     return ser
 
 
-def _fnv1a(data: bytes, h: int = 2166136261) -> int:
-    for b in data:
-        h = ((h ^ b) * 16777619) & 0xFFFFFFFF
-    return h
+_fnv1a = scrn_frame.fnv1a
 
 
 class LineReader:
@@ -687,7 +687,7 @@ class HardwareMonitor:
 # Response lines that terminate a dev command exchange.
 _CMD_END_MARKERS = ["pong", "Total:", "Error:", "Launching", "Rebooting",
                     "Unknown", "Status:", "Created:", "Unzipped", "Deleted:",
-                    "Pad:", "Usage: pad", "Moved:", "Usage: mv"]
+                    "Pad:", "Usage: pad", "Moved:", "Usage: mv", "LogNoise:"]
 
 
 def _is_cmd_end(line: str) -> bool:
@@ -734,10 +734,12 @@ def _exclusive_serial(port: str):
 def _retry_transfer(fn, attempts: int = 3):
     """Retry a serial bulk transfer on integrity/corruption failures.
 
-    A device log line interleaving mid-transfer surfaces as an fnv1a
-    mismatch or a corrupted base64 line; both are transient (the firmware
-    also mutes its log sink during transfers now), so a retry nearly
-    always succeeds.  Non-transient errors re-raise immediately.
+    A transfer that gained or lost bytes surfaces as an fnv1a mismatch, a
+    corrupted line or frame, or a stall; all are transient (the firmware also
+    keeps its log output out of a transfer: src/console_gate.h), so a retry
+    nearly always succeeds. Non-transient errors re-raise immediately, and a
+    transfer still failing after the last attempt raises: a caller never gets
+    a transfer that failed its check.
     """
     for attempt in range(attempts):
         try:
@@ -746,9 +748,11 @@ def _retry_transfer(fn, attempts: int = 3):
             msg = str(e)
             transient = ("integrity" in msg or "corrupted" in msg
                          or "mismatch" in msg or "stalled" in msg)
-            if not transient or attempt == attempts - 1:
+            if not transient:
                 raise
-            time.sleep(0.5)
+            if attempt == attempts - 1:
+                raise type(e)(f"{msg} (after {attempts} attempts)") from e
+            time.sleep(RETRY_DELAY_S)
 
 
 # ── Base64 file transfer (works on UART and CDC — stdio-based) ────────────────
@@ -761,6 +765,10 @@ def do_get_file_b64(port: str, remote_path: str) -> bytes:
     return _retry_transfer(attempt)
 
 
+_B64_LINE_CORRUPTED = ("corrupted base64 line (a device log line may have "
+                       "interleaved mid-transfer) — retry the transfer")
+
+
 def _do_get_file_b64_once(port: str, remote_path: str) -> bytes:
     ser = open_serial(port, timeout=0.2)
     try:
@@ -768,22 +776,27 @@ def _do_get_file_b64_once(port: str, remote_path: str) -> bytes:
         ser.flush()
         raw = bytearray()
         size = None
+        bad_line = False
         for line in LineReader(ser).lines(idle_timeout=10.0):
             if line.startswith(b"~"):
+                # A bad line fails the transfer at its footer, not here: closing
+                # on a half-read stream puts the rest of it ahead of the retry.
                 try:
                     raw += base64.b64decode(line[1:], validate=True)
                 except Exception:
-                    raise RuntimeError(
-                        "corrupted base64 line (a device log line may have "
-                        "interleaved mid-transfer) — retry the transfer")
+                    bad_line = True
             elif b"B64 size=" in line:
                 size = int(line.split(b"size=")[1].split()[0])
+                raw.clear()  # any '~' line before the header is an older transfer's
+                bad_line = False
             elif b"Failed to open" in line:
                 raise FileNotFoundError(f"device: no such file: {remote_path}")
             elif b"Unknown command" in line:
                 raise RuntimeError(
                     "device firmware lacks getb64 — flash the current build")
             elif b"B64_END" in line:
+                if bad_line:
+                    raise RuntimeError(_B64_LINE_CORRUPTED)
                 fnv = int(line.split(b"fnv1a=")[1].split()[0], 16)
                 if size is not None and size >= 0 and len(raw) != size:
                     raise RuntimeError(
@@ -865,15 +878,17 @@ def _do_screenshot_b64_once(port: str) -> bytes:
         ser.flush()
         raw = bytearray()
         w = h = 320
+        bad_line = False
         for line in LineReader(ser).lines(idle_timeout=10.0):
             if line.startswith(b"~"):
+                # As in _do_get_file_b64_once: read on to the footer.
                 try:
                     raw += base64.b64decode(line[1:], validate=True)
                 except Exception:
-                    raise RuntimeError(
-                        "corrupted base64 line (a device log line may have "
-                        "interleaved mid-transfer) — retry the transfer")
+                    bad_line = True
             elif b"SCRN64 " in line:
+                raw.clear()
+                bad_line = False
                 for tok in line.split():
                     if tok.startswith(b"w="):
                         w = int(tok[2:])
@@ -883,6 +898,8 @@ def _do_screenshot_b64_once(port: str) -> bytes:
                 raise RuntimeError(
                     "device firmware lacks screenshot64 — flash the current build")
             elif b"SCRN64_END" in line:
+                if bad_line:
+                    raise RuntimeError(_B64_LINE_CORRUPTED)
                 fnv = int(line.split(b"fnv1a=")[1].split()[0], 16)
                 if _fnv1a(bytes(raw)) != fnv:
                     raise RuntimeError("integrity check failed (fnv1a mismatch)")
@@ -950,8 +967,16 @@ def do_command_hardware(cmd: str, port: str, timeout: float = DEFAULT_TIMEOUT,
 
 
 def do_screenshot_hardware(port: str, timeout: float = DEFAULT_TIMEOUT) -> bytes:
-    with _exclusive_serial(port):
-        return _do_screenshot_hardware_once(port, timeout)
+    """Capture the framebuffer via the binary `screenshot` command: checked
+    against the device's FNV-1a (tools/scrn_frame.py) and retried if it fails.
+    Raises rather than return a frame that failed the check."""
+    def attempt() -> bytes:
+        with _exclusive_serial(port):
+            return _do_screenshot_hardware_once(port, timeout)
+    return _retry_transfer(attempt)
+
+
+_scrn_unverified_warned: set[str] = set()
 
 
 def _do_screenshot_hardware_once(port: str, timeout: float = DEFAULT_TIMEOUT) -> bytes:
@@ -959,34 +984,19 @@ def _do_screenshot_hardware_once(port: str, timeout: float = DEFAULT_TIMEOUT) ->
     try:
         ser.write(b"screenshot\n")
         ser.flush()
-        buf = b""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            chunk = ser.read(max(1, ser.in_waiting))
-            if not chunk:
-                continue
-            buf += chunk
-            idx = buf.find(SCRN_MAGIC)
-            if idx >= 0:
-                buf = buf[idx:]
-                break
-        else:
-            raise TimeoutError("Timed out waiting for SCRN header")
-        while len(buf) < SCRN_HEADER_SIZE:
-            chunk = ser.read(SCRN_HEADER_SIZE - len(buf))
-            if not chunk:
-                raise TimeoutError("Timed out reading header")
-            buf += chunk
-        width, height, fmt = struct.unpack_from("<HHH", buf, 4)
-        pixel_bytes = width * height * 2
-        data = buf[SCRN_HEADER_SIZE:]
-        while len(data) < pixel_bytes:
-            remaining = pixel_bytes - len(data)
-            chunk = ser.read(min(remaining, 4096))
-            if not chunk:
-                raise TimeoutError(f"Timed out reading pixels ({len(data)}/{pixel_bytes})")
-            data += chunk
-        return rgb565be_to_png(data[:pixel_bytes], width, height)
+        try:
+            frame = scrn_frame.read_frame(ser, timeout, SCRN_STALL_S)
+        except Exception:
+            # Never close on a half-read stream: the next attempt would meet
+            # its tail, and the device would be left writing to nobody.
+            scrn_frame.drain(ser)
+            raise
+        if not frame.verified and port not in _scrn_unverified_warned:
+            _scrn_unverified_warned.add(port)
+            print(f"{port}: this firmware sends no screenshot checksum, so its "
+                  "frames are unverified (flash a current build)",
+                  file=sys.stderr)
+        return rgb565be_to_png(frame.pixels, frame.width, frame.height)
     finally:
         ser.close()
 
@@ -1426,19 +1436,41 @@ async def keypress(key: str, count: int = 1, delay_ms: int = 100,
 
 # ── Gamepad (the `pad` dev command) ─────────────────────────────────────────
 
-# Button names the firmware's `pad` command takes (src/dev_ops.c), joined by
-# '+'; "none" releases everything (the pad stays connected), "off"
-# disconnects it.
+# Button and axis names the firmware's `pad` command takes (src/dev_ops.c),
+# joined by '+'; "none" releases everything (the pad stays connected), "off"
+# disconnects it. An axis is name=value: sticks -1 to 1, triggers 0 to 1.
 _PAD_BUTTONS = {"up", "down", "left", "right", "a", "b", "x", "y", "l", "r",
                 "start", "select", "home"}
+_PAD_STICKS = {"lx", "ly", "rx", "ry"}
+_PAD_TRIGGERS = {"lt", "rt"}
+
+
+def _pad_token_error(tok: str) -> str | None:
+    """What is wrong with one name of a pad state, or None."""
+    if "=" not in tok:
+        if tok in _PAD_BUTTONS:
+            return None
+        return (f"unknown pad button {tok!r} (buttons: "
+                + ", ".join(sorted(_PAD_BUTTONS)) + ")")
+    name, value = tok.split("=", 1)
+    if name not in _PAD_STICKS | _PAD_TRIGGERS:
+        return (f"unknown pad axis {name!r} (axes: "
+                + ", ".join(sorted(_PAD_STICKS | _PAD_TRIGGERS)) + ")")
+    low = 0.0 if name in _PAD_TRIGGERS else -1.0
+    # The firmware takes plain decimals only (no exponent, inf, nan or '+').
+    if not re.fullmatch(r"-?(\d+\.?\d*|\.\d+)", value) \
+            or not low <= float(value) <= 1.0:
+        return f"bad pad axis value {tok!r} ({name}: {low:g} to 1)"
+    return None
 
 
 def _parse_pad_states(spec: str) -> list[str]:
     """Split a pad spec into the states to set in turn, normalized.
 
-    "A+Right" -> ["a+right"]; "home, up, a" or "home up a" -> ["home", "up",
-    "a"]; "none" and "off" stand alone. Raises ValueError on an unknown
-    button or an empty spec.
+    "A+Right" -> ["a+right"]; "left+lx=-0.5" stays one state; "home, up, a"
+    or "home up a" -> ["home", "up", "a"]; "none" and "off" stand alone.
+    Raises ValueError on an unknown button or axis, a bad axis value or an
+    empty spec.
     """
     states = []
     for tok in re.split(r"[\s,]+", spec.strip()):
@@ -1449,10 +1481,10 @@ def _parse_pad_states(spec: str) -> list[str]:
             states.append(tok)
             continue
         names = tok.split("+")
-        bad = [n for n in names if n not in _PAD_BUTTONS]
-        if bad:
-            raise ValueError(f"unknown pad button {bad[0]!r} (buttons: "
-                             + ", ".join(sorted(_PAD_BUTTONS)) + ")")
+        for n in names:
+            err = _pad_token_error(n)
+            if err:
+                raise ValueError(err)
         states.append("+".join(names))
     if not states:
         raise ValueError("empty pad state")
@@ -1489,11 +1521,15 @@ async def pad(state: str, hold_ms: int = 0, delay_ms: int = 150,
     command): apps read it through picocalc.gamepad / api->gamepad, ORed with
     the keyboard, like a physical controller.
 
-    state: buttons joined by '+' ("a", "up+a"; up down left right a b x y l
-    r start select, and home, which opens or closes the system menu), "none" (release
-    everything, stay connected) or "off" (disconnect). A single state is held
-    until the next call, or for hold_ms. A list ("home, up, a") presses each
-    in turn, each held hold_ms (default 100), delay_ms apart (default 150).
+    state: buttons and axes joined by '+' ("a", "up+a", "lx=-0.5+rt=1"; up
+    down left right a b x y l r start select, home, which opens or closes the
+    system menu, and the axes lx ly rx ry from -1 to 1, lt rt from 0 to 1, read
+    by picocalc.gamepad.getAxis), "none" (release everything, stay connected)
+    or "off" (disconnect). An axis is what a stick would report: the dead zone
+    applies, so lx=-0.6 reads about -0.575, and it sets no button (a real stick
+    past half way also sets the D-pad: "left+lx=-0.6"). A single state is held
+    whole until the next call, or for hold_ms. A list ("home, up, a") presses
+    each in turn, each held hold_ms (default 100), delay_ms apart (default 150).
     """
     try:
         cmds = _pad_commands(state, hold_ms)
@@ -2156,6 +2192,27 @@ def _hidden_name_ok(name: str) -> bool:
                         for c in name))
 
 
+_STATUS_APP_RE = re.compile(r"\[DEV\] Status: app=(.*?) app_uptime_ms=")
+
+
+def _running_app_hardware(port: str, tries: int = 3) -> str | None:
+    """The app the device is running, None at the launcher. A `status` reply
+    can be dropped, hence the tries; none at all raises, so a silent device is
+    not taken for one at the launcher."""
+    for _ in range(tries):
+        for line in do_command_hardware("status", port, 3.0):
+            m = _STATUS_APP_RE.search(line)
+            if m:
+                return None if m.group(1) == "launcher" else m.group(1)
+    raise RuntimeError(f"no Status reply in {tries} tries "
+                       "(firmware without `status`?)")
+
+
+def _push_app_refused(app: str, rel_dir: str) -> str:
+    return (f"Error: an app is running ({app}): exit it (exit_app) and push "
+            f"again. Nothing was extracted to /{rel_dir}.")
+
+
 @mcp.tool()
 async def push_app(local_dir: str, app_name: str = "",
                    device: str | None = None,
@@ -2174,7 +2231,9 @@ async def push_app(local_dir: str, app_name: str = "",
     Hardware: zips the directory in memory, uploads one file over serial,
     extracts it on-device with the `unzip` dev command and deletes the
     temporary archive — orders of magnitude faster than per-file transfers
-    for asset-heavy apps.
+    for asset-heavy apps. Stops with "an app is running" if one is, before
+    the upload or (a large upload takes minutes) by the time it ends: exit it
+    and push again.
 
     app_name defaults to the basename of local_dir.
     """
@@ -2244,7 +2303,19 @@ async def push_app(local_dir: str, app_name: str = "",
 
     tmp_zip = "/data/tmp/push_app.zip"
     try:
+        running = await asyncio.to_thread(_running_app_hardware, port)
+        if running:
+            return _push_app_refused(running, rel_dir)
         upload = await asyncio.to_thread(do_put_file_b64, port, data, tmp_zip)
+        # Someone can launch an app during the upload. `unzip` would then run
+        # inside it and fail on any file it holds open, leaving the destination
+        # partly updated (issue #65). The firmware also refuses the app's own
+        # directory, for the moment left between this check and the unzip.
+        running = await asyncio.to_thread(_running_app_hardware, port)
+        if running:
+            await asyncio.to_thread(do_command_hardware, f"rm {tmp_zip}", port,
+                                    10.0)
+            return _push_app_refused(running, rel_dir)
         # Extraction is SD-bound: allow generous headroom for slow cards.
         # unzip is silent while it inflates each file (a 700 KB file takes
         # ~1.8 s), so wait for its "Unzipped"/"Error:" line, not for quiet.
@@ -2257,7 +2328,9 @@ async def push_app(local_dir: str, app_name: str = "",
         if any("Unzipped" in ln for ln in lines):
             return (f"Pushed {count} files ({len(data)} bytes zipped) to "
                     f"/{rel_dir}\n{result}")
-        return f"Error: extraction did not complete:\n{result}\n({upload})"
+        return (f"Error: extraction did not complete (what was written before "
+                f"the failure stays, so /{rel_dir} may be partly updated):\n"
+                f"{result}\n({upload})")
     except Exception as e:
         return f"Error: {e}"
 

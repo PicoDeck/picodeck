@@ -80,6 +80,10 @@ static bool s_screenshot_pressed =
 // kbd_event_queue.h (kbd_inject_*), host-tested in test_kbd_event_queue.c.
 static kbd_inject_t s_inj;
 
+// Keys down when the system menu opened or closed, hidden until released
+// (kbd_event_queue.h, "Hidden keys"). 20 bytes.
+static kbd_hide_t s_hide;
+
 // The gamepad's key bindings (24 bytes; the masks live in s_btn.pad).
 // src/os/gamepad.c installs the effective map at every app launch.
 static kbd_padmap_t s_padmap = KBD_PAD_DEFAULT_MAP;
@@ -180,7 +184,7 @@ bool kbd_init(void) {
 // the char the app has not read yet stays, and injected one-shots are
 // neither retired nor published. The app's next kbd_poll() then delivers
 // the press/release edges, chars and raw key of what arrived meanwhile;
-// only the OS-level Sym and Brk flags are set right away.
+// only the OS-level menu key and Brk flags are set right away.
 static void kbd_poll_impl(bool bg);
 
 void kbd_poll(void) { kbd_poll_impl(false); }
@@ -241,6 +245,8 @@ static void kbd_poll_impl(bool bg) {
     else
       printf("[KBD] %s 0x%02X\n", state_str, keycode);
 #endif
+    if (kbd_hide_item(&s_hide, &s_btn.pad, &s_padmap, state, keycode))
+      continue;
     uint8_t raw = kbd_fifo_apply_pad(&s_in, &s_btn, &s_padmap, state, keycode);
     if (raw) {
       s_last_raw_key = raw;
@@ -251,10 +257,11 @@ static void kbd_poll_impl(bool bg) {
     if (state == KBD_FIFO_PRESSED && keycode == KEY_BRK)
       s_screenshot_pressed = true;
   }
+  kbd_hide_tick(&s_hide, now_ms);
 
   // The other gamepad sources (pad_source.h: the `pad` dev command, later a
   // Bluetooth or USB pad), ORed with the keyboard's aliases in the getters.
-  // A source's Home raises the menu like the Sym key (and, like it, wakes a
+  // A source's Home raises the menu like the menu key (and, like it, wakes a
   // dimmed screen without being swallowed).
   bool pad_home = pad_sources_poll(bg, now_ms);
   if (pad_home)
@@ -274,7 +281,8 @@ static void kbd_poll_impl(bool bg) {
   bool activity = bg ? (new_key || s_in.char_pushed)
                      : ((s_btn.curr & ~s_btn.prev) || s_in.char_pushed ||
                         s_last_raw_key);
-  activity = activity || pad_sources_fresh() || pad_home;
+  activity = activity || pad_sources_fresh() || pad_home ||
+             pad_sources_axes_moved();
   if (activity) {
     if (idle_dim_note_activity()) {
       // Drop this poll's fresh press edges (in a background run, only this
@@ -286,10 +294,12 @@ static void kbd_poll_impl(bool bg) {
       // ...and this poll's queued presses and chars. Releases of keys that
       // were down before this poll stay, so a key the app saw go down still
       // comes up; ups of keys pressed in this poll go with their downs. Keys
-      // first seen down in this poll are forgotten (their HOLD then reads as
-      // a quiet hold).
+      // first seen down in this poll are forgotten, and stay hidden until
+      // they are released (their repeats would read as presses).
       kbd_evq_drop_newest_keep_ups(&s_in.q, s_in.ev_pushed, &down_before);
       kbd_chars_drop_newest(&s_in, s_in.char_pushed);
+      kbd_hide_swallowed(&s_hide, &s_btn.pad, &pad_before, &s_in.down,
+                         &down_before, s_inj.active | s_inj.held);
       for (int i = 0; i < 8; i++)
         s_in.down.bits[i] &= down_before.bits[i];
       // A waking injected one-shot must be retired for good here, not just
@@ -337,6 +347,10 @@ uint32_t kbd_get_pad_pressed(void) {
 
 uint32_t kbd_get_pad_released(void) {
   return pad_sources_combine_released(s_btn.pad.curr, s_btn.pad.prev);
+}
+
+float kbd_get_pad_axis(int axis) {
+  return pad_sources_axis(axis, kbd_get_pad());
 }
 
 uint32_t kbd_get_pad_nav_pressed(void) {
@@ -419,6 +433,13 @@ void kbd_clear_state(void) {
   // button the app saw stays held without an edge (pad_sources_clear).
   kbd_inject_after_clear(&s_inj, &s_btn, &s_padmap);
   pad_sources_clear();
+}
+
+void kbd_hide_held(void) {
+  kbd_hide_add_down(&s_hide, &s_in.down, s_inj.active | s_inj.held);
+  kbd_inject_hide(&s_inj);
+  kbd_clear_state();
+  pad_sources_hide_held();
 }
 
 void kbd_inject_buttons(uint32_t buttons) {
