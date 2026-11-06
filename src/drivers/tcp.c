@@ -11,8 +11,15 @@
 #ifndef PSRAM_UNCACHED_OFFSET  // SIM_FIRMWARE_NET: 0 (host heap has no alias)
 #define PSRAM_UNCACHED_OFFSET 0x04000000u
 #endif
+// The ring starts at the block's next 8-byte line, so RX_RING_SLACK more is
+// allocated. umm keeps a block's header on the line before that, through the
+// cached alias, and rewrites it whenever a neighbour is freed: a write-back of
+// that line replaced the bytes sent through the uncached alias, and 1 connection
+// in about 300 got its first 4 bytes back as umm's header, on the device.
+#define RX_RING_SLACK 8u
 static inline uint8_t *rx_buf_uncached(const uint8_t *cached_ptr) {
-  return (uint8_t *)((uintptr_t)cached_ptr + PSRAM_UNCACHED_OFFSET);
+  uintptr_t line = ((uintptr_t)cached_ptr + 7u) & ~(uintptr_t)7u;
+  return (uint8_t *)(line + PSRAM_UNCACHED_OFFSET);
 }
 
 // TCP_CB_* come from os.h (tcp_event_t), shared with native apps.
@@ -83,7 +90,7 @@ static tcp_conn_t *claim_slot(uint8_t *buf) {
 }
 
 tcp_conn_t *tcp_alloc(void) {
-    uint8_t *buf = umm_malloc(TCP_RECV_BUF_DEFAULT);
+    uint8_t *buf = umm_malloc(TCP_RECV_BUF_DEFAULT + RX_RING_SLACK);
     if (!buf) return NULL;
     tcp_reap();
     tcp_conn_t *got = claim_slot(buf);

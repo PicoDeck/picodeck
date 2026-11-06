@@ -68,6 +68,7 @@ function modes.tls_cycles()
             s:close()
         end
         pc.sys.sleep(cfg.gap_ms or 0)
+        collectgarbage()  -- the socket's own Lua objects, and this table's
         local m = pc.sys.getMemInfo()
         row.free = m.psram_free
         row.largest = m.psram_largest_block
@@ -97,7 +98,13 @@ function modes.small_writes()
                 if d then got[#got + 1] = d; len = len + #d else pc.sys.sleep(5) end
             end
             local ms = now() - t0
-            if table.concat(got) ~= want then out.stalled = out.stalled + 1 end
+            local all = table.concat(got)
+            if len < #want then
+                out.stalled = out.stalled + 1
+            elseif all ~= want then
+                out.wrong = (out.wrong or 0) + 1
+                if not out.bad then out.bad = {run = run, got = all, want = want} end
+            end
             if ms > 500 then out.slow = out.slow + 1 end
             if ms > out.max_ms then out.max_ms = ms end
         end

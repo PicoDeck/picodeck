@@ -40,6 +40,9 @@ DIR = f"/data/{APP_ID}"
 # A closed socket's slack on the Lua heap across a run, once every close has
 # finished: fragmentation and Lua's own garbage, not a TLS context (~30 KB each).
 HEAP_SLACK = 24 * 1024
+# The largest free block, which one long-lived block landing in the big free area
+# moves by its size. Free bytes are what shows a leak.
+LARGEST_SLACK = 64 * 1024
 POOL_SLACK = 2 * 1024
 
 
@@ -134,7 +137,7 @@ def check_cycles(target, out, before, label):
     assert after["closing"] == 0, after
     assert before["pool_free"] - after["pool_free"] <= POOL_SLACK, (before, after)
     assert cycles[0]["free"] - cycles[-1]["free"] <= HEAP_SLACK, cycles[:1] + cycles[-1:]
-    assert cycles[0]["largest"] - cycles[-1]["largest"] <= HEAP_SLACK
+    assert cycles[0]["largest"] - cycles[-1]["largest"] <= LARGEST_SLACK
 
 
 def test_small_writes_never_stall(probe):
@@ -149,6 +152,7 @@ def test_small_writes_never_stall(probe):
     print(f"\nsmall writes: {out}; TCP resent {after['resent'] - before['resent']} segments")
     assert not out.get("connect_failed"), out
     assert out["stalled"] == 0, out
+    assert not out.get("wrong"), out
 
 
 def test_tls_open_close_gives_everything_back(probe):

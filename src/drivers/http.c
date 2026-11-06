@@ -19,8 +19,15 @@
 #ifndef PSRAM_UNCACHED_OFFSET  // SIM_FIRMWARE_NET: 0 (host heap has no alias)
 #define PSRAM_UNCACHED_OFFSET 0x04000000u
 #endif
+// The ring starts at the block's next 8-byte line, so RX_RING_SLACK more is
+// allocated. umm keeps a block's header on the line before that, through the
+// cached alias, and rewrites it whenever a neighbour is freed: a write-back of
+// that line replaced the bytes sent through the uncached alias, and 1 connection
+// in about 300 got its first 4 bytes back as umm's header, on the device.
+#define RX_RING_SLACK 8u
 static inline uint8_t *rx_buf_uncached(const uint8_t *cached_ptr) {
-  return (uint8_t *)((uintptr_t)cached_ptr + PSRAM_UNCACHED_OFFSET);
+  uintptr_t line = ((uintptr_t)cached_ptr + 7u) & ~(uintptr_t)7u;
+  return (uint8_t *)(line + PSRAM_UNCACHED_OFFSET);
 }
 
 static char *http_strdup(const char *s) {
@@ -737,7 +744,7 @@ static http_conn_t *claim_slot(char *hdr, uint8_t *rx) {
 http_conn_t *http_alloc(void) {
   http_reap();
   char *hdr = umm_malloc(HTTP_HEADER_BUF_MAX);
-  uint8_t *rx = umm_malloc(HTTP_RECV_BUF_DEFAULT);
+  uint8_t *rx = umm_malloc(HTTP_RECV_BUF_DEFAULT + RX_RING_SLACK);
   if (!hdr || !rx) {
     printf("[HTTP] Failed to allocate connection buffers (OOM)\n");
     umm_free(hdr);
@@ -846,7 +853,7 @@ bool http_set_recv_buf(http_conn_t *c, uint32_t bytes) {
   // A fresh buffer rather than realloc: a realloc memcpy would leave stale
   // XIP cache lines on Core 0 for a buffer Core 1 writes (RP2350 has
   // per-core XIP caches, no hardware coherency for PSRAM).
-  uint8_t *nb = umm_malloc(bytes);
+  uint8_t *nb = umm_malloc(bytes + RX_RING_SLACK);
   if (!nb)
     return false;  // the old buffer stays
   uint32_t irq = spin_lock_blocking(s_lock);
