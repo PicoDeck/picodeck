@@ -198,8 +198,11 @@ def doc_block(heading):
 def test_doc_readline_example(simulator, test_sd_card):
     stage_lua_app(test_sd_card, "repl_doc", doc_block("#### `picocalc.repl.readline()`"))
     simulator.launch_app("repl_doc")
-    simulator.wait_frames(1)
-    time.sleep(0.1)
+    # Polled: the app presents once and then only on input, so that frame may
+    # already be up by the time a wait for the next one starts.
+    deadline = time.time() + 5.0
+    while not any(band(simulator, 0, 8)) and time.time() < deadline:
+        time.sleep(0.05)
     first = band(simulator, 0, 8)
     assert any(first), "the greeting never appeared"
     bar = band(simulator, INPUT_ROW, 320)
