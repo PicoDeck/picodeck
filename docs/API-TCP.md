@@ -91,9 +91,9 @@ end
 local ok, err = write_all(conn, "GET / HTTP/1.0\r\n\r\n")
 ```
 
-**A lost frame costs about a second.** If WiFi loses a frame, the device's TCP stack sends it again a second later, then 2, 4 and so on up to 60 seconds apart until it gets through, and the stream carries on with nothing lost and no error. HTTP and TLS run over the same stack. On one home network about 1 frame in 500 was lost, so a long transfer pauses now and then. The stack also sends at most 6000 bytes ahead of what the server has acknowledged, which limits an upload to 6000 bytes per round trip.
+**A lost frame usually costs little.** If WiFi loses a frame, the device's TCP stack sends it again, at once if more data followed it, otherwise a second later, then 2, 4 and so on up to 60 seconds apart until it gets through, and the stream carries on with nothing lost and no error. HTTP and TLS run over the same stack. So the last write before a pause is the one that can take a second to arrive. The stack also sends at most 6000 bytes ahead of what the server has acknowledged, which limits an upload to 6000 bytes per round trip.
 
-If the server stops answering altogether, the socket fails with `Mongoose error: keepalive` about 3 minutes after the last thing it heard. `setReadTimeout` finds out sooner, if your protocol expects replies. A connection request is not resent: if it is lost, the connect fails after 15 seconds and you can try again.
+If the server stops answering altogether, the socket fails with `Mongoose error: keepalive` about 3 minutes after the last thing it heard. `setReadTimeout` finds out sooner, if your protocol expects replies. A connection request goes again after 1, 3 and 7 seconds, and the connect fails after 15 if nothing has answered.
 
 ---
 

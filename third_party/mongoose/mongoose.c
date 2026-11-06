@@ -4885,7 +4885,13 @@ void mg_multicast_restore(struct mg_connection *c, uint8_t *from) {
 // - A resend the driver refuses goes again on the next poll, uncounted.
 // - An allocation failure with nothing in flight fails the connection: nothing
 //   would ever wake it. Upstream waits.
-// SYN, FIN and ARP are not resent here (ARP is, by the patch above).
+// - Three duplicate ACKs resend at once (RFC 5681): a lost frame otherwise stops
+//   a transfer for the whole timeout, and on the device 1-7% of full-size frames
+//   go missing (16 KB/s uploading a MiB, nearly all of it waiting).
+// - A SYN goes again too, on the same timer (upstream's doesn't, and send_syn
+//   never looked at whether the driver took it): about 1 connect in 40 otherwise
+//   failed at MG_TCPIP_SYN_MS on the device.
+// A FIN is not resent, and ARP is, by the patch above.
 #ifndef MG_TCPIP_RTX_MS
 #define MG_TCPIP_RTX_MS 1000  // Initial retransmission timeout (RFC-6298, 2.1)
 #endif
@@ -4918,7 +4924,8 @@ struct connstate {
   uint8_t arp_tries;     // PicoDeck patch: ARP/NS requests resent so far
   // PicoDeck patch: the retransmission queue (see MG_TCPIP_RTX_MS)
   bool retransmit;       // Keep sent data until it is acknowledged
-  uint8_t txq_retries;   // Resends since the last ACK progress
+  uint8_t txq_retries;   // Resends since the last ACK progress, or of the SYN
+  uint8_t txq_dups;      // Duplicate ACKs of txq_una so far
   uint16_t win;          // The peer's receive window
   uint32_t txq_una;      // Oldest unacknowledged sequence number
   uint64_t txq_timer;    // When to resend (RFC-6298, 5)
@@ -6251,23 +6258,28 @@ long mg_io_send(struct mg_connection *c, const void *buf, size_t len) {
 
 // PicoDeck patch: an ACK takes what it covers off the queue. Sequence numbers
 // compare modulo 2^32. An ACK older than the last one, or for bytes never sent
-// (the ACK of our FIN), changes nothing.
-static void txq_ack(struct connstate *s, uint32_t ackno, uint16_t win,
-                    uint64_t now) {
+// (the ACK of our FIN), changes nothing. Returns true at the third duplicate of
+// an ACK that carries nothing else: the peer has what came after a hole.
+static bool txq_ack(struct connstate *s, uint32_t ackno, uint16_t win,
+                    uint64_t now, bool bare) {
   if ((int32_t) (ackno - s->txq_una) < 0 || (int32_t) (s->seq - ackno) < 0)
-    return;
+    return false;
   s->win = win;
-  if (ackno == s->txq_una) return;  // duplicate: its window is all it brings
+  if (ackno == s->txq_una)
+    return bare && s->txq.len > 0 && s->txq_dups < 3 && ++s->txq_dups == 3;
   mg_iobuf_del(&s->txq, 0, (size_t) (ackno - s->txq_una));
   s->txq_una = ackno;
   s->txq_retries = 0;
+  s->txq_dups = 0;
   s->txq_timer = now + MG_TCPIP_RTX_MS;  // RFC-6298, 5.3
   if (s->txq.len == 0) mg_iobuf_free(&s->txq);
+  return false;
 }
 
 // PicoDeck patch: send what is oldest again, up to one segment, and back off
 // (RFC-6298, 5.5). It also serves as the probe of a window that has shut.
-static void txq_resend(struct mg_connection *c) {
+// `fast` is the duplicate ACKs' resend: the link is working, so no backing off.
+static void txq_resend(struct mg_connection *c, bool fast) {
   struct connstate *s = (struct connstate *) (c + 1);
   struct mg_tcpip_if *ifp = c->mgr->ifp;
   size_t len = trim_len(c, s->txq.len), sent;
@@ -6282,6 +6294,10 @@ static void txq_resend(struct mg_connection *c) {
   }
   if (sent == 0) return;  // the driver is busy: next poll
   ifp->nrtx++;
+  if (fast) {
+    s->txq_timer = ifp->now + MG_TCPIP_RTX_MS;
+    return;
+  }
   if (s->txq_retries < 255) s->txq_retries++;
   // R1 reports a delivery problem; it does not close (RFC-9293, 3.8.3)
   if (s->txq_retries == MG_TCPIP_RTX_R1) MG_ERROR(("%lu retransmit", c->id));
@@ -6335,9 +6351,11 @@ static void read_conn(struct mg_connection *c, struct pkt *pkt) {
   struct mg_iobuf *io = c->is_tls ? &c->rtls : &c->recv;
   uint32_t seq = mg_ntohl(pkt->tcp->seq);
   // PicoDeck patch: every segment's ACK counts, whatever else it carries
-  if (s->retransmit && (pkt->tcp->flags & TH_ACK))
-    txq_ack(s, mg_ntohl(pkt->tcp->ack), mg_ntohs(pkt->tcp->win),
-            c->mgr->ifp->now);
+  if (s->retransmit && (pkt->tcp->flags & TH_ACK) &&
+      txq_ack(s, mg_ntohl(pkt->tcp->ack), mg_ntohs(pkt->tcp->win),
+              c->mgr->ifp->now,
+              pkt->pay.len == 0 && !(pkt->tcp->flags & (TH_SYN | TH_FIN))))
+    txq_resend(c, true);
   if (pkt->tcp->flags & TH_FIN) {
     uint8_t flags = TH_ACK;
     if (mg_ntohl(pkt->tcp->seq) != s->ack) {
@@ -6376,14 +6394,13 @@ static void read_conn(struct mg_connection *c, struct pkt *pkt) {
     if (s->fin_rcvd && s->ttype == MIP_TTYPE_FIN) s->twclosure = true;
     return;  // no data to process
   } else if (seq != s->ack) {
-    uint32_t ack = (uint32_t) (mg_htonl(pkt->tcp->seq) + pkt->pay.len);
-    if (s->ack == ack) {
-      MG_VERBOSE(("ignoring duplicate pkt"));
-    } else {
-      MG_VERBOSE(("SEQ != ACK: %x %x %x", seq, s->ack, ack));
-      tx_tcp(c->mgr->ifp, s->mac, &c->loc, &c->rem, TH_ACK, mg_htonl(s->seq),
-             mg_htonl(s->ack), "", 0);
-    }
+    // PicoDeck patch: a duplicate gets an ACK too (RFC-9293, 3.10.7.4). It means
+    // the peer never saw the last one, and without an answer it resends for ever
+    // and holds back what Nagle is keeping for that ACK. Seen on the device: 1
+    // burst in 100 stalled like this. 7.20 said "ignoring duplicate pkt" here.
+    MG_VERBOSE(("SEQ != ACK: %x %x", seq, s->ack));
+    tx_tcp(c->mgr->ifp, s->mac, &c->loc, &c->rem, TH_ACK, mg_htonl(s->seq),
+           mg_htonl(s->ack), "", 0);
     return;  // drop it
   } else if (io->size - io->len < pkt->pay.len &&
              !mg_iobuf_resize(io, io->len + pkt->pay.len)) {
@@ -6897,7 +6914,15 @@ static void mg_tcpip_poll(struct mg_tcpip_if *ifp, uint64_t now) {
     // PicoDeck patch: the resend timer runs beside the one below, which goes on
     // counting keep-alive misses: that is what ends a dead peer
     if (s->txq.len > 0 && !c->is_closing && ifp->now > s->txq_timer)
-      txq_resend(c);
+      txq_resend(c, false);
+    // PicoDeck patch: the SYN, at 1, 3 and 7 s; MG_TCPIP_SYN_MS still ends it
+    if (s->retransmit && c->is_connecting && s->ttype == MIP_TTYPE_SYN &&
+        !c->is_closing && ifp->now > s->txq_timer) {
+      send_syn(c);
+      ifp->nrtx++;
+      s->txq_retries++;
+      s->txq_timer = ifp->now + ((uint64_t) MG_TCPIP_RTX_MS << s->txq_retries);
+    }
     if (ifp->now > s->timer) {
       if (s->ttype == MIP_TTYPE_ARP && s->arp_tries < MG_TCPIP_ARP_RETRIES) {
         // PicoDeck patch: ask again instead of failing (see MG_TCPIP_ARP_RETRIES)
@@ -7009,8 +7034,11 @@ static void l2addr_resolved(struct mg_connection *c) {
     c->is_connecting = 0;
     mg_call(c, MG_EV_CONNECT, NULL);
   } else {
+    struct connstate *s = (struct connstate *) (c + 1);
     send_syn(c);
     settmout(c, MIP_TTYPE_SYN);
+    s->txq_timer = c->mgr->ifp->now + MG_TCPIP_RTX_MS;  // PicoDeck patch
+    s->txq_retries = 0;
   }
 }
 

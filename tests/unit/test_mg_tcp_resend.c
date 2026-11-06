@@ -59,9 +59,11 @@ typedef struct {
   uint32_t drop_at;   // lose the data frames numbered from here (1 = first) ...
   uint32_t drop_n;    // ... this many
   uint32_t refuse;    // the driver refuses this many frames
+  uint32_t drop_syns; // lose this many SYNs
 
   // What it saw
   uint32_t syns;
+  uint32_t bare_acks;
   uint32_t data_frames;
   uint32_t resent_frames;  // data frames below the highest seq seen
   uint32_t max_seq_end;
@@ -182,9 +184,14 @@ static void peer_rx_tcp(peer_t *p, const uint8_t *frame) {
     p->rsts++;
     return;
   }
+  if (n == 0 && t->flags == TH_ACK) p->bare_acks++;
   if (t->flags & TH_SYN) {
     uint32_t client_seq;
     p->syns++;
+    if (p->drop_syns) {
+      p->drop_syns--;
+      return;
+    }
     p->client_port = mg_ntohs(t->sport);
     client_seq = p->start_seq ? p->start_seq : seq + 1;
     p->first_seq = client_seq;
@@ -291,7 +298,7 @@ static void run_ms(rig_t *r, uint64_t ms) {
 }
 
 // Up, connected, the peer set up by `setup` first.
-static void rig_up(rig_t *r, bool resend, void (*setup)(peer_t *)) {
+static void rig_connect(rig_t *r, bool resend, void (*setup)(peer_t *)) {
   uint8_t *rx = s_peer.rx, *have = s_peer.have;
   memset(r, 0, sizeof(*r));
   memset(&s_peer, 0, sizeof(s_peer));
@@ -322,6 +329,10 @@ static void rig_up(rig_t *r, bool resend, void (*setup)(peer_t *)) {
   r->c = mg_connect(&r->mgr, "tcp://192.168.1.10:5000", app_fn, &r->app);
   CHECK(r->c != NULL);
   r->s = (struct connstate *) (r->c + 1);
+}
+
+static void rig_up(rig_t *r, bool resend, void (*setup)(peer_t *)) {
+  rig_connect(r, resend, setup);
   run_ms(r, 50);
   CHECK(r->app.connected);
 }
@@ -376,9 +387,10 @@ static void test_without_the_resend_a_lost_frame_stalls(void) {
   rig_down(&r);
 }
 
+// Too little follows the hole for three duplicate ACKs, so the timer does it.
 static void test_a_lost_frame_is_resent_after_a_second(void) {
   rig_t r;
-  uint8_t buf[6000];
+  uint8_t buf[4000];
   uint64_t t0;
   pattern(buf, sizeof(buf));
   rig_up(&r, true, drop_second_frame);
@@ -854,7 +866,94 @@ static void test_a_reset_frees_the_queue(void) {
   rig_down(&r);  // LeakSanitizer: the queue went with the connection
 }
 
+// Seen on the device: the ACK of the peer's last data was lost, the peer sent it
+// again, and nothing answered: it backs off for ever, and anything it holds back
+// for that ACK (Nagle) never goes.
+static void test_a_duplicate_segment_gets_an_ack(void) {
+  rig_t r;
+  uint8_t d[5] = {'h', 'e', 'l', 'l', 'o'};
+  uint32_t acks;
+  rig_up(&r, true, NULL);
+  peer_send(&s_peer, TH_PUSH | TH_ACK, s_peer.snd_nxt, s_peer.rcv_nxt, d, sizeof(d));
+  run_ms(&r, 300);  // past the delayed ACK
+  acks = s_peer.bare_acks;
+  CHECK(acks > 0);
+  peer_send(&s_peer, TH_PUSH | TH_ACK, s_peer.snd_nxt, s_peer.rcv_nxt, d, sizeof(d));
+  run_ms(&r, 5);
+  CHECK_EQ_INT(s_peer.bare_acks, acks + 1);
+  rig_down(&r);
+}
+
+static void lose_one_syn(peer_t *p) { p->drop_syns = 1; }
+static void lose_every_syn(peer_t *p) { p->drop_syns = 1000; }
+
+static void test_a_lost_syn_goes_again_after_a_second(void) {
+  rig_t r;
+  rig_connect(&r, true, lose_one_syn);
+  run_ms(&r, 900);
+  CHECK(!r.app.connected);
+  CHECK_EQ_INT(s_peer.syns, 1);
+  run_ms(&r, 300);
+  CHECK(r.app.connected);
+  CHECK_EQ_INT(s_peer.syns, 2);
+  rig_down(&r);
+}
+
+// At 1, 3 and 7 s, and the connect still ends at 15 s for a peer that isn't there.
+static void test_syns_back_off_and_a_connect_still_ends(void) {
+  rig_t r;
+  rig_connect(&r, true, lose_every_syn);
+  run_ms(&r, 2500);
+  CHECK_EQ_INT(s_peer.syns, 2);
+  run_ms(&r, 2000);
+  CHECK_EQ_INT(s_peer.syns, 3);
+  run_ms(&r, 4000);
+  CHECK_EQ_INT(s_peer.syns, 4);
+  CHECK(r.app.err[0] == 0);
+  run_ms(&r, 7500);
+  CHECK(strstr(r.app.err, "Connection timeout") != NULL);
+  rig_down(&r);
+}
+
+static void test_three_duplicate_acks_resend_at_once(void) {
+  rig_t r;
+  static uint8_t buf[6000];
+  pattern(buf, sizeof(buf));
+  rig_up(&r, true, drop_second_frame);
+  mg_send(r.c, buf, sizeof(buf));
+  run_ms(&r, 50);
+  CHECK(peer_has_pattern(sizeof(buf)));
+  CHECK_EQ_INT(s_peer.lost_frames, 1);
+  CHECK_EQ_INT(r.ifp.nrtx, 1);
+  CHECK_EQ_INT(r.s->txq.len, 0);
+  rig_down(&r);
+}
+
+// A frame's data is no duplicate ACK, however often its ACK number repeats.
+static void test_only_bare_acks_count_as_duplicates(void) {
+  rig_t r;
+  uint8_t buf[500];
+  pattern(buf, sizeof(buf));
+  rig_up(&r, true, NULL);
+  s_peer.no_ack = true;
+  mg_send(r.c, buf, sizeof(buf));
+  run_ms(&r, 20);
+  for (int i = 0; i < 5; i++) {
+    uint8_t d = 'x';
+    peer_send(&s_peer, TH_PUSH | TH_ACK, s_peer.snd_nxt, r.s->txq_una, &d, 1);
+    s_peer.snd_nxt++;
+    run_ms(&r, 5);
+  }
+  CHECK_EQ_INT(r.ifp.nrtx, 0);
+  rig_down(&r);
+}
+
 int main(void) {
+  test_a_duplicate_segment_gets_an_ack();
+  test_a_lost_syn_goes_again_after_a_second();
+  test_syns_back_off_and_a_connect_still_ends();
+  test_three_duplicate_acks_resend_at_once();
+  test_only_bare_acks_count_as_duplicates();
   test_without_the_resend_a_lost_frame_stalls();
   test_a_lost_frame_is_resent_after_a_second();
   test_small_writes_survive_a_lost_frame();
