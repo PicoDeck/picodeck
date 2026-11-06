@@ -90,6 +90,7 @@ PORT=/dev/serial/by-id/usb-Raspberry_Pi_PicoDeck_Device_<serial>-if00
 pytest tests/e2e --target hw:$PORT -v       # every hardware + both test, serially
 pytest tests/e2e/test_hw_device.py --target hw:$PORT -v
 PICODECK_HW_HOST_IP=192.168.1.20 pytest tests/e2e/test_hw_http_close.py --target hw:$PORT -v
+PICODECK_HW_HOST_IP=192.168.1.20 pytest tests/e2e/test_hw_tcp_resend.py --target hw:$PORT -sv  # -s: its figures
 ```
 
 `--target hw:<port>` (or `PICODECK_E2E_TARGET`) runs only tests marked

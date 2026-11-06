@@ -1,0 +1,3 @@
+{ "id": "com.test.tcp_close_probe", "name": "tcp close probe", "version": "1.0",
+  "description": "TCP resend and close measurements (hardware test)", "author": "PicoDeck",
+  "requirements": ["http"] }
