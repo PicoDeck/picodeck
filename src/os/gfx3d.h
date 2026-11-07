@@ -80,6 +80,7 @@ typedef struct {
   uint32_t drawn;     // triangles rasterised
   uint32_t sprites;   // sprites rasterised
   uint32_t overflow;  // records dropped because the scene was full
+  uint32_t pixels;    // pixels of textured triangles rasterised
 } gfx3d_stats_t;
 
 // Resolves sprite `slot` (as given to gfx3d_draw_sprite) at raster time.
@@ -191,6 +192,23 @@ void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t);
 bool gfx3d_project(const gfx3d_t *g, const float p[3], float *sx, float *sy,
                    float *depth);
 const gfx3d_stats_t *gfx3d_get_stats(const gfx3d_t *g);
+#ifdef GFX3D_TEST
+// One textured triangle straight to the rasteriser, past the scene: screen
+// positions (any values), 1/z, uv in texture repeats, host RGB565. Mip `level` of
+// texture `slot` (clamped to its last), clipped to the target's clip rect, added to
+// stats.pixels. `info`, if not NULL, says what it did: `affine` no per-span division,
+// `rows` the rows it walked, 0 if it stopped before any.
+typedef struct {
+  float x, y, iw, u, v;
+  uint16_t color;
+} gfx3d_test_vert_t;
+typedef struct {
+  bool affine;
+  int rows;
+} gfx3d_test_tex_info_t;
+void gfx3d_test_tex_tri(gfx3d_t *g, const gfx3d_target_t *t, int slot, int level,
+                        const gfx3d_test_vert_t v[3], bool blend, gfx3d_test_tex_info_t *info);
+#endif
 // Fast memory for one mesh's vertices during a draw call, or NULL. Weak in
 // gfx3d.c (none); the firmware lends the video decoder's SRAM while no player
 // exists. Nothing in it outlives the call, so nothing else may run meanwhile.

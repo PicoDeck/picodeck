@@ -1040,6 +1040,8 @@ static void fill_sky(const gfx3d_t *g, const gfx3d_target_t *t,
   }
 }
 
+#include "gfx3d_tex.h"
+
 // Not inlined: the rasteriser below stays small, and this stays in flash.
 __attribute__((noinline)) static void raster_sprite(gfx3d_t *g, const gfx3d_target_t *t,
                                                     const disp_clip_t *c,
@@ -1093,6 +1095,41 @@ GFX3D_RAM_FUNC static void raster_scene(gfx3d_t *g, const gfx3d_target_t *t,
   }
   g->stats.drawn += drawn;
 }
+
+// Mip `level` of a texture (past the last: the last).
+__attribute__((unused)) static const uint16_t *tex_level(const gfx3d_tex_t *t, int level, int *lw,
+                                                         int *lh) {
+  if (level > t->nmips - 1) level = t->nmips - 1;
+  const uint16_t *px = t->px;
+  int w = t->lg_w, h = t->lg_h;
+  for (int k = 0; k < level; k++, w--, h--) px += (size_t)1u << (w + h);
+  *lw = w;
+  *lh = h;
+  return px;
+}
+
+#ifdef GFX3D_TEST
+void gfx3d_test_tex_tri(gfx3d_t *g, const gfx3d_target_t *t, int slot, int level,
+                        const gfx3d_test_vert_t v[3], bool blend, gfx3d_test_tex_info_t *info) {
+  tex_vert_t tv[3];
+  for (int i = 0; i < 3; i++) {
+    tv[i].x = v[i].x;
+    tv[i].y = v[i].y;
+    tv[i].iw = v[i].iw;
+    tv[i].u = v[i].u;
+    tv[i].v = v[i].v;
+    tv[i].color = v[i].color;
+  }
+  int lw, lh;
+  const uint16_t *px = tex_level(&g->tex[slot], level, &lw, &lh);
+  g->stats.pixels += tex_tri(t->fb, t->stride, t->clip_x0, t->clip_y0, t->clip_x1, t->clip_y1,
+                             &tv[0], &tv[1], &tv[2], px, lw, lh, blend, t->swap);
+  if (info) {
+    info->affine = s_tex_test_affine;
+    info->rows = s_tex_test_rows;
+  }
+}
+#endif
 
 void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t) {
   disp_clip_t c = {t->clip_x0 > g->vx ? t->clip_x0 : g->vx,

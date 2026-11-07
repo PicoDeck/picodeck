@@ -1,7 +1,9 @@
 // Host tests for src/os/gfx3d.c: conventions, meshes, projection (Task 8),
 // the scene pipeline (Task 9), sky, background and sprites (Task 10).
 #include "check.h"
+#include "display_clip.h"
 #include "gfx3d.h"
+#include "gfx3d_tex_scene.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1131,6 +1133,748 @@ static void test_new_ex_capacity(void) {
   gfx3d_free(g);
 }
 
+// ── Textured triangles, through the test-only raster entry ──
+
+// Small buffers: thousands of triangles are compared whole.
+#define TW 96
+#define TH 64
+static uint16_t s_ta[TW * TH], s_tb[TW * TH];
+
+static uint32_t s_trng = 0x1234ABCDu;
+static uint32_t trand(void) {
+  s_trng ^= s_trng << 13;
+  s_trng ^= s_trng >> 17;
+  s_trng ^= s_trng << 5;
+  return s_trng;
+}
+static float trandf(float lo, float hi) {
+  return lo + (hi - lo) * (float)(trand() & 0xFFFFFFu) / 16777216.0f;
+}
+
+static gfx3d_target_t tex_target(uint16_t *fb, bool swap) {
+  gfx3d_target_t t = {fb, TW, 0, 0, TW - 1, TH - 1, swap, NULL, NULL};
+  return t;
+}
+
+static gfx3d_test_vert_t tv(float x, float y, float iw, float u, float v, uint16_t c) {
+  gfx3d_test_vert_t r = {x, y, iw, u, v, c};
+  return r;
+}
+
+// One solid colour, 2^lg x 2^lg, one level.
+static int tex_solid(gfx3d_t *g, int lg, uint16_t c) {
+  static uint16_t p[64 * 64];
+  for (int i = 0; i < 1 << (2 * lg); i++) p[i] = c;
+  return gfx3d_tex_add(g, lg, lg, 1, p);
+}
+
+static void tex_tri(gfx3d_t *g, const gfx3d_target_t *t, int slot, gfx3d_test_vert_t a,
+                    gfx3d_test_vert_t b, gfx3d_test_vert_t c, bool blend,
+                    gfx3d_test_tex_info_t *info) {
+  const gfx3d_test_vert_t v[3] = {a, b, c};
+  gfx3d_test_tex_tri(g, t, slot, 0, v, blend, info);
+}
+
+// A random triangle, in one of the shapes that break a rasteriser.
+static void random_tri(float p[6]) {
+  const uint32_t kind = trand() % 8u;
+  const float cx = trandf(-20.0f, TW + 20.0f), cy = trandf(-20.0f, TH + 20.0f);
+  for (int i = 0; i < 6; i += 2) {
+    switch (kind) {
+      case 0:  // anywhere near the buffer
+        p[i] = trandf(-30.0f, TW + 30.0f);
+        p[i + 1] = trandf(-30.0f, TH + 30.0f);
+        break;
+      case 1:  // on whole and half pixels: every tie the top-left rule decides
+        p[i] = (float)(int)trandf(0.0f, TW * 2.0f) * 0.5f;
+        p[i + 1] = (float)(int)trandf(0.0f, TH * 2.0f) * 0.5f;
+        break;
+      case 2:  // tiny
+        p[i] = cx + trandf(-2.0f, 2.0f);
+        p[i + 1] = cy + trandf(-2.0f, 2.0f);
+        break;
+      case 3:  // a sliver: nearly a line
+        p[i] = cx + (float)(i - 2) * 30.0f + trandf(-0.05f, 0.05f);
+        p[i + 1] = cy + (float)(i - 2) * 12.0f + trandf(-0.05f, 0.05f);
+        break;
+      case 4:  // flat top or bottom
+        p[i] = trandf(0.0f, (float)TW);
+        p[i + 1] = i < 4 ? cy : trandf(0.0f, (float)TH);
+        break;
+      case 5:  // big
+        p[i] = trandf(-5000.0f, 5000.0f);
+        p[i + 1] = trandf(-5000.0f, 5000.0f);
+        break;
+      case 6:  // huge
+        p[i] = trandf(-3e7f, 3e7f);
+        p[i + 1] = trandf(-3e7f, 3e7f);
+        break;
+      default:  // two vertices the same
+        p[i] = i < 4 ? cx : trandf(0.0f, (float)TW);
+        p[i + 1] = i < 4 ? cy : trandf(0.0f, (float)TH);
+        break;
+    }
+  }
+}
+
+static void test_tex_tri_coverage_matches_flat(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const int white = tex_solid(g, 2, 0xFFFF);
+  CHECK(white >= 0);
+  int bad = 0, drew = 0, persp = 0, affine = 0;
+  for (int n = 0; n < 12000; n++) {
+    float p[6];
+    random_tri(p);
+    disp_clip_t c = {0, 0, TW - 1, TH - 1};
+    if (n % 3 == 1) {  // a part of the buffer
+      c.x0 = (int)(trand() % (TW / 2));
+      c.y0 = (int)(trand() % (TH / 2));
+      c.x1 = c.x0 + (int)(trand() % (TW / 2));
+      c.y1 = c.y0 + (int)(trand() % (TH / 2));
+    }
+    memset(s_ta, 0, sizeof s_ta);
+    memset(s_tb, 0, sizeof s_tb);
+    disp_fill_tri_f(s_ta, TW, &c, p[0], p[1], p[2], p[3], p[4], p[5], 0xFFFF);
+    // Depth and uv have no say in coverage. Half of them take each path.
+    const bool flat_depth = (n & 1) != 0;
+    const gfx3d_test_vert_t v[3] = {
+        tv(p[0], p[1], 0.5f, trandf(-4, 4), trandf(-4, 4), 0xFFFF),
+        tv(p[2], p[3], flat_depth ? 0.5f : 0.05f, trandf(-4, 4), trandf(-4, 4), 0xFFFF),
+        tv(p[4], p[5], flat_depth ? 0.5f : 0.2f, trandf(-4, 4), trandf(-4, 4), 0xFFFF)};
+    gfx3d_begin(g, false, 0);
+    gfx3d_target_t t = tex_target(s_tb, false);
+    t.clip_x0 = c.x0;
+    t.clip_y0 = c.y0;
+    t.clip_x1 = c.x1;
+    t.clip_y1 = c.y1;
+    gfx3d_test_tex_info_t info;
+    gfx3d_test_tex_tri(g, &t, white, 0, v, false, &info);
+    int covered = 0, wrong = 0;
+    for (int i = 0; i < TW * TH; i++) {
+      if (s_ta[i]) covered++;
+      if ((s_ta[i] != 0) != (s_tb[i] != 0)) wrong++;
+    }
+    if (wrong || gfx3d_get_stats(g)->pixels != (uint32_t)covered) {
+      if (bad++ < 5)
+        printf("coverage differs (%d px, %d covered, %u counted): (%g,%g) (%g,%g) (%g,%g) clip %d,%d,%d,%d\n",
+               wrong, covered, (unsigned)gfx3d_get_stats(g)->pixels, (double)p[0], (double)p[1],
+               (double)p[2], (double)p[3], (double)p[4], (double)p[5], c.x0, c.y0, c.x1, c.y1);
+    }
+    if (covered) {
+      drew++;
+      if (info.affine) affine++;
+      else persp++;
+    }
+  }
+  CHECK_EQ_INT(bad, 0);
+  CHECK(drew > 3000);  // the test tests something
+  CHECK(persp > 1000);
+  CHECK(affine > 1000);
+
+  // Coordinates whose differences overflow: an edge's x is NaN on a row that starts
+  // on the vertex (0 * inf), and that row is left out, as the flat rasteriser does.
+  static const float overflow[][6] = {{-3e38f, 10.5f, 3e38f, 50.0f, 0.0f, 30.0f},
+                                      {3e38f, 10.5f, -3e38f, 50.0f, 0.0f, 30.0f},
+                                      {40.0f, 10.5f, 3e38f, 20.5f, -3e38f, 50.5f}};
+  for (size_t k = 0; k < sizeof overflow / sizeof overflow[0]; k++) {
+    const float *p = overflow[k];
+    memset(s_ta, 0, sizeof s_ta);
+    memset(s_tb, 0, sizeof s_tb);
+    const disp_clip_t c = {0, 0, TW - 1, TH - 1};
+    disp_fill_tri_f(s_ta, TW, &c, p[0], p[1], p[2], p[3], p[4], p[5], 0xFFFF);
+    gfx3d_target_t t = tex_target(s_tb, false);
+    tex_tri(g, &t, white, tv(p[0], p[1], 1, 0, 0, 0xFFFF), tv(p[2], p[3], 1, 1, 0, 0xFFFF),
+            tv(p[4], p[5], 1, 0, 1, 0xFFFF), false, NULL);
+    int differ = 0, flat_px = 0;
+    for (int i = 0; i < TW * TH; i++) {
+      if ((s_ta[i] != 0) != (s_tb[i] != 0)) differ++;
+      if (s_ta[i]) flat_px++;
+    }
+    CHECK_EQ_INT(differ, 0);
+    CHECK(flat_px > 0);
+  }
+
+  // Non-finite vertices draw nothing, as the flat rasteriser.
+  const float bad_v[4] = {NAN, INFINITY, -INFINITY, 1e30f};
+  for (int k = 0; k < 4; k++) {
+    for (int slot = 0; slot < 6; slot++) {
+      float p[6] = {10, 10, 60, 12, 30, 50};
+      p[slot] = bad_v[k];
+      memset(s_ta, 0, sizeof s_ta);
+      memset(s_tb, 0, sizeof s_tb);
+      const disp_clip_t c = {0, 0, TW - 1, TH - 1};
+      disp_fill_tri_f(s_ta, TW, &c, p[0], p[1], p[2], p[3], p[4], p[5], 0xFFFF);
+      gfx3d_target_t t = tex_target(s_tb, false);
+      tex_tri(g, &t, white, tv(p[0], p[1], 1, 0, 0, 0xFFFF), tv(p[2], p[3], 1, 1, 0, 0xFFFF),
+              tv(p[4], p[5], 1, 0, 1, 0xFFFF), false, NULL);
+      for (int i = 0; i < TW * TH; i++) CHECK((s_ta[i] != 0) == (s_tb[i] != 0));
+    }
+  }
+  gfx3d_free(g);
+}
+
+// A triangle across the whole buffer in one colour on one colour of texture.
+static uint16_t modulated(gfx3d_t *g, uint16_t texel, uint16_t vertex) {
+  const int t = tex_solid(g, 0, texel);
+  CHECK(t >= 0);
+  memset(s_tb, 0, sizeof s_tb);
+  gfx3d_target_t tg = tex_target(s_tb, false);
+  tex_tri(g, &tg, t, tv(-10, -10, 1, 0, 0, vertex), tv(300, -10, 1, 1, 0, vertex),
+          tv(-10, 300, 1, 0, 1, vertex), false, NULL);
+  return s_tb[20 * TW + 20];
+}
+
+static void test_tex_modulate(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+#define MOD(tr, tg, tb, vr, vg, vb) \
+  modulated(g, (uint16_t)(((tr) << 11) | ((tg) << 5) | (tb)), (uint16_t)(((vr) << 11) | ((vg) << 5) | (vb)))
+  uint16_t c = MOD(31, 0, 0, 16, 0, 0);
+  CHECK_EQ_INT(c >> 11, 24);
+  c = MOD(31, 0, 0, 31, 0, 0);
+  CHECK_EQ_INT(c >> 11, 31);  // saturates
+  CHECK_EQ_INT((c >> 5) & 63, 0);
+  CHECK_EQ_INT(c & 31, 0);
+  c = MOD(0, 63, 0, 0, 32, 0);
+  CHECK_EQ_INT((c >> 5) & 63, 48);
+  c = MOD(0, 63, 0, 0, 63, 0);
+  CHECK_EQ_INT((c >> 5) & 63, 63);
+  c = MOD(0, 0, 31, 0, 0, 16);
+  CHECK_EQ_INT(c & 31, 24);
+  c = MOD(0, 0, 31, 0, 0, 31);
+  CHECK_EQ_INT(c & 31, 31);
+  CHECK_EQ_U32(MOD(31, 63, 31, 0, 0, 0), 0);  // no colour: black
+  CHECK_EQ_U32(MOD(0, 0, 0, 31, 63, 31), 0);  // no texel: black
+  CHECK_EQ_U32(MOD(31, 63, 31, 31, 63, 31), 0xFFFF);
+  // Channels stay apart.
+  c = MOD(31, 0, 31, 0, 63, 0);
+  CHECK_EQ_U32(c, 0);
+  gfx3d_free(g);
+
+  // Every texel with every vertex value, a channel at a time: t * v * 1.5 / max,
+  // saturating, within rounding. (A new context per sweep: textures are finite.)
+  for (int ch = 0; ch < 3; ch++) {
+    const int bits = ch == 1 ? 6 : 5, shift = ch == 0 ? 11 : ch == 1 ? 5 : 0;
+    const int max = (1 << bits) - 1;
+    gfx3d_t *h = gfx3d_new(W, H);
+    int used = 0;
+    for (int ti = 0; ti <= max; ti += 3) {
+      if (used++ == GFX3D_MAX_TEXTURES - 1) {
+        gfx3d_free(h);
+        h = gfx3d_new(W, H);
+        used = 1;
+      }
+      const int slot = tex_solid(h, 0, (uint16_t)(ti << shift));
+      for (int vi = 0; vi <= max; vi += 2) {
+        memset(s_tb, 0, sizeof s_tb);
+        gfx3d_target_t tg = tex_target(s_tb, false);
+        const uint16_t vc = (uint16_t)(vi << shift);
+        tex_tri(h, &tg, slot, tv(0, 0, 1, 0, 0, vc), tv(40, 0, 1, 1, 0, vc), tv(0, 40, 1, 0, 1, vc), false, NULL);
+        const int got = (s_tb[5 * TW + 5] >> shift) & max;
+        double want = (double)ti * vi * 1.5 / max;
+        if (want > max) want = max;
+        CHECK(fabs((double)got - want) <= 1.0);
+      }
+    }
+    gfx3d_free(h);
+  }
+
+  // The colour runs across the triangle, in steps of at most 8 pixels along a row and
+  // exactly down the rows, in each channel. From 0 to 20 of it over 96 pixels.
+  gfx3d_t *k = gfx3d_new(W, H);
+  const int t = tex_solid(k, 0, 0xFFFF);
+  for (int ch = 0; ch < 3; ch++) {
+    const int shift = ch == 0 ? 11 : ch == 1 ? 5 : 0, max = ch == 1 ? 63 : 31;
+    const uint16_t c20 = (uint16_t)(20 << shift);
+    const double per_px = 20.0 / 96.0 * 1.5;  // a texel at its maximum is x1.5
+    gfx3d_target_t tg = tex_target(s_tb, false);
+    memset(s_tb, 0, sizeof s_tb);
+    tex_tri(k, &tg, t, tv(0, 0, 1, 0, 0, 0), tv(96, 0, 1, 1, 0, c20), tv(0, 960, 1, 0, 1, 0), false, NULL);
+    for (int x = 0; x < 90; x++) {
+      const int got = (s_tb[2 * TW + x] >> shift) & max;
+      CHECK(fabs((double)got - per_px * x) <= per_px * 8.0 + 1.0);
+    }
+    memset(s_tb, 0, sizeof s_tb);
+    tex_tri(k, &tg, t, tv(0, 0, 1, 0, 0, 0), tv(960, 0, 1, 1, 0, 0), tv(0, 96, 1, 0, 1, c20), false, NULL);
+    for (int y = 0; y < TH; y++) {
+      const int got = (s_tb[y * TW + 2] >> shift) & max;
+      CHECK(fabs((double)got - per_px * y) <= per_px + 1.0);
+    }
+  }
+  gfx3d_free(k);
+}
+
+// ── An exact reference: the same triangle evaluated at every pixel, in double ──
+
+typedef struct {
+  double a, b, c;
+} plane_t;
+
+static plane_t plane_of(const gfx3d_test_vert_t *v, const double k[3]) {
+  const double x0 = (double)v[0].x, y0 = (double)v[0].y, x1 = (double)v[1].x;
+  const double y1 = (double)v[1].y, x2 = (double)v[2].x, y2 = (double)v[2].y;
+  const double area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+  plane_t p;
+  p.a = ((k[1] - k[0]) * (y2 - y0) - (k[2] - k[0]) * (y1 - y0)) / area;
+  p.b = ((k[2] - k[0]) * (x1 - x0) - (k[1] - k[0]) * (x2 - x0)) / area;
+  p.c = k[0] - p.a * x0 - p.b * y0;
+  return p;
+}
+static double plane_at(plane_t p, int x, int y) {
+  return p.a * ((double)x + 0.5) + p.b * ((double)y + 0.5) + p.c;
+}
+
+// How many drawn pixels of `fb` hold no colour of `tex` (w x h) within `tol` texels
+// of where the exact (perspective or affine) uv lands. An undrawn pixel (`bg`) is
+// not looked at.
+static int reference_misses(const uint16_t *fb, uint16_t bg, const gfx3d_test_vert_t *v,
+                            const uint16_t *want, int w, int h, int tol, bool perspective,
+                            int *checked) {
+  double ku[3], kv[3], ki[3];
+  for (int i = 0; i < 3; i++) {
+    const double wgt = perspective ? (double)v[i].iw : 1.0;
+    ki[i] = wgt;
+    ku[i] = (double)v[i].u * wgt;
+    kv[i] = (double)v[i].v * wgt;
+  }
+  const plane_t pi = plane_of(v, ki), pu = plane_of(v, ku), pv = plane_of(v, kv);
+  int misses = 0;
+  for (int y = 0; y < TH; y++)
+    for (int x = 0; x < TW; x++) {
+      const uint16_t got = fb[y * TW + x];
+      if (got == bg) continue;
+      const double iw = plane_at(pi, x, y);
+      const double tu = plane_at(pu, x, y) / iw * w, tv_ = plane_at(pv, x, y) / iw * h;
+      bool ok = false;
+      for (int dy = -tol; dy <= tol && !ok; dy++)
+        for (int dx = -tol; dx <= tol && !ok; dx++) {
+          const int ix = ((int)floor(tu) + dx) & (w - 1), iy = ((int)floor(tv_) + dy) & (h - 1);
+          ok = want[iy * w + ix] == got;
+        }
+      if (!ok) misses++;
+      if (checked) (*checked)++;
+    }
+  return misses;
+}
+
+// Black and white squares of `cell` texels. A white vertex keeps them black and
+// white: 31 * 1.5 saturates.
+static void make_checker(uint16_t *p, int w, int h, int cell) {
+  for (int y = 0; y < h; y++)
+    for (int x = 0; x < w; x++) p[y * w + x] = ((x / cell + y / cell) & 1) ? 0xFFFF : 0x0000;
+}
+
+// A wall going away to the right: depth changes along every row, so only a span
+// that follows 1/z gets it right. `far` is the far edge's depth (the near's is 1).
+static void wall(gfx3d_test_vert_t q[4], float far, float us, float vs) {
+  const float iw = 1.0f / far, cy = TH * 0.5f, hn = TH * 0.7f, hf = hn * iw;
+  q[0] = tv(-4, cy - hn, 1, 0, 0, 0xFFFF);
+  q[1] = tv(TW + 4, cy - hf, iw, us, 0, 0xFFFF);
+  q[2] = tv(TW + 4, cy + hf, iw, us, vs, 0xFFFF);
+  q[3] = tv(-4, cy + hn, 1, 0, vs, 0xFFFF);
+}
+
+static void test_tex_perspective(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  static uint16_t chk[32 * 32];
+  make_checker(chk, 32, 32, 4);
+  const int slot = gfx3d_tex_add(g, 5, 5, 1, chk);
+  gfx3d_test_vert_t q[4];
+  wall(q, 3.0f, 1.0f, 1.0f);
+  // The two triangles of the quad, each against its own reference. A sentinel
+  // that is neither texel colour marks what was not drawn.
+  const uint16_t bg = 0x1234;
+  const gfx3d_test_vert_t tris[2][3] = {{q[0], q[1], q[2]}, {q[0], q[2], q[3]}};
+  int checked = 0, affine_misses = 0;
+  for (int i = 0; i < 2; i++) {
+    for (int p = 0; p < TW * TH; p++) s_tb[p] = bg;
+    gfx3d_target_t t = tex_target(s_tb, false);
+    gfx3d_test_tex_info_t info;
+    gfx3d_test_tex_tri(g, &t, slot, 0, tris[i], false, &info);
+    CHECK(!info.affine);
+    CHECK_EQ_INT(reference_misses(s_tb, bg, tris[i], chk, 32, 32, 1, true, &checked), 0);
+    affine_misses += reference_misses(s_tb, bg, tris[i], chk, 32, 32, 1, false, NULL);
+  }
+  CHECK(checked > TW * TH / 2);
+  CHECK(affine_misses > 100);  // a span that ignored 1/z would fail this test
+  gfx3d_free(g);
+}
+
+static void test_tex_affine_shortcut_close(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  static uint16_t chk[32 * 32];
+  make_checker(chk, 32, 32, 2);
+  const int slot = gfx3d_tex_add(g, 5, 5, 1, chk);
+  const uint16_t bg = 0x1234;
+  // Near-constant depth: the shortcut, close to the exact picture.
+  for (int i = 0; i < 3; i++) {
+    const float far = i == 0 ? 1.0f : i == 1 ? 1.05f : 1.1f;
+    gfx3d_test_vert_t q[4];
+    wall(q, far, 1.0f, 1.0f);
+    for (int p = 0; p < TW * TH; p++) s_tb[p] = bg;
+    gfx3d_target_t t = tex_target(s_tb, false);
+    gfx3d_test_tex_info_t info;
+    int checked = 0;
+    const gfx3d_test_vert_t tri[3] = {q[0], q[1], q[2]};
+    gfx3d_test_tex_tri(g, &t, slot, 0, tri, false, &info);
+    CHECK(info.affine);
+    CHECK_EQ_INT(reference_misses(s_tb, bg, tri, chk, 32, 32, 1, true, &checked), 0);
+    CHECK(checked > 500);
+  }
+  // Where it stops: 1/z varying by under 20% is affine, over it is not, whichever
+  // vertex has which.
+  static const float ratio[4] = {1.0f, 1.1f, 1.19f, 1.21f};
+  static const bool want[4] = {true, true, true, false};
+  for (int i = 0; i < 4; i++)
+    for (int order = 0; order < 3; order++) {
+      float iw[3] = {0.25f, 0.25f, 0.25f};
+      iw[order] = 0.25f * ratio[i];
+      gfx3d_target_t t = tex_target(s_tb, false);
+      gfx3d_test_tex_info_t info;
+      tex_tri(g, &t, slot, tv(3, 3, iw[0], 0, 0, 0xFFFF), tv(70, 7, iw[1], 1, 0, 0xFFFF),
+              tv(9, 60, iw[2], 0, 1, 0xFFFF), false, &info);
+      CHECK(info.affine == want[i]);
+    }
+  gfx3d_free(g);
+}
+
+// Every texel its own colour, so a wrong row or column shows.
+static void make_unique(uint16_t *p, int w, int h) {
+  for (int y = 0; y < h; y++)
+    for (int x = 0; x < w; x++) p[y * w + x] = (uint16_t)(0x8000u | (uint32_t)(y * w + x));
+}
+
+// About x1 under the texel multiply, so that different texels stay different.
+#define WRAP_VERTEX 0xAD55
+
+static void test_tex_wrap(void) {
+  static const int lg[][2] = {{3, 3}, {4, 2}, {2, 4}, {0, 3}, {3, 0}, {6, 1}, {1, 6}, {0, 0}};
+  static uint16_t tex[128], moded[128];
+  for (size_t n = 0; n < sizeof lg / sizeof lg[0]; n++) {
+    const int lw = lg[n][0], lh = lg[n][1], w = 1 << lw, h = 1 << lh;
+    make_unique(tex, w, h);
+    // What the rasteriser makes of each texel, from a texture of that one texel:
+    // this test looks at where a texel lands, not at its arithmetic.
+    gfx3d_t *g = NULL;
+    for (int i = 0; i < w * h; i++) {
+      if (i % 60 == 0) {
+        gfx3d_free(g);
+        g = gfx3d_new(W, H);
+      }
+      moded[i] = modulated(g, tex[i], WRAP_VERTEX);
+    }
+    gfx3d_free(g);
+
+    g = gfx3d_new(W, H);
+    CHECK(gfx3d_tex_add(g, lw, lh, 1, tex) == 0);
+    const uint16_t bg = 0x0001;  // no texel comes out as this: their red is high
+    gfx3d_target_t t = tex_target(s_tb, false);
+    // u from -0.75 to 1.25, v from -1.25 to 0.75: a seam in the middle of each.
+    // Constant depth (the shortcut), then perspective.
+    for (int persp = 0; persp < 2; persp++) {
+      const float i0 = 1.0f, i1 = persp ? 0.6f : 1.0f, i2 = persp ? 0.8f : 1.0f;
+      const gfx3d_test_vert_t tri[2][3] = {
+          {tv(0, 0, i0, -0.75f, -1.25f, WRAP_VERTEX), tv(TW, 0, i1, 1.25f, -1.25f, WRAP_VERTEX),
+           tv(0, TH, i2, -0.75f, 0.75f, WRAP_VERTEX)},
+          {tv(TW, 0, i1, 1.25f, -1.25f, WRAP_VERTEX), tv(TW, TH, i0, 1.25f, 0.75f, WRAP_VERTEX),
+           tv(0, TH, i2, -0.75f, 0.75f, WRAP_VERTEX)}};
+      for (int i = 0; i < 2; i++) {
+        for (int p = 0; p < TW * TH; p++) s_tb[p] = bg;
+        gfx3d_test_tex_info_t info;
+        gfx3d_test_tex_tri(g, &t, 0, 0, tri[i], false, &info);
+        if (w * h > 1) CHECK(info.affine == !persp);
+        int checked = 0;
+        CHECK_EQ_INT(reference_misses(s_tb, bg, tri[i], moded, w, h, 1, true, &checked), 0);
+        CHECK(checked > 1000);
+      }
+    }
+    // Whole repeats change nothing: the same picture with uv moved far either way.
+    static const float shift[][2] = {{1, 0}, {0, 1}, {-3, 5}, {1024, -2048}, {-4096, 512}};
+    for (int persp = 0; persp < 2; persp++) {
+      const gfx3d_test_vert_t base[3] = {
+          tv(5.5f, 3.25f, 0.5f, 0.125f, 0.25f, WRAP_VERTEX),
+          tv(90.25f, 20.5f, persp ? 0.2f : 0.5f, 1.625f, 0.5f, WRAP_VERTEX),
+          tv(30.75f, 60.5f, 0.5f, 0.5f, 1.75f, WRAP_VERTEX)};
+      memset(s_ta, 0, sizeof s_ta);
+      gfx3d_target_t ta = tex_target(s_ta, false);
+      gfx3d_test_tex_tri(g, &ta, 0, 0, base, false, NULL);
+      for (size_t s = 0; s < sizeof shift / sizeof shift[0]; s++) {
+        gfx3d_test_vert_t moved[3];
+        for (int i = 0; i < 3; i++) {
+          moved[i] = base[i];
+          moved[i].u += shift[s][0];
+          moved[i].v += shift[s][1];
+        }
+        memset(s_tb, 0, sizeof s_tb);
+        gfx3d_test_tex_tri(g, &t, 0, 0, moved, false, NULL);
+        CHECK(memcmp(s_ta, s_tb, sizeof s_ta) == 0);
+      }
+    }
+    gfx3d_free(g);
+  }
+}
+
+// Each mip level a solid colour: `level` picks it, and past the last means the last.
+static void test_tex_levels(void) {
+  static const int lg[][3] = {{4, 4, 5}, {3, 1, 2}, {1, 3, 2}, {0, 0, 1}};
+  static const uint16_t colour[5] = {RED, GREEN, BLUE, 0xFFE0, 0x07FF};
+  for (size_t n = 0; n < sizeof lg / sizeof lg[0]; n++) {
+    gfx3d_t *g = gfx3d_new(W, H);
+    static uint16_t px[1024];
+    int at = 0;
+    for (int k = 0; k < lg[n][2]; k++)
+      for (int i = 0; i < 1 << (lg[n][0] - k + lg[n][1] - k); i++) px[at++] = colour[k];
+    const int slot = gfx3d_tex_add(g, lg[n][0], lg[n][1], lg[n][2], px);
+    for (int level = 0; level < lg[n][2] + 2; level++) {
+      const int last = lg[n][2] - 1;
+      const uint16_t want = modulated(g, colour[level > last ? last : level], 0xFFFF);
+      memset(s_tb, 0, sizeof s_tb);
+      gfx3d_target_t t = tex_target(s_tb, false);
+      const gfx3d_test_vert_t v[3] = {tv(0, 0, 1, 0, 0, 0xFFFF), tv(TW, 0, 1, 3, 0, 0xFFFF),
+                                      tv(0, TH, 1, 0, 3, 0xFFFF)};
+      gfx3d_test_tex_tri(g, &t, slot, level, v, false, NULL);
+      CHECK_EQ_U32(s_tb[10 * TW + 10], want);
+    }
+    gfx3d_free(g);
+  }
+}
+
+// With swap, every pixel is the same pixel byte-swapped, in both spans and both
+// paths: the variants of a span differ in byte order and nothing else.
+static void test_tex_swap_is_only_byte_order(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  static uint16_t tex[64 * 16];
+  for (int i = 0; i < 64 * 16; i++) tex[i] = (uint16_t)(i * 2654435761u >> 16);
+  const int slot = gfx3d_tex_add(g, 6, 4, 1, tex);
+  int drew = 0;
+  for (int n = 0; n < 400; n++) {
+    const bool flat_depth = (n & 1) != 0, blend = (n & 2) != 0;
+    const gfx3d_test_vert_t v[3] = {
+        tv(trandf(-40, TW + 40), trandf(-40, TH + 40), 0.5f, trandf(-3, 3), trandf(-3, 3), (uint16_t)trand()),
+        tv(trandf(-40, TW + 40), trandf(-40, TH + 40), flat_depth ? 0.51f : 0.1f, trandf(-3, 3), trandf(-3, 3),
+           (uint16_t)trand()),
+        tv(trandf(-40, TW + 40), trandf(-40, TH + 40), flat_depth ? 0.49f : 0.3f, trandf(-3, 3), trandf(-3, 3),
+           (uint16_t)trand())};
+    for (int i = 0; i < TW * TH; i++) {
+      const uint16_t d = (uint16_t)(i * 40503u);
+      s_ta[i] = d;
+      s_tb[i] = disp_px(d, true);
+    }
+    gfx3d_target_t ta = tex_target(s_ta, false), tb = tex_target(s_tb, true);
+    gfx3d_test_tex_tri(g, &ta, slot, 0, v, blend, NULL);
+    gfx3d_test_tex_tri(g, &tb, slot, 0, v, blend, NULL);
+    bool same = true;
+    for (int i = 0; i < TW * TH; i++) same = same && s_tb[i] == disp_px(s_ta[i], true);
+    CHECK(same);
+    if (gfx3d_get_stats(g)->pixels) drew++;
+  }
+  CHECK(drew > 100);
+  gfx3d_free(g);
+}
+
+static void test_tex_blend(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  static uint16_t tex[16 * 16];
+  for (int i = 0; i < 16 * 16; i++) tex[i] = (uint16_t)((uint32_t)i * 2654435761u >> 16);
+  const int slot = gfx3d_tex_add(g, 4, 4, 1, tex);
+  for (int swap = 0; swap < 2; swap++) {
+    for (int persp = 0; persp < 2; persp++) {
+      const float far = persp ? 0.25f : 1.0f;
+      const gfx3d_test_vert_t v[3] = {tv(-3, 2, 1, 0, 0, 0xFFFF), tv(TW + 8, 9, far, 2, 0, 0x7BEF),
+                                      tv(11, TH + 3, far, 0, 2, 0xC638)};
+      // src: the same triangle opaque on black.
+      memset(s_ta, 0, sizeof s_ta);
+      gfx3d_target_t ta = tex_target(s_ta, swap != 0);
+      gfx3d_test_tex_tri(g, &ta, slot, 0, v, false, NULL);
+      // dst: a pattern, in the target's byte order.
+      static uint16_t dst[TW * TH];
+      for (int i = 0; i < TW * TH; i++) {
+        dst[i] = (uint16_t)((uint32_t)i * 40503u);
+        s_tb[i] = disp_px(dst[i], swap != 0);
+      }
+      gfx3d_target_t tb = tex_target(s_tb, swap != 0);
+      gfx3d_test_tex_info_t info;
+      gfx3d_test_tex_tri(g, &tb, slot, 0, v, true, &info);
+      CHECK(info.affine == !persp);
+      int blended = 0;
+      for (int i = 0; i < TW * TH; i++) {
+        const uint16_t s = disp_px(s_ta[i], swap != 0), d = dst[i];
+        // The plain draw left 0 where it did not draw, and a black texel draws 0
+        // too: such a pixel may be either, and only the covered ones count.
+        const uint16_t mixed = (uint16_t)(((s >> 1) & 0x7BEF) + ((d >> 1) & 0x7BEF));
+        const uint16_t got = disp_px(s_tb[i], swap != 0);
+        if (s == 0) {
+          CHECK(got == d || got == mixed);
+        } else {
+          CHECK_EQ_U32(got, mixed);
+          blended++;
+        }
+      }
+      CHECK(blended > 2000);
+    }
+  }
+  // 50% of white over black, and of black over white: each half the full value.
+  const int white = tex_solid(g, 0, 0xFFFF);
+  memset(s_tb, 0, sizeof s_tb);
+  gfx3d_target_t t = tex_target(s_tb, false);
+  tex_tri(g, &t, white, tv(-9, -9, 1, 0, 0, 0xFFFF), tv(300, -9, 1, 1, 0, 0xFFFF),
+          tv(-9, 300, 1, 0, 1, 0xFFFF), true, NULL);
+  CHECK_EQ_U32(s_tb[5 * TW + 5], 0x7BEF);
+  gfx3d_free(g);
+}
+
+static void test_tex_clip(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  static uint16_t chk[64 * 64];
+  make_checker(chk, 64, 64, 8);
+  const int slot = gfx3d_tex_add(g, 6, 6, 1, chk);
+  const uint16_t bg = 0x1234;
+  // A corner of the buffer, through a triangle far bigger than the screen, and the
+  // whole buffer. Both paths.
+  static const int clips[2][4] = {{10, 20, 49, 59}, {0, 0, TW - 1, TH - 1}};
+  static const float size[3] = {2e3f, 1e6f, 3e7f};
+  for (int c = 0; c < 2; c++)
+    for (int sz = 0; sz < 3; sz++)
+      for (int persp = 0; persp < 2; persp++) {
+        for (int p = 0; p < TW * TH; p++) s_tb[p] = bg;
+        gfx3d_begin(g, false, 0);
+        gfx3d_target_t t = tex_target(s_tb, false);
+        t.clip_x0 = clips[c][0];
+        t.clip_y0 = clips[c][1];
+        t.clip_x1 = clips[c][2];
+        t.clip_y1 = clips[c][3];
+        const float s = size[sz], far = persp ? 0.5f : 1.0f;
+        const float rep = s / 100.0f;  // a repeat per 100 pixels, whatever the size
+        const gfx3d_test_vert_t v[3] = {tv(-s, -s, 1, -rep, -rep, 0xFFFF), tv(2 * s, -s, far, 2 * rep, -rep, 0xFFFF),
+                                        tv(-s, 2 * s, far, -rep, 2 * rep, 0xFFFF)};
+        gfx3d_test_tex_info_t info;
+        gfx3d_test_tex_tri(g, &t, slot, 0, v, false, &info);
+        const int w = clips[c][2] - clips[c][0] + 1, h = clips[c][3] - clips[c][1] + 1;
+        CHECK_EQ_U32(gfx3d_get_stats(g)->pixels, (uint32_t)(w * h));
+        CHECK_EQ_INT(info.rows, h);  // the rows it walked: the visible ones
+        int inside = 0, outside = 0;
+        for (int y = 0; y < TH; y++)
+          for (int x = 0; x < TW; x++) {
+            const bool in = x >= clips[c][0] && x <= clips[c][2] && y >= clips[c][1] && y <= clips[c][3];
+            if (s_tb[y * TW + x] != bg) {
+              if (in) inside++;
+              else outside++;
+            }
+          }
+        CHECK_EQ_INT(inside, w * h);
+        CHECK_EQ_INT(outside, 0);
+        // And it is still the right picture, where the floats can say so.
+        if (sz == 0) {
+          int checked = 0;
+          CHECK_EQ_INT(reference_misses(s_tb, bg, v, chk, 64, 64, 1, true, &checked), 0);
+          CHECK_EQ_INT(checked, w * h);
+        }
+      }
+  // Nothing on screen, and an empty clip, walk nothing.
+  gfx3d_begin(g, false, 0);
+  gfx3d_target_t t = tex_target(s_tb, false);
+  gfx3d_test_tex_info_t info;
+  tex_tri(g, &t, slot, tv(10, 500, 1, 0, 0, 0xFFFF), tv(40, 500, 1, 1, 0, 0xFFFF), tv(10, 900, 1, 0, 1, 0xFFFF),
+          false, &info);
+  CHECK_EQ_INT(info.rows, 0);
+  CHECK_EQ_U32(gfx3d_get_stats(g)->pixels, 0);
+  gfx3d_free(g);
+}
+
+// Whatever comes in, the coverage is the flat rasteriser's and nothing is read
+// outside the texture or converted out of range (ASan and UBSan watch this).
+static void test_tex_bad_values_stay_safe(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  static uint16_t tex[8 * 2];
+  for (int i = 0; i < 16; i++) tex[i] = 0xFFFF;
+  const int slot = gfx3d_tex_add(g, 3, 1, 1, tex);
+  const float bad[] = {0.0f, -0.0f, -1.0f, 1e-30f, 1e-45f, 1e30f, -1e30f, 3e9f, INFINITY, -INFINITY, NAN};
+  const int nb = (int)(sizeof bad / sizeof bad[0]);
+  const float p[6] = {-20, 3, TW + 40, 17, 20, TH + 11};
+  memset(s_ta, 0, sizeof s_ta);
+  const disp_clip_t c = {0, 0, TW - 1, TH - 1};
+  disp_fill_tri_f(s_ta, TW, &c, p[0], p[1], p[2], p[3], p[4], p[5], 0xFFFF);
+  for (int blend = 0; blend < 2; blend++)
+    for (int which = 0; which < 3; which++)     // iw, u, v
+      for (int vert = 0; vert < 3; vert++)
+        for (int i = 0; i < nb; i++) {
+          gfx3d_test_vert_t v[3] = {tv(p[0], p[1], 0.5f, 0, 0, 0xFFFF), tv(p[2], p[3], 0.25f, 1, 0, 0xFFFF),
+                                    tv(p[4], p[5], 0.5f, 0, 1, 0xFFFF)};
+          if (which == 0) v[vert].iw = bad[i];
+          else if (which == 1) v[vert].u = bad[i];
+          else v[vert].v = bad[i];
+          gfx3d_begin(g, false, 0);
+          memset(s_tb, 0, sizeof s_tb);
+          gfx3d_target_t t = tex_target(s_tb, false);
+          gfx3d_test_tex_tri(g, &t, slot, 0, v, blend != 0, NULL);
+          // Every covered pixel counted, every pixel drawn inside the coverage.
+          int covered = 0;
+          bool outside = false;
+          for (int k = 0; k < TW * TH; k++) {
+            if (s_ta[k]) covered++;
+            else if (s_tb[k]) outside = true;
+          }
+          CHECK(!outside);
+          CHECK_EQ_U32(gfx3d_get_stats(g)->pixels, (uint32_t)covered);
+        }
+
+  // A one-texel texture reads its one texel, whatever the arithmetic before it comes
+  // to: here coordinates whose differences overflow, in both paths.
+  static const uint16_t one[1] = {0xFFFF};
+  const int single = gfx3d_tex_add(g, 0, 0, 1, one);
+  const float huge = 3e38f;
+  static const float depth[2] = {0.5f, 0.05f};
+  for (int d = 0; d < 2; d++) {
+    const gfx3d_test_vert_t tris[3][3] = {
+        {tv(-huge, -huge, 0.5f, 1e30f, -1e30f, 0xFFFF), tv(huge, -huge, depth[d], -1e30f, 1e30f, 0xFFFF),
+         tv(0, huge, 0.5f, NAN, INFINITY, 0xFFFF)},
+        {tv(-huge, 5, 0.5f, 0, 0, 0xFFFF), tv(huge, 5, depth[d], 1, 0, 0xFFFF), tv(0, 40, 0.5f, 0, 1, 0xFFFF)},
+        {tv(10, 3, 0.5f, 0, 0, 0xFFFF), tv(70, 4, depth[d], 1e30f, 0, 0xFFFF), tv(20, 60, 0.5f, 0, 1e30f, 0xFFFF)}};
+    for (int i = 0; i < 3; i++) {
+      memset(s_tb, 0, sizeof s_tb);
+      gfx3d_target_t t = tex_target(s_tb, false);
+      gfx3d_test_tex_tri(g, &t, single, 0, tris[i], false, NULL);
+      for (int k = 0; k < TW * TH; k++) CHECK(s_tb[k] == 0 || s_tb[k] == 0xFFFF);
+    }
+  }
+  gfx3d_free(g);
+}
+
+// The rasteriser's bytes, pinned. tools/perf_rig's check-tex draws the same triangles
+// on the M33's code: if the two disagree, its pixel loop and the C here differ.
+#define TEX_SCENE_CRC_HOST 0x66c7cc20u
+#define TEX_SCENE_CRC_SWAP 0xf35ebb58u
+
+static void test_tex_scene_crc(void) {
+  static uint16_t fb[TEX_SCENE_W * TEX_SCENE_H];
+  static uint16_t texels[5461];
+  for (int swap = 0; swap < 2; swap++) {
+    gfx3d_t *g = gfx3d_new(TEX_SCENE_W, TEX_SCENE_H);
+    int slots[4];
+    tex_scene_add_textures(g, texels, slots);
+    memset(fb, 0, sizeof fb);
+    const gfx3d_target_t t = {fb, TEX_SCENE_W, 0, 0, TEX_SCENE_W - 1, TEX_SCENE_H - 1, swap != 0, NULL, NULL};
+    uint32_t s = 0x13579BDFu;
+    int persp = 0, affine = 0;
+    for (int i = 0; i < TEX_SCENE_TRIS; i++) {
+      gfx3d_test_vert_t v[3];
+      int tex, level;
+      bool blend;
+      tex_scene_next(&s, v, &tex, &level, &blend);
+      gfx3d_test_tex_info_t info;
+      gfx3d_test_tex_tri(g, &t, slots[tex], level, v, blend, &info);
+      if (info.rows) {
+        if (info.affine) affine++;
+        else persp++;
+      }
+    }
+    CHECK(persp > 400);
+    CHECK(affine > 400);
+    const uint32_t crc = crc32_u16(fb, (size_t)TEX_SCENE_W * TEX_SCENE_H);
+    CHECK_EQ_U32(crc, swap ? TEX_SCENE_CRC_SWAP : TEX_SCENE_CRC_HOST);
+    gfx3d_free(g);
+  }
+}
+
 int main(void) {
   test_euler_conventions();
   test_basis();
@@ -1158,5 +1902,16 @@ int main(void) {
   test_tmesh_new_validates();
   test_tmesh_new_copies();
   test_new_ex_capacity();
+  test_tex_tri_coverage_matches_flat();
+  test_tex_modulate();
+  test_tex_perspective();
+  test_tex_affine_shortcut_close();
+  test_tex_wrap();
+  test_tex_levels();
+  test_tex_swap_is_only_byte_order();
+  test_tex_blend();
+  test_tex_clip();
+  test_tex_bad_values_stay_safe();
+  test_tex_scene_crc();
   return check_report("test_gfx3d");
 }
