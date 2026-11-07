@@ -7,6 +7,8 @@
 #   make run MAP=text-sram                   the same code moved (see "Maps" below)
 #   make run RIG_ARGS="--policy random"      any option of the host tool (make help)
 #   make run-lua                             the real Lua core, an empty for-loop
+#   make run-tex                             gfx3d's textured rasteriser, a frame of ground
+#   make check-tex                           its M33 pixels against this host's
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 HERE := $(ROOT)/tools/perf_rig
 GFX3D_SRC ?= $(ROOT)
@@ -71,7 +73,7 @@ RIG := $(HERE)/build/perf_rig
 SCENE := $(HERE)/build/scene-$(FRAMES)-$(LAP_S).bin
 GUEST := $(O)/gfx3d.elf
 
-.PHONY: all run run-lua sweep compare check help clean
+.PHONY: all run run-lua run-tex check-tex sweep compare check help clean
 all: $(RIG) $(GUEST)
 
 # Checks the emulator: the self-test of VFP, DSP, hook counts and the cache model,
@@ -127,6 +129,43 @@ compare:
 	@$(MAKE) --no-print-directory run GFX3D_SRC=$(ROOT)
 	@$(MAKE) --no-print-directory run GFX3D_SRC=$(GFX3D_SRC)
 
+# The textured rasteriser through gfx3d.c's GFX3D_TEST entry: no scene from a game.
+TEX_DIR = $(O)/tex
+TEX_FLAGS = -DGFX3D_TEST -DPICO_ON_DEVICE=1 -I$(GFX3D_SRC)/tests/unit
+TEX_DEPS = $(GFX3D_SRC)/src/os/gfx3d.c $(GFX3D_SRC)/src/os/gfx3d.h $(GFX3D_SRC)/src/os/gfx3d_tex.h \
+	$(GFX3D_SRC)/src/drivers/display_clip.h $(GFX3D_SRC)/tests/unit/gfx3d_tex_scene.h \
+	$(HERE)/guest/gfx3d_tex_main.c $(HERE)/guest/rig.h $(HERE)/guest/rig_alloc.h
+
+$(TEX_DIR)/empty.bin:
+	@mkdir -p $(TEX_DIR)/terrain $(TEX_DIR)/scene
+	@: > $@
+
+$(TEX_DIR)/start.o: $(HERE)/guest/start.S $(TEX_DIR)/empty.bin
+	$(CC) $(ARCH) -DSCENE_BIN=\"$(TEX_DIR)/empty.bin\" -c -o $@ $<
+
+# Named as the link script wants: gfx3d.o's text first.
+$(TEX_DIR)/%/gfx3d.o: $(TEX_DEPS) $(TEX_DIR)/empty.bin
+	$(CC) $(ARCH) $(GFX3D_FLAGS) $(GUEST_INC) $(TEX_FLAGS) -include rig_alloc.h -DGFX3D_MALLOC=rig_malloc -DGFX3D_FREE=rig_free -c -o $@ $<
+
+$(TEX_DIR)/terrain/gfx3d_main.o: $(TEX_DEPS) $(TEX_DIR)/empty.bin
+	$(CC) $(ARCH) $(GFX3D_FLAGS) $(GUEST_INC) $(TEX_FLAGS) -c -o $@ $(HERE)/guest/gfx3d_tex_main.c
+
+$(TEX_DIR)/scene/gfx3d_main.o: $(TEX_DEPS) $(TEX_DIR)/empty.bin
+	$(CC) $(ARCH) $(GFX3D_FLAGS) $(GUEST_INC) $(TEX_FLAGS) -DTEX_WORK_SCENE -c -o $@ $(HERE)/guest/gfx3d_tex_main.c
+
+$(TEX_DIR)/%.elf: $(TEX_DIR)/%/gfx3d.o $(TEX_DIR)/%/gfx3d_main.o $(TEX_DIR)/start.o $(HERE)/guest/guest.ld
+	$(CC) $(ARCH) $(LDFLAGS) -o $@ $(TEX_DIR)/$*/gfx3d.o $(TEX_DIR)/$*/gfx3d_main.o $(TEX_DIR)/start.o -lm -lc -lgcc
+
+run-tex: $(RIG) $(TEX_DIR)/terrain.elf
+	@$(RIG) $(TEX_DIR)/terrain.elf --label "textured ground, gfx3d.c from $(GFX3D_SRC), map $(MAP)" $(RIG_ARGS)
+
+$(TEX_DIR)/scene/native: $(TEX_DEPS) $(HERE)/guest/native.c $(TEX_DIR)/empty.bin
+	$(HOSTCC) -O2 -std=gnu11 -ffp-contract=off -DRIG_NATIVE -DTEX_WORK_SCENE $(TEX_FLAGS) -DSCENE_BIN=\"$(TEX_DIR)/empty.bin\" $(GUEST_INC) -include rig_alloc.h -DGFX3D_MALLOC=rig_malloc -DGFX3D_FREE=rig_free -o $@ $(HERE)/guest/native.c $(HERE)/guest/gfx3d_tex_main.c $(GFX3D_SRC)/src/os/gfx3d.c -lm
+
+# The same triangles on the M33's code and on this host's: the same bytes, both orders.
+check-tex: $(RIG) $(TEX_DIR)/scene.elf $(TEX_DIR)/scene/native
+	@a=$$($(TEX_DIR)/scene/native); b=$$($(RIG) $(TEX_DIR)/scene.elf | sed -n 's/.*buffer //p'); echo "textured pixels: native $$a, emulated $$b"; test "$$a" = "$$b"
+
 help: $(RIG)
 	@$(RIG) 2>&1 || true
 
@@ -140,7 +179,7 @@ $(SCENE): $(HERE)/scene/dump_scene.lua
 	cd $(NOVA_RAIL) && lua $(HERE)/scene/dump_scene.lua . $@ $(FRAMES) $(LAP_S)
 
 # gfx3d.c is its own translation unit, as in the firmware: nothing inlines across it.
-$(O)/gfx3d.o: $(GFX3D_SRC)/src/os/gfx3d.c $(GFX3D_SRC)/src/os/gfx3d.h $(GFX3D_SRC)/src/drivers/display_clip.h $(HERE)/guest/rig_alloc.h
+$(O)/gfx3d.o: $(GFX3D_SRC)/src/os/gfx3d.c $(GFX3D_SRC)/src/os/gfx3d.h $(wildcard $(GFX3D_SRC)/src/os/gfx3d_tex.h) $(GFX3D_SRC)/src/drivers/display_clip.h $(HERE)/guest/rig_alloc.h
 	@mkdir -p $(O)
 	$(CC) $(ARCH) $(GFX3D_FLAGS) $(GUEST_INC) -include rig_alloc.h -DGFX3D_MALLOC=rig_malloc -DGFX3D_FREE=rig_free -c -o $@ $<
 
