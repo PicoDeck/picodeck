@@ -34,8 +34,8 @@ GROUPS = {
 
 
 # What src/hot_gfx.ld must hold. raster_scene is not here: it runs from SRAM.
-HOT_GFX = ["gfx3d_draw", "gfx3d_draw_xf", "gfx3d_end", "l_gfx3d_draw", "l_gfx3d_endScene",
-           "display_flush"]
+HOT_GFX = ["gfx3d_draw", "gfx3d_draw_xf", "gfx3d_draw_tmesh", "gfx3d_end", "l_gfx3d_draw",
+           "l_gfx3d_endScene", "display_flush"]
 
 # libgcc the SDK's script would copy to SRAM for nothing (src/hot_text.ld).
 COLD_LIBGCC = ["__aeabi_unwind_cpp_pr0", "_Unwind_VRS_Pop", "__gnu_unwind_execute",

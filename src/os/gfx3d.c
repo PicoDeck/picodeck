@@ -22,9 +22,24 @@
 #define GFX3D_RAM_FUNC
 #endif
 
-// A record's next index, with REC_SPRITE set on a sprite's own record.
+// Textured code has a section of its own, which src/hot_gfx.ld and the perf rig's link
+// script put after everything else: a scene with no textured triangle runs from the
+// cache sets it always did, however much this code grows.
+#ifdef __ELF__
+#define GFX3D_TEX_FUNC __attribute__((section(".gfx3d_tex_text")))
+#else
+#define GFX3D_TEX_FUNC
+#endif
+
+// A record's next index, with REC_OTHER set on a record that is no flat triangle, so the
+// rasteriser's one test per record is all flat triangles ever pay for the other kinds.
 #define REC_END 0x7FFFu
-#define REC_SPRITE 0x8000u
+#define REC_OTHER 0x8000u
+// Such a record's `color`: 0 for a sprite; for a textured triangle, these.
+#define REC_TEX 0x8000u
+#define REC_TEX_BLEND 0x4000u
+#define REC_TEX_SLOT 0x3Fu
+_Static_assert(GFX3D_MAX_TEXTURES <= REC_TEX_SLOT + 1, "a texture's slot fits a record");
 _Static_assert(GFX3D_REC_LIMIT <= REC_END && GFX3D_CAPACITY <= GFX3D_REC_LIMIT,
                "record indices are 15 bits with REC_END as the terminator");
 #define BG_BUCKET GFX3D_BUCKETS  // the highest, so the first rasterised
@@ -46,6 +61,20 @@ typedef struct {
 } gfx3d_rec_t;
 _Static_assert(sizeof(gfx3d_rec_t) == 28, "see above");
 
+// A textured triangle's record holds its screen positions, in the mesh's vertex order, and
+// its texture in `color`. This is the rest of it, at xrec[i] for record i: there is no index
+// to keep or run out of, and the lent SRAM's first records work as they do for flat triangles.
+// It is in PSRAM, where a byte stored costs a line filled, written back and read again. So
+// the uv stays in the mesh, by reference, as those lines are only read; the colours are here,
+// with the fog in them, so the rasteriser needs neither the mesh's colours nor the fog.
+typedef struct {
+  float iw[3];                // focal / depth: tex_tri wants only the ratios of 1/z
+  const gfx3d_tmesh_t *mesh;  // its uv by triangle: idx, then uv. NULL: fan[tri]
+  uint16_t tri;
+  uint16_t color[3];  // host RGB565, fog mixed in
+} gfx3d_xrec_t;
+_Static_assert(sizeof(void *) != 4 || sizeof(gfx3d_xrec_t) == 24, "three of the XIP cache's lines");
+
 typedef struct {
   float depth;
   uint16_t rec;
@@ -56,6 +85,13 @@ typedef struct {
 typedef struct {
   float x, y, z, sx, sy;
 } gfx3d_vert_t;
+
+// The same for a textured mesh, in the same scratch.
+typedef struct {
+  float x, y, z, sx, sy;
+  float iw;        // focal / depth, as sx and sy when in front of the near plane
+  uint16_t color;  // fog mixed in
+} gfx3d_tvert_t;
 
 // head and tail share a line, and mean something only if the bucket's bit in
 // `used` is set, so a frame's beginScene clears 132 bytes, not 4 KB of PSRAM.
@@ -115,6 +151,11 @@ struct gfx3d {
   gfx3d_order_t *order;  // sort_as_one scratch
   int ocap;
   gfx3d_stats_t stats;
+  // Made at the first textured draw: a scene with none has nothing here.
+  void *xblock;
+  gfx3d_xrec_t *xrec;  // cap of them, starting on a cache line
+  float (*fan)[6];     // GFX3D_TM_FANS triangles' uv, for those the near plane cut
+  int nfan;
 };
 
 // ── Small vector helpers ────────────────────────────────────────────────────
@@ -272,7 +313,7 @@ gfx3d_tmesh_t *gfx3d_tmesh_new(const gfx3d_tmesh_desc_t *d) {
   for (int i = 0; i < 3 * nt; i++)
     if (d->idx[i] >= nv) return NULL;
   const size_t head = (sizeof(gfx3d_tmesh_t) + 7u) & ~(size_t)7u;
-  const size_t total = head + sizeof(float) * 5u * (size_t)nv +
+  const size_t total = head + sizeof(float) * 5u * (size_t)nv + 7u +
                        sizeof(uint16_t) * ((size_t)nv + 3u * (size_t)nt) +
                        2u * (size_t)nt;
   uint8_t *b = (uint8_t *)GFX3D_MALLOC(total);
@@ -281,7 +322,8 @@ gfx3d_tmesh_t *gfx3d_tmesh_new(const gfx3d_tmesh_desc_t *d) {
   m->nverts = nv;
   m->ntris = nt;
   m->xyz = (float *)(void *)(b + head);
-  m->uv = m->xyz + 3 * nv;
+  // Each vertex's uv in one of the XIP cache's lines: the rasteriser reads three a triangle.
+  m->uv = (float *)(((uintptr_t)(m->xyz + 3 * nv) + 7u) & ~(uintptr_t)7u);
   m->color = (uint16_t *)(void *)(m->uv + 2 * nv);
   m->idx = m->color + nv;
   m->tex = (uint8_t *)(void *)(m->idx + 3 * nt);
@@ -318,19 +360,6 @@ gfx3d_tmesh_t *gfx3d_tmesh_new(const gfx3d_tmesh_desc_t *d) {
 void gfx3d_tmesh_free(gfx3d_tmesh_t *m) {
   if (m) GFX3D_FREE(m);
 }
-
-#ifdef GFX3D_TEST
-void gfx3d_tmesh_test_arrays(const gfx3d_tmesh_t *m, const float **xyz, const float **uv,
-                             const uint16_t **color, const uint16_t **idx,
-                             const uint8_t **tex, const uint8_t **flags) {
-  *xyz = m->xyz;
-  *uv = m->uv;
-  *color = m->color;
-  *idx = m->idx;
-  *tex = m->tex;
-  *flags = m->flags;
-}
-#endif
 
 // ── Context ─────────────────────────────────────────────────────────────────
 
@@ -420,6 +449,7 @@ void gfx3d_free(gfx3d_t *g) {
   for (int i = 0; i < g->nimg; i++) GFX3D_FREE(g->img[i].px);
   if (g->verts) GFX3D_FREE(g->verts);
   if (g->order) GFX3D_FREE(g->order);
+  if (g->xblock) GFX3D_FREE(g->xblock);
   GFX3D_FREE(g);
 }
 
@@ -555,6 +585,7 @@ void gfx3d_begin(gfx3d_t *g, bool clear, uint16_t clear_color) {
   g->clear = clear;
   g->clear_color = clear_color;
   g->nrec = 0;
+  g->nfan = 0;
   tier_acquire(g);
   memset(g->used, 0, sizeof g->own_used);
   memset(&g->stats, 0, sizeof g->stats);
@@ -562,7 +593,7 @@ void gfx3d_begin(gfx3d_t *g, bool clear, uint16_t clear_color) {
 
 // ── Scene building ──────────────────────────────────────────────────────────
 
-static int bucket_of(float znear, float range, float depth) {
+__attribute__((always_inline)) static inline int bucket_of(float znear, float range, float depth) {
   const float t = (depth - znear) / range;
   if (!(t > 0.0f)) return 0;
   if (t >= 1.0f) return GFX3D_BUCKETS - 1;
@@ -574,7 +605,7 @@ static inline gfx3d_rec_t *rec_at(const gfx3d_t *g, int i) {
 }
 
 // Appends record i to bucket b (submission order is kept within a bucket).
-// `kind` is 0 for a triangle, REC_SPRITE for a sprite.
+// `kind` is 0 for a flat triangle, else REC_OTHER.
 static void link_rec(gfx3d_t *g, int b, int i, uint16_t kind) {
   rec_at(g, i)->next = kind | REC_END;
   gfx3d_bucket_t *const bk = &g->bucket[b];
@@ -585,7 +616,7 @@ static void link_rec(gfx3d_t *g, int b, int i, uint16_t kind) {
     bk->head = (uint16_t)i;
   } else {
     gfx3d_rec_t *const last = rec_at(g, bk->tail);
-    last->next = (uint16_t)((last->next & REC_SPRITE) | i);
+    last->next = (uint16_t)((last->next & REC_OTHER) | i);
   }
   bk->tail = (uint16_t)i;
 }
@@ -598,7 +629,7 @@ static int new_rec(gfx3d_t *g) {
   return g->nrec++;
 }
 
-static uint16_t rgb565f(float r, float gch, float b) {
+__attribute__((always_inline)) static inline uint16_t rgb565f(float r, float gch, float b) {
   int ri = (int)(r + 0.5f), gi = (int)(gch + 0.5f), bi = (int)(b + 0.5f);
   ri = ri < 0 ? 0 : ri > 31 ? 31 : ri;
   gi = gi < 0 ? 0 : gi > 63 ? 63 : gi;
@@ -612,8 +643,9 @@ static uint16_t shade(uint16_t c, float k) {
 }
 
 // (fr, fg, fb): the fog colour's channels as floats; range = fog_far - fog_near.
-static uint16_t fog_mix(float fog_near, float range, float fr, float fg, float fb,
-                        uint16_t c, float depth) {
+__attribute__((always_inline)) static inline uint16_t fog_mix(float fog_near, float range, float fr,
+                                                              float fg, float fb, uint16_t c,
+                                                              float depth) {
   float t = (depth - fog_near) / range;
   if (!(t > 0.0f)) return c;
   if (t > 1.0f) t = 1.0f;
@@ -643,8 +675,9 @@ __attribute__((weak)) void *gfx3d_sram_scratch(size_t *bytes) {
 // Room for one mesh's vertices and sort entries, until process_mesh returns: in
 // the lent SRAM when they fit (no XIP cache line touched, and PSRAM's stays
 // unallocated), else blocks kept for the next mesh.
-static bool get_scratch(gfx3d_t *g, int nverts, int norder, gfx3d_vert_t **verts,
-                        gfx3d_order_t **order) {
+__attribute__((always_inline)) static inline bool get_scratch(gfx3d_t *g, int nverts, int norder,
+                                                              gfx3d_vert_t **verts,
+                                                              gfx3d_order_t **order) {
   const size_t vbytes = sizeof(gfx3d_vert_t) * (size_t)nverts;
   size_t have = 0;
   uint8_t *const sram = (uint8_t *)gfx3d_sram_scratch(&have);
@@ -705,8 +738,8 @@ static int clip_near(const gfx3d_t *g, const float *a, const float *b,
   return n;
 }
 
-static bool offscreen(float x0, float x1, float y0, float y1, const float *x,
-                      const float *y, int n) {
+__attribute__((always_inline)) static inline bool offscreen(float x0, float x1, float y0, float y1,
+                                                            const float *x, const float *y, int n) {
   bool left = true, right = true, top = true, bottom = true;
   for (int i = 0; i < n; i++) {
     if (x[i] >= x0) left = false;
@@ -969,8 +1002,256 @@ bool gfx3d_draw_sprite(gfx3d_t *g, int slot, const float pos[3], float size,
   r->u.spr.sw = (int16_t)sw;
   r->u.spr.sh = (int16_t)sh;
   r->u.spr.slot = (uint16_t)slot;
-  link_rec(g, bucket_of(g->znear, g->zfar - g->znear, depth + bias), ri, REC_SPRITE);
+  r->color = 0;
+  link_rec(g, bucket_of(g->znear, g->zfar - g->znear, depth + bias), ri, REC_OTHER);
   return true;
+}
+
+// ── Textured meshes in a scene ──────────────────────────────────────────────
+
+GFX3D_TEX_FUNC static bool tmesh_scene_alloc(gfx3d_t *g) {
+  const size_t rec = sizeof(gfx3d_xrec_t) * (size_t)g->cap, fan = sizeof(float[6]) * GFX3D_TM_FANS;
+  uint8_t *const b = (uint8_t *)GFX3D_MALLOC(rec + fan + 7u);
+  if (!b) return false;
+  g->xblock = b;
+  g->xrec = (gfx3d_xrec_t *)(void *)(((uintptr_t)b + 7u) & ~(uintptr_t)7u);
+  g->fan = (float (*)[6])(void *)(g->xrec + g->cap);
+  return true;
+}
+
+// A record's `color` for this triangle.
+__attribute__((always_inline)) static inline uint16_t tmesh_kind(unsigned flags, unsigned slot) {
+  return (uint16_t)(REC_TEX | ((flags & GFX3D_TM_BLEND) ? REC_TEX_BLEND : 0u) | slot);
+}
+
+// A triangle the near plane cuts, as clip_near does it and to the same points, so that it
+// has the flat path's outline: each crossing is interpolated from its inside end, so two
+// triangles sharing the edge get the same one, in position, uv and colour alike. The fan's
+// pieces hold their uv in the arena. Not inlined: few triangles a frame come here.
+__attribute__((noinline)) GFX3D_TEX_FUNC static void tmesh_cut(gfx3d_t *g, const gfx3d_tmesh_t *m,
+                                                               int tri, const gfx3d_tvert_t *va,
+                                                               const gfx3d_tvert_t *vb,
+                                                               const gfx3d_tvert_t *vc, float bias) {
+  const unsigned fl = m->flags[tri], slot = m->tex[tri];
+  // No screen position yet to tell which way it faces: < 0 faces the eye, at the origin.
+  const float ux = vb->x - va->x, uy = vb->y - va->y, uz = vb->z - va->z;
+  const float wx = vc->x - va->x, wy = vc->y - va->y, wz = vc->z - va->z;
+  const float facing = (uy * wz - uz * wy) * va->x + (uz * wx - ux * wz) * va->y +
+                       (ux * wy - uy * wx) * va->z;
+  if ((fl & GFX3D_TM_DOUBLE_SIDED) ? facing == 0.0f : !(facing < 0.0f)) {
+    g->stats.culled++;
+    return;
+  }
+  const gfx3d_tvert_t *const in[3] = {va, vb, vc};
+  const uint16_t *const idx = &m->idx[3 * tri];
+  const float zn = g->znear;
+  uint16_t col[3];
+  for (int i = 0; i < 3; i++) col[i] = (fl & GFX3D_TM_NO_FOG) ? m->color[idx[i]] : in[i]->color;
+  float ox[4], oy[4], oiw[4], ou[4], ov[4];
+  uint16_t oc[4];
+  int n = 0;
+  for (int i = 0; i < 3; i++) {
+    const int j = (i + 1) % 3;
+    const float du = -in[i]->z - zn, dw = -in[j]->z - zn;  // >= 0: inside
+    if (du >= 0.0f) {
+      const float *const uv = &m->uv[2 * idx[i]];
+      ox[n] = in[i]->sx;
+      oy[n] = in[i]->sy;
+      oiw[n] = in[i]->iw;
+      ou[n] = uv[0];
+      ov[n] = uv[1];
+      oc[n] = col[i];
+      n++;
+    }
+    if ((du >= 0.0f) != (dw >= 0.0f)) {
+      const int si = du >= 0.0f ? i : j, oi = du >= 0.0f ? j : i;
+      const gfx3d_tvert_t *const s = in[si], *const o = in[oi];
+      const float ds = du >= 0.0f ? du : dw, dd = du >= 0.0f ? dw : du;
+      // Limited only where it is inf / inf, beyond any world, as a colour may not be NaN.
+      const float t = fminf(fmaxf(ds / (ds - dd), 0.0f), 1.0f);
+      const float k = g->focal / fmaxf(-(s->z + (o->z - s->z) * t), zn);
+      const float *const us = &m->uv[2 * idx[si]], *const uo = &m->uv[2 * idx[oi]];
+      ox[n] = g->cxs + (s->x + (o->x - s->x) * t) * k;
+      oy[n] = g->cys - (s->y + (o->y - s->y) * t) * k;
+      oiw[n] = k;
+      ou[n] = us[0] + (uo[0] - us[0]) * t;
+      ov[n] = us[1] + (uo[1] - us[1]) * t;
+      const unsigned cs = col[si], co = col[oi];
+      const float r0 = (float)(cs >> 11), g0 = (float)((cs >> 5) & 63), b0 = (float)(cs & 31);
+      oc[n] = rgb565f(r0 + ((float)(co >> 11) - r0) * t, g0 + ((float)((co >> 5) & 63) - g0) * t,
+                      b0 + ((float)(co & 31) - b0) * t);
+      n++;
+    }
+  }
+  g->stats.clipped++;
+  if (offscreen((float)g->vx, (float)(g->vx + g->vw), (float)g->vy, (float)(g->vy + g->vh), ox, oy,
+                n) ||
+      (int)slot >= g->ntex) {
+    g->stats.culled++;
+    return;
+  }
+  const float depth = (fmaxf(-va->z, zn) + fmaxf(-vb->z, zn) + fmaxf(-vc->z, zn)) * (1.0f / 3.0f);
+  const int bucket = bucket_of(zn, g->zfar - zn, depth + bias);
+  for (int k = 1; k + 1 < n; k++) {
+    if (g->nfan >= GFX3D_TM_FANS) {
+      g->stats.overflow++;
+      break;
+    }
+    const int ri = new_rec(g);
+    if (ri < 0) break;
+    const int v[3] = {0, k, k + 1};
+    gfx3d_rec_t *const r = rec_at(g, ri);
+    gfx3d_xrec_t *const x = &g->xrec[ri];
+    float *const uv = g->fan[g->nfan];
+    for (int c = 0; c < 3; c++) {
+      r->u.tri.x[c] = ox[v[c]];
+      r->u.tri.y[c] = oy[v[c]];
+      x->iw[c] = oiw[v[c]];
+      x->color[c] = oc[v[c]];
+      uv[2 * c] = ou[v[c]];
+      uv[2 * c + 1] = ov[v[c]];
+    }
+    r->color = tmesh_kind(fl, slot);
+    x->mesh = NULL;
+    x->tri = (uint16_t)g->nfan++;
+    link_rec(g, bucket, ri, REC_OTHER);
+  }
+}
+
+// As process_mesh: everything the loops read from g and m is a local first. Which way a
+// triangle faces comes from its screen area, as a mesh of this kind has no planes.
+GFX3D_TEX_FUNC static void process_tmesh(gfx3d_t *g, const gfx3d_tmesh_t *m, const float a[9],
+                                         const float t[3], float bias) {
+  const int nverts = m->nverts, ntris = m->ntris;
+  gfx3d_vert_t *scratch;
+  gfx3d_order_t *no_order;
+  const size_t vbytes = sizeof(gfx3d_tvert_t) * (size_t)nverts;
+  if (!get_scratch(g, (int)((vbytes + sizeof(gfx3d_vert_t) - 1u) / sizeof(gfx3d_vert_t)), 0, &scratch,
+                   &no_order)) {
+    g->stats.overflow += (uint32_t)ntris;
+    return;
+  }
+  gfx3d_tvert_t *const vs = (gfx3d_tvert_t *)(void *)scratch;
+  const float zn = g->znear, zf = g->zfar, zrange = zf - zn;
+  {
+    const bool fog = g->fog_on;
+    const float fog_near = g->fog_near, fog_range = g->fog_far - g->fog_near;
+    const uint16_t fc = g->fog_color;
+    const float fog_r = (float)((fc >> 11) & 31), fog_g = (float)((fc >> 5) & 63);
+    const float fog_b = (float)(fc & 31);
+    const float focal = g->focal, cxs = g->cxs, cys = g->cys;
+    const float a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3], a4 = a[4], a5 = a[5];
+    const float a6 = a[6], a7 = a[7], a8 = a[8], t0 = t[0], t1 = t[1], t2 = t[2];
+    const float *p = m->xyz;
+    const uint16_t *restrict colors = m->color;
+    gfx3d_tvert_t *v = vs;
+    for (int i = 0; i < nverts; i++, p += 3, v++) {
+      const float px = p[0], py = p[1], pz = p[2];
+      const float x = a0 * px + a1 * py + a2 * pz + t0;
+      const float y = a3 * px + a4 * py + a5 * pz + t1;
+      const float z = a6 * px + a7 * py + a8 * pz + t2;
+      v->x = x;
+      v->y = y;
+      v->z = z;
+      const float depth = -z;
+      if (depth >= zn) {
+        const float k = focal / depth;
+        v->sx = cxs + x * k;
+        v->sy = cys - y * k;
+        v->iw = k;
+      }
+      const uint16_t c = colors[i];
+      v->color = fog ? fog_mix(fog_near, fog_range, fog_r, fog_g, fog_b, c, depth) : c;
+    }
+  }
+  const float vx0 = (float)g->vx, vx1 = (float)(g->vx + g->vw);
+  const float vy0 = (float)g->vy, vy1 = (float)(g->vy + g->vh);
+  const unsigned ntex = (unsigned)g->ntex;
+  const uint16_t *restrict idx = m->idx;
+  const uint16_t *restrict colors = m->color;
+  const uint8_t *restrict tex = m->tex;
+  const uint8_t *restrict flags = m->flags;
+  gfx3d_xrec_t *const xrec = g->xrec;
+  uint32_t culled = 0;
+  for (int i = 0; i < ntris; i++, idx += 3) {
+    const unsigned ia = idx[0], ib = idx[1], ic = idx[2];
+    const gfx3d_tvert_t *const va = &vs[ia], *const vb = &vs[ib], *const vc = &vs[ic];
+    const float da = -va->z, db = -vb->z, dc = -vc->z;
+    if ((da < zn && db < zn && dc < zn) || (da > zf && db > zf && dc > zf)) {
+      culled++;
+      continue;
+    }
+    if (!(da >= zn && db >= zn && dc >= zn)) {
+      tmesh_cut(g, m, i, va, vb, vc, bias);
+      continue;
+    }
+    const unsigned fl = flags[i], slot = tex[i];
+    const float xa = va->sx, xb = vb->sx, xc = vc->sx, ya = va->sy, yb = vb->sy, yc = vc->sy;
+    // Below 0 it faces the eye: screen y runs down, and its front is counter-clockwise.
+    const float area = (xb - xa) * (yc - ya) - (xc - xa) * (yb - ya);
+    if (((fl & GFX3D_TM_DOUBLE_SIDED) ? area == 0.0f : !(area < 0.0f)) ||
+        (!(xa >= vx0) && !(xb >= vx0) && !(xc >= vx0)) ||
+        (!(xa <= vx1) && !(xb <= vx1) && !(xc <= vx1)) ||
+        (!(ya >= vy0) && !(yb >= vy0) && !(yc >= vy0)) ||
+        (!(ya <= vy1) && !(yb <= vy1) && !(yc <= vy1)) || slot >= ntex) {
+      culled++;
+      continue;
+    }
+    const int ri = new_rec(g);
+    if (ri < 0) continue;
+    gfx3d_rec_t *const r = rec_at(g, ri);
+    r->u.tri.x[0] = xa;
+    r->u.tri.y[0] = ya;
+    r->u.tri.x[1] = xb;
+    r->u.tri.y[1] = yb;
+    r->u.tri.x[2] = xc;
+    r->u.tri.y[2] = yc;
+    r->color = tmesh_kind(fl, slot);
+    gfx3d_xrec_t *const x = &xrec[ri];
+    x->iw[0] = va->iw;
+    x->iw[1] = vb->iw;
+    x->iw[2] = vc->iw;
+    x->mesh = m;
+    x->tri = (uint16_t)i;
+    if (fl & GFX3D_TM_NO_FOG) {
+      x->color[0] = colors[ia];
+      x->color[1] = colors[ib];
+      x->color[2] = colors[ic];
+    } else {
+      x->color[0] = va->color;
+      x->color[1] = vb->color;
+      x->color[2] = vc->color;
+    }
+    link_rec(g, bucket_of(zn, zrange, (da + db + dc) * (1.0f / 3.0f) + bias), ri, REC_OTHER);
+  }
+  g->stats.culled += culled;
+}
+
+GFX3D_TEX_FUNC void gfx3d_draw_tmesh(gfx3d_t *g, const gfx3d_tmesh_t *m, const float rot[9],
+                                     const float pos[3], float scale, float bias) {
+  g->stats.tris_in += (uint32_t)m->ntris;
+  float a[9], t[3], c[3];
+  if (rot) {
+    mat_mul(a, g->V, rot);
+  } else {
+    memcpy(a, g->V, sizeof a);
+  }
+  for (int i = 0; i < 9; i++) a[i] *= scale;
+  const float d[3] = {pos[0] - g->cam[0], pos[1] - g->cam[1], pos[2] - g->cam[2]};
+  mat_vec(t, g->V, d);
+  mat_vec(c, a, m->center);
+  c[0] += t[0];
+  c[1] += t[1];
+  c[2] += t[2];
+  if (sphere_outside(g, c, m->radius * fabsf(scale), false)) {
+    g->stats.culled += (uint32_t)m->ntris;
+    return;
+  }
+  if (!g->xrec && !tmesh_scene_alloc(g)) {
+    g->stats.overflow += (uint32_t)m->ntris;
+    return;
+  }
+  process_tmesh(g, m, a, t, bias);
 }
 
 // ── Rasterisation ───────────────────────────────────────────────────────────
@@ -1042,10 +1323,101 @@ static void fill_sky(const gfx3d_t *g, const gfx3d_target_t *t,
 
 #include "gfx3d_tex.h"
 
-// Not inlined: the rasteriser below stays small, and this stays in flash.
-__attribute__((noinline)) static void raster_sprite(gfx3d_t *g, const gfx3d_target_t *t,
-                                                    const disp_clip_t *c,
-                                                    const gfx3d_rec_t *r) {
+// Mip `level` of a texture (past the last: the last).
+GFX3D_TEX_FUNC static const uint16_t *tex_level(const gfx3d_tex_t *t, int level, int *lw, int *lh) {
+  if (level > t->nmips - 1) level = t->nmips - 1;
+  const uint16_t *px = t->px;
+  int w = t->lg_w, h = t->lg_h;
+  for (int k = 0; k < level; k++, w--, h--) px += (size_t)1u << (w + h);
+  *lw = w;
+  *lh = h;
+  return px;
+}
+
+// A triangle's mip, from its texels per pixel along its longest edge on screen: level 0
+// below TEX_MIP_RATIO, then one more per doubling. Squared, to spare the two roots, so
+// each level is four times the last.
+__attribute__((always_inline)) static inline int tex_mip(const gfx3d_tex_t *t, const tex_vert_t *v) {
+  const int last = t->nmips - 1;
+  if (last <= 0) return 0;
+  const float e0x = v[1].x - v[0].x, e0y = v[1].y - v[0].y;
+  const float e1x = v[2].x - v[1].x, e1y = v[2].y - v[1].y;
+  const float e2x = v[0].x - v[2].x, e2y = v[0].y - v[2].y;
+  const float l0 = e0x * e0x + e0y * e0y, l1 = e1x * e1x + e1y * e1y, l2 = e2x * e2x + e2y * e2y;
+  const tex_vert_t *p = &v[0], *q = &v[1];
+  float len = l0;
+  if (l1 > len) {
+    len = l1;
+    p = &v[1];
+    q = &v[2];
+  }
+  if (l2 > len) {
+    len = l2;
+    p = &v[2];
+    q = &v[0];
+  }
+  const float du = (q->u - p->u) * (float)(1 << t->lg_w), dv = (q->v - p->v) * (float)(1 << t->lg_h);
+  const float texels = du * du + dv * dv;
+  float limit = len * (TEX_MIP_RATIO * TEX_MIP_RATIO);
+  int level = 0;
+  while (level < last && texels >= limit) {
+    level++;
+    limit *= 4.0f;
+  }
+  return level;
+}
+
+// The vertices tex_tri reads: in SRAM on the device, where the stack is PSRAM.
+static tex_vert_t s_tex_verts[3];
+
+// A textured record: everything is read here, once, and the rest is tex_tri's.
+__attribute__((noinline)) GFX3D_TEX_FUNC static void raster_tex(gfx3d_t *g, const gfx3d_target_t *t,
+                                                                const disp_clip_t *c,
+                                                                const gfx3d_rec_t *r) {
+  const size_t in_tier = (uintptr_t)r - (uintptr_t)g->trec;
+  const size_t i = in_tier < (size_t)g->ntrec * sizeof *r ? in_tier / sizeof *r : (size_t)(r - g->rec);
+  const gfx3d_xrec_t *const x = &g->xrec[i];
+  const gfx3d_tmesh_t *const m = x->mesh;
+  tex_vert_t *const v = s_tex_verts;
+  if (m) {
+    const uint16_t *const idx = &m->idx[3u * x->tri];
+    const float *const uv = m->uv;
+    for (int k = 0; k < 3; k++) {
+      const float *const p = &uv[2u * idx[k]];
+      v[k].u = p[0];
+      v[k].v = p[1];
+    }
+  } else {
+    const float *const p = g->fan[x->tri];
+    for (int k = 0; k < 3; k++) {
+      v[k].u = p[2 * k];
+      v[k].v = p[2 * k + 1];
+    }
+  }
+  for (int k = 0; k < 3; k++) {
+    v[k].x = r->u.tri.x[k];
+    v[k].y = r->u.tri.y[k];
+    v[k].iw = x->iw[k];
+    v[k].color = x->color[k];
+  }
+  const unsigned kind = r->color;
+  const gfx3d_tex_t *const tx = &g->tex[kind & REC_TEX_SLOT];
+  int lw, lh;
+  const uint16_t *const px = tex_level(tx, tex_mip(tx, v), &lw, &lh);
+  g->stats.pixels += tex_tri(t->fb, t->stride, c->x0, c->y0, c->x1, c->y1, &v[0], &v[1], &v[2], px,
+                             lw, lh, (kind & REC_TEX_BLEND) != 0, t->swap);
+  g->stats.drawn++;
+}
+
+// A record that is no flat triangle. Not inlined: the rasteriser below stays small, and
+// this stays in flash.
+__attribute__((noinline)) static void raster_other(gfx3d_t *g, const gfx3d_target_t *t,
+                                                   const disp_clip_t *c,
+                                                   const gfx3d_rec_t *r) {
+  if (r->color & REC_TEX) {
+    raster_tex(g, t, c, r);
+    return;
+  }
   const uint16_t *data;
   int iw, ih;
   uint16_t key;
@@ -1080,8 +1452,8 @@ GFX3D_RAM_FUNC static void raster_scene(gfx3d_t *g, const gfx3d_target_t *t,
       while (i != REC_END) {
         const gfx3d_rec_t *const r = i < ntrec ? &trec[i] : &rec[i];
         const uint32_t next = r->next;
-        if (next & REC_SPRITE) {
-          raster_sprite(g, t, c, r);
+        if (next & REC_OTHER) {
+          raster_other(g, t, c, r);
         } else {
           disp_fill_tri_sorted(fb, stride, cx0, cy0, cx1, cy1, r->u.tri.x[0],
                                r->u.tri.y[0], r->u.tri.x[1], r->u.tri.y[1],
@@ -1089,23 +1461,11 @@ GFX3D_RAM_FUNC static void raster_scene(gfx3d_t *g, const gfx3d_target_t *t,
                                disp_px(r->color, swap));
           drawn++;
         }
-        i = next & ~REC_SPRITE;
+        i = next & ~REC_OTHER;
       }
     }
   }
   g->stats.drawn += drawn;
-}
-
-// Mip `level` of a texture (past the last: the last).
-__attribute__((unused)) static const uint16_t *tex_level(const gfx3d_tex_t *t, int level, int *lw,
-                                                         int *lh) {
-  if (level > t->nmips - 1) level = t->nmips - 1;
-  const uint16_t *px = t->px;
-  int w = t->lg_w, h = t->lg_h;
-  for (int k = 0; k < level; k++, w--, h--) px += (size_t)1u << (w + h);
-  *lw = w;
-  *lh = h;
-  return px;
 }
 
 #ifdef GFX3D_TEST

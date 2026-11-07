@@ -9,6 +9,7 @@ SECTIONS
     KEEP(*gfx3d.o(.text .text.*))
     *gfx3d_main.o(.text .text.*)
     *start.o(.text .text.*)
+    *gfx3d.o(.gfx3d_tex_text)  /* after what a flat scene runs, as in src/hot_gfx.ld */
   }
   /* Code the firmware keeps in SRAM: .time_critical*, and newlib's sqrtf. */
   .ramtext RAMTEXT_BASE : {

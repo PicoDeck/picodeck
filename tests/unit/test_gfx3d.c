@@ -960,7 +960,7 @@ static void test_flat_scene_crc(void) {
   gfx3d_free(g);
 }
 
-// ── Textures and textured meshes (data model only; drawing comes later) ──
+// ── Textures and textured meshes, as data ──
 
 static void test_tex_add_validates(void) {
   gfx3d_t *g = gfx3d_new(W, H);
@@ -1063,44 +1063,6 @@ static void test_tmesh_new_validates(void) {
   e.flags = fl;  // flags are optional
   m = gfx3d_tmesh_new(&e);
   CHECK(m != NULL);
-  gfx3d_tmesh_free(m);
-}
-
-static void test_tmesh_new_copies(void) {
-  float xyz[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
-  float uv[6] = {0, 0, 1, 0, 0, 1};
-  uint16_t col[3] = {0x1111, 0x2222, 0x3333}, idx[3] = {0, 1, 2};
-  uint8_t tex[1] = {5}, fl[1] = {GFX3D_TM_DOUBLE_SIDED};
-  const float xyz0[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
-  const float uv0[6] = {0, 0, 1, 0, 0, 1};
-  const gfx3d_tmesh_desc_t d = {3, 1, xyz, uv, col, idx, tex, fl};
-  gfx3d_tmesh_t *m = gfx3d_tmesh_new(&d);
-  CHECK(m != NULL);
-  memset(xyz, 0, sizeof xyz);
-  memset(uv, 0, sizeof uv);
-  memset(col, 0, sizeof col);
-  memset(idx, 0, sizeof idx);
-  tex[0] = 0;
-  fl[0] = 0;
-  const float *sx, *su;
-  const uint16_t *sc, *si;
-  const uint8_t *st, *sf;
-  gfx3d_tmesh_test_arrays(m, &sx, &su, &sc, &si, &st, &sf);
-  CHECK(memcmp(sx, xyz0, sizeof xyz0) == 0);
-  CHECK(memcmp(su, uv0, sizeof uv0) == 0);
-  CHECK(sc[0] == 0x1111 && sc[1] == 0x2222 && sc[2] == 0x3333);
-  CHECK(si[0] == 0 && si[1] == 1 && si[2] == 2);
-  CHECK(st[0] == 5 && sf[0] == GFX3D_TM_DOUBLE_SIDED);
-  gfx3d_tmesh_free(m);
-
-  // Without flags the stored flags are zero.
-  const gfx3d_tmesh_desc_t d2 = {3, 1, xyz0, uv0, col, idx, tex, NULL};
-  idx[1] = 1;
-  idx[2] = 2;
-  m = gfx3d_tmesh_new(&d2);
-  CHECK(m != NULL);
-  gfx3d_tmesh_test_arrays(m, &sx, &su, &sc, &si, &st, &sf);
-  CHECK(sf[0] == 0);
   gfx3d_tmesh_free(m);
 }
 
@@ -2023,6 +1985,1190 @@ static void test_tex_scene_crc(void) {
   }
 }
 
+// ── Textured meshes in a scene ──
+
+#define FOCAL 277.12813f  // px per unit at depth 1: 160 / tan(30 degrees)
+#define NEUTRAL 0xAD55    // a texel of about x1 under the multiply
+
+static gfx3d_tmesh_t *tm_make(int nv, int nt, const float *xyz, const float *uv,
+                              const uint16_t *col, const uint16_t *idx, const uint8_t *tex,
+                              const uint8_t *fl) {
+  const gfx3d_tmesh_desc_t d = {nv, nt, xyz, uv, col, idx, tex, fl};
+  gfx3d_tmesh_t *m = gfx3d_tmesh_new(&d);
+  CHECK(m != NULL);
+  return m;
+}
+
+// A square facing +z, half-size s around (cx, cy) at z, with uv from 0 to rep.
+static gfx3d_tmesh_t *tm_square(float cx, float cy, float s, float z, float rep, uint16_t color,
+                                int slot, uint8_t fl) {
+  const float xyz[12] = {cx - s, cy - s, z, cx + s, cy - s, z, cx + s, cy + s, z, cx - s, cy + s, z};
+  const float uv[8] = {0, 0, rep, 0, rep, rep, 0, rep};
+  const uint16_t col[4] = {color, color, color, color};
+  const uint16_t idx[6] = {0, 1, 2, 0, 2, 3};
+  const uint8_t tex[2] = {(uint8_t)slot, (uint8_t)slot}, f[2] = {fl, fl};
+  return tm_make(4, 2, xyz, uv, col, idx, tex, f);
+}
+
+// World units for `px` pixels on screen at depth z.
+static float world_of_px(float px, float z) { return px * fabsf(z) / FOCAL; }
+
+// What a solid `texel` under a solid `vertex` draws.
+static uint16_t tm_expect(uint16_t texel, uint16_t vertex) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const uint16_t c = modulated(g, texel, vertex);
+  gfx3d_free(g);
+  return c;
+}
+
+// How many pixels of the frame are not `v`.
+static int fb_count_not(uint16_t v) {
+  int n = 0;
+  for (int i = 0; i < W * H; i++) n += s_fb[i] != v;
+  return n;
+}
+
+static void tm_render_one(gfx3d_t *g, const gfx3d_tmesh_t *m) {
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw_tmesh(g, m, NULL, ORIGIN, 1, 0);
+  render(g);
+}
+
+// R1: every array of the description shows in the picture, and none is the caller's.
+static void test_tmesh_new_copies(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  static uint16_t uniq[16 * 16];
+  make_unique(uniq, 16, 16);
+  const int wrong = tex_solid(g, 0, 0xA800), t0 = gfx3d_tex_add(g, 4, 4, 1, uniq);
+  const int t1 = tex_solid(g, 0, 0x0540);
+  // The first faces the camera; the second faces away and is double-sided.
+  float xyz[18] = {-4, -1, -10, -2, -1, -10, -3, 1, -10, 3, 1, -10, 4, -1, -10, 2, -1, -10};
+  float uv[12] = {0, 0, 1, 0, 0.5f, 1, 0, 0, 1, 0, 0.5f, 1};
+  uint16_t col[6] = {0x1111, 0xFFFF, 0x7BEF, 0xFFFF, 0xFFFF, 0xFFFF}, idx[6] = {0, 1, 2, 3, 4, 5};
+  uint8_t tex[2] = {(uint8_t)t0, (uint8_t)t1}, fl[2] = {0, GFX3D_TM_DOUBLE_SIDED};
+  const float xyz0[18] = {-4, -1, -10, -2, -1, -10, -3, 1, -10, 3, 1, -10, 4, -1, -10, 2, -1, -10};
+  const float uv0[12] = {0, 0, 1, 0, 0.5f, 1, 0, 0, 1, 0, 0.5f, 1};
+  const uint16_t col0[6] = {0x1111, 0xFFFF, 0x7BEF, 0xFFFF, 0xFFFF, 0xFFFF};
+  const uint16_t idx0[6] = {0, 1, 2, 3, 4, 5};
+  const uint8_t tex0[2] = {(uint8_t)t0, (uint8_t)t1};
+
+  gfx3d_tmesh_t *m = tm_make(6, 2, xyz, uv, col, idx, tex, fl);
+  tm_render_one(g, m);
+  static uint16_t want[W * H];
+  memcpy(want, s_fb, sizeof want);
+  CHECK(gfx3d_get_stats(g)->drawn == 2);
+  CHECK(fb_count_not(BG) > 1000);
+  gfx3d_tmesh_free(m);
+
+  // Each array mutated after the new, one at a time and then all, and the picture stays.
+  for (int which = 0; which < 7; which++) {
+    memcpy(xyz, xyz0, sizeof xyz);
+    memcpy(uv, uv0, sizeof uv);
+    memcpy(col, col0, sizeof col);
+    memcpy(idx, idx0, sizeof idx);
+    memcpy(tex, tex0, sizeof tex);
+    fl[0] = 0;
+    fl[1] = GFX3D_TM_DOUBLE_SIDED;
+    m = tm_make(6, 2, xyz, uv, col, idx, tex, fl);
+    if (which == 0 || which == 6) memset(xyz, 0, sizeof xyz);
+    if (which == 1 || which == 6) memset(uv, 0, sizeof uv);
+    if (which == 2 || which == 6) memset(col, 0, sizeof col);
+    if (which == 3 || which == 6) memset(idx, 0, sizeof idx);
+    if (which == 4 || which == 6) tex[0] = tex[1] = (uint8_t)wrong;
+    if (which == 5 || which == 6) fl[0] = fl[1] = 0;
+    tm_render_one(g, m);
+    CHECK(memcmp(want, s_fb, sizeof want) == 0);
+    gfx3d_tmesh_free(m);
+  }
+
+  // Without flags, none are set: the second triangle is culled.
+  m = tm_make(6, 2, xyz0, uv0, col0, idx0, tex0, NULL);
+  tm_render_one(g, m);
+  CHECK(gfx3d_get_stats(g)->drawn == 1);
+  CHECK(gfx3d_get_stats(g)->culled == 1);
+  gfx3d_tmesh_free(m);
+  gfx3d_free(g);
+}
+
+static bool tm_sprite_px(void *ud, int slot, const uint16_t **data, int *w, int *h,
+                         uint16_t *key) {
+  static const uint16_t one = YELLOW;
+  (void)ud;
+  (void)slot;
+  *data = &one;
+  *w = *h = 1;
+  *key = MAGENTA;
+  return true;
+}
+
+typedef struct {
+  gfx3d_tmesh_t *t[2];
+  gfx3d_mesh_t *f[2];
+} tm_mixed_t;
+
+static void tm_mixed_item(gfx3d_t *g, const tm_mixed_t *m, int item) {
+  const float at[3] = {0, 0, -20};
+  switch (item) {
+    case 0: gfx3d_draw_tmesh(g, m->t[0], NULL, ORIGIN, 1, 0); break;
+    case 1: gfx3d_draw(g, m->f[0], ID, ORIGIN, 1, 0, false); break;
+    case 2: CHECK(gfx3d_draw_sprite(g, 0, at, 2 * world_of_px(90, 20), 0, 0, 1, 1, 0)); break;
+    case 3: gfx3d_draw_tmesh(g, m->t[1], ID, ORIGIN, 1, 0); break;
+    default: gfx3d_draw(g, m->f[1], ID, ORIGIN, 1, 0, false); break;
+  }
+}
+
+static void test_tmesh_mixed_painter_order(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const int slot = tex_solid(g, 0, NEUTRAL);
+  const uint8_t ff = GFX3D_UNLIT | GFX3D_NO_FOG;
+  // Five layers, far to near, each smaller on screen: a ring of each shows.
+  tm_mixed_t mx;
+  mx.t[0] = tm_square(0, 0, world_of_px(150, 40), -40, 1, RED, slot, 0);
+  mx.f[0] = square(world_of_px(120, 30), -30, GREEN, ff);
+  mx.t[1] = tm_square(0, 0, world_of_px(60, 10), -10, 1, BLUE, slot, 0);
+  mx.f[1] = square(world_of_px(30, 5), -5, WHITE, ff);
+  const uint16_t tr = tm_expect(NEUTRAL, RED), tb = tm_expect(NEUTRAL, BLUE);
+  gfx3d_target_t t = target();
+  t.sprite = tm_sprite_px;
+  static const int orders[3][5] = {{0, 1, 2, 3, 4}, {4, 3, 2, 1, 0}, {2, 4, 0, 3, 1}};
+  static uint16_t first[W * H];
+  for (int tier = 0; tier < 2; tier++) {
+    gfx3d_sram_take_back();
+    tier_set(tier ? 23820 : 0);
+    for (int o = 0; o < 3; o++) {
+      gfx3d_begin(g, true, BG);
+      for (int i = 0; i < 5; i++) tm_mixed_item(g, &mx, orders[o][i]);
+      gfx3d_end(g, &t);
+      CHECK_EQ_U32(px(160 + 155, 160), BG);
+      CHECK_EQ_U32(px(160 + 135, 160), tr);
+      CHECK_EQ_U32(px(160 + 105, 160), GREEN);
+      CHECK_EQ_U32(px(160 + 75, 160), YELLOW);
+      CHECK_EQ_U32(px(160 + 45, 160), tb);
+      CHECK_EQ_U32(px(160 + 15, 160), WHITE);
+      const gfx3d_stats_t *st = gfx3d_get_stats(g);
+      CHECK(st->tris_in == 8);
+      CHECK(st->drawn == 8);
+      CHECK(st->sprites == 1);
+      CHECK(st->culled == 0);
+      if (tier == 0 && o == 0) memcpy(first, s_fb, sizeof first);
+      CHECK(memcmp(first, s_fb, sizeof first) == 0);
+    }
+  }
+  gfx3d_sram_take_back();
+  tier_set(0);
+
+  // At one depth, one bucket: the order of submission, whatever the kinds.
+  gfx3d_tmesh_t *tie_t = tm_square(0, 0, world_of_px(100, 10), -10, 1, RED, slot, 0);
+  gfx3d_mesh_t *tie_f = square(world_of_px(100, 10), -10, GREEN, ff);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw_tmesh(g, tie_t, NULL, ORIGIN, 1, 0);
+  gfx3d_draw(g, tie_f, ID, ORIGIN, 1, 0, false);
+  render(g);
+  CHECK_EQ_U32(px(160, 160), GREEN);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw(g, tie_f, ID, ORIGIN, 1, 0, false);
+  gfx3d_draw_tmesh(g, tie_t, NULL, ORIGIN, 1, 0);
+  render(g);
+  CHECK_EQ_U32(px(160, 160), tr);
+
+  // Bias: nearer than the flat square, but pushed behind it.
+  gfx3d_tmesh_t *near_t = tm_square(0, 0, world_of_px(100, 5), -5, 1, RED, slot, 0);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw_tmesh(g, near_t, NULL, ORIGIN, 1, 20.0f);
+  gfx3d_draw(g, tie_f, ID, ORIGIN, 1, 0, false);
+  render(g);
+  CHECK_EQ_U32(px(160, 160), GREEN);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw(g, tie_f, ID, ORIGIN, 1, 0, false);
+  gfx3d_draw_tmesh(g, near_t, NULL, ORIGIN, 1, 0);
+  render(g);
+  CHECK_EQ_U32(px(160, 160), tr);
+
+  gfx3d_tmesh_free(near_t);
+  gfx3d_tmesh_free(tie_t);
+  gfx3d_mesh_free(tie_f);
+  gfx3d_tmesh_free(mx.t[0]);
+  gfx3d_tmesh_free(mx.t[1]);
+  gfx3d_mesh_free(mx.f[0]);
+  gfx3d_mesh_free(mx.f[1]);
+  gfx3d_free(g);
+}
+
+static void test_tmesh_stats(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const int slot = tex_solid(g, 0, NEUTRAL);
+  const float z = -10;
+  const float xyz[72] = {
+      -4,  -1, z,  -2,  -1, z,  -3,  1, z,   // 0: visible
+      -3,  1,  z,  -2,  -1, z,  -4,  -1, z,  // 1: faces away
+      3,   1,  z,  4,   -1, z,  2,   -1, z,  // 2: faces away, double-sided: drawn
+      100, -1, z,  102, -1, z,  101, 1, z,   // 3: off the viewport
+      -1,  -1, 5,  1,   -1, 5,  0,   1, 5,   // 4: behind the camera
+      -1,  -1, -2000, 1, -1, -2000, 0, 1, -2000,  // 5: beyond the far plane
+      -1,  2,  z,  1,   2,  z,  0,   3, z,   // 6: a texture this context has not got
+      -1,  -1, 5,  0,   1,  5,  1,   -1, 5,  // 7: behind the camera, turned to face it
+  };
+  float uv[48];
+  uint16_t col[24], idx[24];
+  for (int i = 0; i < 24; i++) {
+    uv[2 * i] = (float)(i % 3);
+    uv[2 * i + 1] = (float)(i % 2);
+    col[i] = WHITE;
+    idx[i] = (uint16_t)i;
+  }
+  const uint8_t tex[8] = {(uint8_t)slot, (uint8_t)slot, (uint8_t)slot, (uint8_t)slot,
+                          (uint8_t)slot, (uint8_t)slot, 63, (uint8_t)slot};
+  const uint8_t fl[8] = {0, 0, GFX3D_TM_DOUBLE_SIDED, 0, 0, 0, 0, 0};
+  gfx3d_tmesh_t *m = tm_make(24, 8, xyz, uv, col, idx, tex, fl);
+  tm_render_one(g, m);
+  gfx3d_stats_t st = *gfx3d_get_stats(g);
+  CHECK_EQ_INT(st.tris_in, 8);
+  CHECK_EQ_INT(st.culled, 6);
+  CHECK_EQ_INT(st.drawn, 2);
+  CHECK_EQ_INT(st.clipped, 0);
+  CHECK_EQ_INT(st.overflow, 0);
+  CHECK_EQ_INT(st.sprites, 0);
+  CHECK(st.pixels > 1000);
+  CHECK_EQ_INT(st.pixels, fb_count_not(BG));  // nothing overlaps, no texel is BG
+  // Draw twice: both count. A new scene starts from nothing.
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw_tmesh(g, m, NULL, ORIGIN, 1, 0);
+  gfx3d_draw_tmesh(g, m, NULL, ORIGIN, 1, 0);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 0);  // nothing rasterises until the end
+  render(g);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->tris_in, 16);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->culled, 12);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 4);
+
+  // A bounding sphere outside the frustum culls all without touching a vertex: the
+  // vertices' scratch memory is not even asked for.
+  gfx3d_tmesh_t *left = tm_square(-1000, 0, 1, -10, 1, WHITE, slot, 0);
+  gfx3d_tmesh_t *behind = tm_square(0, 0, 1, 50, 1, WHITE, slot, 0);
+  gfx3d_tmesh_t *far = tm_square(0, 0, 1, -5000, 1, WHITE, slot, 0);
+  gfx3d_tmesh_t *seen = tm_square(0, 0, 1, -10, 1, WHITE, slot, 0);
+  gfx3d_begin(g, true, BG);
+  s_lent_calls = 0;
+  gfx3d_draw_tmesh(g, left, NULL, ORIGIN, 1, 0);
+  gfx3d_draw_tmesh(g, behind, NULL, ORIGIN, 1, 0);
+  gfx3d_draw_tmesh(g, far, NULL, ORIGIN, 1, 0);
+  CHECK_EQ_INT(s_lent_calls, 0);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->tris_in, 6);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->culled, 6);
+  gfx3d_draw_tmesh(g, seen, NULL, ORIGIN, 1, 0);
+  CHECK_EQ_INT(s_lent_calls, 1);  // so that count means something
+  render(g);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 2);
+  gfx3d_tmesh_free(left);
+  gfx3d_tmesh_free(behind);
+  gfx3d_tmesh_free(far);
+  gfx3d_tmesh_free(seen);
+  gfx3d_tmesh_free(m);
+  gfx3d_free(g);
+}
+
+// Where pixel (x, y) lands on the ground y = 0, for a level camera h above the origin.
+static bool ground_at(int x, int y, double h, double *wx, double *wz) {
+  const double f = (double)FOCAL, dy = (double)y + 0.5 - 160.0;
+  if (dy <= 0.0) return false;
+  const double depth = f * h / dy;
+  *wx = ((double)x + 0.5 - 160.0) / f * depth;
+  *wz = -depth;
+  return true;
+}
+
+// How many drawn pixels in rows y0..y1 of s_fb hold no texel within `tol` of where the
+// ground truly is. `table`: each 64 x 64 texel as drawn; a repeat is `repeat` units.
+static int ground_misses(const uint16_t *table, double h, double repeat, int shift, int y0, int y1,
+                         int tol, int *checked) {
+  int misses = 0;
+  for (int y = y0; y <= y1; y++)
+    for (int x = 0; x < W; x++) {
+      if (px(x, y) == BG) continue;
+      double wx, wz;
+      if (!ground_at(x, y, h, &wx, &wz)) continue;
+      const int cu = (int)floor(wx / repeat * 64.0) + shift, cv = (int)floor(wz / repeat * 64.0);
+      bool ok = false;
+      for (int dv = -tol; dv <= tol && !ok; dv++)
+        for (int du = -tol; du <= tol && !ok; du++)
+          ok = table[((cv + dv) & 63) * 64 + ((cu + du) & 63)] == px(x, y);
+      misses += !ok;
+      (*checked)++;
+    }
+  return misses;
+}
+
+// A mesh on the ground y = 0 from (x, z) pairs, with uv = (x, z) / repeat.
+static gfx3d_tmesh_t *ground_tmesh(const float *xz, const uint16_t *colors, int nv,
+                                   const uint16_t *idx, int nt, int slot, uint8_t fl, float repeat) {
+  float xyz[3 * 8], uv[2 * 8];
+  uint8_t tex[8], f[8];
+  for (int i = 0; i < nv; i++) {
+    xyz[3 * i] = xz[2 * i];
+    xyz[3 * i + 1] = 0;
+    xyz[3 * i + 2] = xz[2 * i + 1];
+    uv[2 * i] = xz[2 * i] / repeat;
+    uv[2 * i + 1] = xz[2 * i + 1] / repeat;
+  }
+  for (int t = 0; t < nt; t++) {
+    tex[t] = (uint8_t)slot;
+    f[t] = fl;
+  }
+  return tm_make(nv, nt, xyz, uv, colors, idx, tex, f);
+}
+
+// The same on the flat path: only its coverage is of use.
+static gfx3d_mesh_t *ground_flat(const float *xz, int nv, const uint16_t *idx, int nt) {
+  gfx3d_mesh_t *m = gfx3d_mesh_alloc(nv, nt);
+  for (int i = 0; i < nv; i++) {
+    m->xyz[3 * i] = xz[2 * i];
+    m->xyz[3 * i + 1] = 0;
+    m->xyz[3 * i + 2] = xz[2 * i + 1];
+  }
+  memcpy(m->idx, idx, sizeof(uint16_t) * 3u * (size_t)nt);
+  for (int t = 0; t < nt; t++) {
+    m->color[t] = WHITE;
+    m->flags[t] = GFX3D_UNLIT | GFX3D_NO_FOG;
+  }
+  CHECK(gfx3d_mesh_finish(m) == NULL);
+  return m;
+}
+
+static int channel_gap(uint16_t a, uint16_t b) {
+  const int dr = abs((a >> 11) - (b >> 11)), dg = abs(((a >> 5) & 63) - ((b >> 5) & 63));
+  const int db = abs((a & 31) - (b & 31));
+  return dr > dg ? (dr > db ? dr : db) : (dg > db ? dg : db);
+}
+
+static void test_tmesh_near_clip(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  static uint16_t uniq[64 * 64], table[64 * 64], flat[W * H];
+  make_unique(uniq, 64, 64);
+  modulated_table(uniq, 64 * 64, table);
+  const int slot = gfx3d_tex_add(g, 6, 6, 1, uniq);
+  const int solid = tex_solid(g, 0, NEUTRAL);
+
+  // One triangle whose fan's seam crosses the screen, and a quad under the camera.
+  static const float tri[6] = {0, 2, 20, -20, -20, -20};
+  static const uint16_t tri_idx[3] = {0, 1, 2};
+  static const float quad[8] = {-40, 6, 40, 6, 40, -40, -40, -40};
+  static const uint16_t quad_idx[6] = {0, 1, 2, 0, 2, 3};
+  static const uint16_t vcol[4] = {WRAP_VERTEX, WRAP_VERTEX, WRAP_VERTEX, WRAP_VERTEX};
+  struct {
+    const float *xz;
+    int nv;
+    const uint16_t *idx;
+    int nt, clipped, drawn;
+    float h;
+  } const cases[] = {
+      {tri, 3, tri_idx, 1, 1, 2, 1.0f},
+      {quad, 4, quad_idx, 2, 2, 3, 1.0f},
+      {quad, 4, quad_idx, 2, 2, 3, 0.2f},  // the near plane's cut is on screen
+  };
+  const float repeat = 8.0f;
+  for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+    const float eye[3] = {0, cases[c].h, 0};
+    gfx3d_set_camera(g, eye, 0, 0, 0);
+    gfx3d_tmesh_t *m = ground_tmesh(cases[c].xz, vcol, cases[c].nv, cases[c].idx, cases[c].nt, slot, 0, repeat);
+    gfx3d_mesh_t *f = ground_flat(cases[c].xz, cases[c].nv, cases[c].idx, cases[c].nt);
+    gfx3d_begin(g, true, BG);
+    gfx3d_draw(g, f, ID, ORIGIN, 1, 0, false);
+    render(g);
+    memcpy(flat, s_fb, sizeof flat);
+
+    tm_render_one(g, m);
+    const gfx3d_stats_t *st = gfx3d_get_stats(g);
+    CHECK_EQ_INT(st->clipped, cases[c].clipped);
+    CHECK_EQ_INT(st->drawn, cases[c].drawn);
+    CHECK_EQ_INT(st->culled, 0);
+    CHECK_EQ_INT(st->overflow, 0);
+
+    // Coverage: the flat path's, pixel for pixel, the cut included.
+    int differ = 0, covered = 0;
+    for (int i = 0; i < W * H; i++) {
+      differ += (s_fb[i] != BG) != (flat[i] != BG);
+      covered += s_fb[i] != BG;
+    }
+    CHECK_EQ_INT(differ, 0);
+    CHECK(covered > 10000);
+    if (cases[c].h >= 1.0f) {
+      for (int x = 0; x < W; x++) CHECK(px(x, H - 1) != BG);  // no gap at the bottom row
+    } else {
+      // At h = 0.2 the near plane is at row 270.85: the ground stops there.
+      CHECK(px(160, 270) != BG);
+      CHECK_EQ_U32(px(160, 271), BG);
+    }
+
+    // uv: every pixel where the ground truly is, across the fan's seam too. Below row 207
+    // the texels are at most one to a pixel, so a texel's distance means something.
+    int checked = 0;
+    const int stop = cases[c].h >= 1.0f ? H - 1 : 270;
+    const int start = cases[c].h >= 1.0f ? 207 : 172;
+    CHECK_EQ_INT(ground_misses(table, (double)cases[c].h, (double)repeat, 0, start, stop, 1, &checked), 0);
+    CHECK(checked > 4000);
+    // Those errors would show: the same picture out by 3 texels fails nearly everywhere.
+    int shifted = 0;
+    CHECK(ground_misses(table, (double)cases[c].h, (double)repeat, 3, start, stop, 1, &shifted) >
+          shifted / 2);
+    gfx3d_tmesh_free(m);
+    gfx3d_mesh_free(f);
+  }
+
+  // Colour: the fan's new vertices are between the ends of their edges. A solid texture and
+  // three colours; no step across the seam, and the bottom of the screen is the right mix.
+  const float eye[3] = {0, 1, 0};
+  gfx3d_set_camera(g, eye, 0, 0, 0);
+  static const uint16_t tri_col[3] = {RED, GREEN, BLUE};
+  gfx3d_tmesh_t *m = ground_tmesh(tri, tri_col, 3, tri_idx, 1, solid, 0, repeat);
+  tm_render_one(g, m);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 2);
+  int steps = 0;
+  for (int y = 180; y < H; y++)
+    for (int x = 1; x < W; x++) {
+      if (px(x, y) == BG || px(x - 1, y) == BG || px(x, y - 1) == BG) continue;
+      steps += channel_gap(px(x, y), px(x - 1, y)) > 2;
+      steps += channel_gap(px(x, y), px(x, y - 1)) > 2;
+    }
+  CHECK_EQ_INT(steps, 0);
+  // Row 319 is 27% of the way down the screen from the far edge (y 173.9) to the cut (y
+  // 714.3), whose vertices are 88.6% of the red end's colour: 24% red.
+  const int r = px(160, H - 1) >> 11;
+  CHECK(r >= 5 && r <= 10);
+  gfx3d_tmesh_free(m);
+  gfx3d_free(g);
+}
+
+// A grid of triangles, with rows going up (or away over the ground).
+#define TG_N 24
+#define TG_V ((TG_N + 1) * (TG_N + 1))
+#define TG_T (2 * TG_N * TG_N)
+static float s_tg_xyz[3 * TG_V], s_tg_uv[2 * TG_V];
+static uint16_t s_tg_col[TG_V], s_tg_idx[3 * TG_T];
+static uint8_t s_tg_tex[TG_T], s_tg_fl[TG_T];
+
+static void tg_topology(int slot, uint8_t fl, uint16_t color) {
+  for (int v = 0; v < TG_V; v++) s_tg_col[v] = color;
+  for (int r = 0; r < TG_N; r++)
+    for (int c = 0; c < TG_N; c++) {
+      const uint16_t a = (uint16_t)(r * (TG_N + 1) + c), b = (uint16_t)(a + 1);
+      const uint16_t d = (uint16_t)(a + TG_N + 1), e = (uint16_t)(d + 1);
+      const uint16_t tri[6] = {a, b, e, a, e, d};
+      const int t = 2 * (r * TG_N + c);
+      memcpy(&s_tg_idx[3 * t], tri, sizeof tri);
+      s_tg_tex[t] = s_tg_tex[t + 1] = (uint8_t)slot;
+      s_tg_fl[t] = s_tg_fl[t + 1] = fl;
+    }
+}
+
+static gfx3d_tmesh_t *tg_tmesh(void) {
+  return tm_make(TG_V, TG_T, s_tg_xyz, s_tg_uv, s_tg_col, s_tg_idx, s_tg_tex, s_tg_fl);
+}
+
+static gfx3d_mesh_t *tg_flat(void) {
+  gfx3d_mesh_t *m = gfx3d_mesh_alloc(TG_V, TG_T);
+  memcpy(m->xyz, s_tg_xyz, sizeof s_tg_xyz);
+  memcpy(m->idx, s_tg_idx, sizeof s_tg_idx);
+  for (int t = 0; t < TG_T; t++) {
+    m->color[t] = WHITE;
+    m->flags[t] = GFX3D_UNLIT | GFX3D_NO_FOG;
+  }
+  CHECK(gfx3d_mesh_finish(m) == NULL);
+  return m;
+}
+
+// Over the ground, from (x0, z0) at row 0 to (x1, z1) at the last.
+static void tg_ground(float x0, float z0, float x1, float z1) {
+  for (int r = 0; r <= TG_N; r++)
+    for (int c = 0; c <= TG_N; c++) {
+      const int v = r * (TG_N + 1) + c;
+      s_tg_xyz[3 * v] = x0 + (x1 - x0) * (float)c / TG_N;
+      s_tg_xyz[3 * v + 1] = 0;
+      s_tg_xyz[3 * v + 2] = z0 + (z1 - z0) * (float)r / TG_N;
+      s_tg_uv[2 * v] = s_tg_xyz[3 * v] * 0.25f;
+      s_tg_uv[2 * v + 1] = s_tg_xyz[3 * v + 2] * 0.25f;
+    }
+}
+
+static void test_tmesh_no_cracks(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const int slot = tex_solid(g, 0, NEUTRAL);
+  const uint16_t vert = 0xE71C, m = tm_expect(NEUTRAL, vert);
+  const uint16_t once = (uint16_t)(((m >> 1) & 0x7BEF) + ((BG >> 1) & 0x7BEF));
+  const uint16_t twice = (uint16_t)(((m >> 1) & 0x7BEF) + ((once >> 1) & 0x7BEF));
+  CHECK(once != BG && twice != once);
+  tg_topology(slot, GFX3D_TM_BLEND, vert);
+
+  // Across the whole screen, uneven, facing the camera.
+  s_trng = 0x2468ACE1u;
+  for (int r = 0; r <= TG_N; r++)
+    for (int c = 0; c <= TG_N; c++) {
+      const int v = r * (TG_N + 1) + c;
+      s_tg_xyz[3 * v] = -8.0f + 16.0f * (float)c / TG_N + trandf(-0.2f, 0.2f);
+      s_tg_xyz[3 * v + 1] = -8.0f + 16.0f * (float)r / TG_N + trandf(-0.2f, 0.2f);
+      s_tg_xyz[3 * v + 2] = -8.0f + trandf(-0.2f, 0.2f);
+      s_tg_uv[2 * v] = s_tg_xyz[3 * v];
+      s_tg_uv[2 * v + 1] = s_tg_xyz[3 * v + 1];
+    }
+  gfx3d_tmesh_t *a = tg_tmesh();
+  tm_render_one(g, a);
+  CHECK(gfx3d_get_stats(g)->drawn > 400);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->culled + gfx3d_get_stats(g)->drawn, TG_T);
+  CHECK_EQ_INT(fb_count_not(once), 0);
+  // Turned, moved and scaled.
+  float roll[9];
+  gfx3d_rot_euler(roll, 0, 0, 0.7f);
+  const float pos[3] = {0.5f, -0.25f, 0.0f};
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw_tmesh(g, a, roll, pos, 1.3f, 0);
+  render(g);
+  CHECK_EQ_INT(fb_count_not(once), 0);
+  gfx3d_tmesh_free(a);
+
+  // Over the ground through the near plane, with the cut below the screen and on it. Every
+  // pixel is blended once or not at all, exactly where the flat path covers it.
+  struct {
+    float h, x, z0, z1;
+    int full_from;  // rows from here down are all covered, or 0
+  } const grounds[] = {{1.0f, 30.0f, 4.0f, -36.0f, 170}, {0.2f, 4.0f, 1.37f, -6.5f, 0}};
+  static uint16_t flat[W * H];
+  for (size_t i = 0; i < sizeof grounds / sizeof grounds[0]; i++) {
+    const float eye[3] = {0, grounds[i].h, 0};
+    gfx3d_set_camera(g, eye, 0, 0, 0);
+    tg_ground(-grounds[i].x, grounds[i].z0, grounds[i].x, grounds[i].z1);
+    gfx3d_tmesh_t *t = tg_tmesh();
+    gfx3d_mesh_t *f = tg_flat();
+    gfx3d_begin(g, true, BG);
+    gfx3d_draw(g, f, ID, ORIGIN, 1, 0, false);
+    render(g);
+    memcpy(flat, s_fb, sizeof flat);
+    tm_render_one(g, t);
+    CHECK(gfx3d_get_stats(g)->clipped > 0);
+    CHECK_EQ_INT(gfx3d_get_stats(g)->overflow, 0);
+    int wrong = 0, differ = 0;
+    for (int p = 0; p < W * H; p++) {
+      wrong += s_fb[p] != BG && s_fb[p] != once;
+      differ += (s_fb[p] == once) != (flat[p] != BG);
+    }
+    CHECK_EQ_INT(wrong, 0);
+    CHECK_EQ_INT(differ, 0);
+    for (int y = grounds[i].full_from; grounds[i].full_from && y < H; y++)
+      for (int x = 0; x < W; x++) CHECK_EQ_U32(px(x, y), once);
+    gfx3d_tmesh_free(t);
+    gfx3d_mesh_free(f);
+  }
+  gfx3d_free(g);
+}
+
+// A triangle the near plane cuts, on the ground below a camera at the origin: one vertex
+// behind it, two in front. Its pieces go the way a whole triangle's would, for every flag.
+static gfx3d_tmesh_t *tm_cut(float behind, float x, float z, uint16_t color, int slot, uint8_t fl,
+                             bool face_away) {
+  const float xyz[9] = {0, -1, behind, face_away ? -x : x, -1, z, face_away ? x : -x, -1, z};
+  const float uv[6] = {0, 0, 1, 0, 0, 1};
+  const uint16_t col[3] = {color, color, color}, idx[3] = {0, 1, 2};
+  const uint8_t tex[1] = {(uint8_t)slot}, f[1] = {fl};
+  return tm_make(3, 1, xyz, uv, col, idx, tex, f);
+}
+
+static void test_tmesh_cut_goes_as_whole(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const int slot = tex_solid(g, 0, NEUTRAL);
+  const uint16_t clear = tm_expect(NEUTRAL, RED), in_fog = tm_expect(NEUTRAL, BLUE);
+  const uint8_t ff = GFX3D_UNLIT | GFX3D_NO_FOG;
+
+  // Which way it faces.
+  gfx3d_tmesh_t *away = tm_cut(2, 5, -5, RED, slot, 0, true);
+  tm_render_one(g, away);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->culled, 1);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->clipped, 0);
+  CHECK_EQ_INT(fb_count_not(BG), 0);
+  gfx3d_tmesh_free(away);
+  away = tm_cut(2, 5, -5, RED, slot, GFX3D_TM_DOUBLE_SIDED, true);
+  tm_render_one(g, away);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->culled, 0);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 2);
+  CHECK_EQ_U32(px(160, 250), clear);
+  gfx3d_tmesh_free(away);
+
+  // A texture this context has not got; off the viewport. As the flat path counts it: cut,
+  // and then culled.
+  gfx3d_tmesh_t *bad = tm_cut(2, 5, -5, RED, 63, 0, false);
+  tm_render_one(g, bad);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->clipped, 1);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->culled, 1);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 0);
+  gfx3d_tmesh_free(bad);
+  // High over the camera, cut, and off the screen; the far one keeps the sphere in view.
+  const float high_xyz[18] = {0, 50, 2, 5, 50, -5, -5, 50, -5, -9, -9, -90, 9, -9, -90, 0, 9, -90};
+  const float high_uv[12] = {0};
+  const uint16_t high_col[6] = {RED, RED, RED, RED, RED, RED}, high_idx[6] = {0, 2, 1, 3, 4, 5};
+  const uint8_t high_tex[2] = {(uint8_t)slot, (uint8_t)slot};
+  gfx3d_tmesh_t *high = tm_make(6, 2, high_xyz, high_uv, high_col, high_idx, high_tex, NULL);
+  tm_render_one(g, high);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->clipped, 1);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->culled, 1);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 1);
+
+  // Blended, each piece.
+  gfx3d_tmesh_t *wet = tm_cut(2, 5, -5, RED, slot, GFX3D_TM_BLEND, false);
+  tm_render_one(g, wet);
+  const uint16_t once = (uint16_t)(((clear >> 1) & 0x7BEF) + ((BG >> 1) & 0x7BEF));
+  int plain = 0, blended = 0;
+  for (int i = 0; i < W * H; i++) {
+    plain += s_fb[i] == clear;
+    blended += s_fb[i] == once;
+  }
+  CHECK_EQ_INT(plain, 0);
+  CHECK(blended > 1000);
+  gfx3d_tmesh_free(wet);
+
+  // Fog, and a flag against it. The new vertices are mixed between fogged ends.
+  gfx3d_set_fog(g, true, 0.01f, 0.02f, BLUE);
+  gfx3d_tmesh_t *fogged = tm_cut(2, 5, -5, RED, slot, 0, false);
+  gfx3d_tmesh_t *flagged = tm_cut(2, 5, -5, RED, slot, GFX3D_TM_NO_FOG, false);
+  tm_render_one(g, fogged);
+  CHECK(channel_gap(px(160, 218), in_fog) <= 1);  // just below the far edge, at row 215
+  // The cut, at row 714, is 64% of the way to the red vertex behind the camera, unfogged.
+  // Row 319 is 21% of the way to the cut: 13% red.
+  const int fog_r = px(160, 319) >> 11;
+  CHECK(fog_r >= 2 && fog_r <= 6);
+  tm_render_one(g, flagged);
+  CHECK_EQ_U32(px(160, 218), clear);
+  CHECK_EQ_U32(px(160, 319), clear);
+  gfx3d_tmesh_free(fogged);
+  gfx3d_tmesh_free(flagged);
+  gfx3d_set_fog(g, false, 0, 0, 0);
+
+  // In the painter's order, where its depth counts what is behind the near plane as on it:
+  // (0.5 + 10 + 10) / 3. Far behind the camera, a plain average would put it nearest.
+  gfx3d_tmesh_t *deep = tm_cut(100, 10, -10, RED, slot, 0, false);
+  gfx3d_mesh_t *nearer = square(1, -3, GREEN, ff);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw(g, nearer, ID, ORIGIN, 1, 0, false);
+  gfx3d_draw_tmesh(g, deep, NULL, ORIGIN, 1, 0);
+  render(g);
+  CHECK_EQ_U32(px(160, 200), GREEN);
+  // And its bias, pushing it behind what it would cover.
+  gfx3d_mesh_t *further = square(5, -20, GREEN, ff);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw(g, further, ID, ORIGIN, 1, 0, false);
+  gfx3d_draw_tmesh(g, deep, NULL, ORIGIN, 1, 0);
+  render(g);
+  CHECK_EQ_U32(px(160, 200), clear);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw(g, further, ID, ORIGIN, 1, 0, false);
+  gfx3d_draw_tmesh(g, deep, NULL, ORIGIN, 1, 50.0f);
+  render(g);
+  CHECK_EQ_U32(px(160, 200), GREEN);
+  gfx3d_tmesh_free(high);
+  gfx3d_tmesh_free(deep);
+  gfx3d_mesh_free(nearer);
+  gfx3d_mesh_free(further);
+  gfx3d_free(g);
+}
+
+// A draw call's vertices in the lent SRAM or not: the same picture. A textured vertex is
+// 28 bytes, counted in the flat path's 20 B ones: 12 of those for a cube's eight.
+static void test_tmesh_lent_scratch(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const int slot = tex_solid(g, 0, NEUTRAL);
+  gfx3d_mesh_t *f = cube_mesh(GFX3D_UNLIT | GFX3D_NO_FOG);
+  float uv[16];
+  uint16_t col[8];
+  uint8_t tex[12];
+  for (int i = 0; i < 8; i++) {
+    uv[2 * i] = f->xyz[3 * i];
+    uv[2 * i + 1] = f->xyz[3 * i + 1];
+    col[i] = (uint16_t)(0x4208u + 0x1111u * (unsigned)i);
+  }
+  for (int i = 0; i < 12; i++) tex[i] = (uint8_t)slot;
+  gfx3d_tmesh_t *m = tm_make(8, 12, f->xyz, uv, col, f->idx, tex, NULL);
+  float rot[9];
+  gfx3d_rot_euler(rot, 0.5f, 0.3f, 0.1f);
+  const float pos[3] = {0.2f, 0.1f, -2.4f};  // a corner through the near plane
+  gfx3d_set_fog(g, true, 2, 12, 0x8C71);
+  static uint16_t want[W * H];
+  const size_t bytes[4] = {0, 239, 240, sizeof s_lent};
+  for (int i = 0; i < 4; i++) {
+    s_lent_bytes = bytes[i];
+    gfx3d_begin(g, true, BG);
+    gfx3d_draw_tmesh(g, m, rot, pos, 1.5f, 0);
+    render(g);
+    if (i == 0) {
+      memcpy(want, s_fb, sizeof want);
+      CHECK(gfx3d_get_stats(g)->clipped > 0);
+    }
+    CHECK(memcmp(want, s_fb, sizeof want) == 0);
+  }
+  s_lent_bytes = 0;
+  gfx3d_tmesh_free(m);
+  gfx3d_mesh_free(f);
+  gfx3d_free(g);
+}
+
+// Solid levels, in colours that stay apart under a white vertex.
+static const uint16_t k_level_col[7] = {0xA800, 0x0540, 0x0015, 0xAD40, 0x0555, 0xA815, 0x5280};
+
+static int tm_mip_tex(gfx3d_t *g, int lw, int lh, int nmips) {
+  size_t n = 0;
+  for (int k = 0; k < nmips; k++) n += (size_t)1u << (lw - k + lh - k);
+  uint16_t *p = (uint16_t *)malloc(n * sizeof *p);
+  size_t at = 0;
+  for (int k = 0; k < nmips; k++)
+    for (size_t i = 0; i < (size_t)1u << (lw - k + lh - k); i++) p[at++] = k_level_col[k];
+  const int slot = gfx3d_tex_add(g, lw, lh, nmips, p);
+  free(p);
+  CHECK(slot >= 0);
+  return slot;
+}
+
+// The centre's colour for a square w_px across on screen at depth z, uv from 0 to rep.
+static uint16_t tm_mip_probe(gfx3d_t *g, int slot, float w_px, float z, float rep) {
+  gfx3d_tmesh_t *m = tm_square(0, 0, world_of_px(w_px * 0.5f, z), z, rep, WHITE, slot, 0);
+  tm_render_one(g, m);
+  gfx3d_tmesh_free(m);
+  return px(160, 160);
+}
+
+static void test_tmesh_mip_selection(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  uint16_t want[7];
+  for (int k = 0; k < 7; k++) want[k] = tm_expect(k_level_col[k], WHITE);
+  for (int k = 0; k < 7; k++)
+    for (int j = 0; j < k; j++) CHECK(want[k] != want[j]);
+  const int five = tm_mip_tex(g, 6, 6, 5);
+
+  // The square's texels per pixel along either triangle's longest edge, its diagonal, are
+  // rep * 64 / w. Each side of each threshold.
+  struct {
+    float ratio;
+    int level;
+  } const sides[] = {{0.5f, 0}, {2.80f, 0}, {2.86f, 1}, {5.60f, 1}, {5.72f, 2}, {11.2f, 2},
+                     {11.4f, 3}, {22.4f, 3}, {22.8f, 4}, {1000.0f, 4}};
+  for (size_t i = 0; i < sizeof sides / sizeof sides[0]; i++)
+    CHECK_EQ_U32(tm_mip_probe(g, five, 40.0f, -10.0f, sides[i].ratio * 40.0f / 64.0f),
+                 want[sides[i].level]);
+
+  // The same square, close then further away: close is level 0, far the last.
+  const float s = 1.0f;
+  CHECK_EQ_U32(tm_mip_probe(g, five, 2.0f * s * FOCAL / 10.0f, -10.0f, 1), want[0]);
+  CHECK_EQ_U32(tm_mip_probe(g, five, 2.0f * s * FOCAL / 40.0f, -40.0f, 1), want[1]);
+  CHECK_EQ_U32(tm_mip_probe(g, five, 2.0f * s * FOCAL / 80.0f, -80.0f, 1), want[2]);
+  CHECK_EQ_U32(tm_mip_probe(g, five, 2.0f * s * FOCAL / 150.0f, -150.0f, 1), want[3]);
+  CHECK_EQ_U32(tm_mip_probe(g, five, 2.0f * s * FOCAL / 320.0f, -320.0f, 1), want[4]);
+
+  // Clamped to the texture's last: two levels, one level.
+  const int two = tm_mip_tex(g, 6, 6, 2), one = tm_mip_tex(g, 6, 6, 1);
+  CHECK_EQ_U32(tm_mip_probe(g, two, 40.0f, -10.0f, 100.0f), want[1]);
+  CHECK_EQ_U32(tm_mip_probe(g, one, 40.0f, -10.0f, 100.0f), want[0]);
+
+  // Not square: 64 x 16. Along the diagonal that is hypot(64, 16) rep texels over
+  // w * sqrt(2) pixels, so 1.1662 rep at w = 40.
+  const int wide = tm_mip_tex(g, 6, 4, 5);
+  CHECK_EQ_U32(tm_mip_probe(g, wide, 40.0f, -10.0f, 2.80f / 1.1662f), want[0]);
+  CHECK_EQ_U32(tm_mip_probe(g, wide, 40.0f, -10.0f, 2.86f / 1.1662f), want[1]);
+
+  // Only the longest edge counts. Long and flat, its long edge has 32 texels over 200
+  // pixels, while the two short ones have about 640 over 100.
+  const float d = world_of_px(1.0f, -10.0f);
+  const float xyz[9] = {-100 * d, 0, -10, 100 * d, 0, -10, 0, 10 * d, -10};
+  const float uv[6] = {0, 0, 0.5f, 0, 0.25f, 10};
+  const uint16_t col[3] = {WHITE, WHITE, WHITE}, idx[3] = {0, 1, 2};
+  const uint8_t tex[1] = {(uint8_t)five};
+  gfx3d_tmesh_t *m = tm_make(3, 1, xyz, uv, col, idx, tex, NULL);
+  tm_render_one(g, m);
+  CHECK_EQ_U32(px(160, 157), want[0]);
+  gfx3d_tmesh_free(m);
+  gfx3d_free(g);
+}
+
+static void test_tmesh_fog(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const int slot = tex_solid(g, 0, NEUTRAL);
+  const uint16_t fog = BLUE, vert = RED;
+  const uint16_t in_fog = tm_expect(NEUTRAL, fog), clear = tm_expect(NEUTRAL, vert);
+  CHECK(in_fog != clear);
+  gfx3d_set_fog(g, true, 2, 12, fog);
+
+  // All past the fog's far: its colour. Before its near: none. Flagged: none.
+  gfx3d_tmesh_t *far = tm_square(0, 0, 5, -20, 1, vert, slot, 0);
+  gfx3d_tmesh_t *far_flag = tm_square(0, 0, 5, -20, 1, vert, slot, GFX3D_TM_NO_FOG);
+  gfx3d_tmesh_t *near = tm_square(0, 0, 0.5f, -1.5f, 1, vert, slot, 0);
+  tm_render_one(g, far);
+  CHECK_EQ_U32(px(160, 160), in_fog);
+  tm_render_one(g, far_flag);
+  CHECK_EQ_U32(px(160, 160), clear);
+  tm_render_one(g, near);
+  CHECK_EQ_U32(px(160, 160), clear);
+  gfx3d_set_fog(g, false, 2, 12, fog);
+  tm_render_one(g, far);
+  CHECK_EQ_U32(px(160, 160), clear);
+  gfx3d_set_fog(g, true, 2, 12, fog);
+
+  // Per vertex: ground from before the fog to past it, two strips sharing their vertices,
+  // the left fogged and the right flagged. Each row is one mix, across the whole triangle.
+  const float xyz[18] = {-20, -1, -1, 0, -1, -1, 20, -1, -1, -20, -1, -40, 0, -1, -40, 20, -1, -40};
+  const float uv[12] = {0, 0, 1, 0, 2, 0, 0, 1, 1, 1, 2, 1};
+  const uint16_t col[6] = {vert, vert, vert, vert, vert, vert};
+  const uint16_t idx[12] = {0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4};
+  const uint8_t tex[4] = {(uint8_t)slot, (uint8_t)slot, (uint8_t)slot, (uint8_t)slot};
+  const uint8_t fl[4] = {0, 0, GFX3D_TM_NO_FOG, GFX3D_TM_NO_FOG};
+  gfx3d_tmesh_t *strips = tm_make(6, 4, xyz, uv, col, idx, tex, fl);
+  tm_render_one(g, strips);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 4);
+  // Far vertices (y 166.9) are the fog's colour, near ones (y 437) their own. At row 170,
+  // 1% from the far edge; at row 319, 56%.
+  const uint16_t far_left = px(100, 170), low_left = px(100, 319);
+  CHECK(channel_gap(far_left, in_fog) <= 1);
+  CHECK(far_left >> 11 <= 1);
+  const int low_r = low_left >> 11, low_b = low_left & 31;
+  CHECK(low_r >= 15 && low_r <= 19);
+  CHECK(low_b >= 12 && low_b <= 16);
+  CHECK(channel_gap(px(30, 240), px(150, 240)) <= 1);  // one mix across the row
+  CHECK_EQ_U32(px(220, 170), clear);
+  CHECK_EQ_U32(px(220, 319), clear);
+  gfx3d_tmesh_free(strips);
+  gfx3d_tmesh_free(far);
+  gfx3d_tmesh_free(far_flag);
+  gfx3d_tmesh_free(near);
+  gfx3d_free(g);
+}
+
+static void test_tmesh_overflow_counted(void) {
+  // Twenty-five triangles' records, room for ten. The first ten are the ones drawn.
+  gfx3d_t *g = gfx3d_new_ex(W, H, 10);
+  int slot = tex_solid(g, 0, NEUTRAL);
+  const float xyz[9] = {-1, -1, -5, 1, -1, -5, 0, 1, -5};
+  const float uv[6] = {0, 0, 1, 0, 0, 1};
+  const uint16_t col[3] = {WHITE, WHITE, WHITE};
+  uint16_t idx[75];
+  uint8_t tex[25];
+  for (int t = 0; t < 25; t++) {
+    idx[3 * t] = 0;
+    idx[3 * t + 1] = 1;
+    idx[3 * t + 2] = 2;
+    tex[t] = (uint8_t)slot;
+  }
+  gfx3d_tmesh_t *many = tm_make(3, 25, xyz, uv, col, idx, tex, NULL);
+  tm_render_one(g, many);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 10);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->overflow, 15);
+  CHECK(px(160, 160) != BG);
+
+  // Sharing the same room with flat triangles and sprites.
+  gfx3d_mesh_t *f = square(1, -5, GREEN, GFX3D_UNLIT | GFX3D_NO_FOG);
+  const float at[3] = {0, 0, -3};
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw(g, f, ID, ORIGIN, 1, 0, false);
+  CHECK(gfx3d_draw_sprite(g, 0, at, 1, 0, 0, 1, 1, 0));
+  gfx3d_draw_tmesh(g, many, NULL, ORIGIN, 1, 0);
+  gfx3d_target_t t = target();
+  t.sprite = tm_sprite_px;
+  gfx3d_end(g, &t);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 9);  // 2 flat, 7 textured
+  CHECK_EQ_INT(gfx3d_get_stats(g)->sprites, 1);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->overflow, 18);
+  gfx3d_mesh_free(f);
+  gfx3d_tmesh_free(many);
+  gfx3d_free(g);
+
+  // A cut triangle needs two records here, and two places in the fan arena. Past either,
+  // what cannot be filed is counted and the rest of the picture is still right.
+  const float cut_xyz[9] = {0, -1, 2, 2, -1, -5, -2, -1, -5};
+  const int kN = GFX3D_TM_FANS + 144;
+  uint16_t *cut_idx = (uint16_t *)malloc(sizeof(uint16_t) * 3u * (size_t)kN);
+  uint8_t *cut_tex = (uint8_t *)malloc((size_t)kN);
+  for (int i = 0; i < kN; i++) {
+    cut_idx[3 * i] = 0;
+    cut_idx[3 * i + 1] = 1;
+    cut_idx[3 * i + 2] = 2;
+    cut_tex[i] = 0;
+  }
+  g = gfx3d_new_ex(W, H, 5);
+  CHECK(tex_solid(g, 0, NEUTRAL) == 0);
+  gfx3d_tmesh_t *cut = tm_make(3, kN, cut_xyz, uv, col, cut_idx, cut_tex, NULL);
+  tm_render_one(g, cut);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->clipped, kN);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 5);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->overflow, kN - 2);  // once a triangle
+  CHECK(px(160, 250) != BG);
+  gfx3d_free(g);
+
+  g = gfx3d_new_ex(W, H, 8 * GFX3D_TM_FANS);  // room for records, the arena fills first
+  CHECK(tex_solid(g, 0, NEUTRAL) == 0);
+  tm_render_one(g, cut);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->clipped, kN);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, GFX3D_TM_FANS);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->overflow, kN - GFX3D_TM_FANS / 2);
+  // The next scene has it all back.
+  tm_render_one(g, cut);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, GFX3D_TM_FANS);
+  gfx3d_free(g);
+  gfx3d_tmesh_free(cut);
+  free(cut_idx);
+  free(cut_tex);
+}
+
+// One scene of everything: `mid` happens between two draw calls.
+static void tm_tier_scene(gfx3d_t *g, const gfx3d_tmesh_t *tm, const gfx3d_tmesh_t *cut,
+                          const gfx3d_mesh_t *fm, uint16_t *fb, gfx3d_stats_t *st, tier_mid_fn mid) {
+  const float p0[3] = {0, 0, 0}, back[3] = {0, 0.5f, -1.0f}, s1[3] = {-1, 1, -4}, s2[3] = {1, -1, -4};
+  const float c0[3] = {0, -1, 0}, c1[3] = {0, -0.5f, -1.0f};  // seen from above
+  gfx3d_begin(g, true, 0x0841);
+  CHECK(gfx3d_draw_sprite(g, 0, s1, 1.0f, 0, 0, 2, 2, 0));
+  gfx3d_draw_tmesh(g, tm, NULL, p0, 1, 0);
+  gfx3d_draw(g, fm, ID, ORIGIN, 1, 0, false);
+  gfx3d_draw_tmesh(g, cut, NULL, c0, 1, 0);
+  if (mid) mid(g);
+  gfx3d_draw_tmesh(g, tm, NULL, back, 1, 0);
+  gfx3d_draw_tmesh(g, cut, NULL, c1, 1, 0);
+  CHECK(gfx3d_draw_sprite(g, 1, s2, 1.0f, 0, 0, 2, 2, 0));
+  const gfx3d_target_t t = {fb, W, 0, 0, W - 1, H - 1, false, tier_sprite, NULL};
+  gfx3d_end(g, &t);
+  *st = *gfx3d_get_stats(g);
+}
+
+static void test_tmesh_tier_take_back(void) {
+  gfx3d_sram_take_back();
+  tier_set(0);
+  gfx3d_t *g = gfx3d_new(W, H);
+  static uint16_t uniq[64 * 64];
+  make_unique(uniq, 64, 64);
+  const int slot = gfx3d_tex_add(g, 6, 6, 1, uniq);
+  tg_topology(slot, GFX3D_TM_DOUBLE_SIDED, WRAP_VERTEX);
+  // A slanted grid in many buckets (tier_grid's), and a sheet through the near plane.
+  for (int r = 0; r <= TG_N; r++)
+    for (int c = 0; c <= TG_N; c++) {
+      const int v = r * (TG_N + 1) + c;
+      s_tg_xyz[3 * v] = -4.0f + 8.0f * (float)c / TG_N;
+      s_tg_xyz[3 * v + 1] = -3.0f + 6.0f * (float)r / TG_N;
+      s_tg_xyz[3 * v + 2] = -5.0f - 6.0f * (float)r / TG_N;
+      s_tg_uv[2 * v] = (float)c * 0.1f;
+      s_tg_uv[2 * v + 1] = (float)r * 0.1f;
+    }
+  gfx3d_tmesh_t *tm = tg_tmesh();
+  gfx3d_mesh_t *fm = tier_grid();
+  static const float cut_xz[6] = {0, 2, 2, -3, -2, -3};
+  static const uint16_t cut_idx[3] = {0, 1, 2}, cut_col[3] = {RED, GREEN, BLUE};
+  gfx3d_tmesh_t *cut = ground_tmesh(cut_xz, cut_col, 3, cut_idx, 1, slot, GFX3D_TM_DOUBLE_SIDED, 2.0f);
+
+  static uint16_t want[W * H], got[W * H];
+  gfx3d_stats_t swant, sgot;
+  tm_tier_scene(g, tm, cut, fm, want, &swant, NULL);
+  CHECK(swant.drawn > 2000);
+  CHECK_EQ_INT(swant.clipped, 2);
+  CHECK_EQ_INT(swant.sprites, 2);
+  CHECK_EQ_INT(swant.overflow, 0);
+
+  // No room for a record, one record, part of the scene, all of it.
+  const size_t sizes[] = {TIER_HEAD, TIER_HEAD + 27, TIER_HEAD + 28, TIER_HEAD + 28 * 100,
+                          8192, 23820, TIER_HEAD + 28 * GFX3D_CAPACITY + 1000};
+  for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+    gfx3d_sram_take_back();
+    tier_set(sizes[i]);
+    for (int round = 0; round < 2; round++) {
+      tm_tier_scene(g, tm, cut, fm, got, &sgot, NULL);
+      CHECK(memcmp(want, got, sizeof want) == 0);
+      CHECK(memcmp(&swant, &sgot, sizeof swant) == 0);
+    }
+  }
+  // Taken back between two draw calls, at every size the records may have filled.
+  const size_t back_sizes[] = {TIER_HEAD + 28, TIER_HEAD + 28 * 100, 8192, 23820,
+                               TIER_HEAD + 28 * GFX3D_CAPACITY};
+  for (size_t i = 0; i < sizeof back_sizes / sizeof back_sizes[0]; i++) {
+    gfx3d_sram_take_back();
+    tier_set(back_sizes[i]);
+    tm_tier_scene(g, tm, cut, fm, got, &sgot, NULL);  // holds it
+    tm_tier_scene(g, tm, cut, fm, got, &sgot, tier_mid_take_back);
+    CHECK(memcmp(want, got, sizeof want) == 0);
+    CHECK(memcmp(&swant, &sgot, sizeof swant) == 0);
+    tm_tier_scene(g, tm, cut, fm, got, &sgot, NULL);  // the next is PSRAM's
+    CHECK(memcmp(want, got, sizeof want) == 0);
+    tier_set(back_sizes[i]);
+    tm_tier_scene(g, tm, cut, fm, got, &sgot, NULL);  // offered again, it takes it
+    CHECK(memcmp(want, got, sizeof want) == 0);
+  }
+  gfx3d_free(g);
+  gfx3d_sram_take_back();
+  tier_set(0);
+  gfx3d_tmesh_free(tm);
+  gfx3d_tmesh_free(cut);
+  gfx3d_mesh_free(fm);
+}
+
+// The flat path's own picture: cube faces cull alike, cover alike and transform alike.
+static void test_tmesh_matches_flat(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const int slot = tex_solid(g, 0, NEUTRAL);
+  gfx3d_mesh_t *f = cube_mesh(GFX3D_UNLIT | GFX3D_NO_FOG);
+  float uv[16];
+  uint16_t col[8];
+  uint8_t tex[12];
+  for (int i = 0; i < 8; i++) {
+    uv[2 * i] = f->xyz[3 * i];
+    uv[2 * i + 1] = f->xyz[3 * i + 1];
+    col[i] = WHITE;
+  }
+  for (int i = 0; i < 12; i++) tex[i] = (uint8_t)slot;
+  gfx3d_tmesh_t *m = tm_make(8, 12, f->xyz, uv, col, f->idx, tex, NULL);
+  static uint16_t flat[W * H];
+  float rot[9];
+  gfx3d_rot_euler(rot, 0.5f, 0.3f, 0.1f);
+  struct {
+    const float *rot;
+    float pos[3], scale;
+  } const cases[] = {
+      {ID, {0, 0, -6}, 1.0f},
+      {rot, {1.0f, 0.5f, -8.0f}, 1.5f},
+      {rot, {0, 0, -4}, 0.25f},
+      {rot, {0.2f, 0.1f, -2.4f}, 1.5f},    // a corner through the near plane
+      {ID, {200, 0, -200}, 150.0f},        // inside the frustum only as scaled
+  };
+  uint32_t any_clipped = 0;
+  for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+    gfx3d_begin(g, true, BG);
+    gfx3d_draw(g, f, cases[c].rot, cases[c].pos, cases[c].scale, 0, false);
+    render(g);
+    const gfx3d_stats_t sf = *gfx3d_get_stats(g);
+    memcpy(flat, s_fb, sizeof flat);
+    gfx3d_begin(g, true, BG);
+    gfx3d_draw_tmesh(g, m, cases[c].rot, cases[c].pos, cases[c].scale, 0);
+    render(g);
+    const gfx3d_stats_t *st = gfx3d_get_stats(g);
+    int differ = 0, covered = 0;
+    for (int i = 0; i < W * H; i++) {
+      differ += (s_fb[i] != BG) != (flat[i] != BG);
+      covered += s_fb[i] != BG;
+    }
+    CHECK_EQ_INT(differ, 0);
+    CHECK(covered > 100);
+    CHECK_EQ_INT(st->tris_in, sf.tris_in);
+    CHECK_EQ_INT(st->culled, sf.culled);
+    CHECK_EQ_INT(st->clipped, sf.clipped);
+    CHECK_EQ_INT(st->drawn, sf.drawn);
+    CHECK_EQ_INT(st->pixels, covered);
+    any_clipped += st->clipped;
+  }
+  CHECK(any_clipped > 0);
+  // No rotation given is the identity.
+  const float pos[3] = {0.5f, 0.25f, -7.0f};
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw_tmesh(g, m, NULL, pos, 1.25f, 0);
+  render(g);
+  memcpy(flat, s_fb, sizeof flat);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw_tmesh(g, m, ID, pos, 1.25f, 0);
+  render(g);
+  CHECK(memcmp(flat, s_fb, sizeof flat) == 0);
+  gfx3d_tmesh_free(m);
+  gfx3d_mesh_free(f);
+  gfx3d_free(g);
+}
+
+static void test_tmesh_viewport_clip_swap(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const int slot = tex_solid(g, 0, NEUTRAL);
+  const uint16_t c = tm_expect(NEUTRAL, WHITE);
+  gfx3d_set_viewport(g, 40, 60, 100, 120);
+  gfx3d_tmesh_t *big = tm_square(0, 0, 50, -10, 1, WHITE, slot, 0);
+  gfx3d_tmesh_t *off = tm_square(30, 0, 1, -10, 1, WHITE, slot, 0);  // beside the viewport
+  fb_fill(0x1234);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw_tmesh(g, big, NULL, ORIGIN, 1, 0);
+  gfx3d_draw_tmesh(g, off, NULL, ORIGIN, 1, 0);
+  gfx3d_target_t t = target();
+  t.clip_x0 = 50;
+  t.clip_y0 = 70;
+  t.clip_x1 = 120;
+  t.clip_y1 = 150;
+  gfx3d_end(g, &t);
+  int out = 0, in = 0;
+  for (int y = 0; y < H; y++)
+    for (int x = 0; x < W; x++) {
+      const bool inside = x >= 50 && x <= 120 && y >= 70 && y <= 150;
+      if (inside) in += px(x, y) == c;
+      else out += px(x, y) != 0x1234;
+    }
+  CHECK_EQ_INT(out, 0);
+  CHECK_EQ_INT(in, 71 * 81);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->pixels, 71 * 81);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->culled, 2);  // the second square, wholly off
+  gfx3d_set_viewport(g, 0, 0, W, H);
+
+  // Swapped pixels are host-order ones, byte for byte, opaque and blended.
+  static uint16_t host[W * H];
+  gfx3d_tmesh_t *op = tm_square(-1, 0, 2, -8, 3, 0x7BEF, slot, 0);
+  gfx3d_tmesh_t *bl = tm_square(1, 0, 2, -6, 3, 0xFFE0, slot, GFX3D_TM_BLEND);
+  for (int swap = 0; swap < 2; swap++) {
+    gfx3d_begin(g, true, BG);
+    gfx3d_draw_tmesh(g, op, NULL, ORIGIN, 1, 0);
+    gfx3d_draw_tmesh(g, bl, NULL, ORIGIN, 1, 0);
+    gfx3d_target_t ts = target();
+    ts.swap = swap != 0;
+    gfx3d_end(g, &ts);
+    if (!swap) {
+      memcpy(host, s_fb, sizeof host);
+    } else {
+      int differ = 0;
+      for (int i = 0; i < W * H; i++) differ += disp_px(host[i], true) != s_fb[i];
+      CHECK_EQ_INT(differ, 0);
+    }
+  }
+  gfx3d_tmesh_free(op);
+  gfx3d_tmesh_free(bl);
+  gfx3d_tmesh_free(big);
+  gfx3d_tmesh_free(off);
+  gfx3d_free(g);
+}
+
+// Values that would be trouble anywhere: nothing here may crash or read out of bounds,
+// whether a value reaches the rasteriser or not (ASan and UBSan watch).
+static void test_tmesh_bad_values_stay_safe(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const int slot = tm_mip_tex(g, 6, 6, 5);
+  const float big = 3e38f;
+  const float xyz[36] = {-big, -big, -5, big, -big, -5, 0, big, -5,          // huge across
+                         0, 0, -1e-30f, 1e-30f, 0, -1e-30f, 0, 1e-30f, -1e-30f,  // at the eye
+                         0, 0, 2, big, 0, -big, -big, 0, -big,               // cut, huge
+                         1, 1, -5, 1, 1, -5, 1, 1, -5};                      // no area
+  const float uv[24] = {big, -big, -big, big, 1e30f, 0, 0, 0, 1, 1, 0, 1,
+                        1e20f, 1e20f, -1e20f, 0, 0, -1e20f, 0, 0, 0, 0, 0, 0};
+  const uint16_t col[12] = {0xFFFF, 0, 0x1234, 0xFFFF, 0, 0x1234, 0xFFFF, 0, 0x1234, 0xFFFF, 0, 0x1234};
+  const uint16_t idx[12] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+  const uint8_t tex[4] = {(uint8_t)slot, (uint8_t)slot, (uint8_t)slot, (uint8_t)slot};
+  const uint8_t fl[4] = {GFX3D_TM_DOUBLE_SIDED, GFX3D_TM_DOUBLE_SIDED, GFX3D_TM_DOUBLE_SIDED,
+                         GFX3D_TM_DOUBLE_SIDED};
+  gfx3d_tmesh_t *m = tm_make(12, 4, xyz, uv, col, idx, tex, fl);
+  gfx3d_set_fog(g, true, 2, 12, 0x8C71);
+  const float scales[3] = {1.0f, 0.0f, 1e30f};
+  for (int i = 0; i < 3; i++) {
+    gfx3d_begin(g, true, BG);
+    gfx3d_draw_tmesh(g, m, NULL, ORIGIN, scales[i], 1e30f);
+    render(g);
+    CHECK_EQ_INT(gfx3d_get_stats(g)->tris_in, 4);
+  }
+  gfx3d_tmesh_free(m);
+  gfx3d_free(g);
+}
+
+// The whole pipeline's bytes, pinned. test_gfx3d_tex_m33 draws the same scene on the M33.
+#define TMESH_SCENE_CRC 0x706a27f7u
+
+static void test_tmesh_scene_crc(void) {
+  static uint16_t fb[TEX_SCENE_W * TEX_SCENE_H], swapped[TEX_SCENE_W * TEX_SCENE_H];
+  static uint16_t texels[5461];
+  const gfx3d_stats_t st = tex_scene_pipeline(fb, false, texels);
+  CHECK_EQ_U32(crc32_u16(fb, (size_t)TEX_SCENE_W * TEX_SCENE_H), TMESH_SCENE_CRC);
+  CHECK(st.clipped > 10);
+  CHECK(st.culled > 100);
+  CHECK(st.drawn > 300);
+  CHECK_EQ_INT(st.sprites, 1);
+  CHECK_EQ_INT(st.overflow, 0);
+  tex_scene_pipeline(swapped, true, texels);
+  int differ = 0;
+  for (int i = 0; i < TEX_SCENE_W * TEX_SCENE_H; i++) differ += disp_px(fb[i], true) != swapped[i];
+  CHECK_EQ_INT(differ, 0);
+}
+
 int main(void) {
   test_euler_conventions();
   test_basis();
@@ -2048,7 +3194,6 @@ int main(void) {
   test_tex_add_validates();
   test_image_add_resolves();
   test_tmesh_new_validates();
-  test_tmesh_new_copies();
   test_new_ex_capacity();
   test_tex_tri_coverage_matches_flat();
   test_tex_modulate();
@@ -2062,5 +3207,20 @@ int main(void) {
   test_tex_clip();
   test_tex_bad_values_stay_safe();
   test_tex_scene_crc();
+  test_tmesh_new_copies();
+  test_tmesh_mixed_painter_order();
+  test_tmesh_stats();
+  test_tmesh_near_clip();
+  test_tmesh_cut_goes_as_whole();
+  test_tmesh_lent_scratch();
+  test_tmesh_no_cracks();
+  test_tmesh_mip_selection();
+  test_tmesh_fog();
+  test_tmesh_overflow_counted();
+  test_tmesh_tier_take_back();
+  test_tmesh_matches_flat();
+  test_tmesh_viewport_clip_swap();
+  test_tmesh_bad_values_stay_safe();
+  test_tmesh_scene_crc();
   return check_report("test_gfx3d");
 }

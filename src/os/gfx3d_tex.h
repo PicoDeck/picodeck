@@ -1,5 +1,5 @@
-// Textured triangles: the rasteriser behind gfx3d's textured records. Included only
-// by gfx3d.c, which defines GFX3D_RAM_FUNC first.
+// Textured triangles: the rasteriser behind gfx3d's textured records. Included by gfx3d.c
+// and by the cross-check, which define GFX3D_RAM_FUNC first.
 //
 // A pixel is a texel of the triangle's mip times the interpolated vertex colour. A
 // triangle covers exactly the pixels disp_fill_tri_sorted covers for the same
@@ -27,6 +27,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifndef GFX3D_TEX_FUNC
+#define GFX3D_TEX_FUNC
+#endif
+
 // One vertex on screen: position, 1/z, uv in texture repeats, host RGB565.
 typedef struct {
   float x, y, iw, u, v;
@@ -34,6 +38,9 @@ typedef struct {
 } tex_vert_t;
 
 #define TEX_SUB 8  // pixels between re-aims of a span: of the uv, of the colour
+
+// The texels per pixel along a triangle's longest edge at which it leaves mip level 0.
+#define TEX_MIP_RATIO 2.83f
 
 // Affine needs both of these. 1/z varies across the triangle by less than this ratio:
 #define TEX_AFFINE_RATIO 1.2f
@@ -292,15 +299,13 @@ __attribute__((always_inline)) static inline void tex_span_persp(uint16_t *d, in
   }
 }
 
-// The firmware's framebuffer is byte-swapped: those four run from SRAM. `used`, as until
-// a scene draws textured records nothing else keeps them, and the map's figure should be
-// the real one. Host-order targets (the simulator, an off-screen image) get the same
-// code from ordinary memory.
+// The firmware's framebuffer is byte-swapped: those four run from SRAM. Host-order targets
+// (the simulator, an off-screen image) get the same code from ordinary memory.
 #define TEX_SPANS(name, body, blend)                                                 \
-  GFX3D_RAM_FUNC __attribute__((used)) static void name##_swap(uint16_t *d, int n) { \
+  GFX3D_RAM_FUNC static void name##_swap(uint16_t *d, int n) {                       \
     body(d, n, blend, true);                                                         \
   }                                                                                  \
-  __attribute__((noinline)) static void name##_host(uint16_t *d, int n) {            \
+  __attribute__((noinline)) GFX3D_TEX_FUNC static void name##_host(uint16_t *d, int n) { \
     body(d, n, blend, false);                                                        \
   }
 
@@ -389,8 +394,8 @@ __attribute__((always_inline)) static inline uint32_t tex_walk(const bool persp)
   return pixels;
 }
 
-__attribute__((noinline)) static uint32_t tex_walk_affine(void) { return tex_walk(false); }
-__attribute__((noinline)) static uint32_t tex_walk_persp(void) { return tex_walk(true); }
+__attribute__((noinline)) GFX3D_TEX_FUNC static uint32_t tex_walk_affine(void) { return tex_walk(false); }
+__attribute__((noinline)) GFX3D_TEX_FUNC static uint32_t tex_walk_persp(void) { return tex_walk(true); }
 
 // ── A triangle ──────────────────────────────────────────────────────────────
 
@@ -401,10 +406,11 @@ static int s_tex_test_rows;
 
 // Draws one triangle into fb, clipped to the inclusive rect (not empty), with the
 // 2^lw x 2^lh texels at px. Returns the pixels it wrote.
-__attribute__((unused)) static uint32_t tex_tri(uint16_t *fb, int stride, int cx0, int cy0, int cx1,
-                                                int cy1, const tex_vert_t *a, const tex_vert_t *b,
-                                                const tex_vert_t *c, const uint16_t *px, int lw,
-                                                int lh, bool blend, bool swap) {
+__attribute__((unused)) GFX3D_TEX_FUNC static uint32_t tex_tri(uint16_t *fb, int stride, int cx0, int cy0,
+                                                               int cx1, int cy1, const tex_vert_t *a,
+                                                               const tex_vert_t *b, const tex_vert_t *c,
+                                                               const uint16_t *px, int lw, int lh,
+                                                               bool blend, bool swap) {
 #ifdef GFX3D_TEST
   s_tex_test_affine = false;
   s_tex_test_rows = 0;

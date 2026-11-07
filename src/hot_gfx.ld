@@ -15,6 +15,8 @@ SECTIONS
         *src/fonts/font.c.o(.text* .rodata*)
         *src/os/lua_bridge_display.c.o(.text* .rodata*)
         *src/drivers/display.c.o(.text* .rodata*)
+        /* Last, so that textured code moves nothing a flat scene runs: gfx3d.c. */
+        *src/os/gfx3d.c.o(.gfx3d_tex_text)
         . = ALIGN(4);
         __hot_gfx_end__ = .;
     } > FLASH

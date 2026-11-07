@@ -1,5 +1,5 @@
-// gfx3d: the renderer behind picocalc.gfx3d. Flat-shaded low-poly triangle
-// meshes and billboard sprites are transformed, culled, lit, fogged and
+// gfx3d: the renderer behind picocalc.gfx3d. Flat-shaded and textured low-poly
+// triangle meshes and billboard sprites are transformed, culled, lit, fogged and
 // near-clipped when drawn, painter's-ordered into depth buckets, then
 // rasterised into a 16-bit framebuffer by gfx3d_end(). Pure C (no Lua, no
 // Pico SDK): the firmware, the simulator and tests/unit/test_gfx3d.c build
@@ -53,6 +53,8 @@ typedef struct gfx3d gfx3d_t;
 #define GFX3D_TM_BLEND 1u         // 50% over what is there (water)
 #define GFX3D_TM_DOUBLE_SIDED 2u
 #define GFX3D_TM_NO_FOG 4u
+// Triangles a scene's near-plane cuts of textured meshes can leave (see gfx3d_draw_tmesh).
+#define GFX3D_TM_FANS 256
 
 typedef struct {
   int nverts, ntris;      // 1..GFX3D_MAX_VERTS, 1..GFX3D_MAX_TRIS
@@ -114,11 +116,6 @@ void gfx3d_mesh_free(gfx3d_mesh_t *m);
 // Texture slots are not checked here: they belong to the context that draws it.
 gfx3d_tmesh_t *gfx3d_tmesh_new(const gfx3d_tmesh_desc_t *d);
 void gfx3d_tmesh_free(gfx3d_tmesh_t *m);
-#ifdef GFX3D_TEST
-void gfx3d_tmesh_test_arrays(const gfx3d_tmesh_t *m, const float **xyz, const float **uv,
-                             const uint16_t **color, const uint16_t **idx,
-                             const uint8_t **tex, const uint8_t **flags);
-#endif
 
 // ── Math ──
 void gfx3d_rot_euler(float out[9], float yaw, float pitch, float roll);
@@ -179,6 +176,16 @@ void gfx3d_xform(const gfx3d_t *g, const float rot[9], const float pos[3],
                  float scale, gfx3d_xform_t *xf);
 void gfx3d_draw_xf(gfx3d_t *g, const gfx3d_mesh_t *m, const gfx3d_xform_t *xf,
                    float bias, bool sort_as_one);
+// A textured mesh: world = rot * (scale * p) + pos, rot NULL being the identity. Everything
+// but rasterisation happens now, but the scene's records refer to the mesh for their uv:
+// unlike gfx3d_draw's, it must live until gfx3d_end has returned. bias as for gfx3d_draw.
+// Its triangles join flat ones and sprites in the same depth buckets, a record each. Fog
+// mixes into the vertex colours. A triangle the near plane cuts takes a record per piece and
+// a place per piece in GFX3D_TM_FANS; past either, stats.overflow counts it. The first
+// textured draw allocates 24 bytes per record of capacity, and 6 KB; failing that, or the
+// vertices' scratch memory, the whole mesh counts as overflow.
+void gfx3d_draw_tmesh(gfx3d_t *g, const gfx3d_tmesh_t *m, const float rot[9],
+                      const float pos[3], float scale, float bias);
 // Scenery centred on the camera: rotation only, no fog, never far-culled,
 // drawn first, in submission order.
 void gfx3d_draw_background(gfx3d_t *g, const gfx3d_mesh_t *m);
