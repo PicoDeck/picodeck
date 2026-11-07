@@ -25,7 +25,7 @@
 // A record's next index, with REC_SPRITE set on a sprite's own record.
 #define REC_END 0x7FFFu
 #define REC_SPRITE 0x8000u
-_Static_assert(GFX3D_CAPACITY < REC_END,
+_Static_assert(GFX3D_REC_LIMIT <= REC_END && GFX3D_CAPACITY <= GFX3D_REC_LIMIT,
                "record indices are 15 bits with REC_END as the terminator");
 #define BG_BUCKET GFX3D_BUCKETS  // the highest, so the first rasterised
 #define USED_WORDS ((GFX3D_BUCKETS + 1 + 31) / 32)
@@ -73,6 +73,16 @@ typedef struct {
   gfx3d_rec_t rec[];
 } gfx3d_tier_t;
 
+typedef struct {
+  uint16_t *px;  // all mip levels, packed
+  uint8_t lg_w, lg_h, nmips;
+} gfx3d_tex_t;
+
+typedef struct {
+  uint16_t *px;
+  uint16_t w, h, key;
+} gfx3d_image_t;
+
 struct gfx3d {
   int vx, vy, vw, vh;
   float fov_y, znear, zfar;
@@ -88,7 +98,11 @@ struct gfx3d {
   uint16_t sky_color[GFX3D_MAX_SKY_BANDS];
   bool clear;
   uint16_t clear_color;
-  gfx3d_rec_t *rec;  // GFX3D_CAPACITY records: all but the first ntrec are here
+  int cap;           // records per scene
+  gfx3d_tex_t tex[GFX3D_MAX_TEXTURES];
+  gfx3d_image_t img[GFX3D_MAX_IMAGES];
+  int ntex, nimg;
+  gfx3d_rec_t *rec;  // cap records: all but the first ntrec are here
   gfx3d_rec_t *trec;  // the lent block's records, or NULL
   int ntrec;
   int nrec;
@@ -235,6 +249,89 @@ const char *gfx3d_mesh_finish(gfx3d_mesh_t *m) {
   return NULL;
 }
 
+// ── Textured meshes ─────────────────────────────────────────────────────────
+
+struct gfx3d_tmesh {
+  int nverts, ntris;
+  float center[3], radius;
+  float *xyz, *uv;
+  uint16_t *color, *idx;
+  uint8_t *tex, *flags;
+};
+
+gfx3d_tmesh_t *gfx3d_tmesh_new(const gfx3d_tmesh_desc_t *d) {
+  if (!d || d->nverts < 1 || d->nverts > GFX3D_MAX_VERTS || d->ntris < 1 ||
+      d->ntris > GFX3D_MAX_TRIS || !d->xyz || !d->uv || !d->color || !d->idx ||
+      !d->tex)
+    return NULL;
+  const int nv = d->nverts, nt = d->ntris;
+  for (int i = 0; i < 3 * nv; i++)
+    if (!isfinite(d->xyz[i])) return NULL;
+  for (int i = 0; i < 2 * nv; i++)
+    if (!isfinite(d->uv[i])) return NULL;
+  for (int i = 0; i < 3 * nt; i++)
+    if (d->idx[i] >= nv) return NULL;
+  const size_t head = (sizeof(gfx3d_tmesh_t) + 7u) & ~(size_t)7u;
+  const size_t total = head + sizeof(float) * 5u * (size_t)nv +
+                       sizeof(uint16_t) * ((size_t)nv + 3u * (size_t)nt) +
+                       2u * (size_t)nt;
+  uint8_t *b = (uint8_t *)GFX3D_MALLOC(total);
+  if (!b) return NULL;
+  gfx3d_tmesh_t *m = (gfx3d_tmesh_t *)(void *)b;
+  m->nverts = nv;
+  m->ntris = nt;
+  m->xyz = (float *)(void *)(b + head);
+  m->uv = m->xyz + 3 * nv;
+  m->color = (uint16_t *)(void *)(m->uv + 2 * nv);
+  m->idx = m->color + nv;
+  m->tex = (uint8_t *)(void *)(m->idx + 3 * nt);
+  m->flags = m->tex + nt;
+  memcpy(m->xyz, d->xyz, sizeof(float) * 3u * (size_t)nv);
+  memcpy(m->uv, d->uv, sizeof(float) * 2u * (size_t)nv);
+  memcpy(m->color, d->color, sizeof(uint16_t) * (size_t)nv);
+  memcpy(m->idx, d->idx, sizeof(uint16_t) * 3u * (size_t)nt);
+  memcpy(m->tex, d->tex, (size_t)nt);
+  if (d->flags) {
+    for (int t = 0; t < nt; t++) m->flags[t] = d->flags[t] & 7u;
+  } else {
+    memset(m->flags, 0, (size_t)nt);
+  }
+  float lo[3] = {m->xyz[0], m->xyz[1], m->xyz[2]}, hi[3] = {lo[0], lo[1], lo[2]};
+  for (int i = 1; i < nv; i++)
+    for (int k = 0; k < 3; k++) {
+      const float v = m->xyz[3 * i + k];
+      if (v < lo[k]) lo[k] = v;
+      if (v > hi[k]) hi[k] = v;
+    }
+  for (int k = 0; k < 3; k++) m->center[k] = 0.5f * (lo[k] + hi[k]);
+  float r2 = 0.0f;
+  for (int i = 0; i < nv; i++) {
+    const float dx = m->xyz[3 * i] - m->center[0], dy = m->xyz[3 * i + 1] - m->center[1];
+    const float dz = m->xyz[3 * i + 2] - m->center[2];
+    const float d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 > r2) r2 = d2;
+  }
+  m->radius = sqrtf(r2);
+  return m;
+}
+
+void gfx3d_tmesh_free(gfx3d_tmesh_t *m) {
+  if (m) GFX3D_FREE(m);
+}
+
+#ifdef GFX3D_TEST
+void gfx3d_tmesh_test_arrays(const gfx3d_tmesh_t *m, const float **xyz, const float **uv,
+                             const uint16_t **color, const uint16_t **idx,
+                             const uint8_t **tex, const uint8_t **flags) {
+  *xyz = m->xyz;
+  *uv = m->uv;
+  *color = m->color;
+  *idx = m->idx;
+  *tex = m->tex;
+  *flags = m->flags;
+}
+#endif
+
 // ── Context ─────────────────────────────────────────────────────────────────
 
 static void update_projection(gfx3d_t *g) {
@@ -278,7 +375,7 @@ static void tier_acquire(gfx3d_t *g) {
   gfx3d_tier_t *const t = (gfx3d_tier_t *)gfx3d_sram_tier(&have);
   if (!t || have < sizeof *t + sizeof t->rec[0]) return;
   const size_t n = (have - sizeof *t) / sizeof t->rec[0];
-  g->ntrec = n < GFX3D_CAPACITY ? (int)n : GFX3D_CAPACITY;
+  g->ntrec = n < (size_t)g->cap ? (int)n : g->cap;
   g->trec = t->rec;
   g->used = t->used;
   g->bucket = t->bucket;
@@ -286,12 +383,18 @@ static void tier_acquire(gfx3d_t *g) {
 }
 
 gfx3d_t *gfx3d_new(int screen_w, int screen_h) {
+  return gfx3d_new_ex(screen_w, screen_h, GFX3D_CAPACITY);
+}
+
+gfx3d_t *gfx3d_new_ex(int screen_w, int screen_h, int capacity) {
+  if (capacity < 1 || capacity > GFX3D_REC_LIMIT) return NULL;
   gfx3d_t *g = (gfx3d_t *)GFX3D_MALLOC(sizeof *g);
   if (!g) return NULL;
   memset(g, 0, sizeof *g);
   g->used = g->own_used;
   g->bucket = g->own_bucket;
-  g->rec = (gfx3d_rec_t *)GFX3D_MALLOC(sizeof(gfx3d_rec_t) * GFX3D_CAPACITY);
+  g->cap = capacity;
+  g->rec = (gfx3d_rec_t *)GFX3D_MALLOC(sizeof(gfx3d_rec_t) * (size_t)capacity);
   if (!g->rec) {
     GFX3D_FREE(g);
     return NULL;
@@ -313,9 +416,57 @@ void gfx3d_free(gfx3d_t *g) {
   if (!g) return;
   if (s_tier_user == g) s_tier_user = NULL;
   GFX3D_FREE(g->rec);
+  for (int i = 0; i < g->ntex; i++) GFX3D_FREE(g->tex[i].px);
+  for (int i = 0; i < g->nimg; i++) GFX3D_FREE(g->img[i].px);
   if (g->verts) GFX3D_FREE(g->verts);
   if (g->order) GFX3D_FREE(g->order);
   GFX3D_FREE(g);
+}
+
+int gfx3d_tex_add(gfx3d_t *g, int lg_w, int lg_h, int nmips, const uint16_t *pixels) {
+  if (!g || !pixels || g->ntex >= GFX3D_MAX_TEXTURES || lg_w < 0 || lg_w > 10 ||
+      lg_h < 0 || lg_h > 10 || nmips < 1)
+    return -1;
+  if (nmips - 1 > (lg_w < lg_h ? lg_w : lg_h)) return -1;
+  size_t n = 0;
+  for (int k = 0; k < nmips; k++) n += (size_t)1u << (lg_w - k + lg_h - k);
+  uint16_t *px = (uint16_t *)GFX3D_MALLOC(n * sizeof *px);
+  if (!px) return -1;
+  memcpy(px, pixels, n * sizeof *px);
+  gfx3d_tex_t *t = &g->tex[g->ntex];
+  t->px = px;
+  t->lg_w = (uint8_t)lg_w;
+  t->lg_h = (uint8_t)lg_h;
+  t->nmips = (uint8_t)nmips;
+  return g->ntex++;
+}
+
+int gfx3d_image_add(gfx3d_t *g, int w, int h, uint16_t key, const uint16_t *pixels) {
+  if (!g || !pixels || g->nimg >= GFX3D_MAX_IMAGES || w < 1 || w > 1024 || h < 1 ||
+      h > 1024)
+    return -1;
+  const size_t n = (size_t)w * (size_t)h;
+  uint16_t *px = (uint16_t *)GFX3D_MALLOC(n * sizeof *px);
+  if (!px) return -1;
+  memcpy(px, pixels, n * sizeof *px);
+  gfx3d_image_t *im = &g->img[g->nimg];
+  im->px = px;
+  im->w = (uint16_t)w;
+  im->h = (uint16_t)h;
+  im->key = key;
+  return g->nimg++;
+}
+
+bool gfx3d_image_resolve(void *ctx, int slot, const uint16_t **data, int *w, int *h,
+                         uint16_t *key) {
+  const gfx3d_t *g = (const gfx3d_t *)ctx;
+  if (!g || slot < 0 || slot >= g->nimg) return false;
+  const gfx3d_image_t *im = &g->img[slot];
+  *data = im->px;
+  *w = im->w;
+  *h = im->h;
+  *key = im->key;
+  return true;
 }
 
 void gfx3d_set_viewport(gfx3d_t *g, int x, int y, int w, int h) {
@@ -440,7 +591,7 @@ static void link_rec(gfx3d_t *g, int b, int i, uint16_t kind) {
 }
 
 static int new_rec(gfx3d_t *g) {
-  if (g->nrec >= GFX3D_CAPACITY) {
+  if (g->nrec >= g->cap) {
     g->stats.overflow++;
     return -1;
   }

@@ -150,7 +150,7 @@ target_compile_options(test_display_clip PRIVATE -ffp-contract=off)
 # The 3D pipeline (src/os/gfx3d.c) over host malloc; -ffp-contract=off as on
 # the device so shared edges stay bit-identical.
 picodeck_unit_test(test_gfx3d SOURCES ${SRC}/os/gfx3d.c INCLUDES ${SRC}/drivers
-                   DEFINES GFX3D_MALLOC=malloc GFX3D_FREE=free)
+                   DEFINES GFX3D_MALLOC=malloc GFX3D_FREE=free GFX3D_TEST)
 target_link_libraries(test_gfx3d PRIVATE m)
 target_compile_options(test_gfx3d PRIVATE -ffp-contract=off -Wdouble-promotion)
 # picocalc.chargrid core (src/os/chargrid*.c) over host malloc.

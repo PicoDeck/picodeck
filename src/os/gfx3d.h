@@ -24,7 +24,12 @@
 #define GFX3D_MAX_TRIS 8192   // per mesh
 #define GFX3D_MAX_SKY_BANDS 8
 #define GFX3D_BUCKETS 1024    // depth buckets, sqrt-spaced (finer near)
-#define GFX3D_CAPACITY 4096   // triangle + sprite records per scene
+#define GFX3D_CAPACITY 4096   // triangle + sprite records per scene (gfx3d_new)
+// The largest capacity gfx3d_new_ex accepts: what a record's 15-bit `next` index
+// can address. A single constant, so a later change to the encoding moves it.
+#define GFX3D_REC_LIMIT 0x7FFF
+#define GFX3D_MAX_TEXTURES 64
+#define GFX3D_MAX_IMAGES 64
 
 // Per-triangle flags.
 #define GFX3D_DOUBLE_SIDED 1u  // draw the back face too (lit as its own side)
@@ -43,6 +48,22 @@ typedef struct {
 } gfx3d_mesh_t;
 
 typedef struct gfx3d gfx3d_t;
+
+// Per-triangle flags of a textured mesh.
+#define GFX3D_TM_BLEND 1u         // 50% over what is there (water)
+#define GFX3D_TM_DOUBLE_SIDED 2u
+#define GFX3D_TM_NO_FOG 4u
+
+typedef struct {
+  int nverts, ntris;      // 1..GFX3D_MAX_VERTS, 1..GFX3D_MAX_TRIS
+  const float *xyz;       // 3 * nverts, model space
+  const float *uv;        // 2 * nverts, in texture repeats
+  const uint16_t *color;  // nverts, host RGB565: colour times baked light
+  const uint16_t *idx;    // 3 * ntris, 0-based; counter-clockwise from the front
+  const uint8_t *tex;     // ntris: slot from gfx3d_tex_add
+  const uint8_t *flags;   // ntris, or NULL for none
+} gfx3d_tmesh_desc_t;
+typedef struct gfx3d_tmesh gfx3d_tmesh_t;
 
 // A model -> view transform (v = A p + t), with the eye and the light direction
 // in model space for the face-plane tests. Valid until the camera or the light
@@ -85,6 +106,19 @@ gfx3d_mesh_t *gfx3d_mesh_alloc(int nverts, int ntris);
 const char *gfx3d_mesh_finish(gfx3d_mesh_t *m);
 void gfx3d_mesh_free(gfx3d_mesh_t *m);
 
+// ── Textured meshes ──
+// One block copying the whole description (22 bytes per vertex, 8 per triangle),
+// with the bounding sphere. NULL on a bad description (ranges, NULL arrays other
+// than `flags`, an index out of range, a non-finite xyz or uv) or out of memory.
+// Texture slots are not checked here: they belong to the context that draws it.
+gfx3d_tmesh_t *gfx3d_tmesh_new(const gfx3d_tmesh_desc_t *d);
+void gfx3d_tmesh_free(gfx3d_tmesh_t *m);
+#ifdef GFX3D_TEST
+void gfx3d_tmesh_test_arrays(const gfx3d_tmesh_t *m, const float **xyz, const float **uv,
+                             const uint16_t **color, const uint16_t **idx,
+                             const uint8_t **tex, const uint8_t **flags);
+#endif
+
 // ── Math ──
 void gfx3d_rot_euler(float out[9], float yaw, float pitch, float roll);
 // Rotation whose -z axis points along fwd, y axis towards up. False when fwd
@@ -96,7 +130,23 @@ bool gfx3d_rot_basis(float out[9], const float fwd[3], const float up[3]);
 // camera at the origin looking along -z, light towards (0.3, 1, 0.5) with
 // ambient 0.25, no fog, no sky, empty scene. NULL on out of memory.
 gfx3d_t *gfx3d_new(int screen_w, int screen_h);
+// As gfx3d_new, with room for `capacity` records per scene
+// (1..GFX3D_REC_LIMIT); NULL outside that. gfx3d_new is capacity GFX3D_CAPACITY.
+gfx3d_t *gfx3d_new_ex(int screen_w, int screen_h, int capacity);
 void gfx3d_free(gfx3d_t *g);
+// 2^lg_w x 2^lg_h host RGB565 (lg 0..10), then nmips - 1 levels, each half the
+// last (nmips 1..min(lg_w, lg_h) + 1), tightly packed, copied into the context.
+// A texel multiplies the vertex colour: 31 (63 for green) means x1.5,
+// saturating. The slot (counting up from 0), or -1 on bad arguments, a full
+// table (GFX3D_MAX_TEXTURES) or out of memory. Slots are valid only in this
+// context: drawing with an unknown slot draws nothing and counts as culled.
+int gfx3d_tex_add(gfx3d_t *g, int lg_w, int lg_h, int nmips, const uint16_t *pixels);
+// A w x h (1..1024) host RGB565 image with colour key `key`, copied into the
+// context. The slot, or -1 (bad arguments, GFX3D_MAX_IMAGES, out of memory).
+int gfx3d_image_add(gfx3d_t *g, int w, int h, uint16_t key, const uint16_t *pixels);
+// A gfx3d_sprite_fn for gfx3d_image_add's images: pass the context as `g`.
+bool gfx3d_image_resolve(void *g, int slot, const uint16_t **data, int *w, int *h,
+                         uint16_t *key);
 void gfx3d_set_viewport(gfx3d_t *g, int x, int y, int w, int h);  // w, h >= 1
 bool gfx3d_set_projection(gfx3d_t *g, float fov_y, float znear, float zfar);
 void gfx3d_set_camera(gfx3d_t *g, const float pos[3], float yaw, float pitch,

@@ -958,6 +958,179 @@ static void test_flat_scene_crc(void) {
   gfx3d_free(g);
 }
 
+// ── Textures and textured meshes (data model only; drawing comes later) ──
+
+static void test_tex_add_validates(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  static uint16_t px[64 * 64 * 2];
+  for (size_t i = 0; i < sizeof px / sizeof px[0]; i++) px[i] = (uint16_t)i;
+  CHECK(gfx3d_tex_add(g, -1, 2, 1, px) == -1);
+  CHECK(gfx3d_tex_add(g, 2, -1, 1, px) == -1);
+  CHECK(gfx3d_tex_add(g, 11, 2, 1, px) == -1);
+  CHECK(gfx3d_tex_add(g, 2, 11, 1, px) == -1);
+  CHECK(gfx3d_tex_add(g, 2, 2, 0, px) == -1);
+  CHECK(gfx3d_tex_add(g, 2, 2, 4, px) == -1);  // 4x4 has levels 4, 2, 1 only
+  CHECK(gfx3d_tex_add(g, 3, 1, 3, px) == -1);  // 8x2: levels 8x2, 4x1, then 2x0.5
+  CHECK(gfx3d_tex_add(g, 2, 2, 1, NULL) == -1);
+  CHECK(gfx3d_tex_add(NULL, 2, 2, 1, px) == -1);
+  CHECK(gfx3d_tex_add(g, 2, 2, 3, px) == 0);   // slots count up from 0
+  CHECK(gfx3d_tex_add(g, 0, 0, 1, px) == 1);
+  CHECK(gfx3d_tex_add(g, 3, 1, 2, px) == 2);
+  for (int i = 3; i < GFX3D_MAX_TEXTURES; i++) CHECK(gfx3d_tex_add(g, 1, 1, 2, px) == i);
+  CHECK(gfx3d_tex_add(g, 1, 1, 1, px) == -1);  // the 65th
+  gfx3d_free(g);
+}
+
+static void test_image_add_resolves(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const uint16_t a[6] = {1, 2, 3, 4, 5, 6}, b[1] = {9};
+  CHECK(gfx3d_image_add(g, 0, 2, 0, a) == -1);
+  CHECK(gfx3d_image_add(g, 3, 0, 0, a) == -1);
+  CHECK(gfx3d_image_add(g, 3, 2, 0, NULL) == -1);
+  CHECK(gfx3d_image_add(g, 3, 2, 0xF81F, a) == 0);
+  CHECK(gfx3d_image_add(g, 1, 1, 7, b) == 1);
+  const uint16_t *d = NULL;
+  int w = 0, h = 0;
+  uint16_t key = 0;
+  CHECK(gfx3d_image_resolve(g, 0, &d, &w, &h, &key));
+  CHECK(w == 3 && h == 2 && key == 0xF81F && d != NULL && d != a);  // a copy
+  for (int i = 0; i < 6; i++) CHECK(d[i] == a[i]);
+  CHECK(gfx3d_image_resolve(g, 1, &d, &w, &h, &key));
+  CHECK(w == 1 && h == 1 && key == 7 && d[0] == 9);
+  CHECK(!gfx3d_image_resolve(g, 2, &d, &w, &h, &key));
+  CHECK(!gfx3d_image_resolve(g, -1, &d, &w, &h, &key));
+  CHECK(!gfx3d_image_resolve(g, GFX3D_MAX_IMAGES, &d, &w, &h, &key));
+  for (int i = 2; i < GFX3D_MAX_IMAGES; i++) CHECK(gfx3d_image_add(g, 1, 1, 0, b) == i);
+  CHECK(gfx3d_image_add(g, 1, 1, 0, b) == -1);
+  gfx3d_free(g);
+}
+
+static void test_tmesh_new_validates(void) {
+  float xyz[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+  float uv[6] = {0, 0, 1, 0, 0, 1};
+  uint16_t col[3] = {0xFFFF, 0xFFFF, 0xFFFF}, idx[3] = {0, 1, 2};
+  uint8_t tex[1] = {0};
+  gfx3d_tmesh_desc_t d = {3, 1, xyz, uv, col, idx, tex, NULL};
+  gfx3d_tmesh_t *m = gfx3d_tmesh_new(&d);
+  CHECK(m != NULL);
+  gfx3d_tmesh_free(m);
+  gfx3d_tmesh_free(NULL);
+  CHECK(gfx3d_tmesh_new(NULL) == NULL);
+
+  idx[2] = 3;
+  CHECK(gfx3d_tmesh_new(&d) == NULL);  // index out of range
+  idx[2] = 2;
+  xyz[4] = NAN;
+  CHECK(gfx3d_tmesh_new(&d) == NULL);
+  xyz[4] = INFINITY;
+  CHECK(gfx3d_tmesh_new(&d) == NULL);
+  xyz[4] = 0;
+  uv[3] = NAN;
+  CHECK(gfx3d_tmesh_new(&d) == NULL);
+  uv[3] = 0;
+
+  gfx3d_tmesh_desc_t e = d;
+  e.nverts = GFX3D_MAX_VERTS + 1;
+  CHECK(gfx3d_tmesh_new(&e) == NULL);
+  e = d;
+  e.nverts = 0;
+  CHECK(gfx3d_tmesh_new(&e) == NULL);
+  e = d;
+  e.ntris = 0;
+  CHECK(gfx3d_tmesh_new(&e) == NULL);
+  e = d;
+  e.ntris = GFX3D_MAX_TRIS + 1;
+  CHECK(gfx3d_tmesh_new(&e) == NULL);
+  e = d;
+  e.uv = NULL;
+  CHECK(gfx3d_tmesh_new(&e) == NULL);
+  e = d;
+  e.xyz = NULL;
+  CHECK(gfx3d_tmesh_new(&e) == NULL);
+  e = d;
+  e.color = NULL;
+  CHECK(gfx3d_tmesh_new(&e) == NULL);
+  e = d;
+  e.idx = NULL;
+  CHECK(gfx3d_tmesh_new(&e) == NULL);
+  e = d;
+  e.tex = NULL;
+  CHECK(gfx3d_tmesh_new(&e) == NULL);
+  uint8_t fl[1] = {GFX3D_TM_BLEND | GFX3D_TM_NO_FOG};
+  e = d;
+  e.flags = fl;  // flags are optional
+  m = gfx3d_tmesh_new(&e);
+  CHECK(m != NULL);
+  gfx3d_tmesh_free(m);
+}
+
+static void test_tmesh_new_copies(void) {
+  float xyz[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+  float uv[6] = {0, 0, 1, 0, 0, 1};
+  uint16_t col[3] = {0x1111, 0x2222, 0x3333}, idx[3] = {0, 1, 2};
+  uint8_t tex[1] = {5}, fl[1] = {GFX3D_TM_DOUBLE_SIDED};
+  const float xyz0[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+  const float uv0[6] = {0, 0, 1, 0, 0, 1};
+  const gfx3d_tmesh_desc_t d = {3, 1, xyz, uv, col, idx, tex, fl};
+  gfx3d_tmesh_t *m = gfx3d_tmesh_new(&d);
+  CHECK(m != NULL);
+  memset(xyz, 0, sizeof xyz);
+  memset(uv, 0, sizeof uv);
+  memset(col, 0, sizeof col);
+  memset(idx, 0, sizeof idx);
+  tex[0] = 0;
+  fl[0] = 0;
+  const float *sx, *su;
+  const uint16_t *sc, *si;
+  const uint8_t *st, *sf;
+  gfx3d_tmesh_test_arrays(m, &sx, &su, &sc, &si, &st, &sf);
+  CHECK(memcmp(sx, xyz0, sizeof xyz0) == 0);
+  CHECK(memcmp(su, uv0, sizeof uv0) == 0);
+  CHECK(sc[0] == 0x1111 && sc[1] == 0x2222 && sc[2] == 0x3333);
+  CHECK(si[0] == 0 && si[1] == 1 && si[2] == 2);
+  CHECK(st[0] == 5 && sf[0] == GFX3D_TM_DOUBLE_SIDED);
+  gfx3d_tmesh_free(m);
+
+  // Without flags the stored flags are zero.
+  const gfx3d_tmesh_desc_t d2 = {3, 1, xyz0, uv0, col, idx, tex, NULL};
+  idx[1] = 1;
+  idx[2] = 2;
+  m = gfx3d_tmesh_new(&d2);
+  CHECK(m != NULL);
+  gfx3d_tmesh_test_arrays(m, &sx, &su, &sc, &si, &st, &sf);
+  CHECK(sf[0] == 0);
+  gfx3d_tmesh_free(m);
+}
+
+static void test_new_ex_capacity(void) {
+  CHECK(gfx3d_new_ex(W, H, 0) == NULL);
+  CHECK(gfx3d_new_ex(W, H, -1) == NULL);
+  CHECK(gfx3d_new_ex(W, H, GFX3D_REC_LIMIT + 1) == NULL);
+  gfx3d_t *g = gfx3d_new_ex(W, H, 8000);
+  CHECK(g != NULL);
+  gfx3d_mesh_t *many = gfx3d_mesh_alloc(3, 8000);
+  const float v[9] = {-1, -1, -5, 1, -1, -5, 0, 1, -5};
+  memcpy(many->xyz, v, sizeof v);
+  for (int t = 0; t < 8000; t++) {
+    many->idx[3 * t] = 0;
+    many->idx[3 * t + 1] = 1;
+    many->idx[3 * t + 2] = 2;
+    many->color[t] = RED;
+  }
+  CHECK(gfx3d_mesh_finish(many) == NULL);
+  gfx3d_begin(g, true, BG);
+  gfx3d_draw(g, many, ID, ORIGIN, 1, 0, false);
+  render(g);
+  CHECK(gfx3d_get_stats(g)->drawn == 8000);
+  CHECK(gfx3d_get_stats(g)->overflow == 0);
+  gfx3d_begin(g, true, BG);  // one more than it holds overflows
+  gfx3d_draw(g, many, ID, ORIGIN, 1, 0, false);
+  gfx3d_draw(g, many, ID, ORIGIN, 1, 0, false);
+  CHECK(gfx3d_get_stats(g)->overflow == 8000);
+  gfx3d_mesh_free(many);
+  gfx3d_free(g);
+}
+
 int main(void) {
   test_euler_conventions();
   test_basis();
@@ -980,5 +1153,10 @@ int main(void) {
   test_lent_tier_changes_nothing();
   test_nonfinite_vertex_draws_nothing();
   test_flat_scene_crc();
+  test_tex_add_validates();
+  test_image_add_resolves();
+  test_tmesh_new_validates();
+  test_tmesh_new_copies();
+  test_new_ex_capacity();
   return check_report("test_gfx3d");
 }
