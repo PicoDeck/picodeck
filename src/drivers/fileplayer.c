@@ -498,14 +498,20 @@ float fileplayer_get_rate(const fileplayer_t *player) {
  * floor(F * rate) * block_align bytes. Reading more (as the old code did,
  * 4 KB every tick at SD speed) only made audio_push_samples drop what did
  * not fit while position raced to EOF: a long WAV "finished" in seconds. */
-static uint32_t bytes_that_fit(const fileplayer_t *p, uint32_t limit) {
+// What one update may read or decode with `ring_free` frames free in the stream ring.
+static __force_inline uint32_t fit_bytes(const fileplayer_t *p, uint32_t limit,
+                                         uint32_t ring_free) {
     float rate = p->rate < 0.1f ? 0.1f : p->rate;
-    uint32_t in_frames = (uint32_t)((float)audio_ring_free() * rate);
+    uint32_t in_frames = (uint32_t)((float)ring_free * rate);
     uint32_t remaining = p->position < limit ? limit - p->position : 0;
     uint32_t n = FILEPLAYER_READ_MAX;
     if (n / p->block_align > in_frames) n = in_frames * p->block_align;
     if (n > remaining) n = remaining;
     return n - n % p->block_align;  // whole frames: an odd step swaps L/R
+}
+
+static uint32_t bytes_that_fit(const fileplayer_t *p, uint32_t limit) {
+    return fit_bytes(p, limit, audio_ring_free());
 }
 
 // Convert br bytes of 16-bit PCM at pcm to stereo and push them.
@@ -787,10 +793,31 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
     return cb;
 }
 
-// Core 1's tick gate. A player in PSRAM is not read for this: a stopped one is
-// no longer active, and a paused one costs the walk it always did.
+// Core 1's tick gate. Idle with no active player, and while the active one plays mid-pass
+// with the ring too full for its next read or decode: the update would only find that
+// (update_locked's and qoa_update_locked's first test) and return, after the underrun check,
+// which then waits for the next full tick (at most 16 ms; it latches what it finds, so nothing
+// is missed). So with music playing most ticks skip the full tick and its walk through flash:
+// at 22.05 kHz mono a decode is due about every 12 ms. Never idle while the stream is held
+// (the update releases it), at a pass's end, with stop-on-underrun (the stop is due on the
+// tick that sees one) or with a loop range (rare, and its pass end costs 64-bit arithmetic:
+// SRAM). Reads the player and the ring without the lock: a stale answer costs one tick's
+// delay or one tick's walk, and the next tick asks again.
 bool __time_critical_func(fileplayer_core1_idle)(void) {
-    return s_active_player == NULL;
+    const fileplayer_t *const p = s_active_player;
+    if (p == NULL)
+        return true;
+    if (p->state != FILEPLAYER_STATE_PLAYING || !p->file || p->stop_on_underrun || p->loop)
+        return false;
+    const uint32_t room = audio_stream_core1_room();
+    if (room == AUDIO_STREAM_NO_ROOM)
+        return false;
+    // pass_limit() with no loop range: the data's whole frames (or its end, past them).
+    const uint32_t size = p->data_size - p->data_size % p->block_align;
+    const uint32_t limit = p->position <= size ? size : p->data_size;
+    const uint32_t remaining = p->position < limit ? limit - p->position : 0;
+    const uint32_t budget = fit_bytes(p, limit, room);
+    return remaining >= p->block_align && budget < FILEPLAYER_READ_MIN && budget < remaining;
 }
 
 // Called from Core 1 every tick: tops the stream ring up from the active

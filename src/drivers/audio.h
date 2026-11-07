@@ -62,6 +62,11 @@ void audio_push_samples(const int16_t *samples, int count);  // count = frames
 // 0 while the stream is stopped (pushes are dropped then), so a producer
 // that paces on it waits until its stream is started again.
 uint32_t audio_ring_free(void);
+// The same, for Core 1's tick gate (fileplayer_core1_idle), from RAM: the ring's free frames
+// while the stream is on and not held, else AUDIO_STREAM_NO_ROOM (a stopped stream, or a held
+// one, which only the producer's update releases).
+#define AUDIO_STREAM_NO_ROOM 0xFFFFFFFFu
+uint32_t audio_stream_core1_room(void);
 void audio_stream_debug(uint32_t *isr_count, uint32_t *underruns, uint32_t *ring_used);
 // Starts a new window for the underrun count and audio_stream_get_stats.
 void audio_stream_reset_underruns(void);

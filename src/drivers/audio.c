@@ -1,5 +1,6 @@
 #include "audio.h"
 #include "audio_mix.h"
+#include "sound.h"
 #include "../hardware.h"
 #include "hardware/gpio.h"
 #include "hardware/pwm.h"
@@ -192,8 +193,11 @@ void audio_apply_clock(void) {
   pwm_set_clkdiv_int_frac4(s_pwm_slice, div_int, div_frac4);
 }
 
+// The poll has work only for a start pending; while the output runs, the full tick's
+// sound_pump_callbacks has work only for a voice's callback (the render runs in its own
+// interrupt). The stream's producers answer for themselves (fileplayer_core1_idle).
 bool __time_critical_func(audio_core1_idle)(void) {
-  return !s_dma_start_pending && !s_output_on;
+  return !s_dma_start_pending && (!s_output_on || sound_core1_idle());
 }
 
 void audio_stream_poll(void) {

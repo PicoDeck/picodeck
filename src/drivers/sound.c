@@ -184,6 +184,13 @@ void __time_critical_func(sound_mixer_process)(int32_t *out_l, int32_t *out_r, i
 
 /* Fires deferred finish/loop callbacks — call from the Core 1 work pump
  * (NOT from the mixer ISR; callbacks trampoline into Lua). */
+bool __time_critical_func(sound_core1_idle)(void) {
+    for (int p = 0; p < SOUND_MAX_PLAYERS; p++)
+        if (s_context.players[p].finish_pending || s_context.players[p].loop_pending)
+            return false;
+    return true;
+}
+
 void sound_pump_callbacks(void) {
     for (int p = 0; p < SOUND_MAX_PLAYERS; p++) {
         sound_player_t *player = &s_context.players[p];

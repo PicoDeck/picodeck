@@ -70,6 +70,9 @@ void audio_stream_flush_held(void) {
 }
 void audio_stop_stream(void) { s_stops++; }
 uint32_t audio_ring_free(void) { return RING_FRAMES - s_ring_used; }
+uint32_t audio_stream_core1_room(void) {
+  return s_held ? AUDIO_STREAM_NO_ROOM : RING_FRAMES - s_ring_used;
+}
 void audio_push_samples(const int16_t *samples, int count) {
   for (int i = 0; i < count; i++) {
     if (s_ring_used >= RING_FRAMES) { s_dropped++; continue; }
@@ -204,6 +207,69 @@ static void test_core1_gate_sees_the_active_player(void) {
   CHECK(!fileplayer_core1_idle());
   fileplayer_stop(p);
   CHECK(fileplayer_core1_idle());
+  fileplayer_destroy(p);
+}
+
+// Core 1's gate reads idle while the player plays with the ring too full for its next read
+// or decode, and then an update does nothing: no read, no push, no move, and it neither
+// loops nor finishes (an underrun it would have latched waits for the next full tick).
+// The gate reads busy whenever an update would do something. WAV and QOA, mono and stereo,
+// at 22.05 and 44.1 kHz, through a loop; and in steady state most ticks are idle.
+static void check_gate_matches_update(const char *path, uint32_t per_tick, int loops) {
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, path));
+  CHECK(fileplayer_play(p, loops));
+  int ticks = 0, idle = 0, bad = 0, played_idle = 0;
+  while (fileplayer_is_playing(p) && ticks < 20000) {
+    const bool g = fileplayer_core1_idle();
+    const uint64_t pushed = s_pushed;
+    const int reads = sdfake_try_reads(), marks = s_marks, drains = s_drains;
+    const uint32_t pos = fileplayer_get_position(p);
+    const bool held = s_held;
+    fileplayer_update();
+    const bool did = s_pushed != pushed || sdfake_try_reads() != reads || s_marks != marks ||
+                     s_drains != drains || fileplayer_get_position(p) != pos || s_held != held;
+    if (g && did && bad++ < 3)
+      printf("  gate idle but the update acted: %s tick %d\n", path, ticks);
+    if (g) idle++;
+    if (g && !held) played_idle++;
+    drain(per_tick);
+    ticks++;
+  }
+  CHECK_EQ_INT(bad, 0);
+  CHECK(!fileplayer_is_playing(p));
+  CHECK(played_idle == idle);       // never idle while the stream was held
+  CHECK(idle * 10 > ticks * 6);     // most ticks: the ring takes a chunk every few
+  CHECK_EQ_INT((int)s_dropped, 0);
+  CHECK(fileplayer_core1_idle());   // finished: no active player
+  fileplayer_destroy(p);
+}
+
+static void test_core1_gate_idle_while_the_ring_is_full(void) {
+  setup();
+  put_qoa("/m.qoa", 22050 * 2, 1, 22050, 700);  // the music's format: 22.05 kHz mono
+  check_gate_matches_update("/m.qoa", 44, 2);   // 1 ms of 44.1 kHz output a tick
+  setup();
+  put_qoa("/s.qoa", 44100, 2, 44100, -300);
+  check_gate_matches_update("/s.qoa", 44, 2);
+  setup();
+  put_wav("/w.wav", 22050, 1, 22050, 1000);
+  check_gate_matches_update("/w.wav", 44, 2);
+  setup();
+  put_wav("/x.wav", 44100, 2, 44100, -1000);
+  check_gate_matches_update("/x.wav", 44, 1);
+  // Stop-on-underrun wants every tick: never idle.
+  setup();
+  put_qoa("/u.qoa", 22050, 1, 22050, 5);
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/u.qoa"));
+  fileplayer_set_stop_on_underrun(p, true);
+  CHECK(fileplayer_play(p, 1));
+  for (int t = 0; t < 400 && fileplayer_is_playing(p); t++) {
+    CHECK(!fileplayer_core1_idle());
+    fileplayer_update();
+    drain(44);
+  }
   fileplayer_destroy(p);
 }
 
@@ -1028,6 +1094,7 @@ static void test_seek_while_held_drops_the_old_audio(void) {
 
 int main(void) {
   test_core1_gate_sees_the_active_player();
+  test_core1_gate_idle_while_the_ring_is_full();
   test_flow_control_plays_every_frame();
   test_mono_and_rate_flow_control();
   test_full_ring_reads_nothing();
