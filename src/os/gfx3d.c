@@ -34,8 +34,10 @@
 // The flat mesh's transform, which is most of a flat scene's time, has a section of its own
 // too, which src/hot_gfx.ld and the perf rig's link script put first: no change elsewhere in
 // this file moves it to other cache sets (GCC does not emit functions in the file's order).
+// noinline, or a copy inlined into its callers would run from wherever they are;
+// tools/check_hot_text.py fails the build unless it sits at __hot_gfx_start__.
 #ifdef __ELF__
-#define GFX3D_MESH_FUNC __attribute__((section(".gfx3d_mesh_text")))
+#define GFX3D_MESH_FUNC __attribute__((section(".gfx3d_mesh_text"), noinline))
 #else
 #define GFX3D_MESH_FUNC
 #endif
@@ -1886,4 +1888,5 @@ void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t) {
   if (!(lent && have >= FOG_LUT_BYTES + END_STACK_BYTES &&
         gfx3d_stack_call(lent + have - END_STACK_BYTES, END_STACK_BYTES, end_scene, &e)))
     end_scene(&e);
+  s_fog_lut = NULL;  // the block is the next borrower's: nothing keeps pointing into it
 }

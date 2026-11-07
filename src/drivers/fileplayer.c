@@ -546,6 +546,18 @@ typedef struct {
     void *arg;
 } fp_callback_t;
 
+// The data's whole frames: where a pass with no loop range ends. Force-inlined, so Core 1's
+// gate shares it and stays call-free into flash.
+static __force_inline uint32_t whole_frames(const fileplayer_t *p) {
+    return p->data_size - p->data_size % p->block_align;
+}
+
+// Where a pass that runs to `end` stops: there, or the end of the data for a player that is
+// already past it (a seek beyond the range plays out the file). Force-inlined, as above.
+static __force_inline uint32_t limit_of(const fileplayer_t *p, uint32_t end) {
+    return p->position <= end ? end : p->data_size;
+}
+
 /* Loop range. setLoopRange(start, end) is in seconds; the pass runs to
  * `end`, then continues from `start` (the first pass starts wherever the
  * player is, normally 0). Both become frame-aligned byte positions in the
@@ -557,7 +569,7 @@ typedef struct {
  * frame (up to 5119) at every wrap, so a start on a frame boundary
  * (multiples of 5120 samples) wraps cheapest. */
 static void loop_bounds(const fileplayer_t *p, uint32_t *start, uint32_t *end) {
-    uint32_t size = p->data_size - p->data_size % p->block_align;
+    uint32_t size = whole_frames(p);
     *start = 0;
     *end = size;
     if (!p->loop)
@@ -572,12 +584,11 @@ static void loop_bounds(const fileplayer_t *p, uint32_t *start, uint32_t *end) {
     }
 }
 
-// Where this pass stops: the loop end, or the end of the data for a player
-// that is already past it (a seek beyond the range plays out the file).
+// Where this pass stops: limit_of the loop end (the data's whole frames without a range).
 static uint32_t pass_limit(const fileplayer_t *p) {
     uint32_t start, end;
     loop_bounds(p, &start, &end);
-    return p->position <= end ? end : p->data_size;
+    return limit_of(p, end);
 }
 
 // Where the next pass starts.
@@ -812,9 +823,7 @@ bool __time_critical_func(fileplayer_core1_idle)(void) {
     const uint32_t room = audio_stream_core1_room();
     if (room == AUDIO_STREAM_NO_ROOM)
         return false;
-    // pass_limit() with no loop range: the data's whole frames (or its end, past them).
-    const uint32_t size = p->data_size - p->data_size % p->block_align;
-    const uint32_t limit = p->position <= size ? size : p->data_size;
+    const uint32_t limit = limit_of(p, whole_frames(p));  // pass_limit() with no loop range
     const uint32_t remaining = p->position < limit ? limit - p->position : 0;
     const uint32_t budget = fit_bytes(p, limit, room);
     return remaining >= p->block_align && budget < FILEPLAYER_READ_MIN && budget < remaining;

@@ -163,11 +163,12 @@ static uint32_t s_lent_peak, s_lent_size;
 
 // Naked trampoline: sp_call(top, limit, fn, arg), in Thread mode on the PSP.
 //   1. saves r4, r5 and LR on the app stack; r4 keeps its SP, r5 its PSPLIM
-//   2. SP = top first, while the old limit (lower: PSRAM) is in force, then
-//      PSPLIM = limit, below the new SP: neither step leaves SP under the limit
-//      in force, so an interrupt between them stacks its frame safely
+//   2. PSPLIM = 0, then SP = top, then PSPLIM = limit (below the new SP). With the
+//      limit at 0 in between, the move is never under the limit in force wherever
+//      the two stacks lie (an app stack in SRAM above the lent region too), and an
+//      interrupt at any step stacks its frame safely
 //   3. fn(arg) runs on the new stack
-//   4. the old limit first (below both SPs), then the old SP; return.
+//   4. the same way back: PSPLIM = 0, the old SP, the old limit; return.
 // Four registers pushed keeps the app stack 8-byte aligned (AAPCS).
 __attribute__((naked, noinline))
 static void sp_call(uint32_t top, uint32_t limit, void (*fn)(void *), void *arg) {
@@ -175,12 +176,16 @@ static void sp_call(uint32_t top, uint32_t limit, void (*fn)(void *), void *arg)
       "push   {r4, r5, r6, lr} \n\t"
       "mov    r4, sp           \n\t"
       "mrs    r5, psplim       \n\t"
+      "movs   r6, #0           \n\t"
+      "msr    psplim, r6       \n\t"
       "mov    sp, r0           \n\t"
       "msr    psplim, r1       \n\t"
       "mov    r0, r3           \n\t"
       "blx    r2               \n\t"
-      "msr    psplim, r5       \n\t"
+      "movs   r1, #0           \n\t"
+      "msr    psplim, r1       \n\t"
       "mov    sp, r4           \n\t"
+      "msr    psplim, r5       \n\t"
       "pop    {r4, r5, r6, pc} \n\t");
 }
 
