@@ -9,6 +9,8 @@
 #   make run-lua                             the real Lua core, an empty for-loop
 #   make run-tex                             gfx3d's textured rasteriser, a frame of ground
 #   make run-tmesh                           gfx3d's whole textured pipeline, a frame of a valley
+#   make run-sky                             a sky image alone, the copy of 40,000 pixels
+#   make run-reflect                         a reflecting frame: two scenes, moving blended water
 #   make check-tex                           its M33 pixels against this host's
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../..)
 HERE := $(ROOT)/tools/perf_rig
@@ -74,7 +76,7 @@ RIG := $(HERE)/build/perf_rig
 SCENE := $(HERE)/build/scene-$(FRAMES)-$(LAP_S).bin
 GUEST := $(O)/gfx3d.elf
 
-.PHONY: all run run-lua run-tex run-tmesh check-tex sweep compare check help clean
+.PHONY: all run run-lua run-tex run-tmesh run-sky run-reflect check-tex sweep compare check help clean
 all: $(RIG) $(GUEST)
 
 # Checks the emulator: the self-test of VFP, DSP, hook counts and the cache model,
@@ -167,6 +169,20 @@ $(TEX_DIR)/pipeline/gfx3d_main.o: $(TEX_DEPS) $(HERE)/guest/gfx3d_tmesh_main.c $
 
 run-tmesh: $(RIG) $(TEX_DIR)/pipeline.elf
 	@$(RIG) $(TEX_DIR)/pipeline.elf --label "textured valley, gfx3d.c from $(GFX3D_SRC), map $(MAP)" $(RIG_ARGS)
+
+$(TEX_DIR)/skyimage/gfx3d_main.o: $(TEX_DEPS) $(HERE)/guest/gfx3d_tmesh_main.c $(TEX_DIR)/empty.bin
+	@mkdir -p $(dir $@)
+	$(CC) $(ARCH) $(GFX3D_FLAGS) $(GUEST_INC) $(TEX_FLAGS) $(LENT) -DTMESH_SKY -c -o $@ $(HERE)/guest/gfx3d_tmesh_main.c
+
+run-sky: $(RIG) $(TEX_DIR)/skyimage.elf
+	@$(RIG) $(TEX_DIR)/skyimage.elf --label "sky image, gfx3d.c from $(GFX3D_SRC), map $(MAP)" $(RIG_ARGS)
+
+$(TEX_DIR)/reflect/gfx3d_main.o: $(TEX_DEPS) $(HERE)/guest/gfx3d_tmesh_main.c $(TEX_DIR)/empty.bin
+	@mkdir -p $(dir $@)
+	$(CC) $(ARCH) $(GFX3D_FLAGS) $(GUEST_INC) $(TEX_FLAGS) $(LENT) -DTMESH_REFLECT -c -o $@ $(HERE)/guest/gfx3d_tmesh_main.c
+
+run-reflect: $(RIG) $(TEX_DIR)/reflect.elf
+	@$(RIG) $(TEX_DIR)/reflect.elf --label "reflecting valley, gfx3d.c from $(GFX3D_SRC), map $(MAP)" $(RIG_ARGS)
 
 $(TEX_DIR)/scene/native: $(TEX_DEPS) $(HERE)/guest/native.c $(TEX_DIR)/empty.bin
 	$(HOSTCC) -O2 -std=gnu11 -ffp-contract=off -DRIG_NATIVE -DTEX_WORK_SCENE $(TEX_FLAGS) -DSCENE_BIN=\"$(TEX_DIR)/empty.bin\" $(GUEST_INC) -include rig_alloc.h -DGFX3D_MALLOC=rig_malloc -DGFX3D_FREE=rig_free -o $@ $(HERE)/guest/native.c $(HERE)/guest/gfx3d_tex_main.c $(GFX3D_SRC)/src/os/gfx3d.c -lm
