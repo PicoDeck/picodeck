@@ -82,7 +82,7 @@ typedef struct {
   uint32_t drawn;     // triangles rasterised
   uint32_t sprites;   // sprites rasterised
   uint32_t overflow;  // records dropped because the scene was full
-  uint32_t pixels;    // pixels of textured triangles rasterised
+  uint32_t pixels;    // textured triangles' pixels, and the clipped area each sprite covers (flat triangles: none)
 } gfx3d_stats_t;
 
 // Resolves sprite `slot` (as given to gfx3d_draw_sprite) at raster time.
@@ -115,6 +115,8 @@ void gfx3d_mesh_free(gfx3d_mesh_t *m);
 // than `flags`, an index out of range, a non-finite xyz or uv) or out of memory.
 // Texture slots are not checked here: they belong to the context that draws it.
 gfx3d_tmesh_t *gfx3d_tmesh_new(const gfx3d_tmesh_desc_t *d);
+// A textured mesh must outlive the scene it was drawn in (until gfx3d_end has returned):
+// the scene's records refer to its uv, unlike a flat mesh's, which is copied into them.
 void gfx3d_tmesh_free(gfx3d_tmesh_t *m);
 
 // ── Math ──
@@ -193,6 +195,21 @@ void gfx3d_draw_background(gfx3d_t *g, const gfx3d_mesh_t *m);
 // (sx, sy, sw, sh) part of the image the target resolves for `slot`.
 bool gfx3d_draw_sprite(gfx3d_t *g, int slot, const float pos[3], float size,
                        int sx, int sy, int sw, int sh, float bias);
+// Many sprites in one call, each a whole image from gfx3d_image_add (so the target should
+// resolve slots with gfx3d_image_resolve) centred at (x, y, z), `size` the world height of
+// the image; its width follows the image's shape. The same records, culling and pixels as
+// gfx3d_draw_sprite with (0, 0, w, h) for each. A slot that is no image, or a size that is
+// not positive, is skipped without a count. Returns how many were filed; those past the
+// scene's capacity count in stats.overflow.
+typedef struct {
+  float x, y, z, size;
+  uint32_t slot;
+} gfx3d_sprite_t;
+int gfx3d_draw_sprites(gfx3d_t *g, const gfx3d_sprite_t *s, int n, float bias);
+// Off by default. On (and the scene's fog on), a sprite's pixels mix towards the fog colour
+// by its depth in 1/31 steps, as a flat triangle's colour does, and the tiny ones too. The
+// fog colour is the one set when gfx3d_end runs. Off, a sprite is drawn exactly as before.
+void gfx3d_set_sprite_fog(gfx3d_t *g, bool on);
 // Fills the viewport ∩ target clip (sky, else the clear colour if any), then
 // rasterises the scene far to near.
 void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t);

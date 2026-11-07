@@ -54,6 +54,7 @@ typedef struct {
     struct {
       int16_t x, y, w, h, sx, sy, sw, sh;
       uint16_t slot;
+      uint8_t fog;  // 0..31: how far towards the fog colour; 0 when sprite fog is off
     } spr;
   } u;
   uint16_t color;  // triangles
@@ -127,6 +128,7 @@ struct gfx3d {
   float V[9], cam[3];                // view = V (p - cam)
   float light[3], ambient;
   bool fog_on;
+  bool sprite_fog;  // gfx3d_set_sprite_fog: sprites take the scene's fog
   float fog_near, fog_far;
   uint16_t fog_color;
   int nsky;
@@ -542,6 +544,8 @@ bool gfx3d_set_light(gfx3d_t *g, float dx, float dy, float dz, float ambient) {
   g->ambient = ambient < 0.0f ? 0.0f : ambient > 1.0f ? 1.0f : ambient;
   return true;
 }
+
+void gfx3d_set_sprite_fog(gfx3d_t *g, bool on) { g->sprite_fog = on; }
 
 void gfx3d_set_fog(gfx3d_t *g, bool on, float fnear, float ffar, uint16_t color) {
   g->fog_on = on && ffar > fnear;
@@ -967,44 +971,111 @@ void gfx3d_draw_background(gfx3d_t *g, const gfx3d_mesh_t *m) {
   process_mesh(g, m, &xf, true, 0.0f, false, 0.0f);
 }
 
+// Files n sprites. With ssw == 0 each is its slot's whole image (gfx3d_image_add's, whose
+// size is read now); else the one sprite shows (ssx, ssy, ssw, ssh) of whatever the target
+// resolves for its slot. Returns how many were filed. Everything it reads from `g` goes
+// into locals first: the stores to the records could alias any of it, and each reload
+// would be a read from PSRAM.
+static int file_sprites(gfx3d_t *g, const gfx3d_sprite_t *s, int n, float bias, int ssx, int ssy,
+                        int ssw, int ssh) {
+  float V[9], cam[3];
+  memcpy(V, g->V, sizeof V);
+  memcpy(cam, g->cam, sizeof cam);
+  const float focal = g->focal, zn = g->znear, zf = g->zfar, zrange = zf - zn;
+  const float cxs = g->cxs, cys = g->cys;
+  const int vx0 = g->vx, vy0 = g->vy, vx1 = g->vx + g->vw, vy1 = g->vy + g->vh;
+  const bool fog = g->sprite_fog && g->fog_on;
+  const float fog_near = g->fog_near, fog_range = g->fog_far - g->fog_near;
+  gfx3d_rec_t *const rec = g->rec, *const trec = g->trec;
+  const int ntrec = g->ntrec, cap = g->cap, nimg = g->nimg;
+  uint32_t *const used = g->used;
+  gfx3d_bucket_t *const bucket = g->bucket;
+  int nrec = g->nrec;
+  uint32_t culled = 0, overflow = 0;
+  int filed = 0;
+  for (int i = 0; i < n; i++) {
+    const float size = s[i].size;
+    const uint32_t slot = s[i].slot;
+    int sw = ssw, sh = ssh;
+    if (!(size > 0.0f)) continue;
+    if (ssw == 0) {
+      if (slot >= (uint32_t)nimg) continue;
+      sw = g->img[slot].w;
+      sh = g->img[slot].h;
+    }
+    const float d[3] = {s[i].x - cam[0], s[i].y - cam[1], s[i].z - cam[2]};
+    float v[3];
+    mat_vec(v, V, d);
+    const float depth = -v[2];
+    const float k = focal / depth;
+    const float h = size * k, w = h * (float)sw / (float)sh;
+    if (!(depth >= zn) || depth > zf || h > 4096.0f || w > 4096.0f) {
+      culled++;
+      continue;
+    }
+    const int iw = (int)(w + 0.5f), ih = (int)(h + 0.5f);
+    const int ix = (int)floorf(cxs + v[0] * k - 0.5f * w + 0.5f);
+    const int iy = (int)floorf(cys - v[1] * k - 0.5f * h + 0.5f);
+    if (iw < 1 || ih < 1 || ix >= vx1 || iy >= vy1 || ix + iw <= vx0 || iy + ih <= vy0) {
+      culled++;
+      continue;
+    }
+    if (nrec >= cap) {
+      overflow++;
+      continue;
+    }
+    unsigned level = 0;
+    if (fog) {
+      const float ft = (depth - fog_near) / fog_range;
+      level = !(ft > 0.0f) ? 0u : ft >= 1.0f ? 31u : (unsigned)(ft * 31.0f + 0.5f);
+    }
+    const int ri = nrec++;
+    gfx3d_rec_t *const r = ri < ntrec ? &trec[ri] : &rec[ri];
+    r->u.spr.x = (int16_t)ix;
+    r->u.spr.y = (int16_t)iy;
+    r->u.spr.w = (int16_t)iw;
+    r->u.spr.h = (int16_t)ih;
+    r->u.spr.sx = (int16_t)ssx;
+    r->u.spr.sy = (int16_t)ssy;
+    r->u.spr.sw = (int16_t)sw;
+    r->u.spr.sh = (int16_t)sh;
+    r->u.spr.slot = (uint16_t)slot;
+    r->u.spr.fog = (uint8_t)level;
+    r->color = 0;
+    r->next = REC_OTHER | REC_END;
+    const int b = bucket_of(zn, zrange, depth + bias);
+    gfx3d_bucket_t *const bk = &bucket[b];
+    uint32_t *const uw = &used[b >> 5];
+    const uint32_t bit = 1u << (b & 31);
+    if (!(*uw & bit)) {
+      *uw |= bit;
+      bk->head = (uint16_t)ri;
+    } else {
+      const unsigned ti = bk->tail;
+      gfx3d_rec_t *const last = ti < (unsigned)ntrec ? &trec[ti] : &rec[ti];
+      last->next = (uint16_t)((last->next & REC_OTHER) | ri);
+    }
+    bk->tail = (uint16_t)ri;
+    filed++;
+  }
+  g->nrec = nrec;
+  g->stats.culled += culled;
+  g->stats.overflow += overflow;
+  return filed;
+}
+
 bool gfx3d_draw_sprite(gfx3d_t *g, int slot, const float pos[3], float size,
                        int sx, int sy, int sw, int sh, float bias) {
   if (slot < 0 || slot > 0xFFFE || sw <= 0 || sh <= 0 || sx < 0 || sy < 0 ||
       sx > 0x7FFF || sy > 0x7FFF || sw > 0x7FFF || sh > 0x7FFF || !(size > 0.0f))
     return false;
-  const float d[3] = {pos[0] - g->cam[0], pos[1] - g->cam[1], pos[2] - g->cam[2]};
-  float v[3];
-  mat_vec(v, g->V, d);
-  const float depth = -v[2];
-  const float k = g->focal / depth;
-  const float h = size * k, w = h * (float)sw / (float)sh;
-  if (!(depth >= g->znear) || depth > g->zfar || h > 4096.0f || w > 4096.0f) {
-    g->stats.culled++;
-    return false;
-  }
-  const int iw = (int)(w + 0.5f), ih = (int)(h + 0.5f);
-  const int ix = (int)floorf(g->cxs + v[0] * k - 0.5f * w + 0.5f);
-  const int iy = (int)floorf(g->cys - v[1] * k - 0.5f * h + 0.5f);
-  if (iw < 1 || ih < 1 || ix >= g->vx + g->vw || iy >= g->vy + g->vh ||
-      ix + iw <= g->vx || iy + ih <= g->vy) {
-    g->stats.culled++;
-    return false;
-  }
-  const int ri = new_rec(g);
-  if (ri < 0) return false;
-  gfx3d_rec_t *const r = rec_at(g, ri);
-  r->u.spr.x = (int16_t)ix;
-  r->u.spr.y = (int16_t)iy;
-  r->u.spr.w = (int16_t)iw;
-  r->u.spr.h = (int16_t)ih;
-  r->u.spr.sx = (int16_t)sx;
-  r->u.spr.sy = (int16_t)sy;
-  r->u.spr.sw = (int16_t)sw;
-  r->u.spr.sh = (int16_t)sh;
-  r->u.spr.slot = (uint16_t)slot;
-  r->color = 0;
-  link_rec(g, bucket_of(g->znear, g->zfar - g->znear, depth + bias), ri, REC_OTHER);
-  return true;
+  const gfx3d_sprite_t one = {pos[0], pos[1], pos[2], size, (uint32_t)slot};
+  return file_sprites(g, &one, 1, bias, sx, sy, sw, sh) == 1;
+}
+
+int gfx3d_draw_sprites(gfx3d_t *g, const gfx3d_sprite_t *s, int n, float bias) {
+  if (!s || n <= 0) return 0;
+  return file_sprites(g, s, n, bias, 0, 0, 0, 0);
 }
 
 // ── Textured meshes in a scene ──────────────────────────────────────────────
@@ -1409,25 +1480,57 @@ __attribute__((noinline)) GFX3D_TEX_FUNC static void raster_tex(gfx3d_t *g, cons
   g->stats.drawn++;
 }
 
-// A record that is no flat triangle. Not inlined: the rasteriser below stays small, and
-// this stays in flash.
-__attribute__((noinline)) static void raster_other(gfx3d_t *g, const gfx3d_target_t *t,
-                                                   const disp_clip_t *c,
-                                                   const gfx3d_rec_t *r) {
-  if (r->color & REC_TEX) {
-    raster_tex(g, t, c, r);
-    return;
-  }
+// A sprite record. The one-texel and 2 x 2 ones, which are most of a valley's, skip the
+// blitter's setup: the pixels are the ones it would make, sampled the same way.
+// pixels counts what the call covers inside the clip, the keyed ones too.
+__attribute__((noinline)) static void raster_sprite(gfx3d_t *g, const gfx3d_target_t *t,
+                                                    const disp_clip_t *c, const gfx3d_rec_t *r) {
   const uint16_t *data;
   int iw, ih;
   uint16_t key;
   if (!t->sprite || !t->sprite(t->ud, r->u.spr.slot, &data, &iw, &ih, &key)) return;
-  if (r->u.spr.sx + r->u.spr.sw > iw || r->u.spr.sy + r->u.spr.sh > ih)
-    return;  // the image is smaller than when it was queued
-  disp_blit_scaled_rect(t->fb, t->stride, c, r->u.spr.x, r->u.spr.y, data, iw,
-                        r->u.spr.sx, r->u.spr.sy, r->u.spr.sw, r->u.spr.sh,
-                        r->u.spr.w, r->u.spr.h, key, t->swap);
+  const int sx = r->u.spr.sx, sy = r->u.spr.sy, sw = r->u.spr.sw, sh = r->u.spr.sh;
+  if (sx + sw > iw || sy + sh > ih) return;  // the image is smaller than when it was queued
+  const int x = r->u.spr.x, y = r->u.spr.y, w = r->u.spr.w, h = r->u.spr.h;
+  const unsigned level = r->u.spr.fog;
+  const uint16_t fogc = g->fog_color;
   g->stats.sprites++;
+  if (w <= 2 && h <= 2) {
+    // Destination (dx, dy) samples source (sx + dx * sw / w, sy + dy * sh / h); with w, h
+    // at most 2, dx * sw / w is 0 or sw / 2.
+    const int colx[2] = {0, sw / 2}, rowy[2] = {0, sh / 2};
+    uint32_t covered = 0;
+    for (int dy = 0; dy < h; dy++) {
+      const int py = y + dy;
+      if (py < c->y0 || py > c->y1) continue;
+      const uint16_t *const sp = data + (size_t)(sy + rowy[dy]) * (size_t)iw + sx;
+      for (int dx = 0; dx < w; dx++) {
+        const int px = x + dx;
+        if (px < c->x0 || px > c->x1) continue;
+        covered++;
+        uint16_t v = sp[colx[dx]];
+        if (key && v == key) continue;
+        if (level) v = disp_fog_px(v, fogc, level);
+        t->fb[(size_t)py * (size_t)t->stride + (size_t)px] = disp_px(v, t->swap);
+      }
+    }
+    g->stats.pixels += covered;
+    return;
+  }
+  g->stats.pixels += level ? disp_blit_scaled_rect_fog(t->fb, t->stride, c, x, y, data, iw, sx, sy,
+                                                       sw, sh, w, h, key, t->swap, fogc, level)
+                           : disp_blit_scaled_rect(t->fb, t->stride, c, x, y, data, iw, sx, sy,
+                                                   sw, sh, w, h, key, t->swap);
+}
+
+// A record that is no flat triangle: two tail calls, so no frame of its own.
+__attribute__((noinline)) static void raster_other(gfx3d_t *g, const gfx3d_target_t *t,
+                                                   const disp_clip_t *c,
+                                                   const gfx3d_rec_t *r) {
+  if (r->color & REC_TEX)
+    raster_tex(g, t, c, r);
+  else
+    raster_sprite(g, t, c, r);
 }
 
 // Every record, the background bucket then far to near. Only the buckets in use

@@ -3169,6 +3169,260 @@ static void test_tmesh_scene_crc(void) {
   CHECK_EQ_INT(differ, 0);
 }
 
+// ── Sprites at scale: gfx3d_draw_sprites, sprite fog, the tiny path ──────────────────────────
+
+// Two context images: 0 is 8x8 with a key, 1 is 3x5 with none (key 0).
+static void spr_images(gfx3d_t *g) {
+  uint16_t a[64], b[15];
+  for (int i = 0; i < 64; i++) a[i] = (i % 5 == 0) ? MAGENTA : (uint16_t)(0x2104 + i * 331);
+  for (int i = 0; i < 15; i++) b[i] = (uint16_t)(0x4208 + i * 977);
+  CHECK_EQ_INT(gfx3d_image_add(g, 8, 8, MAGENTA, a), 0);
+  CHECK_EQ_INT(gfx3d_image_add(g, 3, 5, 0, b), 1);
+}
+
+static gfx3d_target_t spr_target(gfx3d_t *g, uint16_t *fb) {
+  gfx3d_target_t t = {fb, W, 0, 0, W - 1, H - 1, false, gfx3d_image_resolve, g};
+  return t;
+}
+
+// A deterministic spread: near and far, on and off screen, behind the camera, both images,
+// one slot that is no image.
+static int spr_make(gfx3d_sprite_t *s, int n) {
+  uint32_t r = 7;
+  for (int i = 0; i < n; i++) {
+    r = r * 1103515245u + 12345u;
+    const float a = (float)((r >> 8) & 1023) / 1023.0f;
+    r = r * 1103515245u + 12345u;
+    const float b = (float)((r >> 8) & 1023) / 1023.0f;
+    r = r * 1103515245u + 12345u;
+    const float c = (float)((r >> 8) & 1023) / 1023.0f;
+    s[i].x = (a - 0.5f) * 40.0f;
+    s[i].y = (b - 0.5f) * 30.0f;
+    s[i].z = 4.0f - c * 90.0f;  // -86 .. 4: some behind
+    s[i].size = 0.05f + c * 3.0f;
+    s[i].slot = (uint32_t)(i % 2);
+  }
+  return n;
+}
+
+static void test_sprites_bulk_matches_single(void) {
+  enum { N = 400 };
+  static gfx3d_sprite_t sp[N];
+  static uint16_t fa[W * H], fb2[W * H];
+  spr_make(sp, N);
+  sp[3].slot = 9;  // not an image: not filed
+  gfx3d_t *g = gfx3d_new(W, H);
+  spr_images(g);
+  const float cam[3] = {1.0f, 0.5f, 3.0f};
+  gfx3d_set_camera(g, cam, 0.2f, 0.05f, 0.0f);
+  const int dims[2][2] = {{8, 8}, {3, 5}};
+  for (int fog = 0; fog < 2; fog++) {
+    gfx3d_set_fog(g, true, 3, 70, 0x4A69);
+    gfx3d_set_sprite_fog(g, fog != 0);
+    gfx3d_target_t t = spr_target(g, fa);
+    gfx3d_begin(g, true, BG);
+    const int filed = gfx3d_draw_sprites(g, sp, N, 0.25f);
+    gfx3d_end(g, &t);
+    const gfx3d_stats_t bulk = *gfx3d_get_stats(g);
+    gfx3d_begin(g, true, BG);
+    int ok = 0;
+    for (int i = 0; i < N; i++) {
+      if (sp[i].slot > 1) continue;
+      const float p[3] = {sp[i].x, sp[i].y, sp[i].z};
+      ok += gfx3d_draw_sprite(g, (int)sp[i].slot, p, sp[i].size, 0, 0, dims[sp[i].slot][0],
+                              dims[sp[i].slot][1], 0.25f);
+    }
+    t = spr_target(g, fb2);
+    gfx3d_end(g, &t);
+    const gfx3d_stats_t one = *gfx3d_get_stats(g);
+    CHECK_EQ_INT(filed, ok);
+    CHECK(filed > 100 && filed < N - 20);
+    CHECK(memcmp(fa, fb2, sizeof fa) == 0);
+    CHECK_EQ_INT(bulk.sprites, one.sprites);
+    CHECK_EQ_INT(bulk.pixels, one.pixels);
+    CHECK(bulk.pixels > 1000);
+    CHECK_EQ_INT(bulk.overflow, 0);
+  }
+  gfx3d_free(g);
+}
+
+static void test_sprites_bulk_edges(void) {
+  gfx3d_t *g = gfx3d_new_ex(W, H, 3);
+  spr_images(g);
+  gfx3d_begin(g, true, BG);
+  const gfx3d_sprite_t s[5] = {{0, 0, -10, 1, 0}, {0, 0, -11, 1, 1}, {0, 0, -12, 1, 0},
+                               {0, 0, -13, 1, 1}, {0, 0, -14, 1, 0}};
+  CHECK_EQ_INT(gfx3d_draw_sprites(g, s, 5, 0), 3);  // the scene held 3
+  CHECK_EQ_INT(gfx3d_get_stats(g)->overflow, 2);
+  CHECK_EQ_INT(gfx3d_draw_sprites(g, s, 0, 0), 0);
+  CHECK_EQ_INT(gfx3d_draw_sprites(g, s, -1, 0), 0);
+  CHECK_EQ_INT(gfx3d_draw_sprites(g, NULL, 4, 0), 0);
+  const gfx3d_sprite_t bad[3] = {{0, 0, -10, 0, 0}, {0, 0, -10, -1, 0}, {0, 0, -10, NAN, 0}};
+  gfx3d_begin(g, true, BG);
+  CHECK_EQ_INT(gfx3d_draw_sprites(g, bad, 3, 0), 0);
+  gfx3d_free(g);
+}
+
+// With sprite fog off, whatever the scene's fog, a sprite is what disp_blit_scaled_rect makes
+// of its projected rectangle: 1 and 2 px (the tiny path), then 6 and 30.
+static void test_sprite_fog_off_identical(void) {
+  static uint16_t got[W * H], want[W * H];
+  uint16_t a[64], b[15];
+  for (int i = 0; i < 64; i++) a[i] = (i % 5 == 0) ? MAGENTA : (uint16_t)(0x2104 + i * 331);
+  for (int i = 0; i < 15; i++) b[i] = (uint16_t)(0x4208 + i * 977);
+  gfx3d_t *g = gfx3d_new(W, H);
+  spr_images(g);
+  gfx3d_set_fog(g, true, 2, 12, 0x8C71);
+  gfx3d_set_sprite_fog(g, true);
+  gfx3d_set_sprite_fog(g, false);  // off again: the default
+  const disp_clip_t c = {0, 0, W - 1, H - 1};
+  const float pxs[4] = {1, 2, 6, 30}, zs[3] = {-5, -20, -40};
+  for (int k = 0; k < 4; k++)
+    for (int zi = 0; zi < 3; zi++) {
+      const float z = zs[zi], size = world_of_px(pxs[k], z);
+      const float ps[3][3] = {{0.7f, -0.3f, z}, {-0.7f, 0.3f, z}, {0.2f, 0.1f, z}};
+      gfx3d_target_t t = spr_target(g, got);
+      gfx3d_begin(g, true, BG);
+      CHECK(gfx3d_draw_sprite(g, 0, ps[0], size, 1, 1, 6, 6, 0));
+      CHECK(gfx3d_draw_sprite(g, 1, ps[1], size, 0, 0, 3, 5, 0));
+      const gfx3d_sprite_t one = {ps[2][0], ps[2][1], ps[2][2], size, 0};
+      CHECK_EQ_INT(gfx3d_draw_sprites(g, &one, 1, 0), 1);
+      gfx3d_end(g, &t);
+      for (int i = 0; i < W * H; i++) want[i] = BG;
+      const int dim[3][2] = {{6, 6}, {3, 5}, {8, 8}};
+      for (int j = 0; j < 3; j++) {
+        float sx, sy, depth;
+        CHECK(gfx3d_project(g, ps[j], &sx, &sy, &depth));
+        const float h = size * FOCAL / depth, w = h * (float)dim[j][0] / (float)dim[j][1];
+        const int iw = (int)(w + 0.5f), ih = (int)(h + 0.5f);
+        const int ix = (int)floorf(sx - 0.5f * w + 0.5f), iy = (int)floorf(sy - 0.5f * h + 0.5f);
+        if (iw < 1 || ih < 1) continue;
+        if (j == 0)
+          disp_blit_scaled_rect(want, W, &c, ix, iy, a, 8, 1, 1, 6, 6, iw, ih, MAGENTA, false);
+        else if (j == 1)
+          disp_blit_scaled_rect(want, W, &c, ix, iy, b, 3, 0, 0, 3, 5, iw, ih, 0, false);
+        else
+          disp_blit_scaled_rect(want, W, &c, ix, iy, a, 8, 0, 0, 8, 8, iw, ih, MAGENTA, false);
+      }
+      CHECK(memcmp(got, want, sizeof got) == 0);
+    }
+  gfx3d_free(g);
+}
+
+static int spr_level(float depth) {
+  float t = (depth - 2.0f) / 10.0f;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return (int)(t * 31.0f + 0.5f);
+}
+
+static uint16_t spr_mix(uint16_t v, uint16_t f, int l) {
+  const int r = (((v >> 11) & 31) * (31 - l) + ((f >> 11) & 31) * l + 15) / 31;
+  const int g = (((v >> 5) & 63) * (31 - l) + ((f >> 5) & 63) * l + 15) / 31;
+  const int b = ((v & 31) * (31 - l) + (f & 31) * l + 15) / 31;
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+static void test_sprite_fog_far(void) {
+  static uint16_t fb[W * H];
+  const uint16_t fogc = 0x8C71;
+  uint16_t img[16];
+  for (int i = 0; i < 16; i++) img[i] = (uint16_t)(0x3186 + i * 1021);
+  img[0] = MAGENTA;
+  gfx3d_t *g = gfx3d_new(W, H);
+  CHECK_EQ_INT(gfx3d_image_add(g, 4, 4, MAGENTA, img), 0);
+  gfx3d_set_fog(g, true, 2, 12, fogc);
+  gfx3d_set_sprite_fog(g, true);
+  const float depths[4] = {1.0f, 5.0f, 9.0f, 30.0f};  // 1 is before the fog; 30 is past it
+  for (int k = 0; k < 4; k++) {
+    const float z = -depths[k];
+    const float size = world_of_px(40, z);  // 40 px, so 10 px a texel
+    const float p[3] = {0, 0, z};
+    gfx3d_target_t t = spr_target(g, fb);
+    gfx3d_begin(g, true, BG);
+    CHECK(gfx3d_draw_sprite(g, 0, p, size, 0, 0, 4, 4, 0));
+    gfx3d_end(g, &t);
+    const int lv = spr_level(depths[k]);
+    int opaque = 0;
+    for (int ty = 0; ty < 4; ty++)
+      for (int tx = 0; tx < 4; tx++) {
+        const int x = 160 - 20 + tx * 10 + 5, y = 160 - 20 + ty * 10 + 5;
+        if (ty == 0 && tx == 0) {
+          CHECK_EQ_INT(fb[y * W + x], BG);  // the key stays transparent
+          continue;
+        }
+        opaque++;
+        const uint16_t want = spr_mix(img[ty * 4 + tx], fogc, lv);
+        CHECK_EQ_INT(fb[y * W + x], want);
+        if (k == 0) CHECK_EQ_INT(fb[y * W + x], img[ty * 4 + tx]);  // unfogged
+        if (k == 3) CHECK_EQ_INT(fb[y * W + x], fogc);              // all fog
+      }
+    CHECK_EQ_INT(opaque, 15);
+  }
+  // Far enough to be tiny: a fogged texel too.
+  const float z = -30.0f, p[3] = {0, 0, z};
+  gfx3d_target_t t = spr_target(g, fb);
+  gfx3d_begin(g, true, BG);
+  CHECK(gfx3d_draw_sprite(g, 0, p, world_of_px(1, z), 1, 1, 2, 2, 0));
+  gfx3d_end(g, &t);
+  CHECK_EQ_INT(fb[160 * W + 160], fogc);
+  gfx3d_free(g);
+}
+
+static void test_sprite_tiny_fast_path(void) {
+  static uint16_t fb[W * H];
+  uint16_t img[16];
+  for (int i = 0; i < 16; i++) img[i] = (uint16_t)(0x3186 + i * 1021);
+  img[0] = MAGENTA;
+  uint16_t keyed[16];
+  for (int i = 0; i < 16; i++) keyed[i] = MAGENTA;
+  gfx3d_t *g = gfx3d_new(W, H);
+  CHECK_EQ_INT(gfx3d_image_add(g, 4, 4, MAGENTA, img), 0);
+  CHECK_EQ_INT(gfx3d_image_add(g, 4, 4, MAGENTA, keyed), 1);
+  const float z = -20.0f, p[3] = {0, 0, z};
+  gfx3d_target_t t = spr_target(g, fb);
+  // 1 x 1: the source rect's first texel, which here is the key.
+  gfx3d_begin(g, true, BG);
+  CHECK(gfx3d_draw_sprite(g, 0, p, world_of_px(1, z), 0, 0, 4, 4, 0));
+  gfx3d_end(g, &t);
+  CHECK_EQ_INT(fb[160 * W + 160], BG);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->sprites, 1);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->pixels, 1);
+  // 1 x 1 of the part whose first texel is opaque.
+  gfx3d_begin(g, true, BG);
+  CHECK(gfx3d_draw_sprite(g, 0, p, world_of_px(1, z), 1, 0, 3, 4, 0));
+  gfx3d_end(g, &t);
+  CHECK_EQ_INT(fb[160 * W + 160], img[1]);
+  int lit = 0;
+  for (int i = 0; i < W * H; i++) lit += fb[i] != BG;
+  CHECK_EQ_INT(lit, 1);
+  // 2 x 2, at (159..160, 159..160): the four texels the blitter samples.
+  gfx3d_begin(g, true, BG);
+  CHECK(gfx3d_draw_sprite(g, 0, p, world_of_px(2, z), 0, 0, 4, 4, 0));
+  gfx3d_end(g, &t);
+  CHECK_EQ_INT(fb[159 * W + 159], BG);  // texel (0,0) is the key
+  CHECK_EQ_INT(fb[159 * W + 160], img[2]);
+  CHECK_EQ_INT(fb[160 * W + 159], img[8]);
+  CHECK_EQ_INT(fb[160 * W + 160], img[10]);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->pixels, 4);
+  // An all-key image draws nothing at either size.
+  for (int px2 = 1; px2 <= 2; px2++) {
+    gfx3d_begin(g, true, BG);
+    CHECK(gfx3d_draw_sprite(g, 1, p, world_of_px((float)px2, z), 0, 0, 4, 4, 0));
+    gfx3d_end(g, &t);
+    lit = 0;
+    for (int i = 0; i < W * H; i++) lit += fb[i] != BG;
+    CHECK_EQ_INT(lit, 0);
+  }
+  // Clipped at the edge of the target: a 2 x 2 half off the left, and pixels count what is
+  // inside.
+  const float edge[3] = {-world_of_px(160, z), 0, z};
+  gfx3d_begin(g, true, BG);
+  CHECK(gfx3d_draw_sprite(g, 0, edge, world_of_px(2, z), 1, 0, 3, 4, 0));
+  gfx3d_end(g, &t);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->pixels, 2);
+  gfx3d_free(g);
+}
+
 int main(void) {
   test_euler_conventions();
   test_basis();
@@ -3222,5 +3476,10 @@ int main(void) {
   test_tmesh_viewport_clip_swap();
   test_tmesh_bad_values_stay_safe();
   test_tmesh_scene_crc();
+  test_sprites_bulk_matches_single();
+  test_sprites_bulk_edges();
+  test_sprite_fog_off_identical();
+  test_sprite_fog_far();
+  test_sprite_tiny_fast_path();
   return check_report("test_gfx3d");
 }

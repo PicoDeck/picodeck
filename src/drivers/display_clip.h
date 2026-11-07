@@ -719,20 +719,30 @@ DISP_HOT static inline void disp_blit(uint16_t *fb, int stride, const disp_clip_
   }
 }
 
+// One host RGB565 pixel mixed `level`/31 (0..31) of the way to `fog`, per channel.
+static inline uint16_t disp_fog_px(uint16_t v, uint16_t fog, unsigned level) {
+  const unsigned k = 31u - level;
+  const unsigned r = ((((unsigned)v >> 11) & 31u) * k + (((unsigned)fog >> 11) & 31u) * level + 15u) / 31u;
+  const unsigned g = ((((unsigned)v >> 5) & 63u) * k + (((unsigned)fog >> 5) & 63u) * level + 15u) / 31u;
+  const unsigned b = (((unsigned)v & 31u) * k + ((unsigned)fog & 31u) * level + 15u) / 31u;
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
 // Nearest-neighbour stretch of the source rect (sx, sy, sw, sh) of an
 // img_w-wide image to dst_w x dst_h at (x, y), skipping `key` pixels (0 =
 // opaque). Destination pixel (dx, dy) of the unclipped rect samples source
 // (sx + dx*sw/dst_w, sy + dy*sh/dst_h) — exact integer division, stepped with
 // a remainder DDA across each row. The source rect must lie inside the image
-// (callers clamp).
-DISP_HOT static inline void disp_blit_scaled_rect(
+// (callers clamp). Returns the pixels of the clipped destination rect, whatever the key
+// skipped: what the call covers, for a counter that wants it for free.
+DISP_HOT static inline uint32_t disp_blit_scaled_rect(
     uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
     const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,
     int dst_w, int dst_h, uint16_t key, bool swap) {
   if (!data || img_w <= 0 || sw <= 0 || sh <= 0 || dst_w <= 0 || dst_h <= 0)
-    return;
+    return 0;
   disp_span_t s;
-  if (!disp_clip_rect(c, x, y, dst_w, dst_h, &s)) return;
+  if (!disp_clip_rect(c, x, y, dst_w, dst_h, &s)) return 0;
   // The first visible source column and row, then a remainder DDA in 32 bits for
   // both: acc < dst_w and rm < dst_w, so acc + rm fits uint32. (In int64 each
   // pixel cost two add-with-carry pairs and a 64-bit compare, each row a 64-bit
@@ -775,6 +785,71 @@ DISP_HOT static inline void disp_blit_scaled_rect(
     racc += rrm;
     if (racc >= dh) { racc -= dh; src_row++; }
   }
+  return (uint32_t)s.w * (uint32_t)s.h;
+}
+
+// disp_blit_scaled_rect with fog: each pixel drawn (not a key one) is first mixed `level`/31
+// of the way to the host RGB565 colour `fog`, per channel,
+// (c * (31 - level) + fog * level + 15) / 31, so 0 is the image and 31 the fog. Same
+// sampling, same return. gfx3d's sprites; a level of 0 is better sent to the plain blit.
+// Nearest-neighbour stretch of the source rect (sx, sy, sw, sh) of an
+// img_w-wide image to dst_w x dst_h at (x, y), skipping `key` pixels (0 =
+// opaque). Destination pixel (dx, dy) of the unclipped rect samples source
+// (sx + dx*sw/dst_w, sy + dy*sh/dst_h) — exact integer division, stepped with
+// a remainder DDA across each row. The source rect must lie inside the image
+// (callers clamp).
+DISP_HOT static inline uint32_t disp_blit_scaled_rect_fog(
+    uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
+    const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,
+    int dst_w, int dst_h, uint16_t key, bool swap,
+    uint16_t fog, unsigned level) {
+  if (!data || img_w <= 0 || sw <= 0 || sh <= 0 || dst_w <= 0 || dst_h <= 0)
+    return 0;
+  disp_span_t s;
+  if (!disp_clip_rect(c, x, y, dst_w, dst_h, &s)) return 0;
+  // The first visible source column and row, then a remainder DDA in 32 bits for
+  // both: acc < dst_w and rm < dst_w, so acc + rm fits uint32. (In int64 each
+  // pixel cost two add-with-carry pairs and a 64-bit compare, each row a 64-bit
+  // division.)
+  const int q = sw / dst_w, rq = sh / dst_h;
+  const uint32_t rm = (uint32_t)(sw % dst_w), dw = (uint32_t)dst_w;
+  const uint32_t rrm = (uint32_t)(sh % dst_h), dh = (uint32_t)dst_h;
+  const int col_start = s.skip_x ? (int)(s.skip_x * sw / dst_w) : 0;
+  const uint32_t acc_start = s.skip_x ? (uint32_t)(s.skip_x * sw % dst_w) : 0;
+  int src_row = s.skip_y ? (int)(s.skip_y * sh / dst_h) : 0;
+  uint32_t racc = s.skip_y ? (uint32_t)(s.skip_y * sh % dst_h) : 0;
+  uint16_t *row = fb + (size_t)s.y * stride + s.x;
+  int prev = -1;
+  for (int r = 0; r < s.h; r++, row += stride) {
+    if (!key && src_row == prev) {  // opaque: an upscaled row repeats
+      memcpy(row, row - stride, (size_t)s.w * sizeof(uint16_t));
+    } else {
+      prev = src_row;
+      const uint16_t *sp = data + (size_t)(sy + src_row) * img_w + sx;
+      int col = col_start;
+      uint32_t acc = acc_start;
+      if (key) {
+        for (int i = 0; i < s.w; i++) {
+          const uint16_t v = sp[col];
+          if (v != key) row[i] = disp_px(disp_fog_px(v, fog, level), swap);
+          col += q;
+          acc += rm;
+          if (acc >= dw) { acc -= dw; col++; }
+        }
+      } else {
+        for (int i = 0; i < s.w; i++) {
+          row[i] = disp_px(disp_fog_px(sp[col], fog, level), swap);
+          col += q;
+          acc += rm;
+          if (acc >= dw) { acc -= dw; col++; }
+        }
+      }
+    }
+    src_row += rq;
+    racc += rrm;
+    if (racc >= dh) { racc -= dh; src_row++; }
+  }
+  return (uint32_t)s.w * (uint32_t)s.h;
 }
 
 // Nearest-neighbour scale of a whole src_w x src_h image (see above).

@@ -13,6 +13,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define CW 160  // canvas
 #define CH 140
@@ -654,6 +655,61 @@ static void test_blit_scaled_rect_matches_reference(void) {
   CHECK_EQ_INT(bad, 0);
 }
 
+// The same stretch with fog: an opaque pixel mixes `level`/31 of the way to the fog colour,
+// per channel, (c * (31 - level) + fog * level + 15) / 31; a keyed one is skipped before
+// the mix. Both blits return the pixels of the clipped rect they cover, keyed or not.
+static uint16_t ref_fog(uint16_t v, uint16_t f, int level) {
+  const int r = (((v >> 11) & 31) * (31 - level) + ((f >> 11) & 31) * level + 15) / 31;
+  const int g = (((v >> 5) & 63) * (31 - level) + ((f >> 5) & 63) * level + 15) / 31;
+  const int b = ((v & 31) * (31 - level) + (f & 31) * level + 15) / 31;
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+static void test_blit_scaled_rect_fog_matches_reference(void) {
+  enum { IW = 23, IH = 17 };
+  uint16_t img[IW * IH];
+  for (int i = 0; i < IW * IH; i++) img[i] = (uint16_t)(1 + (i * 7919) % 65000);
+  int bad = 0, bad_area = 0;
+  for (int i = 0; i < 4000; i++) {
+    disp_clip_t c = random_clip();
+    int sx = rnd(0, IW - 1), sy = rnd(0, IH - 1);
+    int sw = rnd(1, IW - sx), sh = rnd(1, IH - sy);
+    int dw = rnd(1, 90), dh = rnd(1, 90), x = rnd(-60, 60), y = rnd(-60, 60);
+    uint16_t key = (i % 3 == 0) ? img[(sy * IW) + sx] : 0;
+    int level = i % 5 == 0 ? 0 : i % 7 == 0 ? 31 : rnd(0, 31);
+    uint16_t fogc = (uint16_t)rnd(0, 0xFFFF);
+    bool swap = rnd(0, 1);
+    reset(0);
+    uint32_t area = disp_blit_scaled_rect_fog(screen(s_got), CW, &c, x, y, img, IW, sx, sy,
+                                              sw, sh, dw, dh, key, swap, fogc, (unsigned)level);
+    uint16_t *w = screen(s_want);
+    uint32_t want_area = 0;
+    for (int dy = 0; dy < dh; dy++)
+      for (int dx = 0; dx < dw; dx++) {
+        int px = x + dx, py = y + dy;
+        if (px < c.x0 || px > c.x1 || py < c.y0 || py > c.y1) continue;
+        want_area++;
+        uint16_t v = img[(sy + dy * sh / dh) * IW + sx + dx * sw / dw];
+        if (!key || v != key) w[py * CW + px] = disp_px(ref_fog(v, fogc, level), swap);
+      }
+    if (area != want_area) bad_area++;
+    if (!same("fogged rect") && bad++ < 5)
+      printf("  fog rect src %d,%d %dx%d dst %d,%d %dx%d level %d\n", sx, sy, sw, sh, x, y, dw,
+             dh, level);
+    // Level 0 is the plain blit, byte for byte, and the plain blit reports the same area.
+    if (level == 0) {
+      uint16_t save[CW * CH];
+      memcpy(save, s_got, sizeof save);
+      reset(0);
+      uint32_t a2 = disp_blit_scaled_rect(screen(s_got), CW, &c, x, y, img, IW, sx, sy, sw, sh,
+                                          dw, dh, key, swap);
+      if (memcmp(save, s_got, sizeof save) || a2 != area) bad++;
+    }
+  }
+  CHECK_EQ_INT(bad, 0);
+  CHECK_EQ_INT(bad_area, 0);
+}
+
 // ── disp_fill_tri_f (gfx3d's rasteriser) ────────────────────────────────────
 static float frnd(float lo, float hi) {
   return lo + (hi - lo) * (float)rnd(0, 1000000) / 1000000.0f;
@@ -929,6 +985,7 @@ int main(void) {
   test_fill_circle_mid();
   test_blit_scaled();
   test_blit_scaled_rect_matches_reference();
+  test_blit_scaled_rect_fog_matches_reference();
   test_vline_gradient_matches_reference();
   test_vline_gradient_reaches_both_ends_and_huge_coords();
   test_tri_f_inside_outside_and_clip();
