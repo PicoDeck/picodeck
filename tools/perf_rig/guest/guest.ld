@@ -9,8 +9,9 @@ SECTIONS
     KEEP(*gfx3d.o(.gfx3d_mesh_text))  /* first, as in src/hot_gfx.ld */
     __sprite_slot = .;                  /* then a sprite's fill in its slot, as there */
     KEEP(*gfx3d.o(.gfx3d_sprite_text))
+    . = __sprite_slot + 10564;
     KEEP(*gfx3d.o(.gfx3d_sprite_aux_text))
-    . = __sprite_slot + 11628;
+    . = __sprite_slot + 19820;
     KEEP(*gfx3d.o(.text .text.*))
     *gfx3d_main.o(.text .text.*)
     *start.o(.text .text.*)
