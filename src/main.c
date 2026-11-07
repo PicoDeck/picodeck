@@ -686,6 +686,12 @@ static void sys_reboot(void) {
 static bool sys_isUSBPowered(void) {
   return gpio_get(USB_VBUS_PIN);
 }
+static uint32_t sys_getClockKhz(void) {
+  return clock_get_hz(clk_sys) / 1000u;
+}
+static void sys_resetIdleTimer(void) {
+  idle_dim_note_activity();
+}
 static void sys_log(const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
@@ -794,6 +800,9 @@ static picocalc_sys_t s_sys_impl = {
     .poll = sys_poll,
     .shouldExit = sys_shouldExit,
     .setAudioCallback = sys_setAudioCallback,
+    .getFirmwareId = firmware_id,
+    .getClockKhz = sys_getClockKhz,
+    .resetIdleTimer = sys_resetIdleTimer,
 };
 
 static picocalc_wifi_t s_wifi_impl = {
@@ -2238,8 +2247,9 @@ int main(void) {
   g_api.video       = &s_video_impl;
   g_api.modplayer   = &s_modplayer_impl;
   g_api.zip         = &s_zip_impl;
-  g_api.version     = 10; // 10 = gamepad->getAxis; 9 = gamepad; 8 = TLS verify: http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts; 5 = zip handles
+  g_api.version     = 11; // 11 = gfx3d, sys->getFirmwareId/getClockKhz/resetIdleTimer; 10 = gamepad->getAxis; 9 = gamepad; 8 = TLS verify: http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts; 5 = zip handles
   g_api.gamepad     = &s_gamepad_impl;
+  g_api.gfx3d       = &g_gfx3d_api;
   // fs wired after SD card init
 
   gpio_init(USB_VBUS_PIN);

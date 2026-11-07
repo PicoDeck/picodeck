@@ -29,6 +29,8 @@
 #include "appconfig.h"
 #include "image_api.h"
 #include "font_registry.h"
+#include "gfx3d.h"
+#include "idle_dim.h"
 #include "app_identity.h"
 #include "native_loader.h"
 #include "os_overlay.h"
@@ -378,7 +380,7 @@ enum {
     SLOT_FS_BROWSE,
     SLOT_FS_END,
 
-    // picocalc_sys_t (11 functions)
+    // picocalc_sys_t (14 functions)
     SLOT_SYS_GET_TIME_MS = SLOT_FS_END,
     SLOT_SYS_GET_TIME_US,
     SLOT_SYS_REBOOT,
@@ -390,6 +392,9 @@ enum {
     SLOT_SYS_POLL,
     SLOT_SYS_SHOULD_EXIT,
     SLOT_SYS_SET_AUDIO_CALLBACK,
+    SLOT_SYS_GET_FIRMWARE_ID,    // API v11
+    SLOT_SYS_GET_CLOCK_KHZ,
+    SLOT_SYS_RESET_IDLE_TIMER,
     SLOT_SYS_END,
 
     // picocalc_audio_t (6 functions)
@@ -665,7 +670,32 @@ enum {
     SLOT_GAMEPAD_GET_AXIS,
     SLOT_GAMEPAD_END,
 
-    SLOT_TOTAL_COUNT = SLOT_GAMEPAD_END,
+    // picocalc_gfx3d_t (API v11): the table after `gamepad`. SLOT_GFX3D_END is its `end`,
+    // so the table's own end has a longer name.
+    SLOT_GFX3D_CREATE = SLOT_GAMEPAD_END,
+    SLOT_GFX3D_DESTROY,
+    SLOT_GFX3D_SET_PROJECTION,
+    SLOT_GFX3D_SET_CAMERA,
+    SLOT_GFX3D_LOOK_AT,
+    SLOT_GFX3D_PROJECT,
+    SLOT_GFX3D_SET_FOG,
+    SLOT_GFX3D_TEX_ADD,
+    SLOT_GFX3D_TEX_SCROLL,
+    SLOT_GFX3D_IMAGE_ADD,
+    SLOT_GFX3D_SET_SKY_IMAGE,
+    SLOT_GFX3D_SET_SKY_ROWS,
+    SLOT_GFX3D_SET_SPRITE_FOG,
+    SLOT_GFX3D_SET_MIRROR,
+    SLOT_GFX3D_MESH_NEW,
+    SLOT_GFX3D_MESH_FREE,
+    SLOT_GFX3D_BEGIN,
+    SLOT_GFX3D_DRAW_MESH,
+    SLOT_GFX3D_DRAW_SPRITES,
+    SLOT_GFX3D_END,
+    SLOT_GFX3D_GET_STATS,
+    SLOT_GFX3D_TABLE_END,
+
+    SLOT_TOTAL_COUNT = SLOT_GFX3D_TABLE_END,
 };
 
 // =============================================================================
@@ -1432,6 +1462,20 @@ static void tramp_sys_get_battery(uc_engine *uc) {
 
 static void tramp_sys_is_usb_powered(uc_engine *uc) {
     write_reg(uc, UC_ARM_REG_R0, 1);  // Always USB in simulator
+}
+
+// A permanent string, as the device's in flash: label_addr writes it once per launch.
+static void tramp_sys_get_firmware_id(uc_engine *uc) {
+    write_reg(uc, UC_ARM_REG_R0, label_addr(uc, firmware_id()));
+}
+
+static void tramp_sys_get_clock_khz(uc_engine *uc) {
+    write_reg(uc, UC_ARM_REG_R0, sim_native_clock_khz());
+}
+
+static void tramp_sys_reset_idle_timer(uc_engine *uc) {
+    (void)uc;
+    idle_dim_note_activity();
 }
 
 // ── Native-app system-menu items ────────────────────────────────────────
@@ -3028,6 +3072,243 @@ static void tramp_zip_extract_entry(uc_engine *uc) {
 }
 
 // =============================================================================
+// gfx3d trampoline handlers (API v11)
+// =============================================================================
+// Contexts and meshes cross as handle_wrap's small integers. Arrays are copied out of
+// emulated memory for the call, as the renderer keeps nothing of them but its own copies.
+// Native apps use the base AAPCS: floats come in core registers and on the stack, as bits.
+
+static bool guest_read(uc_engine *uc, uint32_t addr, void *out, size_t bytes) {
+    return uc_mem_read(uc, addr, out, bytes) == UC_ERR_OK;
+}
+
+static bool reg_bool(uc_engine *uc, int reg) {
+    return (read_reg(uc, reg) & 0xFFu) != 0;
+}
+
+static float reg_float(uc_engine *uc, int reg) {
+    return u32_as_float(read_reg(uc, reg));
+}
+
+static void tramp_gfx3d_create(uc_engine *uc) {
+    pc3d_t g = g_gfx3d_api.create((int)read_reg(uc, UC_ARM_REG_R0));
+    write_reg(uc, UC_ARM_REG_R0, wrap_tracked(NATIVE_RES_GFX3D, g));
+}
+
+static void tramp_gfx3d_destroy(uc_engine *uc) {
+    drop_tracked(NATIVE_RES_GFX3D, read_reg(uc, UC_ARM_REG_R0));
+}
+
+static void tramp_gfx3d_set_projection(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    bool ok = g && g_gfx3d_api.setProjection(g, reg_float(uc, UC_ARM_REG_R1),
+                                             reg_float(uc, UC_ARM_REG_R2),
+                                             reg_float(uc, UC_ARM_REG_R3));
+    write_reg(uc, UC_ARM_REG_R0, ok);
+}
+
+static void tramp_gfx3d_set_camera(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    float pos[3];
+    if (g && guest_read(uc, read_reg(uc, UC_ARM_REG_R1), pos, sizeof pos))
+        g_gfx3d_api.setCamera(g, pos, reg_float(uc, UC_ARM_REG_R2), reg_float(uc, UC_ARM_REG_R3),
+                              u32_as_float(read_stack_arg(uc, 0)));
+}
+
+static void tramp_gfx3d_look_at(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    float eye[3], target[3], up[3];
+    bool ok = g && guest_read(uc, read_reg(uc, UC_ARM_REG_R1), eye, sizeof eye) &&
+              guest_read(uc, read_reg(uc, UC_ARM_REG_R2), target, sizeof target) &&
+              guest_read(uc, read_reg(uc, UC_ARM_REG_R3), up, sizeof up) &&
+              g_gfx3d_api.lookAt(g, eye, target, up);
+    write_reg(uc, UC_ARM_REG_R0, ok);
+}
+
+static void tramp_gfx3d_project(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    uint32_t psx = read_reg(uc, UC_ARM_REG_R2), psy = read_reg(uc, UC_ARM_REG_R3);
+    uint32_t pdepth = read_stack_arg(uc, 0);
+    float p[3], sx, sy, depth;
+    bool ok = g && guest_read(uc, read_reg(uc, UC_ARM_REG_R1), p, sizeof p) &&
+              g_gfx3d_api.project(g, p, &sx, &sy, &depth);
+    if (ok) {
+        uc_mem_write(uc, psx, &sx, 4);
+        uc_mem_write(uc, psy, &sy, 4);
+        uc_mem_write(uc, pdepth, &depth, 4);
+    }
+    write_reg(uc, UC_ARM_REG_R0, ok);
+}
+
+static void tramp_gfx3d_set_fog(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    if (g)
+        g_gfx3d_api.setFog(g, reg_bool(uc, UC_ARM_REG_R1), reg_float(uc, UC_ARM_REG_R2),
+                           reg_float(uc, UC_ARM_REG_R3), (uint16_t)read_stack_arg(uc, 0));
+}
+
+static void tramp_gfx3d_tex_add(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    int lg_w = (int)read_reg(uc, UC_ARM_REG_R1), lg_h = (int)read_reg(uc, UC_ARM_REG_R2);
+    int nmips = (int)read_reg(uc, UC_ARM_REG_R3);
+    uint32_t pixels = read_stack_arg(uc, 0);
+    int slot = -1;
+    // Only what it takes to size the copy: the rest of the rules are gfx3d_tex_add's.
+    if (g && pixels && lg_w >= 0 && lg_w <= 10 && lg_h >= 0 && lg_h <= 10 && nmips >= 1 &&
+        nmips - 1 <= (lg_w < lg_h ? lg_w : lg_h)) {
+        size_t n = 0;
+        for (int k = 0; k < nmips; k++) n += (size_t)1u << (lg_w - k + lg_h - k);
+        uint16_t *px = malloc(n * sizeof *px);
+        if (px && guest_read(uc, pixels, px, n * sizeof *px))
+            slot = g_gfx3d_api.texAdd(g, lg_w, lg_h, nmips, px);
+        free(px);
+    }
+    write_reg(uc, UC_ARM_REG_R0, (uint32_t)slot);
+}
+
+static void tramp_gfx3d_tex_scroll(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    if (g)
+        g_gfx3d_api.texScroll(g, (int)read_reg(uc, UC_ARM_REG_R1), reg_float(uc, UC_ARM_REG_R2),
+                              reg_float(uc, UC_ARM_REG_R3));
+}
+
+static void tramp_gfx3d_image_add(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    int w = (int)read_reg(uc, UC_ARM_REG_R1), h = (int)read_reg(uc, UC_ARM_REG_R2);
+    uint16_t key = (uint16_t)read_reg(uc, UC_ARM_REG_R3);
+    uint32_t pixels = read_stack_arg(uc, 0);
+    int slot = -1;
+    if (g && pixels && w >= 1 && w <= 1024 && h >= 1 && h <= 1024) {
+        const size_t n = (size_t)w * (size_t)h;
+        uint16_t *px = malloc(n * sizeof *px);
+        if (px && guest_read(uc, pixels, px, n * sizeof *px))
+            slot = g_gfx3d_api.imageAdd(g, w, h, key, px);
+        free(px);
+    }
+    write_reg(uc, UC_ARM_REG_R0, (uint32_t)slot);
+}
+
+static void tramp_gfx3d_set_sky_image(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    bool ok = g && g_gfx3d_api.setSkyImage(g, (int)read_reg(uc, UC_ARM_REG_R1),
+                                           (int)read_reg(uc, UC_ARM_REG_R2));
+    write_reg(uc, UC_ARM_REG_R0, ok);
+}
+
+static void tramp_gfx3d_set_sky_rows(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    if (g)
+        g_gfx3d_api.setSkyRows(g, (int)read_reg(uc, UC_ARM_REG_R1),
+                               (int)read_reg(uc, UC_ARM_REG_R2));
+}
+
+static void tramp_gfx3d_set_sprite_fog(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    if (g) g_gfx3d_api.setSpriteFog(g, reg_bool(uc, UC_ARM_REG_R1));
+}
+
+static void tramp_gfx3d_set_mirror(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    if (g) g_gfx3d_api.setMirror(g, reg_bool(uc, UC_ARM_REG_R1), reg_float(uc, UC_ARM_REG_R2));
+}
+
+// pc3d_mesh_desc_t as the guest lays it out: two ints and six 32-bit pointers.
+typedef struct {
+    int32_t nverts, ntris;
+    uint32_t xyz, uv, color, idx, tex, flags;
+} guest_mesh_desc_t;
+
+static void tramp_gfx3d_mesh_new(uc_engine *uc) {
+    uint32_t addr = read_reg(uc, UC_ARM_REG_R0);
+    guest_mesh_desc_t gd;
+    pc3dmesh_t m = NULL;
+    // A pointer that is NULL stays NULL for gfx3d_tmesh_new to refuse, flags excepted, as there
+    // it means none. A count out of range would never fit: nothing is read for it.
+    if (addr && guest_read(uc, addr, &gd, sizeof gd) && gd.nverts >= 1 &&
+        gd.nverts <= GFX3D_MAX_VERTS && gd.ntris >= 1 && gd.ntris <= GFX3D_MAX_TRIS) {
+        const size_t nv = (size_t)gd.nverts, nt = (size_t)gd.ntris;
+        float *xyz = malloc(3 * nv * sizeof *xyz), *uv = malloc(2 * nv * sizeof *uv);
+        uint16_t *color = malloc(nv * sizeof *color), *idx = malloc(3 * nt * sizeof *idx);
+        uint8_t *tex = malloc(nt), *flags = malloc(nt);
+        if (xyz && uv && color && idx && tex && flags && gd.xyz && gd.uv && gd.color && gd.idx &&
+            gd.tex && guest_read(uc, gd.xyz, xyz, 3 * nv * sizeof *xyz) &&
+            guest_read(uc, gd.uv, uv, 2 * nv * sizeof *uv) &&
+            guest_read(uc, gd.color, color, nv * sizeof *color) &&
+            guest_read(uc, gd.idx, idx, 3 * nt * sizeof *idx) && guest_read(uc, gd.tex, tex, nt) &&
+            (!gd.flags || guest_read(uc, gd.flags, flags, nt))) {
+            const pc3d_mesh_desc_t d = {gd.nverts, gd.ntris, xyz, uv, color, idx, tex,
+                                        gd.flags ? flags : NULL};
+            m = g_gfx3d_api.meshNew(&d);
+        }
+        free(xyz);
+        free(uv);
+        free(color);
+        free(idx);
+        free(tex);
+        free(flags);
+    }
+    write_reg(uc, UC_ARM_REG_R0, wrap_tracked(NATIVE_RES_GFX3D_MESH, m));
+}
+
+static void tramp_gfx3d_mesh_free(uc_engine *uc) {
+    drop_tracked(NATIVE_RES_GFX3D_MESH, read_reg(uc, UC_ARM_REG_R0));
+}
+
+static void tramp_gfx3d_begin(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    if (g)
+        g_gfx3d_api.begin(g, reg_bool(uc, UC_ARM_REG_R1), (uint16_t)read_reg(uc, UC_ARM_REG_R2));
+}
+
+static void tramp_gfx3d_draw_mesh(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    pc3dmesh_t m = handle_unwrap(read_reg(uc, UC_ARM_REG_R1));
+    uint32_t prot = read_reg(uc, UC_ARM_REG_R2);
+    float rot[9], pos[3];
+    if (g && m && (!prot || guest_read(uc, prot, rot, sizeof rot)) &&
+        guest_read(uc, read_reg(uc, UC_ARM_REG_R3), pos, sizeof pos))
+        g_gfx3d_api.drawMesh(g, m, prot ? rot : NULL, pos, u32_as_float(read_stack_arg(uc, 0)),
+                             u32_as_float(read_stack_arg(uc, 1)));
+}
+
+// A piece at a time, however many the app says it has: filing them in pieces files the same
+// sprites in the same order.
+static void tramp_gfx3d_draw_sprites(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    uint32_t s = read_reg(uc, UC_ARM_REG_R1);
+    int n = (int)read_reg(uc, UC_ARM_REG_R2);
+    float bias = reg_float(uc, UC_ARM_REG_R3);
+    int filed = 0;
+    if (g && s) {
+        pc3d_sprite_t piece[256];
+        while (n > 0) {
+            const int k = n < 256 ? n : 256;
+            if (!guest_read(uc, s, piece, (size_t)k * sizeof piece[0])) break;
+            filed += g_gfx3d_api.drawSprites(g, piece, k, bias);
+            s += (uint32_t)k * sizeof piece[0];
+            n -= k;
+        }
+    }
+    write_reg(uc, UC_ARM_REG_R0, (uint32_t)filed);
+}
+
+static void tramp_gfx3d_end(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    if (g) g_gfx3d_api.end(g);
+}
+
+static void tramp_gfx3d_get_stats(uc_engine *uc) {
+    pc3d_t g = handle_unwrap(read_reg(uc, UC_ARM_REG_R0));
+    uint32_t out = read_reg(uc, UC_ARM_REG_R1);
+    if (g && out) {
+        pc3d_stats_t st;
+        g_gfx3d_api.getStats(g, &st);
+        uc_mem_write(uc, out, &st, sizeof st);
+    }
+}
+
+// =============================================================================
 // Dispatch table
 // =============================================================================
 
@@ -3138,6 +3419,9 @@ void unicorn_tramp_init(uc_engine *uc) {
     s_dispatch[SLOT_SYS_POLL]              = tramp_sys_poll;
     s_dispatch[SLOT_SYS_SHOULD_EXIT]       = tramp_sys_should_exit;
     s_dispatch[SLOT_SYS_SET_AUDIO_CALLBACK]= tramp_sys_set_audio_callback;
+    s_dispatch[SLOT_SYS_GET_FIRMWARE_ID]   = tramp_sys_get_firmware_id;
+    s_dispatch[SLOT_SYS_GET_CLOCK_KHZ]     = tramp_sys_get_clock_khz;
+    s_dispatch[SLOT_SYS_RESET_IDLE_TIMER]  = tramp_sys_reset_idle_timer;
 
     // Audio
     s_dispatch[SLOT_AUDIO_PLAY_TONE]    = tramp_audio_play_tone;
@@ -3393,6 +3677,28 @@ void unicorn_tramp_init(uc_engine *uc) {
     s_dispatch[SLOT_GAMEPAD_GET_BUTTONS_RELEASED] = tramp_gamepad_get_buttons_released;
     s_dispatch[SLOT_GAMEPAD_GET_LABEL]            = tramp_gamepad_get_label;
     s_dispatch[SLOT_GAMEPAD_GET_AXIS]             = tramp_gamepad_get_axis;
+
+    s_dispatch[SLOT_GFX3D_CREATE]         = tramp_gfx3d_create;
+    s_dispatch[SLOT_GFX3D_DESTROY]        = tramp_gfx3d_destroy;
+    s_dispatch[SLOT_GFX3D_SET_PROJECTION] = tramp_gfx3d_set_projection;
+    s_dispatch[SLOT_GFX3D_SET_CAMERA]     = tramp_gfx3d_set_camera;
+    s_dispatch[SLOT_GFX3D_LOOK_AT]        = tramp_gfx3d_look_at;
+    s_dispatch[SLOT_GFX3D_PROJECT]        = tramp_gfx3d_project;
+    s_dispatch[SLOT_GFX3D_SET_FOG]        = tramp_gfx3d_set_fog;
+    s_dispatch[SLOT_GFX3D_TEX_ADD]        = tramp_gfx3d_tex_add;
+    s_dispatch[SLOT_GFX3D_TEX_SCROLL]     = tramp_gfx3d_tex_scroll;
+    s_dispatch[SLOT_GFX3D_IMAGE_ADD]      = tramp_gfx3d_image_add;
+    s_dispatch[SLOT_GFX3D_SET_SKY_IMAGE]  = tramp_gfx3d_set_sky_image;
+    s_dispatch[SLOT_GFX3D_SET_SKY_ROWS]   = tramp_gfx3d_set_sky_rows;
+    s_dispatch[SLOT_GFX3D_SET_SPRITE_FOG] = tramp_gfx3d_set_sprite_fog;
+    s_dispatch[SLOT_GFX3D_SET_MIRROR]     = tramp_gfx3d_set_mirror;
+    s_dispatch[SLOT_GFX3D_MESH_NEW]       = tramp_gfx3d_mesh_new;
+    s_dispatch[SLOT_GFX3D_MESH_FREE]      = tramp_gfx3d_mesh_free;
+    s_dispatch[SLOT_GFX3D_BEGIN]          = tramp_gfx3d_begin;
+    s_dispatch[SLOT_GFX3D_DRAW_MESH]      = tramp_gfx3d_draw_mesh;
+    s_dispatch[SLOT_GFX3D_DRAW_SPRITES]   = tramp_gfx3d_draw_sprites;
+    s_dispatch[SLOT_GFX3D_END]            = tramp_gfx3d_end;
+    s_dispatch[SLOT_GFX3D_GET_STATS]      = tramp_gfx3d_get_stats;
 }
 
 // The API calls that put pixels in the back buffer.
@@ -3420,6 +3726,7 @@ static bool slot_draws(uint32_t slot) {
     case SLOT_GFX_DRAW:
     case SLOT_GFX_DRAW_REGION:
     case SLOT_GFX_DRAW_SCALED:
+    case SLOT_GFX3D_END:  // the fill and every triangle land at its end, none before
         return true;
     default:
         return false;
@@ -3472,8 +3779,8 @@ static uint32_t write_func_table(uc_engine *uc, uint32_t base_addr,
 void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_base) {
     // Layout: PicoCalcAPI struct at api_base, followed by sub-tables
     // PicoCalcAPI has 19 pointer fields, 1 uint32_t (version), then the
-    // pointers added after it (gamepad)
-    uint32_t api_struct_size = 21 * 4;  // 19 pointers + version + gamepad
+    // pointers added after it (gamepad, gfx3d)
+    uint32_t api_struct_size = 22 * 4;  // 19 pointers + version + gamepad + gfx3d
 
     // Sub-tables start after the main struct
     uint32_t sub_base = api_base + api_struct_size;
@@ -3496,7 +3803,7 @@ void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_b
     uint32_t fs_count = SLOT_FS_END - SLOT_FS_OPEN;
     sub_base = write_func_table(uc, sub_base, tramp_base, SLOT_FS_OPEN, fs_count);
 
-    // picocalc_sys_t (11 function pointers)
+    // picocalc_sys_t (14 function pointers)
     uint32_t sys_addr = sub_base;
     uint32_t sys_count = SLOT_SYS_END - SLOT_SYS_GET_TIME_MS;
     sub_base = write_func_table(uc, sub_base, tramp_base, SLOT_SYS_GET_TIME_MS, sys_count);
@@ -3581,6 +3888,11 @@ void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_b
     uint32_t gamepad_count = SLOT_GAMEPAD_END - SLOT_GAMEPAD_GET_BUTTONS;
     sub_base = write_func_table(uc, sub_base, tramp_base, SLOT_GAMEPAD_GET_BUTTONS, gamepad_count);
 
+    // picocalc_gfx3d_t (21 function pointers: API v11)
+    uint32_t gfx3d_addr = sub_base;
+    uint32_t gfx3d_count = SLOT_GFX3D_TABLE_END - SLOT_GFX3D_CREATE;
+    sub_base = write_func_table(uc, sub_base, tramp_base, SLOT_GFX3D_CREATE, gfx3d_count);
+
     // getLabel's strings, written on first use (label_addr); the API region
     // (64 KB) has room well past the ~1.4 KB of tables.
     s_label_count = 0;
@@ -3614,6 +3926,7 @@ void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_b
     //   const picocalc_zip_t     *zip;          // offset 72
     //   uint32_t                  version;      // offset 76
     //   const picocalc_gamepad_t *gamepad;      // offset 80 (API v9)
+    //   const picocalc_gfx3d_t   *gfx3d;        // offset 84 (API v11)
     // };
     // NOTE: keep this struct (and api_struct_size above) in lockstep with
     // src/os/os.h's `struct PicoCalcAPI` — a mismatch here silently shifts
@@ -3640,8 +3953,9 @@ void unicorn_build_api_struct(uc_engine *uc, uint32_t api_base, uint32_t tramp_b
     write32(uc, api_base + 64, video_addr);
     write32(uc, api_base + 68, modplayer_addr);
     write32(uc, api_base + 72, zip_addr);
-    write32(uc, api_base + 76, 10);  // version = 10 (gamepad->getAxis; 9 = gamepad; 8 = http->setInsecure, tcp->connectEx; matches src/main.c g_api.version)
+    write32(uc, api_base + 76, 11);  // version = 11 (gfx3d, sys->getFirmwareId/getClockKhz/resetIdleTimer; 10 = gamepad->getAxis; 9 = gamepad; 8 = http->setInsecure, tcp->connectEx; matches src/main.c g_api.version)
     write32(uc, api_base + 80, gamepad_addr);
+    write32(uc, api_base + 84, gfx3d_addr);
 
-    printf("[UNICORN] PicoCalcAPI struct at 0x%08x, version=10\n", api_base);
+    printf("[UNICORN] PicoCalcAPI struct at 0x%08x, version=11\n", api_base);
 }

@@ -24,6 +24,8 @@ typedef enum {
   NATIVE_RES_TERMINAL,    // terminal->create
   NATIVE_RES_AES,         // crypto->aesNew
   NATIVE_RES_ECDH,        // crypto->ecdhX25519 / ecdhP256
+  NATIVE_RES_GFX3D,       // gfx3d->create (its textures and images are its own)
+  NATIVE_RES_GFX3D_MESH,  // gfx3d->meshNew
 } native_res_kind_t;
 
 // Free one object of `kind` with its driver's destroy function.

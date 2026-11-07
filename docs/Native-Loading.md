@@ -10,7 +10,7 @@ PicoDeck supports running native ARM Cortex-M33 (RP2350) applications in additio
 Lua and native apps reach the same OS, through two different surfaces: the `picocalc.*` modules and the `PicoCalcAPI` table.
 
 - **Lua** has the full game framework: sprites, spritesheets, tilemaps, camera, scene manager, animation, particles, save files. New games should start here.
-- **Native (C)** gets the raw primitives: display (incl. clip rect, mode-7 `drawPlane`, raycasting columns), images, audio, input, fs. It suits ports and emulators (Doom, C-Dogs, GBC) and CPU-bound renderers. There is no native sprite/tilemap engine — replicate what you need in app code, or drive the game logic in Lua.
+- **Native (C)** gets the raw primitives: display (incl. clip rect, mode-7 `drawPlane`, raycasting columns), images, audio, input, fs, and [a textured 3D renderer](#3d). It suits ports and emulators (Doom, C-Dogs, GBC) and CPU-bound renderers. There is no native sprite/tilemap engine — replicate what you need in app code, or drive the game logic in Lua.
 
 ### What only Lua has
 
@@ -19,14 +19,15 @@ Most modules have the same names on both sides, but the native table is not a co
 | In Lua | In a native app |
 |--------|-----------------|
 | Sprites, spritesheets, tilemaps, animation and particles (`picocalc.graphics`); scenes, camera and save slots (`picocalc.game`) | Nothing: write your own |
-| `picocalc.chargrid`, `picocalc.noise`, `picocalc.gfx3d`, `picocalc.json`, `picocalc.repl`, and the `/system/lib` libraries | Nothing |
+| `picocalc.chargrid`, `picocalc.noise`, `picocalc.json`, `picocalc.repl`, and the `/system/lib` libraries | Nothing |
+| `picocalc.gfx3d`: flat-shaded meshes, a light, sky bands, background scenery | [`api->gfx3d`](#3d) is the same renderer with textured meshes and whole-image sprites instead: bake your light into the vertex colours |
 | `picocalc.sysconfig` | No system-config table. The file `/system/config.json` is readable (see [below](#native-apps-have-full-access)) |
 | `sys.sleep` | Loop on `sys->getTimeMs()`, calling `sys->poll()`, or pace frames with `perf->setTargetFPS` and `perf->endFrame` |
 | `sys.getClock` (wall clock and time zone) | Nothing: `sys->getTimeMs()` and `getTimeUs()` count from boot |
 | `input.pollEvent`, `isKeyDown`, `getRawKey`, `getButtonsRepeated` | The button masks and `input->getChar()`: no ordered events, and no key-up for keys without a `BTN_*` bit |
 | `conn:getResponseHeaders` | Nothing: a native app sees the status and body, so it cannot follow a redirect's `Location` |
 | `sys.addMenuOption` | `sys->addMenuItem` only |
-| `sys.getVersion` | `api->version` is the API version, not the firmware's |
+| `sys.getVersion` | `api->version` is the API version, not the firmware's. `sys->getFirmwareId()` (version 11) names the source revision, not a release |
 | `sys.getMemInfo` | Nothing: `psram->qmiAlloc` returning `NULL` is what you learn |
 | `fileplayer:load`, `mp3player:load` return an error | `filePlayerLoad` and `mp3PlayerLoad` return nothing: test `filePlayerIsPlaying` or `mp3PlayerIsPlaying` after playing |
 
@@ -158,6 +159,18 @@ Every firmware that has `api->version` (v0.0.8 on) has these tables, so they nee
 
 `api->gamepad->getAxis` (`AXIS_*`): analog sticks and triggers, at the end of `picocalc_gamepad_t`, so a version 9 table does not have it. See [API Gamepad](API-Gamepad.md).
 
+#### Version 11 additions (`api->version >= 11`)
+
+| Pointer | Type | Description |
+|---------|------|-------------|
+| `api->gfx3d` | `picocalc_gfx3d_t` | Textured 3D renderer ([below](#3d)) |
+
+`api->gfx3d` sits after `gamepad`, so older firmware does not have the field at all. Three calls join the end of `picocalc_sys_t`, so an older table does not have them either:
+
+- `sys->getFirmwareId()`: the source revision the firmware was built from, such as `"b3881b9"`, with `-dirty` when a tracked file differed. It is a string that lasts as long as the app does. A build from a folder with no git says `"unknown"`.
+- `sys->getClockKhz()`: the system clock now, which [`system_clock_khz`](App-Json-Reference.md#system_clock_khz) and video playback change. The simulator always says 125000.
+- `sys->resetIdleTimer()`: as [`picocalc.sys.resetIdleTimer`](API-System-and-Config.md). An app that shows moving pictures with no keys pressed calls it each frame, or the screen dims after 60 s.
+
 #### What each version added
 
 The `api->version` field indicates which additions are present:
@@ -171,6 +184,7 @@ The `api->version` field indicates which additions are present:
 - `8` — TLS verification: `http->setInsecure`, `tcp->connectEx` (`PCTCP_TLS`, `PCTCP_TLS_INSECURE`)
 - `9` — `api->gamepad` (`getButtons`/`getButtonsPressed`/`getButtonsReleased`/`getLabel`, `PAD_*`)
 - `10` — `api->gamepad->getAxis` (`AXIS_*`: analog sticks and triggers)
+- `11` — `api->gfx3d` (textured 3D renderer); `sys->getFirmwareId`, `sys->getClockKhz`, `sys->resetIdleTimer`
 
 #### Which firmware has which version
 
@@ -181,9 +195,9 @@ The `api->version` field indicates which additions are present:
 | v0.0.9, v0.1.0 | 3 |
 | v0.2.0, v0.3.0, v0.4.0 | 8 |
 | v0.5.0, v0.6.0 | 9 |
-| The release after v0.6.0 | 10 |
+| The release after v0.6.0 | 11 |
 
-Versions 4 to 7 were never released on their own: firmware went from 3 to 8.
+Versions 4 to 7 were never released on their own: firmware went from 3 to 8, and from 9 to 11.
 
 #### Handling firmware that is too old
 
@@ -211,6 +225,40 @@ void picodeck_main(const PicoCalcAPI *api, const char *app_dir,
 ```
 
 [`sdk/native/os.h`](https://github.com/PicoDeck/picodeck/blob/master/sdk/native/os.h) is the source of truth for the complete type definitions, the exact struct layout, and the latest `version` values.
+
+### 3D
+
+`api->gfx3d` (version 11) is the renderer behind [`picocalc.gfx3d`](API-3D.md), with textures: meshes whose pixels are a texel times the interpolated vertex colour, whole-image sprites facing the camera, fog, a sky image, a mirror plane for reflections and scrolling textures. There is no depth buffer: a scene is painted far to near, by depth buckets. `os.h` documents every call above `picocalc_gfx3d_t`.
+
+```c
+if (api->version < 11) return;
+const picocalc_gfx3d_t *g3 = api->gfx3d;
+
+pc3d_t g = g3->create(0);                         // room for 4096 triangles + sprites a scene
+int tex = g3->texAdd(g, 6, 6, 1, pixels);         // 64 x 64, one mip level, host-order RGB565
+pc3d_mesh_desc_t d = {nverts, ntris, xyz, uv, colors, indices, tex_of_tri, NULL};
+pc3dmesh_t m = g3->meshNew(&d);                   // copies d's arrays
+const float pos[3] = {0, 0, 0}, eye[3] = {0, 2, 8};
+
+while (!api->sys->shouldExit()) {
+    api->sys->poll();
+    g3->setCamera(g, eye, yaw, 0, 0);
+    g3->begin(g, true, sky_color);
+    g3->drawMesh(g, m, NULL, pos, 1.0f, 0.0f);    // NULL: no rotation
+    g3->end(g);                                   // paints into the back buffer
+    api->display->flush();
+}
+g3->meshFree(m);
+g3->destroy(g);
+```
+
+The things to know:
+
+- **A mesh must outlive the scene it is drawn in.** The scene reads the mesh's uv when `end` paints it, so free a mesh only after `end` has returned. Everything else is copied: mesh arrays by `meshNew`, pixels by `texAdd` and `imageAdd`, sprite arrays by `drawSprites`.
+- `end` draws inside the clip rect, over what is in the back buffer. Raw pixels written through `getBackBuffer` before `begin` or after `end` stay. Colours are host-order RGB565, unlike the back buffer's own.
+- Textures and images belong to the context, and meshes to no context: a mesh's texture slots are read in the context that draws it. `destroy` leaves your meshes alive.
+- An app normally has one context. A second works, but the two share about 24 KB of fast memory for a scene's records, and alternating them copies it at each `begin`. Playing an MP3 takes that memory for the rest of the run ([Writing Fast Apps](Writing-Fast-Apps.md)).
+- Whatever you still hold when `picodeck_main` returns is freed, a scene left open included.
 
 ## Compilation
 

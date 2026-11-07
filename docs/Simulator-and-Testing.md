@@ -194,7 +194,7 @@ This is what is known to differ. The Lua bridge is the firmware's own code; the 
 | PIO PSRAM | `pioPsramSize()` is 0, writes return 0, reads return nil. Native: `pioAvailable()` is false and the other `pio*` calls do nothing | 8 MB, apps from `0x48000` |
 | Bluetooth pads | A scripted radio (`bt sim ...`, below) | Real pads |
 | USB Disk Mode | Does nothing | [Works](Getting-started-on-a-device.md#5-copy-your-own-apps) |
-| `system_clock_khz` | Accepted, with no effect on speed | Changes the clock, and can [drop WiFi](App-Json-Reference.md#system_clock_khz) |
+| `system_clock_khz` | Accepted, with no effect on speed. Native `sys->getClockKhz()` always says 125000 | Changes the clock, and can [drop WiFi](App-Json-Reference.md#system_clock_khz) |
 | Watchdog | None | Resets a stuck app |
 | Backlight | `display.setBrightness` and idle dim change a level nothing draws (the `get_backlight` method reads it). Idle dim is off unless `--idle-dim` | The real backlight. Dims after 60 s, and the waking key is swallowed |
 

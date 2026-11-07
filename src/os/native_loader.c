@@ -3,6 +3,7 @@
 #include "app_identity.h"
 #include "gamepad.h"
 #include "app_abi.h"
+#include "gfx3d.h"
 #include "../drivers/audio.h"
 #include "../drivers/display.h"
 #include "../drivers/http.h"
@@ -159,6 +160,10 @@ void native_res_release(int kind, void *h) {
   case NATIVE_RES_VIDEO:      video_player_destroy((video_player_t *)h); break;
   case NATIVE_RES_MOD:        mod_player_destroy((mod_player_t *)h); break;
   case NATIVE_RES_TERMINAL:   terminal_free((terminal_t *)h); break;
+  // Either may go first at exit: a context's records may name a mesh, but only gfx3d_end
+  // reads them, and gfx3d_free touches no mesh.
+  case NATIVE_RES_GFX3D:      gfx3d_free((gfx3d_t *)h); break;
+  case NATIVE_RES_GFX3D_MESH: gfx3d_tmesh_free((gfx3d_tmesh_t *)h); break;
 #ifndef PICODECK_SIMULATOR
   // The simulator has no crypto, and its qmiAlloc is the emulator's own
   // heap (gone with the Unicorn instance): neither is ever tracked there.
@@ -267,6 +272,7 @@ typedef struct {
   picocalc_modplayer_t modplayer;
   picocalc_terminal_t terminal;
   picocalc_crypto_t crypto;
+  picocalc_gfx3d_t gfx3d;
 } native_api_t;
 
 static pcfile_t napi_fs_open(const char *path, const char *mode) {
@@ -340,6 +346,15 @@ static pccrypto_ecdh_t napi_ecdh_p256(void) {
 }
 static void napi_ecdh_free(pccrypto_ecdh_t ctx) { native_res_drop(NATIVE_RES_ECDH, ctx); }
 
+static pc3d_t napi_gfx3d_create(int capacity) {
+  return native_res_adopt(NATIVE_RES_GFX3D, g_api.gfx3d->create(capacity));
+}
+static void napi_gfx3d_destroy(pc3d_t g) { native_res_drop(NATIVE_RES_GFX3D, g); }
+static pc3dmesh_t napi_gfx3d_mesh_new(const pc3d_mesh_desc_t *d) {
+  return native_res_adopt(NATIVE_RES_GFX3D_MESH, g_api.gfx3d->meshNew(d));
+}
+static void napi_gfx3d_mesh_free(pc3dmesh_t m) { native_res_drop(NATIVE_RES_GFX3D_MESH, m); }
+
 // NULL when PSRAM has no ~1 KB block.  Free with umm_free after the app's
 // handles have been released.
 static native_api_t *native_api_new(void) {
@@ -389,6 +404,12 @@ static native_api_t *native_api_new(void) {
   n->crypto.ecdhP256 = napi_ecdh_p256;
   n->crypto.ecdhFree = napi_ecdh_free;
   n->api.crypto = &n->crypto;
+  n->gfx3d = *g_api.gfx3d;
+  n->gfx3d.create = napi_gfx3d_create;
+  n->gfx3d.destroy = napi_gfx3d_destroy;
+  n->gfx3d.meshNew = napi_gfx3d_mesh_new;
+  n->gfx3d.meshFree = napi_gfx3d_mesh_free;
+  n->api.gfx3d = &n->gfx3d;
   return n;
 }
 

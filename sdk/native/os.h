@@ -26,7 +26,7 @@ extern "C" {
 // The API version this header describes. A program built against it can still
 // run on older firmware, so test api->version at run time before using anything
 // newer than that firmware has (see the version comment in PicoCalcAPI below).
-#define PICODECK_API_VERSION 10
+#define PICODECK_API_VERSION 11
 
 // --- Colours ----------------------------------------------------------------
 // Colour arguments are RGB565 in host byte order. PC_RGB565 takes 8-bit
@@ -340,6 +340,10 @@ typedef struct {
     // keyboard and SD card).  Cleared when the app exits.  Pass NULL to
     // deregister.
     void     (*setAudioCallback)(void (*cb)(void));
+    // --- API version 11 ---
+    const char *(*getFirmwareId)(void);  // source revision, e.g. "b3881b9" or "b3881b9-dirty"
+    uint32_t    (*getClockKhz)(void);    // the system clock now
+    void        (*resetIdleTimer)(void); // as picocalc.sys.resetIdleTimer
 } picocalc_sys_t;
 
 // --- Audio ------------------------------------------------------------------
@@ -829,6 +833,128 @@ typedef struct {
     bool    (*extractEntry)(pczip_t z, int idx, const char *dest_path);
 } picocalc_zip_t;
 
+// --- 3D (API version 11) ------------------------------------------------------
+// The renderer behind picocalc.gfx3d, with textures: low-poly meshes and billboard
+// sprites, no depth buffer. Read api->gfx3d only when api->version >= 11: the pointer
+// sits after `version` in PicoCalcAPI, so older firmware does not have the field.
+// Call it from your main loop, never from the audio callback (that is Core 1).
+//
+// A scene is begin, then drawMesh and drawSprites, then end. Each draw call transforms,
+// culls, fogs and near-clips at once and files its triangles by depth; end paints them
+// far to near over what is in the back buffer, inside the clip rect, and display->flush
+// shows it as usual. Raw pixels written through getBackBuffer before begin or after end
+// stay. Colours are host-order RGB565, not the back buffer's byte-swapped order.
+//
+// Space is right-handed with y up. The camera looks along -z with x to its right;
+// depth is -z in its view. Angles are radians, and a rotation is Ry(yaw) * Rx(pitch) *
+// Rz(roll): positive yaw turns left, pitch looks up, roll banks left. A 3x3 matrix is
+// row-major. A triangle faces where its vertices run counter-clockwise.
+//
+// A textured pixel is the texel times the interpolated vertex colour: a channel at its
+// maximum in both (31, or 63 for green) means x1.5, saturating, so a vertex colour of
+// 0xAD55 leaves the texel about as it is. Bake your lighting into the vertex colours.
+//
+// create(capacity): a context for `capacity` triangles + sprites per scene, 1..32767,
+//   with 0 meaning 4096, the size of the screen, a 60 degree fovY, near 0.5, far 1000,
+//   the camera at the origin. NULL when out of range or out of memory. A context takes
+//   about 6 KB + 28 B per record of PSRAM, and its first textured draw 6.7 KB + 24 B
+//   per record more. Textures and images belong to their context, and destroy frees them.
+//   An app normally has one. A second works, but the two share one block of fast SRAM
+//   for a scene's records (whichever began a scene last has it, until an MP3 session
+//   takes it for the rest of the run), so alternating copies up to 24 KB at each begin.
+// setProjection(fov_y, znear, zfar): false, changing nothing, unless fov_y is in
+//   0.01..3 and 0 < znear < zfar.
+// setCamera, lookAt: where the view is. lookAt is false, changing nothing, when target
+//   is at eye or the view is parallel to up.
+// project: where a world point lands, screen x and y and its depth; false, writing
+//   nothing, when it is nearer than the near plane. No output pointer may be NULL.
+// setFog: vertex colours mix towards `color` from depth fnear to ffar. Off unless on
+//   and ffar > fnear. Set it before drawing: each draw call works its fog out then.
+// texAdd(lg_w, lg_h, nmips, pixels): a 2^lg_w x 2^lg_h texture (lg 0..10), then
+//   nmips - 1 levels each half the last (nmips 1..min(lg_w, lg_h) + 1), tightly
+//   packed and copied. Its slot counting from 0, or -1 (bad arguments, 64 textures
+//   already, out of memory).
+// texScroll(slot, du, dv): added to the uv of every triangle using the texture when it
+//   is rasterised, in texture repeats. An offset, not a step: it replaces the last one,
+//   so to move water pass a total that grows with the frame number.
+// imageAdd(w, h, key, pixels): a w x h (1..1024) sprite image with colour key `key`
+//   (0: none), copied. Its slot counting from 0, or -1 (bad arguments, 64 images, out
+//   of memory).
+// setSkyImage(tex_slot, horizon_row): a texture as the background instead of a clear,
+//   copied a texel per pixel with no colour multiplied, until it is cleared (tex_slot
+//   < 0). horizon_row (0..height) is its first row below the horizon. It scrolls with
+//   yaw and pitch, and ignores roll. False, changing nothing, for another slot or row.
+// setSkyRows(y0, y1): the rows the sky or the clear may touch, inclusive; y1 < y0 is
+//   none. Triangles and sprites still use the clip rect.
+// setSpriteFog: sprites take the scene's fog too, a level per sprite. Off by default.
+// setMirror(on, plane_y): world y becomes 2 * plane_y - y for what is drawn while on.
+//   A reflecting frame is two scenes. Clip rect and sky rows set to the water's rows,
+//   mirror on, draw what stands above it, end; then full clip, sky rows above the water,
+//   mirror off, draw everything with the water flagged PC3D_TM_BLEND, end.
+// meshNew(desc): a textured mesh, copying the whole description: nverts 1..4096, ntris
+//   1..8192, xyz 3 * nverts, uv 2 * nverts in texture repeats, color nverts (one per
+//   vertex), idx 3 * ntris, tex ntris (each triangle's texture slot), flags ntris of
+//   PC3D_TM_* or NULL for none. 22 B a vertex and 8 a triangle of PSRAM. NULL on a bad
+//   description (an index out of range, a coordinate that is not finite) or out of memory.
+//   A mesh belongs to no context, and its slots are read in the context that draws it:
+//   a slot it does not have draws nothing and counts as culled.
+// meshFree: a mesh MUST outlive the scene it is drawn in: until end has returned, the
+//   scene reads the mesh's uv. Freeing it sooner and calling end reads freed memory.
+// begin(clear, color): starts a scene, dropping the last one, and clears the stats.
+//   Without a sky or clear, end paints over what is there.
+// drawMesh(m, rot, pos, scale, bias): world = rot * (scale * p) + pos, rot NULL being
+//   the identity. bias is added to the depth it sorts by, in world units: positive is
+//   behind. Past the scene's capacity triangles count in stats.overflow.
+// drawSprites(s, n, bias): sprites facing the camera, each a whole image from imageAdd
+//   centred on (x, y, z), `size` its world height. Returns how many were filed. A slot
+//   that is no image or a size that is not positive is skipped uncounted; a position
+//   off the view, not finite included, counts as culled.
+// end: the fill, then the scene.
+// getStats: what the scene came to, from begin up to now. tris_in triangles submitted,
+//   culled dropped (frustum, back face, off screen, sprites too), clipped cut by the
+//   near plane, drawn rasterised, sprites rasterised, overflow past the capacity, pixels
+//   written by textured triangles plus the area each sprite covers.
+//
+// Every entry but destroy and meshFree needs the live handles it asks for: a NULL or
+// freed one is not caught. Whatever you still hold when picodeck_main returns is freed,
+// in any order, a scene left open included. Destroying a context leaves your meshes
+// alive, and destroying a mesh's only context is safe.
+typedef void *pc3d_t;
+typedef void *pc3dmesh_t;
+#define PC3D_TM_BLEND 1u
+#define PC3D_TM_DOUBLE_SIDED 2u
+#define PC3D_TM_NO_FOG 4u
+typedef struct { int nverts, ntris; const float *xyz; const float *uv;
+                 const uint16_t *color; const uint16_t *idx;
+                 const uint8_t *tex; const uint8_t *flags; } pc3d_mesh_desc_t;
+typedef struct { float x, y, z, size; uint32_t slot; } pc3d_sprite_t;
+typedef struct { uint32_t tris_in, culled, clipped, drawn, sprites, overflow, pixels; } pc3d_stats_t;
+
+typedef struct {
+    pc3d_t (*create)(int capacity);              // 0: the default, 4096
+    void   (*destroy)(pc3d_t g);
+    bool   (*setProjection)(pc3d_t g, float fov_y, float znear, float zfar);
+    void   (*setCamera)(pc3d_t g, const float pos[3], float yaw, float pitch, float roll);
+    bool   (*lookAt)(pc3d_t g, const float eye[3], const float target[3], const float up[3]);
+    bool   (*project)(pc3d_t g, const float p[3], float *sx, float *sy, float *depth);
+    void   (*setFog)(pc3d_t g, bool on, float fnear, float ffar, uint16_t color);
+    int    (*texAdd)(pc3d_t g, int lg_w, int lg_h, int nmips, const uint16_t *pixels);
+    void   (*texScroll)(pc3d_t g, int slot, float du, float dv);
+    int    (*imageAdd)(pc3d_t g, int w, int h, uint16_t key, const uint16_t *pixels);
+    bool   (*setSkyImage)(pc3d_t g, int tex_slot, int horizon_row);
+    void   (*setSkyRows)(pc3d_t g, int y0, int y1);
+    void   (*setSpriteFog)(pc3d_t g, bool on);
+    void   (*setMirror)(pc3d_t g, bool on, float plane_y);
+    pc3dmesh_t (*meshNew)(const pc3d_mesh_desc_t *d);
+    void   (*meshFree)(pc3dmesh_t m);
+    void   (*begin)(pc3d_t g, bool clear, uint16_t color);
+    void   (*drawMesh)(pc3d_t g, pc3dmesh_t m, const float rot[9], const float pos[3],
+                       float scale, float bias);
+    int    (*drawSprites)(pc3d_t g, const pc3d_sprite_t *s, int n, float bias);
+    void   (*end)(pc3d_t g);                     // draws into the back buffer, honours the clip rect
+    void   (*getStats)(pc3d_t g, pc3d_stats_t *out);
+} picocalc_gfx3d_t;
+
 // --- The complete OS API struct ---------------------------------------------
 // This is what the native loader passes to picodeck_main().
 
@@ -863,8 +989,11 @@ typedef struct PicoCalcAPI {
                                              //   tcp->connectEx
                                              // 9=gamepad
                                              // 10=gamepad->getAxis (AXIS_*)
+                                             // 11=gfx3d, sys->getFirmwareId/getClockKhz/resetIdleTimer
     // --- API version 9: fields after `version` (check it first) ---
     const picocalc_gamepad_t     *gamepad;     // logical gamepad (PAD_*)
+    // --- API version 11 ---
+    const picocalc_gfx3d_t       *gfx3d;       // textured 3D renderer
 } PicoCalcAPI;
 
 #ifdef __cplusplus
