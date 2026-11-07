@@ -11,7 +11,8 @@
 //    which rests on what VMINNM and VMAXNM do with a NaN;
 //  * a whole scene through gfx3d_draw_tmesh and gfx3d_end, the floats of the transform,
 //    fog, near clip and mip selection included.
-// And a reflecting frame: the mirror's facing, the upside-down blits, the sky image's copy.
+// And a reflecting frame: the mirror's facing, the upside-down blits, the sky image's copy, its
+// fogged sprites mixed pixel by pixel and again through the tables gfx3d_end makes in lent SRAM.
 #include "display_clip.h"
 #include "gfx3d.h"
 #include "gfx3d_tex_scene.h"
@@ -22,6 +23,16 @@
 
 #define GFX3D_RAM_FUNC __attribute__((noinline))
 #include "gfx3d_tex.h"
+
+// The SRAM a draw call or gfx3d_end may borrow (gfx3d_sram_scratch, weak in gfx3d.c): lent only
+// for the reflection's second rendering.
+static char s_lent[8192] __attribute__((aligned(8)));
+static int s_lend;
+void *gfx3d_sram_scratch(size_t *bytes) {
+  if (!s_lend) return NULL;
+  *bytes = sizeof s_lent;
+  return s_lent;
+}
 
 #define PIXEL_RUNS 600000
 #define SCENE_TRIS 300
@@ -230,18 +241,26 @@ static int check_pipeline(void) {
 }
 
 static int check_reflection(void) {
-  for (int swap = 0; swap < 2; swap++) {
-    const gfx3d_stats_t st = tex_scene_reflection(s_fb[swap], swap != 0, s_scene_texels);
-    printf("reflection, swap %d: crc %08lx, %lu drawn, %lu culled, %lu clipped, %lu sprites, %lu pixels\n",
-           swap, (unsigned long)crc32_u16(s_fb[swap], (size_t)TEX_SCENE_W * TEX_SCENE_H),
-           (unsigned long)st.drawn, (unsigned long)st.culled, (unsigned long)st.clipped,
-           (unsigned long)st.sprites, (unsigned long)st.pixels);
-  }
   long differ = 0;
-  for (size_t i = 0; i < (size_t)TEX_SCENE_W * TEX_SCENE_H; i++)
-    if (s_fb[0][i] != disp_px(s_fb[1][i], true)) differ++;
+  uint32_t crc[2][2];
+  for (s_lend = 0; s_lend < 2; s_lend++) {
+    for (int swap = 0; swap < 2; swap++) {
+      const gfx3d_stats_t st = tex_scene_reflection(s_fb[swap], swap != 0, s_scene_texels);
+      crc[s_lend][swap] = crc32_u16(s_fb[swap], (size_t)TEX_SCENE_W * TEX_SCENE_H);
+      printf("reflection, lent %d, swap %d: crc %08lx, %lu drawn, %lu culled, %lu clipped, %lu sprites, "
+             "%lu pixels\n",
+             s_lend, swap, (unsigned long)crc[s_lend][swap], (unsigned long)st.drawn,
+             (unsigned long)st.culled, (unsigned long)st.clipped, (unsigned long)st.sprites,
+             (unsigned long)st.pixels);
+    }
+    for (size_t i = 0; i < (size_t)TEX_SCENE_W * TEX_SCENE_H; i++)
+      if (s_fb[0][i] != disp_px(s_fb[1][i], true)) differ++;
+  }
+  s_lend = 0;
   printf("reflection: %ld pixels differ between byte orders\n", differ);
-  return differ == 0;
+  const int same = crc[0][0] == crc[1][0] && crc[0][1] == crc[1][1];
+  printf("reflection: the lent SRAM's tables make %s\n", same ? "the same pixels" : "OTHER PIXELS");
+  return differ == 0 && same;
 }
 
 int main(void) {

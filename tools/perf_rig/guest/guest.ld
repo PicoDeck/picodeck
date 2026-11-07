@@ -6,6 +6,7 @@ SECTIONS
   /* Text at gfx3d.c's firmware address, its functions first and in object
      order, so its lines fall in the same cache sets as in the firmware. */
   .text TEXT_BASE : {
+    KEEP(*gfx3d.o(.gfx3d_mesh_text))  /* first, as in src/hot_gfx.ld */
     KEEP(*gfx3d.o(.text .text.*))
     *gfx3d_main.o(.text .text.*)
     *start.o(.text .text.*)

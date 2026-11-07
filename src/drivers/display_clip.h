@@ -854,6 +854,83 @@ DISP_HOT static inline uint32_t disp_blit_scaled_rect_fog(
   return (uint32_t)s.w * (uint32_t)s.h;
 }
 
+// disp_fog_px for one fog colour and level, as three tables of DISP_FOG_LUT_LEN entries in all:
+// disp_fog_lut_px(lut, v) is disp_px(disp_fog_px(v, fog, level), swap). Each entry is one channel
+// mixed, already in its place and in the target's byte order (a swap only moves bits, so the
+// channels can be swapped apart and ORed after), so a pixel is three loads and two ORs where the
+// mix is three multiply-adds and three divisions by 31.
+#define DISP_FOG_LUT_LEN 128  // red's 32, green's 64, blue's 32
+static inline void disp_fog_lut(uint16_t *lut, uint16_t fog, unsigned level, bool swap) {
+  const unsigned k = 31u - level;
+  const unsigned fr = (((unsigned)fog >> 11) & 31u) * level + 15u;
+  const unsigned fg = (((unsigned)fog >> 5) & 63u) * level + 15u;
+  const unsigned fb = ((unsigned)fog & 31u) * level + 15u;
+  for (unsigned v = 0; v < 32u; v++) {
+    lut[v] = disp_px((uint16_t)(((v * k + fr) / 31u) << 11), swap);
+    lut[96u + v] = disp_px((uint16_t)((v * k + fb) / 31u), swap);
+  }
+  for (unsigned v = 0; v < 64u; v++) lut[32u + v] = disp_px((uint16_t)(((v * k + fg) / 31u) << 5), swap);
+}
+
+static inline uint16_t disp_fog_lut_px(const uint16_t *lut, uint16_t v) {
+  return (uint16_t)(lut[v >> 11] | lut[32u + ((v >> 5) & 63u)] | lut[96u + (v & 31u)]);
+}
+
+// disp_blit_scaled_rect_fog with the mix looked up in disp_fog_lut's tables: the same pixels and
+// the same return. No swap: the tables are in the target's byte order. Out of line, so that no
+// caller's state competes with its pixel loops for registers.
+DISP_HOT static __attribute__((noinline, unused)) uint32_t disp_blit_scaled_rect_lut(
+    uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
+    const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,
+    int dst_w, int dst_h, uint16_t key, const uint16_t *lut) {
+  if (!data || img_w <= 0 || sw <= 0 || sh <= 0 || dst_w <= 0 || dst_h <= 0)
+    return 0;
+  disp_span_t s;
+  if (!disp_clip_rect(c, x, y, dst_w, dst_h, &s)) return 0;
+  const int q = sw / dst_w, rq = sh / dst_h;
+  const uint32_t rm = (uint32_t)(sw % dst_w), dw = (uint32_t)dst_w;
+  const uint32_t rrm = (uint32_t)(sh % dst_h), dh = (uint32_t)dst_h;
+  const int col_start = s.skip_x ? (int)(s.skip_x * sw / dst_w) : 0;
+  const uint32_t acc_start = s.skip_x ? (uint32_t)(s.skip_x * sw % dst_w) : 0;
+  int src_row = s.skip_y ? (int)(s.skip_y * sh / dst_h) : 0;
+  uint32_t racc = s.skip_y ? (uint32_t)(s.skip_y * sh % dst_h) : 0;
+  uint16_t *row = fb + (ptrdiff_t)s.y * stride + s.x;
+  int prev = -1;
+  for (int r = 0; r < s.h; r++, row += stride) {
+    if (!key && src_row == prev) {  // opaque: an upscaled row repeats
+      memcpy(row, row - stride, (size_t)s.w * sizeof(uint16_t));
+    } else {
+      prev = src_row;
+      // The source pixel itself steps, not its column: one register fewer than the other
+      // blits' loops, which on the M33 is what keeps the loop off the stack.
+      const uint16_t *sp = data + (size_t)(sy + src_row) * img_w + sx + col_start;
+      uint32_t acc = acc_start;
+      uint16_t *d = row;
+      uint16_t *const e = row + s.w;
+      if (key) {
+        for (; d < e; d++) {
+          const uint16_t v = *sp;
+          if (v != key) *d = disp_fog_lut_px(lut, v);
+          sp += q;
+          acc += rm;
+          if (acc >= dw) { acc -= dw; sp++; }
+        }
+      } else {
+        for (; d < e; d++) {
+          *d = disp_fog_lut_px(lut, *sp);
+          sp += q;
+          acc += rm;
+          if (acc >= dw) { acc -= dw; sp++; }
+        }
+      }
+    }
+    src_row += rq;
+    racc += rrm;
+    if (racc >= dh) { racc -= dh; src_row++; }
+  }
+  return (uint32_t)s.w * (uint32_t)s.h;
+}
+
 // Nearest-neighbour scale of a whole src_w x src_h image (see above).
 DISP_HOT static inline void disp_blit_scaled(uint16_t *fb, int stride,
                                     const disp_clip_t *c, int x, int y,

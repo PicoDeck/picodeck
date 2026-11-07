@@ -14,7 +14,7 @@
 #define HALF_PI 1.5707964f
 
 // The lent SRAM (gfx3d_sram_scratch, weak in gfx3d.c): off unless a test sets it.
-static char s_lent[2048] __attribute__((aligned(8)));
+static char s_lent[8192] __attribute__((aligned(8)));  // the sprite fog's tables need 7936 B
 static size_t s_lent_bytes;
 static int s_lent_calls;
 void *gfx3d_sram_scratch(size_t *bytes) {
@@ -3449,6 +3449,50 @@ static void test_sprite_fog_far(void) {
   gfx3d_free(g);
 }
 
+// gfx3d_end makes the sprite fog's tables in the lent SRAM when there is enough of it (7936
+// B), asking for it once and only for a scene with a fogged sprite, and otherwise mixes each
+// pixel: the same pixels either way, host order and swapped, tiny sprites and blitted ones,
+// keyed and not, upright and mirrored (upside down through a negative stride).
+static void test_sprite_fog_tables_change_nothing(void) {
+  enum { N = 400 };
+  static gfx3d_sprite_t sp[N];
+  static uint16_t want[W * H], got[W * H];
+  spr_make(sp, N);
+  gfx3d_t *g = gfx3d_new(W, H);
+  spr_images(g);
+  const float cam[3] = {1.0f, 2.5f, 3.0f};
+  gfx3d_set_camera(g, cam, 0.2f, -0.05f, 0.0f);
+  gfx3d_set_fog(g, true, 3, 70, 0x4A69);
+  const size_t sizes[3] = {0, 31u * 128u * 2u - 1u, sizeof s_lent};
+  for (int pass = 0; pass < 4; pass++) {
+    const bool swap = pass & 1, mirror = pass & 2;
+    gfx3d_set_mirror(g, mirror, 0.0f);
+    for (int k = 0; k < 3; k++) {
+      s_lent_bytes = sizes[k];
+      gfx3d_set_sprite_fog(g, true);
+      gfx3d_target_t t = spr_target(g, k ? got : want);
+      t.swap = swap;
+      gfx3d_begin(g, true, BG);
+      CHECK(gfx3d_draw_sprites(g, sp, N, 0.25f) > 100);
+      s_lent_calls = 0;
+      gfx3d_end(g, &t);
+      CHECK_EQ_INT(s_lent_calls, 1);  // asked for once, at the first fogged sprite
+      if (k) CHECK(memcmp(want, got, sizeof want) == 0);
+    }
+    // Sprite fog off: no fogged sprite, so the block is not asked for at all.
+    gfx3d_set_sprite_fog(g, false);
+    gfx3d_target_t t = spr_target(g, got);
+    gfx3d_begin(g, true, BG);
+    gfx3d_draw_sprites(g, sp, N, 0.25f);
+    s_lent_calls = 0;
+    gfx3d_end(g, &t);
+    CHECK_EQ_INT(s_lent_calls, 0);
+  }
+  gfx3d_set_mirror(g, false, 0.0f);
+  s_lent_bytes = 0;
+  gfx3d_free(g);
+}
+
 static void test_sprite_tiny_fast_path(void) {
   static uint16_t fb[W * H];
   uint16_t img[16];
@@ -4696,6 +4740,7 @@ int main(void) {
   test_sprites_wild_positions();
   test_sprite_fog_off_identical();
   test_sprite_fog_far();
+  test_sprite_fog_tables_change_nothing();
   test_sprite_tiny_fast_path();
   test_sky_image_scrolls_with_yaw();
   test_sky_image_pitch();

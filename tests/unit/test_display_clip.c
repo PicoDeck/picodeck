@@ -755,6 +755,67 @@ static void test_blit_scaled_rect_negative_stride(void) {
   CHECK_EQ_INT(bad_area, 0);
 }
 
+// disp_fog_lut's tables are the mix, swapped or not, for every pixel at every level: the
+// table entries ORed are disp_px(disp_fog_px(...)), all 65536 pixels, every level 0..31,
+// fog colours at the corners of the cube and random ones.
+static void test_fog_lut_is_the_mix(void) {
+  static const uint16_t corners[] = {0x0000, 0xFFFF, 0xF800, 0x07E0, 0x001F, 0x8C71, 0x0821};
+  uint16_t lut[DISP_FOG_LUT_LEN];
+  int bad = 0;
+  for (int f = 0; f < 12; f++) {
+    const uint16_t fogc = f < 7 ? corners[f] : (uint16_t)rnd(0, 0xFFFF);
+    for (unsigned level = 0; level <= 31; level++)
+      for (int swap = 0; swap < 2; swap++) {
+        disp_fog_lut(lut, fogc, level, swap != 0);
+        for (uint32_t v = 0; v <= 0xFFFFu; v++) {
+          const uint16_t want = disp_px(disp_fog_px((uint16_t)v, fogc, level), swap != 0);
+          if (disp_fog_lut_px(lut, (uint16_t)v) != want && bad++ < 5)
+            printf("  fog lut: fog %04x level %u swap %d pixel %04x\n", fogc, level, swap,
+                   (unsigned)v);
+        }
+      }
+  }
+  CHECK_EQ_INT(bad, 0);
+}
+
+// disp_blit_scaled_rect_lut is disp_blit_scaled_rect_fog with the mix looked up: the same
+// pixels, keyed and opaque, minified and magnified, clipped on every side, upright and
+// upside down (a negative stride), and the same area returned.
+static void test_blit_scaled_rect_lut_matches_fog(void) {
+  enum { IW = 23, IH = 17 };
+  uint16_t img[IW * IH];
+  for (int i = 0; i < IW * IH; i++) img[i] = (uint16_t)(1 + (i * 7919) % 65000);
+  uint16_t lut[DISP_FOG_LUT_LEN];
+  int bad = 0, bad_area = 0;
+  for (int i = 0; i < 6000; i++) {
+    const disp_clip_t c = random_clip();
+    const int sx = rnd(0, IW - 1), sy = rnd(0, IH - 1);
+    const int sw = rnd(1, IW - sx), sh = rnd(1, IH - sy);
+    const int dw = rnd(1, 90), dh = rnd(1, 90), x = rnd(-60, 60), y = rnd(-60, 60);
+    const uint16_t key = (i % 3 == 0) ? img[(sy * IW) + sx] : (i % 3 == 1) ? img[IW * IH - 1] : 0;
+    const unsigned level = (unsigned)rnd(1, 31);
+    const uint16_t fogc = (uint16_t)rnd(0, 0xFFFF);
+    const bool swap = rnd(0, 1), up = i % 4 == 3;
+    disp_fog_lut(lut, fogc, level, swap);
+    // Upside down: row 0 of the view is the clip's last row of the screen.
+    const disp_clip_t view = up ? (disp_clip_t){c.x0, 0, c.x1, c.y1 - c.y0} : c;
+    const int stride = up ? -CW : CW, vy = up ? c.y1 - (y + dh - 1) : y;
+    reset(0x1234);
+    uint16_t *const want_fb = up ? screen(s_want) + (ptrdiff_t)c.y1 * CW : screen(s_want);
+    const uint32_t want_area = disp_blit_scaled_rect_fog(want_fb, stride, &view, x, vy, img, IW, sx,
+                                                         sy, sw, sh, dw, dh, key, swap, fogc, level);
+    uint16_t *const got_fb = up ? screen(s_got) + (ptrdiff_t)c.y1 * CW : screen(s_got);
+    const uint32_t area = disp_blit_scaled_rect_lut(got_fb, stride, &view, x, vy, img, IW, sx, sy,
+                                                    sw, sh, dw, dh, key, lut);
+    if (area != want_area) bad_area++;
+    if (!same("fog by table") && bad++ < 5)
+      printf("  fog by table: src %d,%d %dx%d dst %d,%d %dx%d level %u key %04x up %d\n", sx, sy,
+             sw, sh, x, y, dw, dh, level, key, up);
+  }
+  CHECK_EQ_INT(bad, 0);
+  CHECK_EQ_INT(bad_area, 0);
+}
+
 // ── disp_fill_tri_f (gfx3d's rasteriser) ────────────────────────────────────
 static float frnd(float lo, float hi) {
   return lo + (hi - lo) * (float)rnd(0, 1000000) / 1000000.0f;
@@ -1032,6 +1093,8 @@ int main(void) {
   test_blit_scaled_rect_matches_reference();
   test_blit_scaled_rect_fog_matches_reference();
   test_blit_scaled_rect_negative_stride();
+  test_fog_lut_is_the_mix();
+  test_blit_scaled_rect_lut_matches_fog();
   test_vline_gradient_matches_reference();
   test_vline_gradient_reaches_both_ends_and_huge_coords();
   test_tri_f_inside_outside_and_clip();

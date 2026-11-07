@@ -10,6 +10,8 @@ SECTIONS
     .hot_gfx : ALIGN(8192)
     {
         __hot_gfx_start__ = .;
+        /* First, at the boundary, so that nothing in gfx3d.c moves it: process_mesh. */
+        *src/os/gfx3d.c.o(.gfx3d_mesh_text)
         *src/os/gfx3d.c.o(.text* .rodata*)
         *src/os/lua_bridge_gfx3d.c.o(.text* .rodata*)
         *src/fonts/font.c.o(.text* .rodata*)

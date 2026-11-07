@@ -272,9 +272,9 @@ typedef struct {
 void gfx3d_test_tex_tri(gfx3d_t *g, const gfx3d_target_t *t, int slot, int level,
                         const gfx3d_test_vert_t v[3], bool blend, gfx3d_test_tex_info_t *info);
 #endif
-// Fast memory for one mesh's vertices during a draw call, or NULL. Weak in
-// gfx3d.c (none); the firmware lends the video decoder's SRAM while no player
-// exists. Nothing in it outlives the call, so nothing else may run meanwhile.
+// Fast memory for one mesh's vertices during a draw call, or for gfx3d_end's sprite fog
+// tables, or NULL. Weak in gfx3d.c (none); the firmware lends the video decoder's SRAM while
+// no player exists. Nothing in it outlives the call, so nothing else may run meanwhile.
 void *gfx3d_sram_scratch(size_t *bytes);
 // Fast memory for a whole scene, from gfx3d_begin to the next one, or NULL: a
 // scene's bitmap, buckets and first records, 4-byte aligned. Weak in gfx3d.c

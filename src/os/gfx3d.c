@@ -31,6 +31,15 @@
 #define GFX3D_TEX_FUNC
 #endif
 
+// The flat mesh's transform, which is most of a flat scene's time, has a section of its own
+// too, which src/hot_gfx.ld and the perf rig's link script put first: no change elsewhere in
+// this file moves it to other cache sets (GCC does not emit functions in the file's order).
+#ifdef __ELF__
+#define GFX3D_MESH_FUNC __attribute__((section(".gfx3d_mesh_text")))
+#else
+#define GFX3D_MESH_FUNC
+#endif
+
 // A record's next index, with REC_OTHER set on a record that is no flat triangle, so the
 // rasteriser's one test per record is all flat triangles ever pay for the other kinds.
 #define REC_END 0x7FFFu
@@ -571,11 +580,7 @@ __attribute__((noinline)) GFX3D_TEX_FUNC static void camera_moved(gfx3d_t *g, fl
   if (g->mirror) camera_reflect(g);
 }
 
-// Returns true for gfx3d_look_at to tail-call it. noipa: told what it returns, GCC makes that
-// a call and a move, and then process_mesh, which follows, is 4 bytes off its old cache lines.
-#if defined(__GNUC__) && !defined(__clang__)
-__attribute__((noipa))
-#endif
+// Returns true for gfx3d_look_at to tail-call it.
 __attribute__((noinline)) GFX3D_TEX_FUNC static bool camera_looked(gfx3d_t *g) {
   camera_moved(g, NAN);  // the sky image finds it in V, if it comes to that
   return true;
@@ -872,9 +877,9 @@ static inline bool add_tri(gfx3d_t *g, gfx3d_order_t *order, int *n_one, bool on
 // a float * could change any float in them, so the compiler would read them
 // again from PSRAM on every iteration. Lighting and fog wait for the off-screen
 // test, whose triangles keep no colour.
-static void process_mesh(gfx3d_t *g, const gfx3d_mesh_t *m,
-                         const gfx3d_xform_t *xf, bool bg, float bias, bool one,
-                         float inst_depth) {
+GFX3D_MESH_FUNC static void process_mesh(gfx3d_t *g, const gfx3d_mesh_t *m,
+                                         const gfx3d_xform_t *xf, bool bg, float bias, bool one,
+                                         float inst_depth) {
   const int nverts = m->nverts, ntris = m->ntris;
   gfx3d_vert_t *vs;
   gfx3d_order_t *order;
@@ -1605,6 +1610,32 @@ __attribute__((noinline)) GFX3D_TEX_FUNC static void raster_tex_tri(gfx3d_t *g, 
   g->stats.drawn++;
 }
 
+// The sprite fog's tables (disp_fog_lut), one per level 1..31 at fog_lut[(level - 1) *
+// DISP_FOG_LUT_LEN], each made the first time gfx3d_end meets its level, in the SRAM a draw call
+// borrows for its vertices (gfx3d_sram_scratch): nothing else runs until gfx3d_end returns.
+// Without that block a sprite's pixels are mixed one by one, to the same values.
+#define FOG_LUT_BYTES (31u * DISP_FOG_LUT_LEN * sizeof(uint16_t))
+static uint16_t *s_fog_lut;
+static uint32_t s_fog_made;  // bit l: level l's table is made; bit 0: the block was asked for
+
+// Level `level`'s table for this gfx3d_end, or NULL.
+__attribute__((noinline)) static const uint16_t *fog_table(const gfx3d_t *g, unsigned level,
+                                                           bool swap) {
+  if (!(s_fog_made & 1u)) {
+    size_t have = 0;
+    void *const lent = gfx3d_sram_scratch(&have);
+    s_fog_lut = lent && have >= FOG_LUT_BYTES ? (uint16_t *)lent : NULL;
+    s_fog_made = 1u;
+  }
+  if (!s_fog_lut) return NULL;
+  uint16_t *const lut = s_fog_lut + (size_t)(level - 1u) * DISP_FOG_LUT_LEN;
+  if (!(s_fog_made & (1u << level))) {
+    disp_fog_lut(lut, g->fog_color, level, swap);
+    s_fog_made |= 1u << level;
+  }
+  return lut;
+}
+
 // A sprite record. The one-texel and 2 x 2 ones, which are most of a valley's, skip the
 // blitter's setup: the pixels are the ones it would make, sampled the same way.
 // pixels counts what the call covers inside the clip, the keyed ones too.
@@ -1619,6 +1650,7 @@ __attribute__((noinline)) static void raster_sprite(gfx3d_t *g, const gfx3d_targ
   const int x = r->u.spr.x, y = r->u.spr.y, w = r->u.spr.w, h = r->u.spr.h;
   const unsigned level = r->u.spr.fog;
   const uint16_t fogc = g->fog_color;
+  const uint16_t *const lut = level ? fog_table(g, level, t->swap) : NULL;
   g->stats.sprites++;
   if (w <= 2 && h <= 2) {
     // Destination (dx, dy) samples source (sx + dx * sw / w, sy + dy * sh / h); with w, h
@@ -1633,19 +1665,23 @@ __attribute__((noinline)) static void raster_sprite(gfx3d_t *g, const gfx3d_targ
         const int px = x + dx;
         if (px < c->x0 || px > c->x1) continue;
         covered++;
-        uint16_t v = sp[colx[dx]];
+        const uint16_t v = sp[colx[dx]];
         if (key && v == key) continue;
-        if (level) v = disp_fog_px(v, fogc, level);
-        t->fb[(ptrdiff_t)py * t->stride + px] = disp_px(v, t->swap);
+        t->fb[(ptrdiff_t)py * t->stride + px] =
+            lut     ? disp_fog_lut_px(lut, v)
+            : level ? disp_px(disp_fog_px(v, fogc, level), t->swap)
+                    : disp_px(v, t->swap);
       }
     }
     g->stats.pixels += covered;
     return;
   }
-  g->stats.pixels += level ? disp_blit_scaled_rect_fog(t->fb, t->stride, c, x, y, data, iw, sx, sy,
-                                                       sw, sh, w, h, key, t->swap, fogc, level)
-                           : disp_blit_scaled_rect(t->fb, t->stride, c, x, y, data, iw, sx, sy,
-                                                   sw, sh, w, h, key, t->swap);
+  g->stats.pixels += lut     ? disp_blit_scaled_rect_lut(t->fb, t->stride, c, x, y, data, iw, sx,
+                                                         sy, sw, sh, w, h, key, lut)
+                     : level ? disp_blit_scaled_rect_fog(t->fb, t->stride, c, x, y, data, iw, sx,
+                                                         sy, sw, sh, w, h, key, t->swap, fogc, level)
+                             : disp_blit_scaled_rect(t->fb, t->stride, c, x, y, data, iw, sx, sy,
+                                                     sw, sh, w, h, key, t->swap);
 }
 
 // A mirrored sprite: raster_sprite's own picture the other way up, whichever path it takes,
@@ -1811,6 +1847,7 @@ void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t) {
                    t->clip_x1 < g->vx + g->vw - 1 ? t->clip_x1 : g->vx + g->vw - 1,
                    t->clip_y1 < g->vy + g->vh - 1 ? t->clip_y1 : g->vy + g->vh - 1};
   if (c.x1 < c.x0 || c.y1 < c.y0) return;
+  s_fog_made = 0;  // the fog's tables are this call's (fog_table)
   if (g->sky_slot1 || g->sky_limited)
     fill_custom(g, t, &c);
   else if (g->nsky > 0)
