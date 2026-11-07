@@ -1052,11 +1052,16 @@ void gfx3d_draw_background(gfx3d_t *g, const gfx3d_mesh_t *m) {
   process_mesh(g, m, &xf, true, 0.0f, false, 0.0f);
 }
 
+// Where a sprite's corner may be and still be converted to an int and added to its width,
+// which is at most 4096. Any screen is inside this, so anything past it is off the view.
+#define SPR_POS_LIMIT 1e9f
+
 // Files n sprites. With ssw == 0 each is its slot's whole image (gfx3d_image_add's, whose
 // size is read now); else the one sprite shows (ssx, ssy, ssw, ssh) of whatever the target
 // resolves for its slot. Returns how many were filed. Everything it reads from `g` goes
 // into locals first: the stores to the records could alias any of it, and each reload
-// would be a read from PSRAM.
+// would be a read from PSRAM. Positions are an app's own numbers: one that is not finite, or
+// projects past SPR_POS_LIMIT, counts as culled, as (int) of those would be undefined.
 static int file_sprites(gfx3d_t *g, const gfx3d_sprite_t *s, int n, float bias, int ssx, int ssy,
                         int ssw, int ssh) {
   float V[9], cam[3];
@@ -1090,13 +1095,15 @@ static int file_sprites(gfx3d_t *g, const gfx3d_sprite_t *s, int n, float bias, 
     const float depth = -v[2];
     const float k = focal / depth;
     const float h = size * k, w = h * (float)sw / (float)sh;
-    if (!(depth >= zn) || depth > zf || h > 4096.0f || w > 4096.0f) {
+    const float fx = cxs + v[0] * k - 0.5f * w + 0.5f, fy = cys - v[1] * k - 0.5f * h + 0.5f;
+    if (!(depth >= zn) || depth > zf || !(h <= 4096.0f) || !(w <= 4096.0f) ||
+        !(fabsf(fx) < SPR_POS_LIMIT) || !(fabsf(fy) < SPR_POS_LIMIT)) {
       culled++;
       continue;
     }
     const int iw = (int)(w + 0.5f), ih = (int)(h + 0.5f);
-    const int ix = (int)floorf(cxs + v[0] * k - 0.5f * w + 0.5f);
-    const int iy = (int)floorf(cys - v[1] * k - 0.5f * h + 0.5f);
+    const int ix = (int)floorf(fx);
+    const int iy = (int)floorf(fy);
     if (iw < 1 || ih < 1 || ix >= vx1 || iy >= vy1 || ix + iw <= vx0 || iy + ih <= vy0) {
       culled++;
       continue;

@@ -3289,6 +3289,61 @@ static void test_sprites_bulk_edges(void) {
   gfx3d_free(g);
 }
 
+// Native apps hand file_sprites their own numbers. A position that is not finite, or projects
+// past any screen, is culled like any sprite off the view: converting it to an int would be
+// undefined, which this build's sanitizer reports, and the real sprite beside them is as drawn
+// without them. Far is huge or infinite in the last passes, so a position of 1e38 reaches the
+// conversion with a depth in range and a size of no pixels at all, and depth and size can both
+// be infinite.
+static void test_sprites_wild_positions(void) {
+  const gfx3d_sprite_t wild[] = {
+      {NAN, 0, -10, 1, 0},       {0, NAN, -10, 1, 0},       {0, 0, NAN, 1, 0},
+      {1e30f, 0, -10, 1, 0},     {-1e30f, 0, -10, 1, 0},    {0, 1e30f, -10, 1, 0},
+      {0, -1e30f, -10, 1, 0},    {1e30f, 1e30f, -10, 1, 0}, {0, 0, 1e30f, 1, 0},
+      {0, 0, -1e30f, 1, 0},      {1e38f, 1e38f, -1e30f, 1, 0}, {-1e38f, 0, -1e30f, 1, 0},
+      {INFINITY, 0, -10, 1, 0},  {0, -INFINITY, -10, 1, 0}, {0, 0, -INFINITY, 1, 0},
+      {1e9f, 0, -2, 1, 0},       {-1e9f, 0, -2, 1, 0},      {0, 1e9f, -2, 1, 0},
+      {0, 0, -INFINITY, INFINITY, 0},
+  };
+  enum { N = sizeof wild / sizeof wild[0] };
+  const gfx3d_sprite_t real = {0, 0, -10, 1, 0};
+  gfx3d_sprite_t mixed[N + 1];
+  for (int i = 0; i < N / 2; i++) mixed[i] = wild[i];
+  mixed[N / 2] = real;
+  for (int i = N / 2; i < N; i++) mixed[i + 1] = wild[i];
+  static uint16_t fb[W * H], want[W * H];
+  const float cam1[3] = {3, -2, 1};
+  for (int pass = 0; pass < 4; pass++) {
+    gfx3d_t *g = gfx3d_new(W, H);
+    spr_images(g);
+    if (pass == 1) gfx3d_set_camera(g, cam1, 0.7f, -0.3f, 0.2f);
+    if (pass == 2) CHECK(gfx3d_set_projection(g, 1.0f, 0.5f, 1e38f));
+    if (pass == 3) CHECK(gfx3d_set_projection(g, 1.0f, 0.5f, INFINITY));
+    gfx3d_target_t t = spr_target(g, fb);
+
+    gfx3d_begin(g, true, BG);
+    CHECK_EQ_INT(gfx3d_draw_sprites(g, wild, N, 0), 0);
+    CHECK_EQ_INT(gfx3d_get_stats(g)->culled, N);
+    gfx3d_end(g, &t);
+    CHECK_EQ_INT(gfx3d_get_stats(g)->sprites, 0);
+    for (int i = 0; i < W * H; i++) CHECK(fb[i] == BG);
+
+    gfx3d_begin(g, true, BG);
+    gfx3d_draw_sprites(g, &real, 1, 0);
+    gfx3d_end(g, &t);
+    const gfx3d_stats_t alone = *gfx3d_get_stats(g);
+    if (pass == 0) CHECK_EQ_INT(alone.sprites, 1);
+    memcpy(want, fb, sizeof want);
+    gfx3d_begin(g, true, BG);
+    CHECK_EQ_INT(gfx3d_draw_sprites(g, mixed, N + 1, 0), alone.sprites);
+    gfx3d_end(g, &t);
+    CHECK_EQ_INT(gfx3d_get_stats(g)->culled, alone.culled + N);
+    CHECK_EQ_INT(gfx3d_get_stats(g)->sprites, alone.sprites);
+    CHECK(memcmp(fb, want, sizeof want) == 0);
+    gfx3d_free(g);
+  }
+}
+
 // With sprite fog off, whatever the scene's fog, a sprite is what disp_blit_scaled_rect makes
 // of its projected rectangle: 1 and 2 px (the tiny path), then 6 and 30.
 static void test_sprite_fog_off_identical(void) {
@@ -4638,6 +4693,7 @@ int main(void) {
   test_tmesh_scene_crc();
   test_sprites_bulk_matches_single();
   test_sprites_bulk_edges();
+  test_sprites_wild_positions();
   test_sprite_fog_off_identical();
   test_sprite_fog_far();
   test_sprite_tiny_fast_path();
