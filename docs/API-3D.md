@@ -10,6 +10,8 @@ Your Lua code builds meshes once and then, every frame, sets the camera and call
 
 Objects are drawn far to near (painter's order), with no depth buffer. Keep triangles reasonably short, so that long faces don't sort in front of objects above them. Use `bias` or `sortAsOne` for objects that sit on other geometry.
 
+Native apps have the same renderer, with textures, through [`api->gfx3d`](Native-Loading.md#3d).
+
 ### Conventions
 
 - **Coordinates are right-handed with y up.** The camera looks along **−z**, with +x to its right.
