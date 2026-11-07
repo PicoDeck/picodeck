@@ -547,3 +547,43 @@ else()
     set_tests_properties(test_splash_m33 PROPERTIES
         ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:abort_on_error=0;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
 endif()
+
+# gfx3d's textured rasteriser on the Cortex-M33 against the host, bit for bit: its
+# written-out pixel loop against the C it stands in for, across every multiplier, and
+# coverage where an edge goes NaN. The same toolchain checks, flags and comparison script.
+set(TEX_XCHECK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/gfx3d_tex_xcheck.c ${SRC}/os/gfx3d.c)
+add_executable(gfx3d_tex_xcheck ${TEX_XCHECK_SOURCES})
+target_include_directories(gfx3d_tex_xcheck PRIVATE ${SRC}/os ${SRC}/drivers
+                           ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(gfx3d_tex_xcheck PRIVATE GFX3D_MALLOC=malloc GFX3D_FREE=free GFX3D_TEST)
+target_compile_options(gfx3d_tex_xcheck PRIVATE -ffp-contract=off -Wdouble-promotion
+                       ${PICODECK_UNIT_SAN_FLAGS})
+target_link_options(gfx3d_tex_xcheck PRIVATE ${PICODECK_UNIT_SAN_FLAGS})
+target_link_libraries(gfx3d_tex_xcheck PRIVATE m)
+if(XCHECK_SKIP)
+    add_test(NAME test_gfx3d_tex_m33 COMMAND ${CMAKE_COMMAND} -E echo "SKIPPED: ${XCHECK_SKIP}")
+    set_tests_properties(test_gfx3d_tex_m33 PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
+else()
+    set(TEX_XCHECK_ELFS "")
+    foreach(opt O2 Os)
+        set(elf ${CMAKE_CURRENT_BINARY_DIR}/gfx3d_tex_xcheck_m33_${opt}.elf)
+        add_custom_command(OUTPUT ${elf}
+            COMMAND ${PICODECK_ARM_GCC} ${M33_FLAGS} -${opt} -std=gnu11 -ffp-contract=off
+                    -Wall -Wextra -Wdouble-promotion -I${SRC}/os -I${SRC}/drivers
+                    -I${CMAKE_CURRENT_SOURCE_DIR} -DGFX3D_MALLOC=malloc -DGFX3D_FREE=free
+                    -DGFX3D_TEST --specs=rdimon.specs ${TEX_XCHECK_SOURCES} -lm -o ${elf}
+            DEPENDS ${TEX_XCHECK_SOURCES} ${SRC}/os/gfx3d.h ${SRC}/os/gfx3d_tex.h
+                    ${SRC}/drivers/display_clip.h ${CMAKE_CURRENT_SOURCE_DIR}/gfx3d_tex_scene.h
+            COMMENT "Building the textured rasteriser's cross-check for the Cortex-M33 (-${opt})"
+            VERBATIM)
+        list(APPEND TEX_XCHECK_ELFS ${elf})
+    endforeach()
+    add_custom_target(gfx3d_tex_xcheck_m33 ALL DEPENDS ${TEX_XCHECK_ELFS})
+    add_test(NAME test_gfx3d_tex_m33
+             COMMAND ${CMAKE_COMMAND} -DHOST=$<TARGET_FILE:gfx3d_tex_xcheck>
+                     -DQEMU=${PICODECK_QEMU_ARM}
+                     -DM33=${CMAKE_CURRENT_BINARY_DIR}/gfx3d_tex_xcheck_m33_
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/charshader_xcheck.cmake)
+    set_tests_properties(test_gfx3d_tex_m33 PROPERTIES
+        ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:abort_on_error=0;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
+endif()

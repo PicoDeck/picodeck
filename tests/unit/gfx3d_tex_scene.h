@@ -53,15 +53,16 @@ static void tex_scene_next(uint32_t *s, gfx3d_test_vert_t v[3], int *tex, int *l
   const uint32_t kind = tex_scene_rand(s) % 8u;
   const int span = kind == 0 ? 6 : kind == 1 ? 24 : kind == 2 ? 2000 : 120;
   const int cx = (int)(tex_scene_rand(s) % TEX_SCENE_W), cy = (int)(tex_scene_rand(s) % TEX_SCENE_H);
-  // A depth at the first vertex, the rest up to 1/8 away (affine) or several times
-  // (perspective).
+  // A depth at the first vertex, the rest the same (affine), up to 1/8 away (either,
+  // by the triangle's size in texels) or several times (perspective).
   const float iw0 = tex_scene_float(s, 1, 200) * (1.0f / 256.0f);
-  const bool flat_depth = (tex_scene_rand(s) & 1u) != 0;
+  const uint32_t depth = tex_scene_rand(s) % 3u;
   for (int i = 0; i < 3; i++) {
     v[i].x = tex_scene_float(s, cx - span, cx + span);
     v[i].y = tex_scene_float(s, cy - span, cy + span);
-    v[i].iw = flat_depth ? iw0 * (1.0f + tex_scene_float(s, 0, 1) * 0.125f)
-                         : iw0 * tex_scene_float(s, 1, 8);
+    v[i].iw = depth == 0   ? iw0
+              : depth == 1 ? iw0 * (1.0f + tex_scene_float(s, 0, 1) * 0.125f)
+                           : iw0 * tex_scene_float(s, 1, 8);
     v[i].u = tex_scene_float(s, -6, 6);
     v[i].v = tex_scene_float(s, -6, 6);
     v[i].color = (uint16_t)tex_scene_rand(s);

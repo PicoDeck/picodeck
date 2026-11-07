@@ -1177,7 +1177,7 @@ static void tex_tri(gfx3d_t *g, const gfx3d_target_t *t, int slot, gfx3d_test_ve
 
 // A random triangle, in one of the shapes that break a rasteriser.
 static void random_tri(float p[6]) {
-  const uint32_t kind = trand() % 8u;
+  const uint32_t kind = trand() % 9u;
   const float cx = trandf(-20.0f, TW + 20.0f), cy = trandf(-20.0f, TH + 20.0f);
   for (int i = 0; i < 6; i += 2) {
     switch (kind) {
@@ -1208,6 +1208,10 @@ static void random_tri(float p[6]) {
       case 6:  // huge
         p[i] = trandf(-3e7f, 3e7f);
         p[i + 1] = trandf(-3e7f, 3e7f);
+        break;
+      case 7:  // differences that overflow, on row centres: 0 * inf is a NaN on a vertex's row
+        p[i] = (trand() & 3u) ? (trand() & 1u ? 1.0f : -1.0f) * trandf(1e37f, 3e38f) : trandf(0.0f, (float)TW);
+        p[i + 1] = (float)(trand() % TH) + 0.5f;
         break;
       default:  // two vertices the same
         p[i] = i < 4 ? cx : trandf(0.0f, (float)TW);
@@ -1272,10 +1276,13 @@ static void test_tex_tri_coverage_matches_flat(void) {
   CHECK(affine > 1000);
 
   // Coordinates whose differences overflow: an edge's x is NaN on a row that starts
-  // on the vertex (0 * inf), and that row is left out, as the flat rasteriser does.
+  // on the vertex (0 * inf), and that row is left out, as the flat rasteriser does,
+  // whichever edge of the row it is.
   static const float overflow[][6] = {{-3e38f, 10.5f, 3e38f, 50.0f, 0.0f, 30.0f},
                                       {3e38f, 10.5f, -3e38f, 50.0f, 0.0f, 30.0f},
-                                      {40.0f, 10.5f, 3e38f, 20.5f, -3e38f, 50.5f}};
+                                      {40.0f, 10.5f, 3e38f, 20.5f, -3e38f, 50.5f},
+                                      {40.0f, 10.5f, -3e38f, 20.5f, 3e38f, 50.5f}};
+  int overflow_px = 0;
   for (size_t k = 0; k < sizeof overflow / sizeof overflow[0]; k++) {
     const float *p = overflow[k];
     memset(s_ta, 0, sizeof s_ta);
@@ -1285,14 +1292,14 @@ static void test_tex_tri_coverage_matches_flat(void) {
     gfx3d_target_t t = tex_target(s_tb, false);
     tex_tri(g, &t, white, tv(p[0], p[1], 1, 0, 0, 0xFFFF), tv(p[2], p[3], 1, 1, 0, 0xFFFF),
             tv(p[4], p[5], 1, 0, 1, 0xFFFF), false, NULL);
-    int differ = 0, flat_px = 0;
+    int differ = 0;
     for (int i = 0; i < TW * TH; i++) {
       if ((s_ta[i] != 0) != (s_tb[i] != 0)) differ++;
-      if (s_ta[i]) flat_px++;
+      if (s_ta[i]) overflow_px++;
     }
     CHECK_EQ_INT(differ, 0);
-    CHECK(flat_px > 0);
   }
+  CHECK(overflow_px > 0);
 
   // Non-finite vertices draw nothing, as the flat rasteriser.
   const float bad_v[4] = {NAN, INFINITY, -INFINITY, 1e30f};
@@ -1499,44 +1506,6 @@ static void test_tex_perspective(void) {
   gfx3d_free(g);
 }
 
-static void test_tex_affine_shortcut_close(void) {
-  gfx3d_t *g = gfx3d_new(W, H);
-  static uint16_t chk[32 * 32];
-  make_checker(chk, 32, 32, 2);
-  const int slot = gfx3d_tex_add(g, 5, 5, 1, chk);
-  const uint16_t bg = 0x1234;
-  // Near-constant depth: the shortcut, close to the exact picture.
-  for (int i = 0; i < 3; i++) {
-    const float far = i == 0 ? 1.0f : i == 1 ? 1.05f : 1.1f;
-    gfx3d_test_vert_t q[4];
-    wall(q, far, 1.0f, 1.0f);
-    for (int p = 0; p < TW * TH; p++) s_tb[p] = bg;
-    gfx3d_target_t t = tex_target(s_tb, false);
-    gfx3d_test_tex_info_t info;
-    int checked = 0;
-    const gfx3d_test_vert_t tri[3] = {q[0], q[1], q[2]};
-    gfx3d_test_tex_tri(g, &t, slot, 0, tri, false, &info);
-    CHECK(info.affine);
-    CHECK_EQ_INT(reference_misses(s_tb, bg, tri, chk, 32, 32, 1, true, &checked), 0);
-    CHECK(checked > 500);
-  }
-  // Where it stops: 1/z varying by under 20% is affine, over it is not, whichever
-  // vertex has which.
-  static const float ratio[4] = {1.0f, 1.1f, 1.19f, 1.21f};
-  static const bool want[4] = {true, true, true, false};
-  for (int i = 0; i < 4; i++)
-    for (int order = 0; order < 3; order++) {
-      float iw[3] = {0.25f, 0.25f, 0.25f};
-      iw[order] = 0.25f * ratio[i];
-      gfx3d_target_t t = tex_target(s_tb, false);
-      gfx3d_test_tex_info_t info;
-      tex_tri(g, &t, slot, tv(3, 3, iw[0], 0, 0, 0xFFFF), tv(70, 7, iw[1], 1, 0, 0xFFFF),
-              tv(9, 60, iw[2], 0, 1, 0xFFFF), false, &info);
-      CHECK(info.affine == want[i]);
-    }
-  gfx3d_free(g);
-}
-
 // Every texel its own colour, so a wrong row or column shows.
 static void make_unique(uint16_t *p, int w, int h) {
   for (int y = 0; y < h; y++)
@@ -1545,6 +1514,146 @@ static void make_unique(uint16_t *p, int w, int h) {
 
 // About x1 under the texel multiply, so that different texels stay different.
 #define WRAP_VERTEX 0xAD55
+
+// What the rasteriser makes of each of n texels under WRAP_VERTEX, from textures of one
+// texel: channels do not mix (test_tex_modulate), so one draw per channel value does.
+static void modulated_table(const uint16_t *tex, int n, uint16_t *out) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  static uint16_t by_value[64];
+  for (int v = 0; v < 64; v++)
+    by_value[v] = modulated(g, (uint16_t)(((v & 31) << 11) | (v << 5) | (v & 31)), WRAP_VERTEX);
+  gfx3d_free(g);
+  for (int i = 0; i < n; i++) {
+    const uint16_t r = by_value[tex[i] >> 11] & 0xF800u, gr = by_value[(tex[i] >> 5) & 63] & 0x07E0u;
+    const uint16_t b = by_value[tex[i] & 31] & 0x001Fu;
+    out[i] = (uint16_t)(r | gr | b);
+  }
+}
+
+// Whether a triangle with these runs of uv (in repeats) goes affine, with 1/z varying by
+// `ratio` along the edge that carries them.
+static bool goes_affine(gfx3d_t *g, int slot, int level, float ratio, float run_u, float run_v) {
+  gfx3d_target_t t = tex_target(s_tb, false);
+  const gfx3d_test_vert_t v[3] = {tv(3, 3, ratio, 0, 0, 0xFFFF), tv(70, 7, 1, run_u, 0, 0xFFFF),
+                                  tv(9, 60, ratio, 0, run_v, 0xFFFF)};
+  gfx3d_test_tex_info_t info;
+  gfx3d_test_tex_tri(g, &t, slot, level, v, false, &info);
+  return info.affine;
+}
+
+static void test_tex_affine_shortcut_close(void) {
+  static uint16_t tex[64 * 64], moded[64 * 64];
+  static uint16_t wrong[TW * TH];
+  const uint16_t bg = 0x0001;  // no texel comes out as this: their red is high
+  for (int lg = 5; lg <= 6; lg++) {
+    const int size = 1 << lg;
+    make_unique(tex, size, size);
+    modulated_table(tex, size * size, moded);
+    gfx3d_t *g = gfx3d_new(W, H);
+    const int slot = gfx3d_tex_add(g, lg, lg, 1, tex);
+    gfx3d_target_t t = tex_target(s_tb, false);
+    // The uv runs one repeat each way, so the extent is the texture's size. Up to the
+    // most 1/z may vary for that size, whichever vertex has which depth: the shortcut,
+    // and at every pixel within a texel of the exact picture.
+    const float most = 1.0f + 4.0f / (float)size;
+    static const float part[3] = {0.0f, 0.5f, 1.0f};
+    for (int p = 0; p < 3; p++) {
+      const float r = 1.0f + (most - 1.0f) * part[p];
+      for (int near_vert = 0; near_vert < 6; near_vert++) {
+        float iw[3] = {1.0f, 1.0f, 1.0f};
+        if (near_vert < 3) {
+          iw[near_vert] = r;
+        } else {  // two near and one far
+          iw[0] = iw[1] = iw[2] = r;
+          iw[near_vert - 3] = 1.0f;
+        }
+        const gfx3d_test_vert_t tri[3] = {tv(-2, -2, iw[0], 0, 0, WRAP_VERTEX),
+                                          tv(TW + 2, 0, iw[1], 1, 0, WRAP_VERTEX),
+                                          tv(0, TH + 2, iw[2], 0, 1, WRAP_VERTEX)};
+        for (int i = 0; i < TW * TH; i++) s_tb[i] = bg;
+        gfx3d_test_tex_info_t info;
+        gfx3d_test_tex_tri(g, &t, slot, 0, tri, false, &info);
+        CHECK(info.affine);
+        int checked = 0;
+        CHECK_EQ_INT(reference_misses(s_tb, bg, tri, moded, size, size, 1, true, &checked), 0);
+        CHECK(checked > TW * TH / 3);
+
+        // That check can fail. The picture three texels along the uv is another picture
+        // (nearly a texel of error, and it could still be within the window at two); the
+        // exact picture of a depth varying six times as much is too; and neither one
+        // colour nor noise is near it.
+        if (p == 2) {
+          gfx3d_test_vert_t moved[3] = {tri[0], tri[1], tri[2]};
+          for (int i = 0; i < 3; i++) moved[i].u += 3.0f / (float)size;
+          for (int i = 0; i < TW * TH; i++) s_ta[i] = bg;
+          gfx3d_target_t ta = tex_target(s_ta, false);
+          gfx3d_test_tex_tri(g, &ta, slot, 0, moved, false, NULL);
+          int seen = 0;
+          CHECK(reference_misses(s_ta, bg, tri, moded, size, size, 1, true, &seen) > seen / 2);
+          for (int i = 0; i < TW * TH; i++) wrong[i] = moded[0];
+          seen = 0;
+          CHECK(reference_misses(wrong, bg, tri, moded, size, size, 1, true, &seen) > seen * 9 / 10);
+          for (int i = 0; i < TW * TH; i++) wrong[i] = (uint16_t)(0x8000u | (trand() & 0x7FFFu));
+          seen = 0;
+          CHECK(reference_misses(wrong, bg, tri, moded, size, size, 1, true, &seen) > seen * 9 / 10);
+          gfx3d_test_vert_t deeper[3] = {tri[0], tri[1], tri[2]};
+          for (int i = 0; i < 3; i++) deeper[i].iw = 1.0f + (iw[i] - 1.0f) * 6.0f;
+          CHECK(reference_misses(s_tb, bg, deeper, moded, size, size, 1, true, NULL) > 50);
+        }
+      }
+    }
+    // Just past that, the same triangle divides.
+    CHECK(goes_affine(g, slot, 0, most, 1, 1));
+    CHECK(!goes_affine(g, slot, 0, most + 2.0f / 256.0f, 1, 1));
+    gfx3d_free(g);
+  }
+
+  // Where each limit stops. Half a repeat of 32 texels leaves only the 20%, whichever
+  // vertex has which depth.
+  static uint16_t mips[64 * 64 + 32 * 32];
+  for (int i = 0; i < 64 * 64 + 32 * 32; i++) mips[i] = 0xFFFF;
+  gfx3d_t *g = gfx3d_new(W, H);
+  const int t32 = gfx3d_tex_add(g, 5, 5, 1, mips), t64 = gfx3d_tex_add(g, 6, 6, 2, mips);
+  const int wide = gfx3d_tex_add(g, 6, 4, 1, mips), tall = gfx3d_tex_add(g, 4, 6, 1, mips);
+  const int one_wide = gfx3d_tex_add(g, 0, 3, 1, mips), one = gfx3d_tex_add(g, 0, 0, 1, mips);
+  static const float ratio[4] = {1.0f, 1.1f, 1.19f, 1.21f};
+  static const bool want[4] = {true, true, true, false};
+  for (int i = 0; i < 4; i++)
+    for (int order = 0; order < 3; order++) {
+      float iw[3] = {0.25f, 0.25f, 0.25f};
+      iw[order] = 0.25f * ratio[i];
+      gfx3d_target_t tg = tex_target(s_tb, false);
+      gfx3d_test_tex_info_t info;
+      tex_tri(g, &tg, t32, tv(3, 3, iw[0], 0, 0, 0xFFFF), tv(70, 7, iw[1], 0.5f, 0, 0xFFFF),
+              tv(9, 60, iw[2], 0, 0.5f, 0xFFFF), false, &info);
+      CHECK(info.affine == want[i]);
+    }
+  // The extent is in texels of the mip drawn: level 1 of 64 is 32.
+  CHECK(!goes_affine(g, t64, 0, 1.08f, 1, 1));
+  CHECK(goes_affine(g, t64, 1, 1.08f, 1, 1));
+  // Twice the repeats is twice the extent.
+  CHECK(goes_affine(g, t32, 0, 1.08f, 1, 1));
+  CHECK(!goes_affine(g, t32, 0, 1.08f, 2, 2));
+  // The longer way in texels decides, on a texture that is not square.
+  CHECK(!goes_affine(g, wide, 0, 1.08f, 1, 0.25f));
+  CHECK(goes_affine(g, wide, 0, 1.08f, 0.25f, 1));
+  CHECK(!goes_affine(g, tall, 0, 1.08f, 0.25f, 1));
+  CHECK(goes_affine(g, tall, 0, 1.08f, 1, 0.25f));
+  // The run of the uv, not its size: far from 0, or across the opposite corners.
+  gfx3d_target_t tg = tex_target(s_tb, false);
+  gfx3d_test_tex_info_t info;
+  tex_tri(g, &tg, t32, tv(3, 3, 1.08f, 500.25f, -300.5f, 0xFFFF), tv(70, 7, 1, 500.75f, -300.5f, 0xFFFF),
+          tv(9, 60, 1.08f, 500.25f, -300.0f, 0xFFFF), false, &info);
+  CHECK(info.affine);
+  tex_tri(g, &tg, t32, tv(3, 3, 1.08f, 0, 0, 0xFFFF), tv(70, 7, 1, 1.5f, 0, 0xFFFF),
+          tv(9, 60, 1.08f, -1.5f, 0, 0xFFFF), false, &info);
+  CHECK(!info.affine);
+  // Depth that does not change: any size. A one-texel texture has no uv to get wrong.
+  CHECK(goes_affine(g, t64, 0, 1.0f, 1000, 1000));
+  CHECK(goes_affine(g, one, 0, 1.15f, 1000, 1000));
+  CHECK(!goes_affine(g, one_wide, 0, 1.15f, 1000, 1000));
+  gfx3d_free(g);
+}
 
 static void test_tex_wrap(void) {
   static const int lg[][2] = {{3, 3}, {4, 2}, {2, 4}, {0, 3}, {3, 0}, {6, 1}, {1, 6}, {0, 0}};
@@ -1608,6 +1717,45 @@ static void test_tex_wrap(void) {
         gfx3d_test_tex_tri(g, &t, 0, 0, moved, false, NULL);
         CHECK(memcmp(s_ta, s_tb, sizeof s_ta) == 0);
       }
+    }
+    gfx3d_free(g);
+  }
+}
+
+// Large textures: past 16 bits of index, v's bits rotate round to reach their place.
+static void test_tex_large_shapes(void) {
+  static const int lg[][2] = {{8, 8}, {10, 6}, {6, 10}, {10, 7}, {7, 10}, {9, 9}, {10, 10}};
+  static uint16_t tex[1024 * 1024], moded[1024 * 1024];
+  const uint16_t bg = 0x0001;
+  for (size_t n = 0; n < sizeof lg / sizeof lg[0]; n++) {
+    const int lw = lg[n][0], lh = lg[n][1], w = 1 << lw, h = 1 << lh;
+    // Random texels, with red high so that none comes out as bg; a neighbour rarely
+    // has the same colour, so the window below is nearly as strict as unique ones.
+    uint32_t r = 0x51ED270Bu;
+    for (int i = 0; i < w * h; i++) {
+      r ^= r << 13;
+      r ^= r >> 17;
+      r ^= r << 5;
+      tex[i] = (uint16_t)(0x8000u | (r & 0x7FFFu));
+    }
+    modulated_table(tex, w * h, moded);
+    gfx3d_t *g = gfx3d_new(W, H);
+    CHECK(gfx3d_tex_add(g, lw, lh, 1, tex) == 0);
+    gfx3d_target_t t = tex_target(s_tb, false);
+    // About a texel to the pixel, somewhere in the middle of the texture; then the
+    // same with depth, for the other path.
+    const float u0 = 0.37f, v0 = 0.61f, du = (float)TW / (float)w, dv = (float)TH / (float)h;
+    for (int persp = 0; persp < 2; persp++) {
+      const float far = persp ? 0.8f : 1.0f;
+      const gfx3d_test_vert_t tri[3] = {tv(0, 0, 1, u0, v0, WRAP_VERTEX), tv(TW, 0, far, u0 + du, v0, WRAP_VERTEX),
+                                        tv(0, TH, 1, u0, v0 + dv, WRAP_VERTEX)};
+      for (int p = 0; p < TW * TH; p++) s_tb[p] = bg;
+      gfx3d_test_tex_info_t info;
+      gfx3d_test_tex_tri(g, &t, 0, 0, tri, false, &info);
+      CHECK(info.affine == !persp);
+      int checked = 0;
+      CHECK_EQ_INT(reference_misses(s_tb, bg, tri, moded, w, h, 1, true, &checked), 0);
+      CHECK(checked > TW * TH / 3);
     }
     gfx3d_free(g);
   }
@@ -1839,10 +1987,10 @@ static void test_tex_bad_values_stay_safe(void) {
   gfx3d_free(g);
 }
 
-// The rasteriser's bytes, pinned. tools/perf_rig's check-tex draws the same triangles
-// on the M33's code: if the two disagree, its pixel loop and the C here differ.
-#define TEX_SCENE_CRC_HOST 0x66c7cc20u
-#define TEX_SCENE_CRC_SWAP 0xf35ebb58u
+// The rasteriser's bytes, pinned. test_gfx3d_tex_m33 and tools/perf_rig's check-tex draw
+// these triangles on the M33's code: if they disagree, its pixel loop and the C here differ.
+#define TEX_SCENE_CRC_HOST 0x4539b902u
+#define TEX_SCENE_CRC_SWAP 0x6ef4cbbcu
 
 static void test_tex_scene_crc(void) {
   static uint16_t fb[TEX_SCENE_W * TEX_SCENE_H];
@@ -1907,6 +2055,7 @@ int main(void) {
   test_tex_perspective();
   test_tex_affine_shortcut_close();
   test_tex_wrap();
+  test_tex_large_shapes();
   test_tex_levels();
   test_tex_swap_is_only_byte_order();
   test_tex_blend();

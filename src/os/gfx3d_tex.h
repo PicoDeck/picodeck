@@ -14,11 +14,13 @@
 //  * Triangle setup and the row loop run from flash. Most of a frame's triangles are
 //    small, so rows are short and their cost matters: attributes step once per row
 //    and once to the row's first pixel, with no plane equations.
-//  * A triangle whose 1/z varies by under 20% is drawn affine: no division in a span.
+//  * A triangle drawn affine has no division in a span. It takes one whose 1/z varies
+//    by under 20% and which, for its size in texels, stays near a texel of the right
+//    picture (TEX_AFFINE_TEXELS).
 //
-// Output is the same bits on every target (tools/perf_rig's check-tex runs the M33's
-// code): single-precision floats with no contraction, and every float to int conversion
-// is clamped first, since out of range it is undefined and differs between x86 and ARM.
+// Output is the same bits on every target (ctest test_gfx3d_tex_m33 runs the M33's code):
+// single-precision floats with no contraction, and every float to int conversion is
+// clamped first, since out of range it is undefined and differs between x86 and ARM.
 #pragma once
 #include "display_clip.h"
 #include <math.h>
@@ -33,8 +35,15 @@ typedef struct {
 
 #define TEX_SUB 8  // pixels between re-aims of a span: of the uv, of the colour
 
-// 1/z varying by less than this ratio across a triangle: affine.
+// Affine needs both of these. 1/z varies across the triangle by less than this ratio:
 #define TEX_AFFINE_RATIO 1.2f
+// And (iw_max - iw_min) * extent <= this * iw_min, the extent being the longest run of
+// the uv over the triangle in texels of its mip. Across an extent E with 1/z varying by
+// a ratio r the two pictures are furthest apart by E * (sqrt(r) - 1) / (sqrt(r) + 1),
+// which is E * (r - 1) / 4 while r is small, so this keeps that near one texel at any
+// size: at most 0.94 at E = 32 and 0.97 at E = 64. It is also why near triangles of many
+// texels stay perspective even at nearly constant depth.
+#define TEX_AFFINE_TEXELS 4.0f
 // A triangle with less area than this (px^2) takes every attribute from its top vertex:
 // its gradients would be noise, and it has a pixel or two at most.
 #define TEX_MIN_AREA 0.0625f
@@ -110,7 +119,7 @@ static tex_state_t s_tex;
 // On the M33 the swapped loop is written out. It wants 13 of the 14 registers, and from
 // C, GCC holds other things across it (s_tex's address, the uv at the start) and spills
 // the loop's own state to the stack, in PSRAM, for every pixel. The C below is the
-// definition, what every other target runs; check-tex holds this loop to it.
+// definition, what every other target runs; test_gfx3d_tex_m33 holds this loop to it.
 #if defined(__thumb2__) && defined(__ARM_FEATURE_DSP) && defined(__ARM_FEATURE_SAT)
 #define TEX_M33_LOOP 1
 #else
@@ -141,7 +150,7 @@ static tex_state_t s_tex;
   "orr    %[t0], %[t0], %[t2], lsl #5\n"    \
   "orr    %[t0], %[t0], %[t1], lsl #11\n"
 #define TEX_M33_OPERANDS                                                      \
-  : [i] "+r"(i), [uv] "+r"(uv), [t0] "=&r"(t0), [t1] "=&r"(t1), [t2] "=&r"(t2) \
+  : [i] "+&r"(i), [uv] "+&r"(uv), [t0] "=&r"(t0), [t1] "=&r"(t1), [t2] "=&r"(t2) \
   : [e] "r"(e), [tex] "r"(tex), [duv] "r"(duv), [su] "r"(su), [sv] "r"(sv),    \
     [vmask] "r"(vmask), [crg] "r"(crg), [cb] "r"(cb)                          \
   : "cc", "memory"
@@ -164,9 +173,8 @@ __attribute__((always_inline)) static inline uint32_t tex_pixels(
                        "ldrh   %[t1], [%[e], %[i]]\n"
                        "rev16  %[t1], %[t1]\n"
                        "bic    %[t0], %[t0], #0x820\n"
-                       "bic    %[t0], %[t0], #1\n"
+                       "bic    %[t0], %[t0], #1\n"  // one operand without it is enough
                        "bic    %[t1], %[t1], #0x820\n"
-                       "bic    %[t1], %[t1], #1\n"
                        "add    %[t0], %[t0], %[t1]\n"
                        "lsr    %[t0], %[t0], #1\n"
                        "rev16  %[t0], %[t0]\n"
@@ -303,8 +311,15 @@ TEX_SPANS(tex_persp_blend, tex_span_persp, true)
 
 // ── Rows ────────────────────────────────────────────────────────────────────
 
-// disp_ceil_px(x, cx0, cxe) of a number, with flo = cx0 and fhi = cxe, without branches.
-__attribute__((always_inline)) static inline int tex_ceil_px(float x, float flo, float fhi) {
+// disp_ceil_px(x, cx0, cxe) with flo = cx0 and fhi = cxe, without branches, for a span's
+// first pixel and for the one past its last. They differ only for a NaN, which a side
+// with no height gives (0 * inf), and where disp_tri_row draws nothing: fminf and fmaxf
+// answer with their other argument, so a NaN starts a span at the clip's end and ends one
+// at its start, and n is not above 0 wherever the NaN is.
+__attribute__((always_inline)) static inline int tex_span_first(float x, float flo, float fhi) {
+  return (int)ceilf(fmaxf(fminf(x, fhi), flo));
+}
+__attribute__((always_inline)) static inline int tex_span_end(float x, float flo, float fhi) {
   return (int)ceilf(fminf(fmaxf(x, flo), fhi));
 }
 
@@ -334,16 +349,13 @@ __attribute__((always_inline)) static inline uint32_t tex_walk(const bool persp)
     const float ss = lower ? (x2 - x1) / (y2 - y1) : (x1 - x0) / (y1 - y0);
     do {
       float xl = x0 + (yc - y0) * s02, xr = xs + (yc - ys) * ss;
-      // Where a side has no height one is a NaN, and disp_tri_row draws nothing. So it
-      // does here: a NaN ends up in xr, tex_ceil_px makes that the first column, and n
-      // is not above 0.
-      if (!(xl <= xr)) {
+      if (xr < xl) {
         const float t = xl;
         xl = xr;
         xr = t;
       }
-      const int xa = tex_ceil_px(xl - 0.5f, flo, fhi);
-      const int n = tex_ceil_px(xr - 0.5f, flo, fhi) - xa;
+      const int xa = tex_span_first(xl - 0.5f, flo, fhi);
+      const int n = tex_span_end(xr - 0.5f, flo, fhi) - xa;
       if (n > 0) {
         pixels += (uint32_t)n;
         const uint32_t dx = (uint32_t)(xa - xref);
@@ -426,7 +438,14 @@ __attribute__((unused)) static uint32_t tex_tri(uint16_t *fb, int stride, int cx
   const bool single = lw == 0;  // 1 x 1: the uv is always 0, so (uv >> 31) too
   const float iw0 = a->iw, iw1 = b->iw, iw2 = c->iw;
   const float iw_min = fminf(fminf(iw0, iw1), iw2), iw_max = fmaxf(fmaxf(iw0, iw1), iw2);
-  const bool affine = single || iw_max < TEX_AFFINE_RATIO * iw_min;
+  const float du1 = u1 - u0, du2 = u2 - u0, dv1 = v1 - v0, dv2 = v2 - v0;
+  bool affine = single;
+  if (!affine && iw_max < TEX_AFFINE_RATIO * iw_min) {
+    const float run_u = fmaxf(fmaxf(fabsf(du1), fabsf(du2)), fabsf(du1 - du2));
+    const float run_v = fmaxf(fmaxf(fabsf(dv1), fabsf(dv2)), fabsf(dv1 - dv2));
+    const float extent = fmaxf(run_u * (float)(1 << lw), run_v * (float)(1 << lh));
+    affine = (iw_max - iw_min) * extent <= TEX_AFFINE_TEXELS * iw_min;
+  }
 
   s_tex.tex = px;
   s_tex.su = single ? 31u : (uint32_t)(32 - lw);
@@ -486,7 +505,6 @@ __attribute__((unused)) static uint32_t tex_tri(uint16_t *fb, int stride, int cx
   // Whole repeats off the top vertex: the fractions keep their bits, and the fixed point
   // has the range. Differences need no such help.
   const float fu0 = u0 - floorf(u0), fv0 = v0 - floorf(v0);
-  const float du1 = u1 - u0, du2 = u2 - u0, dv1 = v1 - v0, dv2 = v2 - v0;
 #ifdef GFX3D_TEST
   s_tex_test_affine = affine;
   s_tex_test_rows = yb - ya;
