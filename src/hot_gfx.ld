@@ -13,6 +13,17 @@ SECTIONS
         /* First, at the boundary, so that nothing in gfx3d.c moves it: process_mesh
            (tools/check_hot_text.py fails the build if it is not at __hot_gfx_start__). */
         *src/os/gfx3d.c.o(.gfx3d_mesh_text)
+        /* Then a sprite's fill in a slot of fixed size: raster_sprite at its start (checked
+           the same way), what only it calls, and room to grow. A change to the fill moves
+           nothing after the slot. Outgrowing it fails the link here ("cannot move location
+           counter backwards"): widen it by 8 KB, and the perf rig's
+           (tools/perf_rig/guest/guest.ld) with it. Its size, 11628 B, is 8 KB more than the
+           3436 B the fill took out of gfx3d.c's .text when it was pinned, so the code after
+           the fill's old place kept its cache sets. */
+        __hot_gfx_sprite__ = .;
+        *src/os/gfx3d.c.o(.gfx3d_sprite_text)
+        *src/os/gfx3d.c.o(.gfx3d_sprite_aux_text)
+        . = __hot_gfx_sprite__ + 11628;
         *src/os/gfx3d.c.o(.text* .rodata*)
         *src/os/lua_bridge_gfx3d.c.o(.text* .rodata*)
         *src/fonts/font.c.o(.text* .rodata*)

@@ -7,6 +7,10 @@ SECTIONS
      order, so its lines fall in the same cache sets as in the firmware. */
   .text TEXT_BASE : {
     KEEP(*gfx3d.o(.gfx3d_mesh_text))  /* first, as in src/hot_gfx.ld */
+    __sprite_slot = .;                  /* then a sprite's fill in its slot, as there */
+    KEEP(*gfx3d.o(.gfx3d_sprite_text))
+    KEEP(*gfx3d.o(.gfx3d_sprite_aux_text))
+    . = __sprite_slot + 11628;
     KEEP(*gfx3d.o(.text .text.*))
     *gfx3d_main.o(.text .text.*)
     *start.o(.text .text.*)

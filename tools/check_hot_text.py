@@ -40,7 +40,7 @@ HOT_GFX = ["gfx3d_draw", "gfx3d_draw_xf", "gfx3d_draw_tmesh", "gfx3d_end", "l_gf
 # Functions src/hot_gfx.ld pins in a section of their own, each at the symbol that marks its
 # place: function, symbol. A pin that slipped (the section attribute lost, the function inlined
 # or renamed) lets an edit elsewhere in gfx3d.c move it to other cache sets again.
-PINNED_GFX = [("process_mesh", "__hot_gfx_start__")]
+PINNED_GFX = [("process_mesh", "__hot_gfx_start__"), ("raster_sprite", "__hot_gfx_sprite__")]
 
 # libgcc the SDK's script would copy to SRAM for nothing (src/hot_text.ld).
 COLD_LIBGCC = ["__aeabi_unwind_cpp_pr0", "_Unwind_VRS_Pop", "__gnu_unwind_execute",

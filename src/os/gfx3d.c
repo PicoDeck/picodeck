@@ -1,6 +1,10 @@
 // See gfx3d.h. Built at -O2 with -ffp-contract=off on every target (shared
 // triangle edges must evaluate bit-identically).
 #include "gfx3d.h"
+// The out-of-line blit only a sprite's fill calls goes in the fill's slot (GFX3D_SPRITE_AUX).
+#ifdef __ELF__
+#define DISP_SPRITE_AUX __attribute__((section(".gfx3d_sprite_aux_text")))
+#endif
 #include "display_clip.h"
 #include <math.h>
 #include <stddef.h>
@@ -40,6 +44,19 @@
 #define GFX3D_MESH_FUNC __attribute__((section(".gfx3d_mesh_text"), noinline))
 #else
 #define GFX3D_MESH_FUNC
+#endif
+
+// A sprite's fill has a slot of fixed size in src/hot_gfx.ld, right after process_mesh:
+// raster_sprite at its start (GFX3D_SPRITE_FUNC; check_hot_text.py fails the build unless it
+// is at __hot_gfx_sprite__), then what only it calls (GFX3D_SPRITE_AUX: fog_table, and
+// display_clip.h's table blit through DISP_SPRITE_AUX above), then room to grow. So a change to
+// the fill moves nothing else, and a change elsewhere in this file does not move the fill.
+#ifdef __ELF__
+#define GFX3D_SPRITE_FUNC __attribute__((section(".gfx3d_sprite_text"), noinline))
+#define GFX3D_SPRITE_AUX __attribute__((section(".gfx3d_sprite_aux_text"), noinline))
+#else
+#define GFX3D_SPRITE_FUNC __attribute__((noinline))
+#define GFX3D_SPRITE_AUX __attribute__((noinline))
 #endif
 
 // A record's next index, with REC_OTHER set on a record that is no flat triangle, so the
@@ -1621,8 +1638,7 @@ static uint16_t *s_fog_lut;
 static uint32_t s_fog_made;  // bit l: level l's table is made
 
 // Level `level`'s table for this gfx3d_end, or NULL.
-__attribute__((noinline)) static const uint16_t *fog_table(const gfx3d_t *g, unsigned level,
-                                                           bool swap) {
+GFX3D_SPRITE_AUX static const uint16_t *fog_table(const gfx3d_t *g, unsigned level, bool swap) {
   if (!s_fog_lut) return NULL;
   uint16_t *const lut = s_fog_lut + (size_t)(level - 1u) * DISP_FOG_LUT_LEN;
   if (!(s_fog_made & (1u << level))) {
@@ -1635,8 +1651,8 @@ __attribute__((noinline)) static const uint16_t *fog_table(const gfx3d_t *g, uns
 // A sprite record. The one-texel and 2 x 2 ones, which are most of a valley's, skip the
 // blitter's setup: the pixels are the ones it would make, sampled the same way.
 // pixels counts what the call covers inside the clip, the keyed ones too.
-__attribute__((noinline)) static void raster_sprite(gfx3d_t *g, const gfx3d_target_t *t,
-                                                    const disp_clip_t *c, const gfx3d_rec_t *r) {
+GFX3D_SPRITE_FUNC static void raster_sprite(gfx3d_t *g, const gfx3d_target_t *t,
+                                            const disp_clip_t *c, const gfx3d_rec_t *r) {
   const uint16_t *data;
   int iw, ih;
   uint16_t key;
@@ -1847,8 +1863,8 @@ __attribute__((weak)) bool gfx3d_stack_call(void *lo, size_t bytes, void (*fn)(v
 
 // What gfx3d_end's fills and raster run on, at the end of its lent SRAM. Meander's whole run
 // peaks at 664 B on the device (the `stack` dev command's raster_peak), interrupts' frames
-// included; Lua's sprite function adds under 300 B (-fstack-usage); the rest is margin. An
-// overflow is a STKOF HardFault (app_stack_call_lent).
+// included; a Lua scene's, its sprite through Lua's sprite function, 456 B (the hardware E2E's
+// gfx3d_scene); the rest is margin. An overflow is a STKOF HardFault (app_stack_call_lent).
 #define END_STACK_BYTES 2048u
 
 typedef struct {

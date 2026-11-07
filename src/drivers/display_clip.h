@@ -34,6 +34,12 @@
 #ifndef DISP_HOT
 #define DISP_HOT
 #endif
+// The section of the out-of-line blit only gfx3d's sprites call (disp_blit_scaled_rect_lut):
+// gfx3d.c defines it before including this header, to keep it in its sprite fill's slot
+// (src/hot_gfx.ld); elsewhere empty.
+#ifndef DISP_SPRITE_AUX
+#define DISP_SPRITE_AUX
+#endif
 
 // Inclusive clip rect. Empty when x1 < x0 or y1 < y0.
 typedef struct {
@@ -879,7 +885,7 @@ static inline uint16_t disp_fog_lut_px(const uint16_t *lut, uint16_t v) {
 // disp_blit_scaled_rect_fog with the mix looked up in disp_fog_lut's tables: the same pixels and
 // the same return. No swap: the tables are in the target's byte order. Out of line, so that no
 // caller's state competes with its pixel loops for registers.
-DISP_HOT static __attribute__((noinline, unused)) uint32_t disp_blit_scaled_rect_lut(
+DISP_HOT DISP_SPRITE_AUX static __attribute__((noinline, unused)) uint32_t disp_blit_scaled_rect_lut(
     uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
     const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,
     int dst_w, int dst_h, uint16_t key, const uint16_t *lut) {
