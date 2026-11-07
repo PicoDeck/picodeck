@@ -14,9 +14,10 @@
 #define HALF_PI 1.5707964f
 
 // The lent SRAM (gfx3d_sram_scratch, weak in gfx3d.c): off unless a test sets it. As large as
-// the firmware's (s_jpeg_sram): gfx3d_end wants 7936 B for the sprite fog's tables and 2048 B
-// for its stack.
+// the firmware's (s_jpeg_sram): gfx3d_end wants 7936 B for the sprite fog's tables and 640 B for
+// a magnified keyed sprite's runs after them (SPR_LENT), and 2048 B for its stack.
 static char s_lent[17884] __attribute__((aligned(8)));
+enum { SPR_LENT = 31 * 128 * 2 + 160 * 4 };
 static size_t s_lent_bytes;
 static int s_lent_calls;
 void *gfx3d_sram_scratch(size_t *bytes) {
@@ -3482,7 +3483,7 @@ static void test_sprite_fog_tables_change_nothing(void) {
   const float cam[3] = {1.0f, 2.5f, 3.0f};
   gfx3d_set_camera(g, cam, 0.2f, -0.05f, 0.0f);
   gfx3d_set_fog(g, true, 3, 70, 0x4A69);
-  const size_t sizes[3] = {0, 31u * 128u * 2u - 1u, sizeof s_lent};
+  const size_t sizes[3] = {0, SPR_LENT - 1u, sizeof s_lent};  // none, one byte short, whole
   for (int pass = 0; pass < 4; pass++) {
     const bool swap = pass & 1, mirror = pass & 2;
     gfx3d_set_mirror(g, mirror, 0.0f);
@@ -3505,9 +3506,10 @@ static void test_sprite_fog_tables_change_nothing(void) {
 }
 
 // gfx3d_end hands the last 2048 B of the lent SRAM to gfx3d_stack_call for its fills and raster,
-// only when the block also holds the sprite fog's tables before it, and runs them itself when
-// the call declines: the same pixels and stats whether it is taken, declined or never offered,
-// for a scene with every kind of record, a sky and fogged sprites, in both byte orders.
+// only when the block also holds the sprite fill's tables and runs before it, and runs them
+// itself when the call declines: the same pixels and stats whether it is taken, declined or
+// never offered, for a scene with every kind of record, a sky and sprites, fogged and not (the
+// magnified keyed ones replaying rows from the runs), in both byte orders.
 static void test_end_stack_changes_nothing(void) {
   enum { N = 300 };
   static gfx3d_sprite_t sp[N];
@@ -3527,13 +3529,14 @@ static void test_end_stack_changes_nothing(void) {
   const uint16_t cols[2] = {0x001F, 0x8410};
   CHECK(gfx3d_set_sky(g, bands, cols, 2));
   gfx3d_set_fog(g, true, 3, 70, 0x4A69);
-  gfx3d_set_sprite_fog(g, true);
   const float cam[3] = {0.5f, 1.0f, 3.0f}, id[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
   gfx3d_set_camera(g, cam, 0.15f, -0.05f, 0.0f);
-  const size_t sizes[4] = {0, 7936 + 2048 - 1, 7936 + 2048, sizeof s_lent};
-  for (int swap = 0; swap < 2; swap++)
+  const size_t sizes[4] = {0, SPR_LENT + 2048 - 1, SPR_LENT + 2048, sizeof s_lent};
+  for (int pass = 0; pass < 4; pass++)
     for (int k = 0; k < 4; k++)
       for (int take = 0; take < 2; take++) {
+        const int swap = pass & 1;
+        gfx3d_set_sprite_fog(g, (pass & 2) != 0);
         s_lent_bytes = sizes[k];
         s_stack_take = take != 0;
         gfx3d_target_t t = spr_target(g, (k || take) ? got : want);
@@ -3551,7 +3554,7 @@ static void test_end_stack_changes_nothing(void) {
         } else {
           CHECK_EQ_INT(s_stack_calls, 1);
           CHECK(s_stack_lo == s_lent + sizes[k] - 2048 && s_stack_bytes == 2048);
-          CHECK(s_stack_lo >= s_lent + 7936);  // past the tables
+          CHECK(s_stack_lo >= s_lent + SPR_LENT);  // past the tables and the runs
         }
         if (k || take) CHECK(memcmp(want, got, sizeof want) == 0);
       }

@@ -34,11 +34,15 @@
 #ifndef DISP_HOT
 #define DISP_HOT
 #endif
-// The section of the out-of-line blit only gfx3d's sprites call (disp_blit_scaled_rect_lut):
-// gfx3d.c defines it before including this header, to keep it in its sprite fill's slot
+// The sections of the out-of-line blits only gfx3d's sprites call: disp_blit_scaled_rect_lut
+// (DISP_SPRITE_AUX), and the two that replay a magnified sprite's runs (DISP_SPRITE_RUNS). gfx3d.c
+// defines them before including this header, to keep them in its sprite fill's slot
 // (src/hot_gfx.ld); elsewhere empty.
 #ifndef DISP_SPRITE_AUX
 #define DISP_SPRITE_AUX
+#endif
+#ifndef DISP_SPRITE_RUNS
+#define DISP_SPRITE_RUNS
 #endif
 
 // Inclusive clip rect. Empty when x1 < x0 or y1 < y0.
@@ -880,6 +884,128 @@ static inline void disp_fog_lut(uint16_t *lut, uint16_t fog, unsigned level, boo
 
 static inline uint16_t disp_fog_lut_px(const uint16_t *lut, uint16_t v) {
   return (uint16_t)(lut[v >> 11] | lut[32u + ((v >> 5) & 63u)] | lut[96u + (v & 31u)]);
+}
+
+// A row's run of drawn pixels: its offset from the row's first pixel, and its length.
+typedef struct {
+  uint16_t at, n;
+} disp_run_t;
+
+// Copies n pixels from row to row, a word at a time where the two are aligned alike (rows of
+// an even stride), with no call: the runs a keyed row replays are mostly a few pixels long. The
+// empty asm keeps the compiler from making the loops a call to memcpy.
+static inline __attribute__((always_inline)) void disp_copy_run(uint16_t *d, const uint16_t *s,
+                                                                 uint32_t n) {
+  if (((uintptr_t)d ^ (uintptr_t)s) & 2u) {
+    for (; n; n--) {
+      __asm__ volatile("");
+      *d++ = *s++;
+    }
+    return;
+  }
+  if (n && ((uintptr_t)d & 2u)) {
+    *d++ = *s++;
+    n--;
+  }
+  for (; n >= 2u; n -= 2u, d += 2, s += 2) {
+    uint32_t t;
+    __asm__ volatile("");
+    memcpy(&t, s, 4);
+    memcpy(d, &t, 4);
+  }
+  if (n) *d = *s;
+}
+
+// The replaying blits' body (disp_blit_scaled_rect_keyed, disp_blit_scaled_rect_lut_runs): the
+// pixels and return of disp_blit_scaled_rect (lut NULL) or disp_blit_scaled_rect_fog (lut from
+// disp_fog_lut), key not 0. A row samples its source row and notes its runs of drawn pixels in
+// runs[0..cap); a row that samples the same source row as the row before copies those runs from
+// it instead: the same pixels, as nothing else draws between, read from the framebuffer's SRAM
+// rather than the image's PSRAM. A row of more runs than cap (cap 0: no runs) is sampled again.
+// The source pixel itself steps, not its column: one register fewer than the other blits'
+// loops, which on the M33 keeps the loops off the stack.
+DISP_HOT static inline __attribute__((always_inline)) uint32_t disp_scaled_keyed(
+    uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
+    const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,
+    int dst_w, int dst_h, uint16_t key, bool swap, const uint16_t *lut,
+    disp_run_t *runs, int cap) {
+  if (!data || img_w <= 0 || sw <= 0 || sh <= 0 || dst_w <= 0 || dst_h <= 0)
+    return 0;
+  disp_span_t s;
+  if (!disp_clip_rect(c, x, y, dst_w, dst_h, &s)) return 0;
+  const int q = sw / dst_w, rq = sh / dst_h;
+  const uint32_t rm = (uint32_t)(sw % dst_w), dw = (uint32_t)dst_w;
+  const uint32_t rrm = (uint32_t)(sh % dst_h), dh = (uint32_t)dst_h;
+  const int col_start = s.skip_x ? (int)(s.skip_x * sw / dst_w) : 0;
+  const uint32_t acc_start = s.skip_x ? (uint32_t)(s.skip_x * sw % dst_w) : 0;
+  int src_row = s.skip_y ? (int)(s.skip_y * sh / dst_h) : 0;
+  uint32_t racc = s.skip_y ? (uint32_t)(s.skip_y * sh % dst_h) : 0;
+  uint16_t *row = fb + (ptrdiff_t)s.y * stride + s.x;
+  int prev = -1, nruns = -1;  // nruns: the row before's runs, -1 when not noted
+  for (int r = 0; r < s.h; r++, row += stride) {
+    if (src_row == prev && nruns >= 0) {
+      const uint16_t *const up = row - stride;
+      for (int k = 0; k < nruns; k++) disp_copy_run(row + runs[k].at, up + runs[k].at, runs[k].n);
+    } else {
+      prev = src_row;
+      const uint16_t *sp = data + (size_t)(sy + src_row) * img_w + sx + col_start;
+      uint32_t acc = acc_start;
+      uint16_t *d = row;
+      uint16_t *const e = row + s.w;
+      int n = 0;
+      while (d < e) {
+        uint16_t v = *sp;
+        if (v == key) {  // a keyed pixel: nothing drawn
+          d++;
+          sp += q;
+          acc += rm;
+          if (acc >= dw) { acc -= dw; sp++; }
+          continue;
+        }
+        uint16_t *const first = d;
+        do {  // a run of drawn pixels
+          *d = lut ? disp_fog_lut_px(lut, v) : disp_px(v, swap);
+          d++;
+          sp += q;
+          acc += rm;
+          if (acc >= dw) { acc -= dw; sp++; }
+        } while (d < e && (v = *sp) != key);
+        if (n < cap) {
+          runs[n].at = (uint16_t)(first - row);
+          runs[n].n = (uint16_t)(d - first);
+        }
+        n++;
+      }
+      nruns = n <= cap ? n : -1;
+    }
+    src_row += rq;
+    racc += rrm;
+    if (racc >= dh) { racc -= dh; src_row++; }
+  }
+  return (uint32_t)s.w * (uint32_t)s.h;
+}
+
+// disp_blit_scaled_rect for a key that is not 0, its repeated rows replayed from runs[0..cap)
+// (disp_scaled_keyed). Out of line, so that no caller's state competes with its loops for
+// registers.
+DISP_HOT DISP_SPRITE_RUNS static __attribute__((noinline, unused)) uint32_t
+disp_blit_scaled_rect_keyed(uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
+                            const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,
+                            int dst_w, int dst_h, uint16_t key, bool swap, disp_run_t *runs,
+                            int cap) {
+  return disp_scaled_keyed(fb, stride, c, x, y, data, img_w, sx, sy, sw, sh, dst_w, dst_h, key,
+                           swap, NULL, runs, cap);
+}
+
+// disp_blit_scaled_rect_lut for a key that is not 0, its repeated rows replayed from runs[0..cap)
+// (disp_scaled_keyed): the same pixels and the same return.
+DISP_HOT DISP_SPRITE_RUNS static __attribute__((noinline, unused)) uint32_t
+disp_blit_scaled_rect_lut_runs(uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
+                               const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,
+                               int dst_w, int dst_h, uint16_t key, const uint16_t *lut,
+                               disp_run_t *runs, int cap) {
+  return disp_scaled_keyed(fb, stride, c, x, y, data, img_w, sx, sy, sw, sh, dst_w, dst_h, key,
+                           false, lut, runs, cap);
 }
 
 // disp_blit_scaled_rect_fog with the mix looked up in disp_fog_lut's tables: the same pixels and

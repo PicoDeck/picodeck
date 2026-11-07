@@ -816,6 +816,59 @@ static void test_blit_scaled_rect_lut_matches_fog(void) {
   CHECK_EQ_INT(bad_area, 0);
 }
 
+// An image full of keyed holes (runs of every length), for the replaying blits.
+enum { RIW = 23, RIH = 17 };
+static const uint16_t RKEY = 0xF81F;
+static void holey_image(uint16_t *img) {
+  for (int i = 0; i < RIW * RIH; i++)
+    img[i] = (i * 7 + i / RIW) % 5 < 2 ? RKEY : (uint16_t)(1 + (i * 7919) % 65000);
+}
+
+// disp_blit_scaled_rect_keyed is disp_blit_scaled_rect with a key, and
+// disp_blit_scaled_rect_lut_runs disp_blit_scaled_rect_fog, their repeated rows copied run by run
+// from the row above: the same pixels and area, minified and magnified, clipped, upright and
+// upside down, with a stride that keeps the rows aligned alike and one that does not, and with
+// room for no runs, too few and enough.
+static void test_blit_scaled_rect_keyed_replays_runs(void) {
+  uint16_t img[RIW * RIH], lut[DISP_FOG_LUT_LEN];
+  holey_image(img);
+  disp_run_t runs[64];
+  int bad = 0, bad_area = 0;
+  for (int i = 0; i < 12000; i++) {
+    const disp_clip_t c = random_clip();
+    const int sx = rnd(0, RIW - 1), sy = rnd(0, RIH - 1);
+    const int sw = rnd(1, RIW - sx), sh = rnd(1, RIH - sy);
+    const int dw = rnd(1, 90), dh = rnd(1, 90), x = rnd(-60, 60), y = rnd(-60, 60);
+    const bool swap = rnd(0, 1), up = i % 4 >= 2, odd = i % 2 == 1, fog = i % 8 >= 4;
+    const int cap = i % 5 == 0 ? 0 : i % 5 == 1 ? 1 : i % 5 == 2 ? 3 : 64;
+    const unsigned level = (unsigned)rnd(1, 31);
+    const uint16_t fogc = (uint16_t)rnd(0, 0xFFFF);
+    if (fog) disp_fog_lut(lut, fogc, level, swap);
+    const int rs = odd ? CW - 1 : CW;  // an odd stride: rows aligned alternately
+    const disp_clip_t view = up ? (disp_clip_t){c.x0, 0, c.x1, c.y1 - c.y0} : c;
+    const int stride = up ? -rs : rs, vy = up ? c.y1 - (y + dh - 1) : y;
+    reset(0x1234);
+    uint16_t *const want_fb = screen(s_want) + (up ? (ptrdiff_t)c.y1 * rs : 0);
+    uint16_t *const got_fb = screen(s_got) + (up ? (ptrdiff_t)c.y1 * rs : 0);
+    const uint32_t want_area =
+        fog ? disp_blit_scaled_rect_fog(want_fb, stride, &view, x, vy, img, RIW, sx, sy, sw, sh, dw,
+                                        dh, RKEY, swap, fogc, level)
+            : disp_blit_scaled_rect(want_fb, stride, &view, x, vy, img, RIW, sx, sy, sw, sh, dw, dh,
+                                    RKEY, swap);
+    const uint32_t area =
+        fog ? disp_blit_scaled_rect_lut_runs(got_fb, stride, &view, x, vy, img, RIW, sx, sy, sw, sh,
+                                             dw, dh, RKEY, lut, runs, cap)
+            : disp_blit_scaled_rect_keyed(got_fb, stride, &view, x, vy, img, RIW, sx, sy, sw, sh,
+                                          dw, dh, RKEY, swap, runs, cap);
+    if (area != want_area) bad_area++;
+    if (!same("keyed runs") && bad++ < 5)
+      printf("  keyed runs: src %d,%d %dx%d dst %d,%d %dx%d cap %d up %d odd %d fog %d\n", sx, sy,
+             sw, sh, x, y, dw, dh, cap, up, odd, fog);
+  }
+  CHECK_EQ_INT(bad, 0);
+  CHECK_EQ_INT(bad_area, 0);
+}
+
 // ── disp_fill_tri_f (gfx3d's rasteriser) ────────────────────────────────────
 static float frnd(float lo, float hi) {
   return lo + (hi - lo) * (float)rnd(0, 1000000) / 1000000.0f;
@@ -1095,6 +1148,7 @@ int main(void) {
   test_blit_scaled_rect_negative_stride();
   test_fog_lut_is_the_mix();
   test_blit_scaled_rect_lut_matches_fog();
+  test_blit_scaled_rect_keyed_replays_runs();
   test_vline_gradient_matches_reference();
   test_vline_gradient_reaches_both_ends_and_huge_coords();
   test_tri_f_inside_outside_and_clip();

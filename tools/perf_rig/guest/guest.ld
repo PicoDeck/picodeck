@@ -11,6 +11,7 @@ SECTIONS
     KEEP(*gfx3d.o(.gfx3d_sprite_text))
     . = __sprite_slot + 10564;
     KEEP(*gfx3d.o(.gfx3d_sprite_aux_text))
+    KEEP(*gfx3d.o(.gfx3d_sprite_runs_text))
     . = __sprite_slot + 19820;
     KEEP(*gfx3d.o(.text .text.*))
     *gfx3d_main.o(.text .text.*)

@@ -15,8 +15,9 @@ SECTIONS
         *src/os/gfx3d.c.o(.gfx3d_mesh_text)
         /* Then a sprite's fill in a slot of fixed size: raster_sprite at its start (checked
            the same way) in a part of its own, then what only it calls (fog_table and the
-           table blit), then room for more. A change to raster_sprite moves nothing else, a
-           change to its helpers moves nothing after the slot, and nothing else moves them.
+           table blit, then the blits that replay runs), then room for more. A change to
+           raster_sprite moves nothing else, a change to its helpers moves nothing after the
+           slot, and nothing else moves them.
            Outgrowing either part fails the link here ("cannot move location counter
            backwards"): widen it by 8 KB, and the perf rig's (tools/perf_rig/guest/guest.ld)
            with it. The sizes are 8 KB more than what the code needed when it was pinned
@@ -26,6 +27,7 @@ SECTIONS
         *src/os/gfx3d.c.o(.gfx3d_sprite_text)
         . = __hot_gfx_sprite__ + 10564;
         *src/os/gfx3d.c.o(.gfx3d_sprite_aux_text)
+        *src/os/gfx3d.c.o(.gfx3d_sprite_runs_text)
         . = __hot_gfx_sprite__ + 19820;
         *src/os/gfx3d.c.o(.text* .rodata*)
         *src/os/lua_bridge_gfx3d.c.o(.text* .rodata*)

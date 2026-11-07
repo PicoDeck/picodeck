@@ -1,9 +1,10 @@
 // See gfx3d.h. Built at -O2 with -ffp-contract=off on every target (shared
 // triangle edges must evaluate bit-identically).
 #include "gfx3d.h"
-// The out-of-line blit only a sprite's fill calls goes in the fill's slot (GFX3D_SPRITE_AUX).
+// The out-of-line blits only a sprite's fill calls go in the fill's slot (GFX3D_SPRITE_AUX).
 #ifdef __ELF__
 #define DISP_SPRITE_AUX __attribute__((section(".gfx3d_sprite_aux_text")))
+#define DISP_SPRITE_RUNS __attribute__((section(".gfx3d_sprite_runs_text")))
 #endif
 #include "display_clip.h"
 #include <math.h>
@@ -49,8 +50,9 @@
 // A sprite's fill has a slot of fixed size in src/hot_gfx.ld, right after process_mesh:
 // raster_sprite at its start (GFX3D_SPRITE_FUNC; check_hot_text.py fails the build unless it
 // is at __hot_gfx_sprite__), then what only it calls (GFX3D_SPRITE_AUX: fog_table, and
-// display_clip.h's table blit through DISP_SPRITE_AUX above), then room to grow. So a change to
-// the fill moves nothing else, and a change elsewhere in this file does not move the fill.
+// display_clip.h's table blit through DISP_SPRITE_AUX above; then its replaying blits,
+// DISP_SPRITE_RUNS), then room to grow. So a change to the fill moves nothing else, and a change
+// elsewhere in this file does not move the fill.
 #ifdef __ELF__
 #define GFX3D_SPRITE_FUNC __attribute__((section(".gfx3d_sprite_text"), noinline))
 #define GFX3D_SPRITE_AUX __attribute__((section(".gfx3d_sprite_aux_text"), noinline))
@@ -1629,11 +1631,15 @@ __attribute__((noinline)) GFX3D_TEX_FUNC static void raster_tex_tri(gfx3d_t *g, 
   g->stats.drawn++;
 }
 
-// The sprite fog's tables (disp_fog_lut), one per level 1..31 at fog_lut[(level - 1) *
-// DISP_FOG_LUT_LEN], each made the first time gfx3d_end meets its level, at the start of the SRAM
-// a draw call borrows for its vertices (gfx3d_sram_scratch): nothing else runs until gfx3d_end
-// returns. Without that block a sprite's pixels are mixed one by one, to the same values.
+// What a sprite's fill keeps at the start of the SRAM a draw call borrows for its vertices
+// (gfx3d_sram_scratch), for one gfx3d_end (nothing else runs until it returns): the fog's tables
+// (disp_fog_lut), one per level 1..31 at s_fog_lut[(level - 1) * DISP_FOG_LUT_LEN], each made the
+// first time gfx3d_end meets its level; then a magnified keyed sprite's runs (disp_scaled_keyed),
+// of which a 320-pixel row has at most 160. Without that block (s_fog_lut NULL) a sprite's pixels
+// are mixed one by one, to the same values, and every row is sampled.
 #define FOG_LUT_BYTES (31u * DISP_FOG_LUT_LEN * sizeof(uint16_t))
+#define SPR_RUNS 160
+#define SPR_LENT_BYTES (FOG_LUT_BYTES + SPR_RUNS * sizeof(disp_run_t))
 static uint16_t *s_fog_lut;
 static uint32_t s_fog_made;  // bit l: level l's table is made
 
@@ -1686,6 +1692,19 @@ GFX3D_SPRITE_FUNC static void raster_sprite(gfx3d_t *g, const gfx3d_target_t *t,
       }
     }
     g->stats.pixels += covered;
+    return;
+  }
+  // A keyed sprite taller on screen than its source part repeats source rows: those replay the
+  // row above's runs, kept after the fog's tables (with the tables, so lut is set when level is).
+  disp_run_t *const runs = key && h > sh && s_fog_lut
+                               ? (disp_run_t *)(void *)((uint8_t *)s_fog_lut + FOG_LUT_BYTES)
+                               : NULL;
+  if (runs) {
+    g->stats.pixels +=
+        lut ? disp_blit_scaled_rect_lut_runs(t->fb, t->stride, c, x, y, data, iw, sx, sy, sw, sh, w,
+                                             h, key, lut, runs, SPR_RUNS)
+            : disp_blit_scaled_rect_keyed(t->fb, t->stride, c, x, y, data, iw, sx, sy, sw, sh, w, h,
+                                          key, t->swap, runs, SPR_RUNS);
     return;
   }
   g->stats.pixels += lut     ? disp_blit_scaled_rect_lut(t->fb, t->stride, c, x, y, data, iw, sx,
@@ -1895,13 +1914,13 @@ void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t) {
                     t->clip_x1 < g->vx + g->vw - 1 ? t->clip_x1 : g->vx + g->vw - 1,
                     t->clip_y1 < g->vy + g->vh - 1 ? t->clip_y1 : g->vy + g->vh - 1}};
   if (e.c.x1 < e.c.x0 || e.c.y1 < e.c.y0) return;
-  // The lent SRAM, for this call: the sprite fog's tables at its start (fog_table), and at its
-  // end the stack the rest runs on, as the app's own stack is PSRAM.
+  // The lent SRAM, for this call: the sprite fill's tables and runs at its start (fog_table),
+  // and at its end the stack the rest runs on, as the app's own stack is PSRAM.
   size_t have = 0;
   uint8_t *const lent = (uint8_t *)gfx3d_sram_scratch(&have);
-  s_fog_lut = lent && have >= FOG_LUT_BYTES ? (uint16_t *)(void *)lent : NULL;
+  s_fog_lut = lent && have >= SPR_LENT_BYTES ? (uint16_t *)(void *)lent : NULL;
   s_fog_made = 0;
-  if (!(lent && have >= FOG_LUT_BYTES + END_STACK_BYTES &&
+  if (!(lent && have >= SPR_LENT_BYTES + END_STACK_BYTES &&
         gfx3d_stack_call(lent + have - END_STACK_BYTES, END_STACK_BYTES, end_scene, &e)))
     end_scene(&e);
   s_fog_lut = NULL;  // the block is the next borrower's: nothing keeps pointing into it

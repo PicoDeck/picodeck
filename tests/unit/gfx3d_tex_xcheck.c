@@ -12,7 +12,8 @@
 //  * a whole scene through gfx3d_draw_tmesh and gfx3d_end, the floats of the transform,
 //    fog, near clip and mip selection included.
 // And a reflecting frame: the mirror's facing, the upside-down blits, the sky image's copy, its
-// fogged sprites mixed pixel by pixel and again through the tables gfx3d_end makes in lent SRAM.
+// fogged sprites mixed pixel by pixel and again through the tables gfx3d_end makes in lent SRAM
+// (with the keyed sprites' replayed runs, and the stack it would move to: the host has none).
 #include "display_clip.h"
 #include "gfx3d.h"
 #include "gfx3d_tex_scene.h"
@@ -26,7 +27,7 @@
 
 // The SRAM a draw call or gfx3d_end may borrow (gfx3d_sram_scratch, weak in gfx3d.c): lent only
 // for the reflection's second rendering.
-static char s_lent[8192] __attribute__((aligned(8)));
+static char s_lent[17884] __attribute__((aligned(8)));  // as large as the firmware's
 static int s_lend;
 void *gfx3d_sram_scratch(size_t *bytes) {
   if (!s_lend) return NULL;
