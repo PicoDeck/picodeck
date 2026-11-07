@@ -3223,8 +3223,8 @@ static void tramp_gfx3d_mesh_new(uc_engine *uc) {
     uint32_t addr = read_reg(uc, UC_ARM_REG_R0);
     guest_mesh_desc_t gd;
     pc3dmesh_t m = NULL;
-    // A pointer that is NULL stays NULL for gfx3d_tmesh_new to refuse, flags excepted, as there
-    // it means none. A count out of range would never fit: nothing is read for it.
+    // A NULL array is refused here, as gfx3d_tmesh_new would, flags excepted, as there it
+    // means none. A count out of range would never fit: nothing is read for it.
     if (addr && guest_read(uc, addr, &gd, sizeof gd) && gd.nverts >= 1 &&
         gd.nverts <= GFX3D_MAX_VERTS && gd.ntris >= 1 && gd.ntris <= GFX3D_MAX_TRIS) {
         const size_t nv = (size_t)gd.nverts, nt = (size_t)gd.ntris;

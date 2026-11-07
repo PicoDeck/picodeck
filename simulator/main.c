@@ -627,7 +627,7 @@ static const picocalc_gamepad_t s_gamepad_impl = {
 
 static void sim_wire_g_api(void) {
     memset(&g_api, 0, sizeof(g_api));
-    sim_native_api_wire(&g_api);  // display, sys, input, perf, fs, audio
+    sim_native_api_wire(&g_api);  // display, sys, input, perf, fs, audio, gfx3d
     g_api.soundplayer = &s_soundplayer_impl;
     g_api.http        = &s_http_impl;
     g_api.appconfig   = &s_appconfig_impl;

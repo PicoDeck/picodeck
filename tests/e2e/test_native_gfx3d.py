@@ -196,8 +196,10 @@ def test_firmware_id_and_clock(target):
                              "firmware built from it")
         assert int(_value(lines, "clock")) == 200000
     else:
-        subprocess.run(["git", "-C", str(PROJECT_ROOT), "merge-base", "--is-ancestor",
-                        commit, "HEAD"], check=True)
+        ancestor = subprocess.run(["git", "-C", str(PROJECT_ROOT), "merge-base",
+                                   "--is-ancestor", commit, "HEAD"], capture_output=True)
+        assert ancestor.returncode == 0, (f"the simulator was built from {fid}, which is "
+                                          "not in this branch: rebuild it")
         # The simulator's clock_get_hz, which its audiostat reports too.
         assert int(_value(lines, "clock")) == 125000
 

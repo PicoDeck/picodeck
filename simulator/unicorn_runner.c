@@ -88,7 +88,9 @@ int g_emu_nested_stop = 0;
 // Handle table: maps 32-bit emulated handles <-> 64-bit host pointers
 // =============================================================================
 
-#define MAX_HANDLES 256
+// Shared by every kind of handle. The device has no such limit, so it is kept far
+// above what an app holds: a world of gfx3d meshes runs to a thousand or more.
+#define MAX_HANDLES 4096
 
 static void *s_handle_to_host[MAX_HANDLES];
 static uint32_t s_next_handle = 1;  // 0 = NULL
