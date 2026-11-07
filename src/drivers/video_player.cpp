@@ -11,6 +11,7 @@ extern "C" {
 #include "../os/launcher.h"
 #include "../os/config.h"
 #include "../os/idle_dim.h"
+#include "../os/app_stack.h"
 }
 
 #include <stdio.h>
@@ -124,6 +125,15 @@ extern "C" void *charshader_sram(size_t *bytes) {
 
 extern "C" void *gfx3d_sram_scratch(size_t *bytes) {
     return charshader_sram(bytes);
+}
+
+// gfx3d_end's fills and raster run on a stack in the block's end (gfx3d_stack_call), while it
+// is lent and only inside it: the app's own stack is PSRAM.
+extern "C" bool gfx3d_stack_call(void *lo, size_t bytes, void (*fn)(void *), void *arg) {
+    uint8_t *const b = (uint8_t *)&s_jpeg_sram, *const p = (uint8_t *)lo;
+    if (s_players || p < b || bytes > sizeof(s_jpeg_sram) || p > b + sizeof(s_jpeg_sram) - bytes)
+        return false;
+    return app_stack_call_lent(p, (uint32_t)bytes, fn, arg);
 }
 
 // --- Adaptive quality: 2x nearest-neighbor upscale callback ---

@@ -86,7 +86,8 @@ typedef struct {
 } gfx3d_stats_t;
 
 // Resolves sprite `slot` (as given to gfx3d_draw_sprite) at raster time.
-// Returns false to skip the sprite.
+// Returns false to skip the sprite. It must return, never longjmp out of gfx3d_end, which may
+// be running on a stack of its own (gfx3d_stack_call).
 typedef bool (*gfx3d_sprite_fn)(void *ud, int slot, const uint16_t **data,
                                 int *img_w, int *img_h, uint16_t *key);
 
@@ -273,9 +274,15 @@ void gfx3d_test_tex_tri(gfx3d_t *g, const gfx3d_target_t *t, int slot, int level
                         const gfx3d_test_vert_t v[3], bool blend, gfx3d_test_tex_info_t *info);
 #endif
 // Fast memory for one mesh's vertices during a draw call, or for gfx3d_end's sprite fog
-// tables, or NULL. Weak in gfx3d.c (none); the firmware lends the video decoder's SRAM while
-// no player exists. Nothing in it outlives the call, so nothing else may run meanwhile.
+// tables and stack, or NULL. Weak in gfx3d.c (none); the firmware lends the video decoder's
+// SRAM while no player exists. Nothing in it outlives the call, so nothing else may run
+// meanwhile.
 void *gfx3d_sram_scratch(size_t *bytes);
+// Runs fn(arg) with [lo, lo + bytes) as its stack, a part of what gfx3d_sram_scratch lent, and
+// returns true; false, having run nothing, where it cannot. gfx3d_end runs its fills and its
+// raster this way. Weak in gfx3d.c (false); the firmware moves the app's PSP there
+// (app_stack_call_lent), so a target's sprite function must return (no longjmp out of it).
+bool gfx3d_stack_call(void *lo, size_t bytes, void (*fn)(void *), void *arg);
 // Fast memory for a whole scene, from gfx3d_begin to the next one, or NULL: a
 // scene's bitmap, buckets and first records, 4-byte aligned. Weak in gfx3d.c
 // (none); the firmware lends the MP3 decoder's SRAM until an MP3 session starts.

@@ -1611,22 +1611,16 @@ __attribute__((noinline)) GFX3D_TEX_FUNC static void raster_tex_tri(gfx3d_t *g, 
 }
 
 // The sprite fog's tables (disp_fog_lut), one per level 1..31 at fog_lut[(level - 1) *
-// DISP_FOG_LUT_LEN], each made the first time gfx3d_end meets its level, in the SRAM a draw call
-// borrows for its vertices (gfx3d_sram_scratch): nothing else runs until gfx3d_end returns.
-// Without that block a sprite's pixels are mixed one by one, to the same values.
+// DISP_FOG_LUT_LEN], each made the first time gfx3d_end meets its level, at the start of the SRAM
+// a draw call borrows for its vertices (gfx3d_sram_scratch): nothing else runs until gfx3d_end
+// returns. Without that block a sprite's pixels are mixed one by one, to the same values.
 #define FOG_LUT_BYTES (31u * DISP_FOG_LUT_LEN * sizeof(uint16_t))
 static uint16_t *s_fog_lut;
-static uint32_t s_fog_made;  // bit l: level l's table is made; bit 0: the block was asked for
+static uint32_t s_fog_made;  // bit l: level l's table is made
 
 // Level `level`'s table for this gfx3d_end, or NULL.
 __attribute__((noinline)) static const uint16_t *fog_table(const gfx3d_t *g, unsigned level,
                                                            bool swap) {
-  if (!(s_fog_made & 1u)) {
-    size_t have = 0;
-    void *const lent = gfx3d_sram_scratch(&have);
-    s_fog_lut = lent && have >= FOG_LUT_BYTES ? (uint16_t *)lent : NULL;
-    s_fog_made = 1u;
-  }
   if (!s_fog_lut) return NULL;
   uint16_t *const lut = s_fog_lut + (size_t)(level - 1u) * DISP_FOG_LUT_LEN;
   if (!(s_fog_made & (1u << level))) {
@@ -1841,18 +1835,55 @@ __attribute__((noinline)) GFX3D_TEX_FUNC static void fill_custom(const gfx3d_t *
     fill_rect(t, &f, disp_px(g->clear_color, t->swap));
 }
 
-void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t) {
-  disp_clip_t c = {t->clip_x0 > g->vx ? t->clip_x0 : g->vx,
-                   t->clip_y0 > g->vy ? t->clip_y0 : g->vy,
-                   t->clip_x1 < g->vx + g->vw - 1 ? t->clip_x1 : g->vx + g->vw - 1,
-                   t->clip_y1 < g->vy + g->vh - 1 ? t->clip_y1 : g->vy + g->vh - 1};
-  if (c.x1 < c.x0 || c.y1 < c.y0) return;
-  s_fog_made = 0;  // the fog's tables are this call's (fog_table)
+__attribute__((weak)) bool gfx3d_stack_call(void *lo, size_t bytes, void (*fn)(void *), void *arg) {
+  (void)lo;
+  (void)bytes;
+  (void)fn;
+  (void)arg;
+  return false;
+}
+
+// What gfx3d_end's fills and raster run on, at the end of its lent SRAM. Meander's whole run
+// peaks at 664 B on the device (the `stack` dev command's raster_peak), interrupts' frames
+// included; Lua's sprite function adds under 300 B (-fstack-usage); the rest is margin. An
+// overflow is a STKOF HardFault (app_stack_call_lent).
+#define END_STACK_BYTES 2048u
+
+typedef struct {
+  gfx3d_t *g;
+  const gfx3d_target_t *t;
+  disp_clip_t c;
+} gfx3d_end_t;
+
+// gfx3d_end's work, on whichever stack it is given.
+static void end_scene(void *arg) {
+  const gfx3d_end_t *const e = (const gfx3d_end_t *)arg;
+  gfx3d_t *const g = e->g;
+  const gfx3d_target_t *const t = e->t;
+  const disp_clip_t *const c = &e->c;
   if (g->sky_slot1 || g->sky_limited)
-    fill_custom(g, t, &c);
+    fill_custom(g, t, c);
   else if (g->nsky > 0)
-    fill_sky(g, t, &c);
+    fill_sky(g, t, c);
   else if (g->clear)
-    fill_rect(t, &c, disp_px(g->clear_color, t->swap));
-  raster_scene(g, t, &c);
+    fill_rect(t, c, disp_px(g->clear_color, t->swap));
+  raster_scene(g, t, c);
+}
+
+void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t) {
+  gfx3d_end_t e = {g, t,
+                   {t->clip_x0 > g->vx ? t->clip_x0 : g->vx,
+                    t->clip_y0 > g->vy ? t->clip_y0 : g->vy,
+                    t->clip_x1 < g->vx + g->vw - 1 ? t->clip_x1 : g->vx + g->vw - 1,
+                    t->clip_y1 < g->vy + g->vh - 1 ? t->clip_y1 : g->vy + g->vh - 1}};
+  if (e.c.x1 < e.c.x0 || e.c.y1 < e.c.y0) return;
+  // The lent SRAM, for this call: the sprite fog's tables at its start (fog_table), and at its
+  // end the stack the rest runs on, as the app's own stack is PSRAM.
+  size_t have = 0;
+  uint8_t *const lent = (uint8_t *)gfx3d_sram_scratch(&have);
+  s_fog_lut = lent && have >= FOG_LUT_BYTES ? (uint16_t *)(void *)lent : NULL;
+  s_fog_made = 0;
+  if (!(lent && have >= FOG_LUT_BYTES + END_STACK_BYTES &&
+        gfx3d_stack_call(lent + have - END_STACK_BYTES, END_STACK_BYTES, end_scene, &e)))
+    end_scene(&e);
 }

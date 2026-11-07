@@ -13,8 +13,10 @@
 #define H 320
 #define HALF_PI 1.5707964f
 
-// The lent SRAM (gfx3d_sram_scratch, weak in gfx3d.c): off unless a test sets it.
-static char s_lent[8192] __attribute__((aligned(8)));  // the sprite fog's tables need 7936 B
+// The lent SRAM (gfx3d_sram_scratch, weak in gfx3d.c): off unless a test sets it. As large as
+// the firmware's (s_jpeg_sram): gfx3d_end wants 7936 B for the sprite fog's tables and 2048 B
+// for its stack.
+static char s_lent[17884] __attribute__((aligned(8)));
 static size_t s_lent_bytes;
 static int s_lent_calls;
 void *gfx3d_sram_scratch(size_t *bytes) {
@@ -23,6 +25,23 @@ void *gfx3d_sram_scratch(size_t *bytes) {
   memset(s_lent, 0xA5, sizeof s_lent);  // nothing may rely on what it held
   *bytes = s_lent_bytes;
   return s_lent;
+}
+
+// gfx3d_end's stack in the lent SRAM (gfx3d_stack_call, weak in gfx3d.c): declined unless a
+// test takes it. Taken, it runs the work on this stack (the host has no other), having checked
+// that it was handed a part of the lent block.
+static bool s_stack_take;
+static int s_stack_calls;
+static char *s_stack_lo;
+static size_t s_stack_bytes;
+bool gfx3d_stack_call(void *lo, size_t bytes, void (*fn)(void *), void *arg) {
+  s_stack_calls++;
+  s_stack_lo = (char *)lo;
+  s_stack_bytes = bytes;
+  if (!s_stack_take) return false;
+  memset(lo, 0x5A, bytes);  // nothing may rely on what it held
+  fn(arg);
+  return true;
 }
 
 // The scene's lent SRAM (gfx3d_sram_tier, weak in gfx3d.c): off unless a test
@@ -624,7 +643,7 @@ static void test_lent_sram_changes_nothing(void) {
   s_lent_bytes = sizeof s_lent;
   s_lent_calls = 0;
   lent_scene(g, m, b, &sb);
-  CHECK(s_lent_calls == 3);
+  CHECK(s_lent_calls == 4);  // three draw calls, and gfx3d_end
   s_lent_bytes = 8 * 20 - 1;  // one byte short of the vertices: PSRAM's path
   lent_scene(g, m, c, &sc);
   s_lent_bytes = 0;
@@ -3450,9 +3469,9 @@ static void test_sprite_fog_far(void) {
 }
 
 // gfx3d_end makes the sprite fog's tables in the lent SRAM when there is enough of it (7936
-// B), asking for it once and only for a scene with a fogged sprite, and otherwise mixes each
-// pixel: the same pixels either way, host order and swapped, tiny sprites and blitted ones,
-// keyed and not, upright and mirrored (upside down through a negative stride).
+// B), asking for it once a call, and otherwise mixes each pixel: the same pixels either way,
+// host order and swapped, tiny sprites and blitted ones, keyed and not, upright and mirrored
+// (upside down through a negative stride).
 static void test_sprite_fog_tables_change_nothing(void) {
   enum { N = 400 };
   static gfx3d_sprite_t sp[N];
@@ -3476,20 +3495,69 @@ static void test_sprite_fog_tables_change_nothing(void) {
       CHECK(gfx3d_draw_sprites(g, sp, N, 0.25f) > 100);
       s_lent_calls = 0;
       gfx3d_end(g, &t);
-      CHECK_EQ_INT(s_lent_calls, 1);  // asked for once, at the first fogged sprite
+      CHECK_EQ_INT(s_lent_calls, 1);  // asked for once, for the whole call
       if (k) CHECK(memcmp(want, got, sizeof want) == 0);
     }
-    // Sprite fog off: no fogged sprite, so the block is not asked for at all.
-    gfx3d_set_sprite_fog(g, false);
-    gfx3d_target_t t = spr_target(g, got);
-    gfx3d_begin(g, true, BG);
-    gfx3d_draw_sprites(g, sp, N, 0.25f);
-    s_lent_calls = 0;
-    gfx3d_end(g, &t);
-    CHECK_EQ_INT(s_lent_calls, 0);
   }
   gfx3d_set_mirror(g, false, 0.0f);
   s_lent_bytes = 0;
+  gfx3d_free(g);
+}
+
+// gfx3d_end hands the last 2048 B of the lent SRAM to gfx3d_stack_call for its fills and raster,
+// only when the block also holds the sprite fog's tables before it, and runs them itself when
+// the call declines: the same pixels and stats whether it is taken, declined or never offered,
+// for a scene with every kind of record, a sky and fogged sprites, in both byte orders.
+static void test_end_stack_changes_nothing(void) {
+  enum { N = 300 };
+  static gfx3d_sprite_t sp[N];
+  static uint16_t want[W * H], got[W * H];
+  spr_make(sp, N);
+  gfx3d_t *g = gfx3d_new(W, H);
+  spr_images(g);
+  gfx3d_mesh_t *m = gfx3d_mesh_alloc(4, 2);
+  const float q[12] = {-3, -1, -8, 3, -1, -8, 3, 2, -12, -3, 2, -12};
+  memcpy(m->xyz, q, sizeof q);
+  const uint16_t idx[6] = {0, 1, 2, 0, 2, 3};
+  memcpy(m->idx, idx, sizeof idx);
+  m->color[0] = 0xF800;
+  m->color[1] = 0x07E0;
+  CHECK(gfx3d_mesh_finish(m) == NULL);
+  const float bands[2] = {-0.2f, 0.3f};
+  const uint16_t cols[2] = {0x001F, 0x8410};
+  CHECK(gfx3d_set_sky(g, bands, cols, 2));
+  gfx3d_set_fog(g, true, 3, 70, 0x4A69);
+  gfx3d_set_sprite_fog(g, true);
+  const float cam[3] = {0.5f, 1.0f, 3.0f}, id[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  gfx3d_set_camera(g, cam, 0.15f, -0.05f, 0.0f);
+  const size_t sizes[4] = {0, 7936 + 2048 - 1, 7936 + 2048, sizeof s_lent};
+  for (int swap = 0; swap < 2; swap++)
+    for (int k = 0; k < 4; k++)
+      for (int take = 0; take < 2; take++) {
+        s_lent_bytes = sizes[k];
+        s_stack_take = take != 0;
+        gfx3d_target_t t = spr_target(g, (k || take) ? got : want);
+        t.swap = swap != 0;
+        gfx3d_begin(g, false, 0);
+        gfx3d_draw(g, m, id, ORIGIN, 1, 0, false);
+        CHECK(gfx3d_draw_sprites(g, sp, N, 0.25f) > 100);
+        const gfx3d_stats_t before = *gfx3d_get_stats(g);
+        s_stack_calls = 0;
+        gfx3d_end(g, &t);
+        const gfx3d_stats_t *const st = gfx3d_get_stats(g);
+        CHECK(st->drawn > before.drawn && st->sprites > 100);
+        if (k < 2) {
+          CHECK_EQ_INT(s_stack_calls, 0);  // too small for the tables and the stack
+        } else {
+          CHECK_EQ_INT(s_stack_calls, 1);
+          CHECK(s_stack_lo == s_lent + sizes[k] - 2048 && s_stack_bytes == 2048);
+          CHECK(s_stack_lo >= s_lent + 7936);  // past the tables
+        }
+        if (k || take) CHECK(memcmp(want, got, sizeof want) == 0);
+      }
+  s_lent_bytes = 0;
+  s_stack_take = false;
+  gfx3d_mesh_free(m);
   gfx3d_free(g);
 }
 
@@ -4741,6 +4809,7 @@ int main(void) {
   test_sprite_fog_off_identical();
   test_sprite_fog_far();
   test_sprite_fog_tables_change_nothing();
+  test_end_stack_changes_nothing();
   test_sprite_tiny_fast_path();
   test_sky_image_scrolls_with_yaw();
   test_sky_image_pitch();

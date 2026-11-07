@@ -73,6 +73,23 @@ uint32_t app_stack_os_last_peak(void);
 // True if Thread mode is running on an app stack right now.
 bool app_stack_active(void);
 
+// Run fn(arg) on [lo, lo+size) instead of the app stack it is called on, for one call, and
+// return true. For a call that wants a fast stack: the app stacks are PSRAM, so every spill
+// and saved register goes through the XIP cache, and [lo, lo+size) can be SRAM lent for the
+// call (gfx3d_end's raster, gfx3d_stack_call). The region is painted, PSP moves to its top and
+// PSPLIM above a guard at its bottom (overflow is a STKOF HardFault, as for app_stack_run),
+// and g_app_stack_base/size name it until fn returns, so the profiler and the HardFault
+// handler see the stack in use; then all of it is put back. An interrupt taken meanwhile
+// stacks its frame here (up to 104 B with the FP context). False, running nothing, when
+// Thread mode is not on an app stack (the MSP) and always in the simulator. fn must return:
+// a longjmp out of it would leave PSPLIM at this stack and the globals naming it.
+bool app_stack_call_lent(uint8_t *lo, uint32_t size, void (*fn)(void *), void *arg);
+
+// The largest peak of app_stack_call_lent's calls since boot, and the size of the last one
+// (the `stack` dev command's raster_peak and raster_size). 0 in the simulator.
+uint32_t app_stack_lent_peak(void);
+uint32_t app_stack_lent_size(void);
+
 // True if the guard words at the bottom of the stack are untouched.
 bool app_stack_guard_intact(const uint8_t *base);
 
