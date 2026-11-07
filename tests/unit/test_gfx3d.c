@@ -797,6 +797,167 @@ static void test_nonfinite_vertex_draws_nothing(void) {
   gfx3d_mesh_free(m);
 }
 
+// ── Pinned output of the flat renderer ──
+// A fixed scene through every flat feature: lit and unlit meshes, a ground
+// quad cut by the near plane, fog, sky bands, background scenery and sprites.
+// Its framebuffer's CRC32 was captured on develop before the textured path
+// existed; the flat path must keep producing exactly these bytes.
+#define FLAT_SCENE_CRC 0xb79cbc35u
+
+static uint32_t crc32_u16(const uint16_t *p, size_t n) {
+  uint32_t c = 0xFFFFFFFFu;
+  for (size_t i = 0; i < n; i++) {
+    for (int b = 0; b < 2; b++) {  // low byte first: independent of host endianness
+      c ^= (uint8_t)(p[i] >> (8 * b));
+      for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
+    }
+  }
+  return ~c;
+}
+
+// A unit cube centred on the origin, 12 triangles, a colour per face.
+static gfx3d_mesh_t *cube_mesh(uint8_t flags) {
+  gfx3d_mesh_t *m = gfx3d_mesh_alloc(8, 12);
+  CHECK(m != NULL);
+  static const float v[24] = {-1, -1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1,
+                              -1, -1, 1,  1, -1, 1,  1, 1, 1,  -1, 1, 1};
+  static const uint16_t idx[36] = {
+      0, 2, 1, 0, 3, 2,  // -z
+      4, 5, 6, 4, 6, 7,  // +z
+      0, 4, 7, 0, 7, 3,  // -x
+      1, 2, 6, 1, 6, 5,  // +x
+      0, 1, 5, 0, 5, 4,  // -y
+      3, 7, 6, 3, 6, 2   // +y
+  };
+  static const uint16_t face[6] = {RED, GREEN, BLUE, 0xFFE0, 0xF81F, 0x07FF};
+  memcpy(m->xyz, v, sizeof v);
+  memcpy(m->idx, idx, sizeof idx);
+  for (int t = 0; t < 12; t++) {
+    m->color[t] = face[t / 2];
+    m->flags[t] = flags;
+  }
+  CHECK(gfx3d_mesh_finish(m) == NULL);
+  return m;
+}
+
+// A quad in the y = 0 plane from (x0, z0) to (x1, z1), facing up.
+static gfx3d_mesh_t *ground_mesh(float x0, float z0, float x1, float z1, uint16_t a,
+                                 uint16_t b) {
+  gfx3d_mesh_t *m = gfx3d_mesh_alloc(4, 2);
+  CHECK(m != NULL);
+  const float v[12] = {x0, 0, z0, x1, 0, z0, x1, 0, z1, x0, 0, z1};
+  memcpy(m->xyz, v, sizeof v);
+  const uint16_t idx[6] = {0, 3, 2, 0, 2, 1};
+  memcpy(m->idx, idx, sizeof idx);
+  m->color[0] = a;
+  m->color[1] = b;
+  m->flags[0] = m->flags[1] = 0;
+  CHECK(gfx3d_mesh_finish(m) == NULL);
+  return m;
+}
+
+// Scenery round the camera: a ring of eight tall triangles, unlit.
+static gfx3d_mesh_t *skyline_mesh(void) {
+  gfx3d_mesh_t *m = gfx3d_mesh_alloc(24, 8);
+  CHECK(m != NULL);
+  for (int i = 0; i < 8; i++) {
+    const float a0 = (float)i * 0.7853982f, a1 = (float)(i + 1) * 0.7853982f;
+    const float am = (a0 + a1) * 0.5f, h = (i & 1) ? 60.0f : 90.0f;
+    float *v = m->xyz + 9 * i;
+    v[0] = 400.0f * sinf(a0); v[1] = 0;  v[2] = -400.0f * cosf(a0);
+    v[3] = 400.0f * sinf(a1); v[4] = 0;  v[5] = -400.0f * cosf(a1);
+    v[6] = 400.0f * sinf(am); v[7] = h;  v[8] = -400.0f * cosf(am);
+    m->idx[3 * i] = (uint16_t)(3 * i);
+    m->idx[3 * i + 1] = (uint16_t)(3 * i + 2);
+    m->idx[3 * i + 2] = (uint16_t)(3 * i + 1);
+    m->color[i] = (i & 1) ? 0x4A69 : 0x6B4D;
+    m->flags[i] = GFX3D_UNLIT | GFX3D_DOUBLE_SIDED | GFX3D_NO_FOG;
+  }
+  CHECK(gfx3d_mesh_finish(m) == NULL);
+  return m;
+}
+
+// Two 8x8 images, a diagonal gradient with a keyed corner and a ring.
+static uint16_t s_flat_img[2][64];
+static bool flat_resolve(void *ud, int slot, const uint16_t **data, int *w, int *h,
+                         uint16_t *key) {
+  (void)ud;
+  if (slot < 0 || slot > 1) return false;
+  *data = s_flat_img[slot];
+  *w = 8;
+  *h = 8;
+  *key = MAGENTA;
+  return true;
+}
+
+static void test_flat_scene_crc(void) {
+  for (int y = 0; y < 8; y++)
+    for (int x = 0; x < 8; x++) {
+      s_flat_img[0][y * 8 + x] = (uint16_t)(((x * 4) << 11) | ((y * 8) << 5) | (31 - x - y));
+      const int r = (x - 4) * (x - 4) + (y - 4) * (y - 4);
+      s_flat_img[1][y * 8 + x] = (r >= 4 && r <= 10) ? YELLOW : MAGENTA;
+    }
+  s_flat_img[0][0] = MAGENTA;
+
+  gfx3d_t *g = gfx3d_new(W, H);
+  CHECK(g != NULL);
+  const float cam[3] = {0.5f, 2.0f, 6.0f};
+  gfx3d_set_camera(g, cam, 0.2f, -0.12f, 0.05f);
+  CHECK(gfx3d_set_projection(g, 1.05f, 0.5f, 300.0f));
+  CHECK(gfx3d_set_light(g, 0.4f, 1.0f, 0.6f, 0.3f));
+  gfx3d_set_fog(g, true, 20.0f, 160.0f, 0x8C71);
+  const float ang[4] = {-0.6f, -0.1f, 0.15f, 0.5f};
+  const uint16_t col[4] = {0x2965, 0x5ABC, 0x9E7F, 0x3D9F};
+  CHECK(gfx3d_set_sky(g, ang, col, 4));
+
+  gfx3d_mesh_t *cube = cube_mesh(0);
+  gfx3d_mesh_t *cube_u = cube_mesh(GFX3D_UNLIT | GFX3D_NO_FOG | GFX3D_DOUBLE_SIDED);
+  // From behind the camera to far away: the near plane cuts it.
+  gfx3d_mesh_t *ground = ground_mesh(-60, 40, 60, -280, 0x3366, 0x2B24);
+  gfx3d_mesh_t *skyline = skyline_mesh();
+
+  gfx3d_begin(g, true, 0x0000);
+  gfx3d_draw_background(g, skyline);
+  gfx3d_draw(g, ground, ID, (const float[3]){0, -1, 0}, 1, 0, false);
+  for (int i = 0; i < 6; i++) {
+    float rot[9];
+    gfx3d_rot_euler(rot, 0.5f * (float)i, 0.3f * (float)i, 0.1f * (float)i);
+    const float pos[3] = {-9.0f + 3.5f * (float)i, 0.5f * (float)(i & 1), -6.0f - 14.0f * (float)i};
+    gfx3d_draw(g, (i & 1) ? cube_u : cube, rot, pos, 1.0f + 0.25f * (float)i, 0, (i % 3) == 2);
+  }
+  // One cube straddling the near plane, one cut by the left edge.
+  const float close[3] = {0.5f, 1.5f, 5.0f}, edge[3] = {-6.0f, 2.0f, -3.0f};
+  gfx3d_draw(g, cube, ID, close, 1.2f, 0, false);
+  gfx3d_draw(g, cube, ID, edge, 1.5f, 0, false);
+  // Biased: pushed behind a nearer cube.
+  const float bpos[3] = {2.0f, 1.0f, -4.0f};
+  gfx3d_draw(g, cube_u, ID, bpos, 1.0f, 8.0f, false);
+  const float s1[3] = {-2.0f, 2.0f, -10.0f}, s2[3] = {3.0f, 1.5f, -25.0f};
+  const float s3[3] = {0.0f, 3.0f, -70.0f}, s4[3] = {1.0f, 2.0f, 40.0f};
+  CHECK(gfx3d_draw_sprite(g, 0, s1, 2.0f, 0, 0, 8, 8, 0));
+  CHECK(gfx3d_draw_sprite(g, 1, s2, 4.0f, 0, 0, 8, 8, 0));
+  CHECK(gfx3d_draw_sprite(g, 0, s3, 12.0f, 1, 1, 6, 6, 0));
+  CHECK(!gfx3d_draw_sprite(g, 0, s4, 2.0f, 0, 0, 8, 8, 0));  // behind the camera
+
+  fb_fill(0);
+  gfx3d_target_t t = target();
+  t.sprite = flat_resolve;
+  gfx3d_end(g, &t);
+
+  const gfx3d_stats_t *st = gfx3d_get_stats(g);
+  CHECK(st->clipped > 0);
+  CHECK(st->drawn > 20);
+  CHECK(st->sprites == 3);
+  CHECK(st->overflow == 0);
+  CHECK_EQ_U32(crc32_u16(s_fb, (size_t)W * H), FLAT_SCENE_CRC);
+
+  gfx3d_mesh_free(cube);
+  gfx3d_mesh_free(cube_u);
+  gfx3d_mesh_free(ground);
+  gfx3d_mesh_free(skyline);
+  gfx3d_free(g);
+}
+
 int main(void) {
   test_euler_conventions();
   test_basis();
@@ -818,5 +979,6 @@ int main(void) {
   test_lent_sram_changes_nothing();
   test_lent_tier_changes_nothing();
   test_nonfinite_vertex_draws_nothing();
+  test_flat_scene_crc();
   return check_report("test_gfx3d");
 }
