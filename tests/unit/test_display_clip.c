@@ -710,6 +710,51 @@ static void test_blit_scaled_rect_fog_matches_reference(void) {
   CHECK_EQ_INT(bad_area, 0);
 }
 
+// A negative stride runs the rows upwards from fb, in both blits: how gfx3d draws a mirrored
+// sprite. The picture is the plain one upside down, the same samples in the same rows of the
+// source, clipped to the same rows of the screen, and no others.
+static void test_blit_scaled_rect_negative_stride(void) {
+  enum { IW = 23, IH = 17 };
+  uint16_t img[IW * IH];
+  for (int i = 0; i < IW * IH; i++) img[i] = (uint16_t)(1 + (i * 7919) % 65000);
+  int bad = 0, bad_area = 0;
+  for (int i = 0; i < 4000; i++) {
+    const disp_clip_t c = random_clip();
+    const int sx = rnd(0, IW - 1), sy = rnd(0, IH - 1);
+    const int sw = rnd(1, IW - sx), sh = rnd(1, IH - sy);
+    const int dw = rnd(1, 90), dh = rnd(1, 90), x = rnd(-60, 60), y = rnd(-60, 60);
+    const uint16_t key = (i % 3 == 0) ? img[(sy * IW) + sx] : 0;
+    const int level = i % 2 ? 0 : rnd(1, 31);
+    const uint16_t fogc = (uint16_t)rnd(0, 0xFFFF);
+    const bool swap = rnd(0, 1);
+    reset(0);
+    // Row 0 of this view is the clip's last row of the screen.
+    const disp_clip_t up = {c.x0, 0, c.x1, c.y1 - c.y0};
+    uint16_t *const fb = screen(s_got) + (ptrdiff_t)c.y1 * CW;
+    const int vy = c.y1 - (y + dh - 1);
+    const uint32_t area =
+        level ? disp_blit_scaled_rect_fog(fb, -CW, &up, x, vy, img, IW, sx, sy, sw, sh, dw, dh, key,
+                                          swap, fogc, (unsigned)level)
+              : disp_blit_scaled_rect(fb, -CW, &up, x, vy, img, IW, sx, sy, sw, sh, dw, dh, key, swap);
+    uint16_t *w = screen(s_want);
+    uint32_t want_area = 0;
+    for (int dy = 0; dy < dh; dy++)
+      for (int dx = 0; dx < dw; dx++) {
+        const int px = x + dx, py = y + dh - 1 - dy;
+        if (px < c.x0 || px > c.x1 || py < c.y0 || py > c.y1) continue;
+        want_area++;
+        const uint16_t v = img[(sy + dy * sh / dh) * IW + sx + dx * sw / dw];
+        if (!key || v != key) w[py * CW + px] = disp_px(ref_fog(v, fogc, level), swap);
+      }
+    if (area != want_area) bad_area++;
+    if (!same("upside-down rect") && bad++ < 5)
+      printf("  upside down: src %d,%d %dx%d dst %d,%d %dx%d level %d\n", sx, sy, sw, sh, x, y, dw,
+             dh, level);
+  }
+  CHECK_EQ_INT(bad, 0);
+  CHECK_EQ_INT(bad_area, 0);
+}
+
 // ── disp_fill_tri_f (gfx3d's rasteriser) ────────────────────────────────────
 static float frnd(float lo, float hi) {
   return lo + (hi - lo) * (float)rnd(0, 1000000) / 1000000.0f;
@@ -986,6 +1031,7 @@ int main(void) {
   test_blit_scaled();
   test_blit_scaled_rect_matches_reference();
   test_blit_scaled_rect_fog_matches_reference();
+  test_blit_scaled_rect_negative_stride();
   test_vline_gradient_matches_reference();
   test_vline_gradient_reaches_both_ends_and_huge_coords();
   test_tri_f_inside_outside_and_clip();

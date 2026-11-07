@@ -3,7 +3,7 @@
 // the written-out loop in gfx3d_tex.h and host-order pixels from the C, compiled for the
 // M33; on the host both are the C. Built for both, the M33 builds run under qemu-arm and
 // must print what the host printed, and a run fails by itself wherever swapped pixels
-// are not the byte swap of host-order ones. Four parts:
+// are not the byte swap of host-order ones. Four parts, and a fifth:
 //  * the pixel loop alone, across every texture shape, wild steps and multipliers over
 //    their whole range, saturating and negative (what no scene reaches);
 //  * whole triangles of tests/unit/gfx3d_tex_scene.h, spans and floats included;
@@ -11,6 +11,7 @@
 //    which rests on what VMINNM and VMAXNM do with a NaN;
 //  * a whole scene through gfx3d_draw_tmesh and gfx3d_end, the floats of the transform,
 //    fog, near clip and mip selection included.
+// And a reflecting frame: the mirror's facing, the upside-down blits, the sky image's copy.
 #include "display_clip.h"
 #include "gfx3d.h"
 #include "gfx3d_tex_scene.h"
@@ -228,7 +229,23 @@ static int check_pipeline(void) {
   return differ == 0;
 }
 
+static int check_reflection(void) {
+  for (int swap = 0; swap < 2; swap++) {
+    const gfx3d_stats_t st = tex_scene_reflection(s_fb[swap], swap != 0, s_scene_texels);
+    printf("reflection, swap %d: crc %08lx, %lu drawn, %lu culled, %lu clipped, %lu sprites, %lu pixels\n",
+           swap, (unsigned long)crc32_u16(s_fb[swap], (size_t)TEX_SCENE_W * TEX_SCENE_H),
+           (unsigned long)st.drawn, (unsigned long)st.culled, (unsigned long)st.clipped,
+           (unsigned long)st.sprites, (unsigned long)st.pixels);
+  }
+  long differ = 0;
+  for (size_t i = 0; i < (size_t)TEX_SCENE_W * TEX_SCENE_H; i++)
+    if (s_fb[0][i] != disp_px(s_fb[1][i], true)) differ++;
+  printf("reflection: %ld pixels differ between byte orders\n", differ);
+  return differ == 0;
+}
+
 int main(void) {
   const int a = check_pixel_loop(), b = check_scene(), c = check_coverage(), d = check_pipeline();
-  return a && b && c && d ? 0 : 1;
+  const int e = check_reflection();
+  return a && b && c && d && e ? 0 : 1;
 }

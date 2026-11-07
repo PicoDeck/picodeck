@@ -35,9 +35,11 @@
 // rasteriser's one test per record is all flat triangles ever pay for the other kinds.
 #define REC_END 0x7FFFu
 #define REC_OTHER 0x8000u
-// Such a record's `color`: 0 for a sprite; for a textured triangle, these.
+// Such a record's `color`: 0 for a sprite; for a textured triangle, these. A mirrored sprite
+// goes with them, REC_TEX | REC_SPR_FLIP, so that a flat scene's dispatch stays as it was.
 #define REC_TEX 0x8000u
 #define REC_TEX_BLEND 0x4000u
+#define REC_SPR_FLIP 0x2000u
 #define REC_TEX_SLOT 0x3Fu
 _Static_assert(GFX3D_MAX_TEXTURES <= REC_TEX_SLOT + 1, "a texture's slot fits a record");
 _Static_assert(GFX3D_REC_LIMIT <= REC_END && GFX3D_CAPACITY <= GFX3D_REC_LIMIT,
@@ -113,6 +115,7 @@ typedef struct {
 typedef struct {
   uint16_t *px;  // all mip levels, packed
   uint8_t lg_w, lg_h, nmips;
+  bool scrolled;  // gfx3d_tex_scroll: an offset in `scroll` that is not 0
 } gfx3d_tex_t;
 
 typedef struct {
@@ -129,8 +132,11 @@ struct gfx3d {
   float light[3], ambient;
   bool fog_on;
   bool sprite_fog;  // gfx3d_set_sprite_fog: sprites take the scene's fog
+  bool mirror;      // gfx3d_set_mirror: V and cam are the reflected camera
+  bool sky_limited;  // gfx3d_set_sky_rows: sky_y0 and sky_y1 say
   float fog_near, fog_far;
   uint16_t fog_color;
+  uint8_t sky_slot1;  // gfx3d_set_sky_image: its slot + 1; 0: none
   int nsky;
   float sky_angle[GFX3D_MAX_SKY_BANDS];
   uint16_t sky_color[GFX3D_MAX_SKY_BANDS];
@@ -158,6 +164,14 @@ struct gfx3d {
   gfx3d_xrec_t *xrec;  // cap of them, starting on a cache line
   float (*fan)[6];     // GFX3D_TM_FANS triangles' uv, for those the near plane cut
   int nfan;
+  // Here at the end, so that what a flat scene reads stays on the lines it was, and few, so
+  // that the blocks after this one stay too: the allocator's blocks are 200 B.
+  float (*scroll)[2];        // gfx3d_tex_scroll, by slot: fractions of a repeat. In xblock
+  int sky_row;               // gfx3d_set_sky_image: its horizon_row
+  int sky_y0, sky_y1;        // gfx3d_set_sky_rows
+  float yaw;                 // gfx3d_set_camera's as it was given; NaN: V's
+  float mirror_y;            // 2 * plane_y
+  float real_cam_y;          // the camera's own y while cam[1] is its reflection's
 };
 
 // ── Small vector helpers ────────────────────────────────────────────────────
@@ -359,7 +373,7 @@ gfx3d_tmesh_t *gfx3d_tmesh_new(const gfx3d_tmesh_desc_t *d) {
   return m;
 }
 
-void gfx3d_tmesh_free(gfx3d_tmesh_t *m) {
+GFX3D_TEX_FUNC void gfx3d_tmesh_free(gfx3d_tmesh_t *m) {
   if (m) GFX3D_FREE(m);
 }
 
@@ -519,12 +533,61 @@ bool gfx3d_set_projection(gfx3d_t *g, float fov_y, float znear, float zfar) {
   return true;
 }
 
+// The mirror is a reflected camera. With S the sign change of y and m the reflection in the
+// plane, V (m(p) - cam) = V S (p - m(cam)). So with V S in V and m(cam) in cam, every world
+// point draws at its reflection, and every path that reads them is mirrored with no test of
+// its own: a flat scene pays nothing for it. Only winding has to know. A flat mesh's facing
+// comes from its planes and the eye, which come out right; a textured mesh's comes from its
+// screen area, which this turns round (process_tmesh, tmesh_cut). The real camera's y is kept,
+// not worked back, so that turning the mirror off restores it to the bit.
+GFX3D_TEX_FUNC static void camera_negate_y_column(gfx3d_t *g) {
+  g->V[1] = -g->V[1];
+  g->V[4] = -g->V[4];
+  g->V[7] = -g->V[7];
+}
+
+__attribute__((noinline)) GFX3D_TEX_FUNC static void camera_reflect(gfx3d_t *g) {
+  g->real_cam_y = g->cam[1];
+  g->cam[1] = g->mirror_y - g->cam[1];
+  camera_negate_y_column(g);
+}
+
+GFX3D_TEX_FUNC void gfx3d_set_mirror(gfx3d_t *g, bool on, float plane_y) {
+  if (g->mirror) {
+    g->cam[1] = g->real_cam_y;
+    camera_negate_y_column(g);
+  }
+  const float y = 2.0f * plane_y;
+  g->mirror = on && isfinite(y);
+  if (g->mirror) {
+    g->mirror_y = y;
+    camera_reflect(g);
+  }
+}
+
+// After V and cam are the real camera's.
+__attribute__((noinline)) GFX3D_TEX_FUNC static void camera_moved(gfx3d_t *g, float yaw) {
+  g->yaw = yaw;
+  if (g->mirror) camera_reflect(g);
+}
+
+// Returns true for gfx3d_look_at to tail-call it. noipa: told what it returns, GCC makes that
+// a call and a move, and then process_mesh, which follows, is 4 bytes off its old cache lines.
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((noipa))
+#endif
+__attribute__((noinline)) GFX3D_TEX_FUNC static bool camera_looked(gfx3d_t *g) {
+  camera_moved(g, NAN);  // the sky image finds it in V, if it comes to that
+  return true;
+}
+
 void gfx3d_set_camera(gfx3d_t *g, const float pos[3], float yaw, float pitch,
                       float roll) {
   float r[9];
   gfx3d_rot_euler(r, yaw, pitch, roll);
   mat_t(g->V, r);
   memcpy(g->cam, pos, sizeof g->cam);
+  camera_moved(g, yaw);
 }
 
 bool gfx3d_look_at(gfx3d_t *g, const float eye[3], const float target[3],
@@ -534,7 +597,7 @@ bool gfx3d_look_at(gfx3d_t *g, const float eye[3], const float target[3],
   if (!gfx3d_rot_basis(r, f, up)) return false;
   mat_t(g->V, r);
   memcpy(g->cam, eye, sizeof g->cam);
-  return true;
+  return camera_looked(g);
 }
 
 bool gfx3d_set_light(gfx3d_t *g, float dx, float dy, float dz, float ambient) {
@@ -545,7 +608,7 @@ bool gfx3d_set_light(gfx3d_t *g, float dx, float dy, float dz, float ambient) {
   return true;
 }
 
-void gfx3d_set_sprite_fog(gfx3d_t *g, bool on) { g->sprite_fog = on; }
+GFX3D_TEX_FUNC void gfx3d_set_sprite_fog(gfx3d_t *g, bool on) { g->sprite_fog = on; }
 
 void gfx3d_set_fog(gfx3d_t *g, bool on, float fnear, float ffar, uint16_t color) {
   g->fog_on = on && ffar > fnear;
@@ -567,6 +630,24 @@ bool gfx3d_set_sky(gfx3d_t *g, const float *angles, const uint16_t *colors,
   }
   g->nsky = n;
   return true;
+}
+
+GFX3D_TEX_FUNC bool gfx3d_set_sky_image(gfx3d_t *g, int tex_slot, int horizon_row) {
+  if (tex_slot < 0) {
+    g->sky_slot1 = 0;
+    return true;
+  }
+  if (tex_slot >= g->ntex || horizon_row < 0 || horizon_row > 1 << g->tex[tex_slot].lg_h)
+    return false;
+  g->sky_slot1 = (uint8_t)(tex_slot + 1);
+  g->sky_row = horizon_row;
+  return true;
+}
+
+GFX3D_TEX_FUNC void gfx3d_set_sky_rows(gfx3d_t *g, int y0, int y1) {
+  g->sky_limited = true;
+  g->sky_y0 = y0;
+  g->sky_y1 = y1;
 }
 
 bool gfx3d_project(const gfx3d_t *g, const float p[3], float *sx, float *sy,
@@ -1064,30 +1145,57 @@ static int file_sprites(gfx3d_t *g, const gfx3d_sprite_t *s, int n, float bias, 
   return filed;
 }
 
+// file_sprites under the mirror. The reflected camera has placed them; what is left is to mark
+// the records just filed, as they flip when drawn. Apart, so that file_sprites' loop stays as
+// it was for a flat scene's sprites.
+__attribute__((noinline)) GFX3D_TEX_FUNC static int file_sprites_flipped(gfx3d_t *g,
+                                                                         const gfx3d_sprite_t *s,
+                                                                         int n, float bias, int ssx,
+                                                                         int ssy, int ssw, int ssh) {
+  const int first = g->nrec;
+  const int filed = file_sprites(g, s, n, bias, ssx, ssy, ssw, ssh);
+  for (int i = first; i < g->nrec; i++) rec_at(g, i)->color = REC_TEX | REC_SPR_FLIP;
+  return filed;
+}
+
 bool gfx3d_draw_sprite(gfx3d_t *g, int slot, const float pos[3], float size,
                        int sx, int sy, int sw, int sh, float bias) {
   if (slot < 0 || slot > 0xFFFE || sw <= 0 || sh <= 0 || sx < 0 || sy < 0 ||
       sx > 0x7FFF || sy > 0x7FFF || sw > 0x7FFF || sh > 0x7FFF || !(size > 0.0f))
     return false;
   const gfx3d_sprite_t one = {pos[0], pos[1], pos[2], size, (uint32_t)slot};
-  return file_sprites(g, &one, 1, bias, sx, sy, sw, sh) == 1;
+  return (g->mirror ? file_sprites_flipped : file_sprites)(g, &one, 1, bias, sx, sy, sw, sh) == 1;
 }
 
-int gfx3d_draw_sprites(gfx3d_t *g, const gfx3d_sprite_t *s, int n, float bias) {
+GFX3D_TEX_FUNC int gfx3d_draw_sprites(gfx3d_t *g, const gfx3d_sprite_t *s, int n, float bias) {
   if (!s || n <= 0) return 0;
-  return file_sprites(g, s, n, bias, 0, 0, 0, 0);
+  return (g->mirror ? file_sprites_flipped : file_sprites)(g, s, n, bias, 0, 0, 0, 0);
 }
 
 // ── Textured meshes in a scene ──────────────────────────────────────────────
 
 GFX3D_TEX_FUNC static bool tmesh_scene_alloc(gfx3d_t *g) {
   const size_t rec = sizeof(gfx3d_xrec_t) * (size_t)g->cap, fan = sizeof(float[6]) * GFX3D_TM_FANS;
-  uint8_t *const b = (uint8_t *)GFX3D_MALLOC(rec + fan + 7u);
+  const size_t scroll = sizeof(float[2]) * GFX3D_MAX_TEXTURES;
+  uint8_t *const b = (uint8_t *)GFX3D_MALLOC(rec + fan + scroll + 7u);
   if (!b) return false;
   g->xblock = b;
   g->xrec = (gfx3d_xrec_t *)(void *)(((uintptr_t)b + 7u) & ~(uintptr_t)7u);
   g->fan = (float (*)[6])(void *)(g->xrec + g->cap);
+  g->scroll = (float (*)[2])(void *)(g->fan + GFX3D_TM_FANS);
+  memset(g->scroll, 0, scroll);
   return true;
+}
+
+GFX3D_TEX_FUNC void gfx3d_tex_scroll(gfx3d_t *g, int slot, float du, float dv) {
+  if (slot < 0 || slot >= g->ntex || !isfinite(du) || !isfinite(dv)) return;
+  if (!g->scroll && !tmesh_scene_alloc(g)) return;
+  // Whole repeats would only cost the uv they are added to its low bits. This is exact, as a
+  // float and its floor share their bits, and at most 1: the tiniest negative rounds up to it.
+  const float fu = du - floorf(du), fv = dv - floorf(dv);
+  g->scroll[slot][0] = fu;
+  g->scroll[slot][1] = fv;
+  g->tex[slot].scrolled = fu != 0.0f || fv != 0.0f;
 }
 
 // A record's `color` for this triangle.
@@ -1105,10 +1213,12 @@ __attribute__((noinline)) GFX3D_TEX_FUNC static void tmesh_cut(gfx3d_t *g, const
                                                                const gfx3d_tvert_t *vc, float bias) {
   const unsigned fl = m->flags[tri], slot = m->tex[tri];
   // No screen position yet to tell which way it faces: < 0 faces the eye, at the origin.
+  // A mirror turns the winding round.
   const float ux = vb->x - va->x, uy = vb->y - va->y, uz = vb->z - va->z;
   const float wx = vc->x - va->x, wy = vc->y - va->y, wz = vc->z - va->z;
-  const float facing = (uy * wz - uz * wy) * va->x + (uz * wx - ux * wz) * va->y +
-                       (ux * wy - uy * wx) * va->z;
+  float facing = (uy * wz - uz * wy) * va->x + (uz * wx - ux * wz) * va->y +
+                 (ux * wy - uy * wx) * va->z;
+  if (g->mirror) facing = -facing;
   if ((fl & GFX3D_TM_DOUBLE_SIDED) ? facing == 0.0f : !(facing < 0.0f)) {
     g->stats.culled++;
     return;
@@ -1238,6 +1348,7 @@ GFX3D_TEX_FUNC static void process_tmesh(gfx3d_t *g, const gfx3d_tmesh_t *m, con
   const float vx0 = (float)g->vx, vx1 = (float)(g->vx + g->vw);
   const float vy0 = (float)g->vy, vy1 = (float)(g->vy + g->vh);
   const unsigned ntex = (unsigned)g->ntex;
+  const float winding = g->mirror ? -1.0f : 1.0f;
   const uint16_t *restrict idx = m->idx;
   const uint16_t *restrict colors = m->color;
   const uint8_t *restrict tex = m->tex;
@@ -1259,7 +1370,7 @@ GFX3D_TEX_FUNC static void process_tmesh(gfx3d_t *g, const gfx3d_tmesh_t *m, con
     const unsigned fl = flags[i], slot = tex[i];
     const float xa = va->sx, xb = vb->sx, xc = vc->sx, ya = va->sy, yb = vb->sy, yc = vc->sy;
     // Below 0 it faces the eye: screen y runs down, and its front is counter-clockwise.
-    const float area = (xb - xa) * (yc - ya) - (xc - xa) * (yb - ya);
+    const float area = ((xb - xa) * (yc - ya) - (xc - xa) * (yb - ya)) * winding;
     if (((fl & GFX3D_TM_DOUBLE_SIDED) ? area == 0.0f : !(area < 0.0f)) ||
         (!(xa >= vx0) && !(xb >= vx0) && !(xc >= vx0)) ||
         (!(xa <= vx1) && !(xb <= vx1) && !(xc <= vx1)) ||
@@ -1347,8 +1458,8 @@ static int first_px(float v, bool strict, int lo, int hi) {
 // pixel distance of the pixel centre (X, Y) from the horizon line (positive
 // towards the sky); band i begins where h >= focal * tan(angle[i]). Exact at
 // the horizon, an approximation for other angles away from the centre.
-static void fill_sky(const gfx3d_t *g, const gfx3d_target_t *t,
-                     const disp_clip_t *c) {
+__attribute__((always_inline)) static inline void fill_sky(const gfx3d_t *g, const gfx3d_target_t *t,
+                                                            const disp_clip_t *c) {
   const int n = g->nsky;
   uint16_t col[GFX3D_MAX_SKY_BANDS];
   float th[GFX3D_MAX_SKY_BANDS];
@@ -1442,9 +1553,10 @@ __attribute__((always_inline)) static inline int tex_mip(const gfx3d_tex_t *t, c
 static tex_vert_t s_tex_verts[3];
 
 // A textured record: everything is read here, once, and the rest is tex_tri's.
-__attribute__((noinline)) GFX3D_TEX_FUNC static void raster_tex(gfx3d_t *g, const gfx3d_target_t *t,
-                                                                const disp_clip_t *c,
-                                                                const gfx3d_rec_t *r) {
+__attribute__((noinline)) GFX3D_TEX_FUNC static void raster_tex_tri(gfx3d_t *g, const gfx3d_target_t *t,
+                                                                    const disp_clip_t *c,
+                                                                    const gfx3d_rec_t *r) {
+  const unsigned kind = r->color;
   const size_t in_tier = (uintptr_t)r - (uintptr_t)g->trec;
   const size_t i = in_tier < (size_t)g->ntrec * sizeof *r ? in_tier / sizeof *r : (size_t)(r - g->rec);
   const gfx3d_xrec_t *const x = &g->xrec[i];
@@ -1471,8 +1583,14 @@ __attribute__((noinline)) GFX3D_TEX_FUNC static void raster_tex(gfx3d_t *g, cons
     v[k].iw = x->iw[k];
     v[k].color = x->color[k];
   }
-  const unsigned kind = r->color;
   const gfx3d_tex_t *const tx = &g->tex[kind & REC_TEX_SLOT];
+  if (tx->scrolled) {  // a line of PSRAM only for what moves
+    const float su = g->scroll[kind & REC_TEX_SLOT][0], sv = g->scroll[kind & REC_TEX_SLOT][1];
+    for (int k = 0; k < 3; k++) {
+      v[k].u += su;
+      v[k].v += sv;
+    }
+  }
   int lw, lh;
   const uint16_t *const px = tex_level(tx, tex_mip(tx, v), &lw, &lh);
   g->stats.pixels += tex_tri(t->fb, t->stride, c->x0, c->y0, c->x1, c->y1, &v[0], &v[1], &v[2], px,
@@ -1511,7 +1629,7 @@ __attribute__((noinline)) static void raster_sprite(gfx3d_t *g, const gfx3d_targ
         uint16_t v = sp[colx[dx]];
         if (key && v == key) continue;
         if (level) v = disp_fog_px(v, fogc, level);
-        t->fb[(size_t)py * (size_t)t->stride + (size_t)px] = disp_px(v, t->swap);
+        t->fb[(ptrdiff_t)py * t->stride + px] = disp_px(v, t->swap);
       }
     }
     g->stats.pixels += covered;
@@ -1521,6 +1639,33 @@ __attribute__((noinline)) static void raster_sprite(gfx3d_t *g, const gfx3d_targ
                                                        sw, sh, w, h, key, t->swap, fogc, level)
                            : disp_blit_scaled_rect(t->fb, t->stride, c, x, y, data, iw, sx, sy,
                                                    sw, sh, w, h, key, t->swap);
+}
+
+// A mirrored sprite: raster_sprite's own picture the other way up, whichever path it takes,
+// as it is handed the screen from the clip's last row upwards. Row 0 of that view is that row,
+// so every pointer stays in the clip, and the sprite's first row in the view is its last on
+// screen. Costs a copy on the stack, and few sprites are mirrored.
+__attribute__((noinline)) GFX3D_TEX_FUNC static void raster_sprite_flipped(gfx3d_t *g,
+                                                                           const gfx3d_target_t *t,
+                                                                           const disp_clip_t *c,
+                                                                           const gfx3d_rec_t *r) {
+  gfx3d_target_t up = *t;
+  up.fb = t->fb + (ptrdiff_t)c->y1 * t->stride;
+  up.stride = -t->stride;
+  const disp_clip_t view = {c->x0, 0, c->x1, c->y1 - c->y0};
+  gfx3d_rec_t turned = *r;
+  turned.u.spr.y = (int16_t)(c->y1 - (r->u.spr.y + r->u.spr.h - 1));
+  raster_sprite(g, &up, &view, &turned);
+}
+
+// REC_TEX's two kinds. Two tail calls, as raster_tex_tri's frame is big for a sprite to pay.
+__attribute__((noinline)) GFX3D_TEX_FUNC static void raster_tex(gfx3d_t *g, const gfx3d_target_t *t,
+                                                                const disp_clip_t *c,
+                                                                const gfx3d_rec_t *r) {
+  if (r->color & REC_SPR_FLIP)
+    raster_sprite_flipped(g, t, c, r);
+  else
+    raster_tex_tri(g, t, c, r);
 }
 
 // A record that is no flat triangle: two tail calls, so no frame of its own.
@@ -1594,13 +1739,74 @@ void gfx3d_test_tex_tri(gfx3d_t *g, const gfx3d_target_t *t, int slot, int level
 }
 #endif
 
+// The sky image (gfx3d_set_sky_image has the formulas). Each row is one sequential read of
+// PSRAM, a line per four pixels, so what a pixel costs here is mostly that fill, and the copy
+// is disp_copy_row's: a word at a time, one REV16 per two pixels, each load in one line.
+__attribute__((noinline)) GFX3D_TEX_FUNC static void fill_sky_image(const gfx3d_t *g,
+                                                                    const gfx3d_target_t *t,
+                                                                    const disp_clip_t *c) {
+  const gfx3d_tex_t *const tx = &g->tex[g->sky_slot1 - 1];
+  const int lw = tx->lg_w, width = 1 << lw, last_row = (1 << tx->lg_h) - 1;
+  // V[6..8] is the camera's z axis in the world, which roll does not move and whose y the
+  // mirror has negated.
+  const float *const V = g->V;
+  const float yaw = isnan(g->yaw) ? atan2f(V[6], V[8]) : g->yaw;
+  const float sin_pitch = g->mirror ? V[7] : -V[7];
+  const float tan_pitch = sin_pitch / sqrtf(V[6] * V[6] + V[8] * V[8]);
+  // Both through tex_f2u: looking straight up, or at a NaN, they are not numbers to convert.
+  const uint32_t turn = tex_f2u(floorf(yaw * g->focal + 0.5f));
+  const int horizon_y = (int)tex_f2u(floorf(g->cys + g->focal * tan_pitch + 0.5f));
+  const int first = (int)(((uint32_t)(c->x0 - g->vx) - turn) & (uint32_t)(width - 1));
+  const int n = c->x1 - c->x0 + 1, y1 = c->y1;
+  const int step = g->mirror ? -1 : 1;
+  int row = g->mirror ? g->sky_row + horizon_y - 1 - c->y0 : g->sky_row + c->y0 - horizon_y;
+  const uint16_t *const px = tx->px;
+  uint16_t *d = t->fb + (size_t)c->y0 * t->stride + c->x0;
+  const int stride = t->stride;
+  const bool swap = t->swap;
+  for (int y = c->y0; y <= y1; y++, d += stride, row += step) {
+    const int r = row < 0 ? 0 : row > last_row ? last_row : row;
+    const uint16_t *const src = px + ((size_t)r << lw);
+    uint16_t *out = d;
+    int col = first, left = n;
+    while (left > 0) {
+      const int k = left < width - col ? left : width - col;
+      disp_copy_row(out, src + col, k, swap);
+      out += k;
+      left -= k;
+      col = 0;
+    }
+  }
+}
+
+// A scene's fill with a sky image or sky rows in it: the same choice as gfx3d_end's, for the
+// rows that are allowed. Apart, so that a scene with neither runs what it did.
+__attribute__((noinline)) GFX3D_TEX_FUNC static void fill_custom(const gfx3d_t *g,
+                                                                 const gfx3d_target_t *t,
+                                                                 const disp_clip_t *c) {
+  disp_clip_t f = *c;
+  if (g->sky_limited) {
+    if (f.y0 < g->sky_y0) f.y0 = g->sky_y0;
+    if (f.y1 > g->sky_y1) f.y1 = g->sky_y1;
+    if (f.y0 > f.y1) return;
+  }
+  if (g->sky_slot1)
+    fill_sky_image(g, t, &f);
+  else if (g->nsky > 0)
+    fill_sky(g, t, &f);
+  else if (g->clear)
+    fill_rect(t, &f, disp_px(g->clear_color, t->swap));
+}
+
 void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t) {
   disp_clip_t c = {t->clip_x0 > g->vx ? t->clip_x0 : g->vx,
                    t->clip_y0 > g->vy ? t->clip_y0 : g->vy,
                    t->clip_x1 < g->vx + g->vw - 1 ? t->clip_x1 : g->vx + g->vw - 1,
                    t->clip_y1 < g->vy + g->vh - 1 ? t->clip_y1 : g->vy + g->vh - 1};
   if (c.x1 < c.x0 || c.y1 < c.y0) return;
-  if (g->nsky > 0)
+  if (g->sky_slot1 || g->sky_limited)
+    fill_custom(g, t, &c);
+  else if (g->nsky > 0)
     fill_sky(g, t, &c);
   else if (g->clear)
     fill_rect(t, &c, disp_px(g->clear_color, t->swap));

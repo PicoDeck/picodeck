@@ -735,6 +735,8 @@ static inline uint16_t disp_fog_px(uint16_t v, uint16_t fog, unsigned level) {
 // a remainder DDA across each row. The source rect must lie inside the image
 // (callers clamp). Returns the pixels of the clipped destination rect, whatever the key
 // skipped: what the call covers, for a counter that wants it for free.
+// A negative stride runs the rows upwards from fb, for a picture the other way up: every
+// row of the clip must then be at fb + its y * stride.
 DISP_HOT static inline uint32_t disp_blit_scaled_rect(
     uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
     const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,
@@ -754,7 +756,7 @@ DISP_HOT static inline uint32_t disp_blit_scaled_rect(
   const uint32_t acc_start = s.skip_x ? (uint32_t)(s.skip_x * sw % dst_w) : 0;
   int src_row = s.skip_y ? (int)(s.skip_y * sh / dst_h) : 0;
   uint32_t racc = s.skip_y ? (uint32_t)(s.skip_y * sh % dst_h) : 0;
-  uint16_t *row = fb + (size_t)s.y * stride + s.x;
+  uint16_t *row = fb + (ptrdiff_t)s.y * stride + s.x;
   int prev = -1;
   for (int r = 0; r < s.h; r++, row += stride) {
     if (!key && src_row == prev) {  // opaque: an upscaled row repeats
@@ -818,7 +820,7 @@ DISP_HOT static inline uint32_t disp_blit_scaled_rect_fog(
   const uint32_t acc_start = s.skip_x ? (uint32_t)(s.skip_x * sw % dst_w) : 0;
   int src_row = s.skip_y ? (int)(s.skip_y * sh / dst_h) : 0;
   uint32_t racc = s.skip_y ? (uint32_t)(s.skip_y * sh % dst_h) : 0;
-  uint16_t *row = fb + (size_t)s.y * stride + s.x;
+  uint16_t *row = fb + (ptrdiff_t)s.y * stride + s.x;
   int prev = -1;
   for (int r = 0; r < s.h; r++, row += stride) {
     if (!key && src_row == prev) {  // opaque: an upscaled row repeats

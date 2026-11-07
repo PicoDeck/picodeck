@@ -3169,6 +3169,32 @@ static void test_tmesh_scene_crc(void) {
   CHECK_EQ_INT(differ, 0);
 }
 
+#define REFLECT_SCENE_CRC 0x0f9f8989u
+
+static void test_reflection_scene_crc(void) {
+  static uint16_t fb[TEX_SCENE_W * TEX_SCENE_H], swapped[TEX_SCENE_W * TEX_SCENE_H];
+  static uint16_t texels[5461];
+  const gfx3d_stats_t st = tex_scene_reflection(fb, false, texels);
+  CHECK_EQ_U32(crc32_u16(fb, (size_t)TEX_SCENE_W * TEX_SCENE_H), REFLECT_SCENE_CRC);
+  CHECK(st.clipped >= 2);
+  CHECK(st.drawn > 50);
+  CHECK(st.sprites >= 6);
+  CHECK_EQ_INT(st.overflow, 0);
+  tex_scene_reflection(swapped, true, texels);
+  int differ = 0;
+  for (int i = 0; i < TEX_SCENE_W * TEX_SCENE_H; i++) differ += disp_px(fb[i], true) != swapped[i];
+  CHECK_EQ_INT(differ, 0);
+  // The mirror's marks on sprites and the textured records' second part, with their records in
+  // the lent block and out of it, and split between the two.
+  const size_t lent[] = {TIER_HEAD + 28, TIER_HEAD + 28 * 30, TIER_HEAD + 28 * 60, TIER_HEAD + 28 * 100, 23820};
+  for (size_t i = 0; i < sizeof lent / sizeof lent[0]; i++) {
+    tier_set(lent[i]);
+    tex_scene_reflection(swapped, false, texels);
+    CHECK(memcmp(fb, swapped, sizeof fb) == 0);
+  }
+  tier_set(0);
+}
+
 // ── Sprites at scale: gfx3d_draw_sprites, sprite fog, the tiny path ──────────────────────────
 
 // Two context images: 0 is 8x8 with a key, 1 is 3x5 with none (key 0).
@@ -3423,6 +3449,1140 @@ static void test_sprite_tiny_fast_path(void) {
   gfx3d_free(g);
 }
 
+// ── Sky image, mirror and moving water ──────────────────────────────────────────────────────
+
+#define FOV_64 1.1170107f  // Meander's camera
+
+static uint16_t s_sky_px[1024 * 256];
+static uint16_t s_ma[W * H], s_mb[W * H], s_mc[W * H], s_md[W * H];
+
+static float focal_of(float fov, int vh) { return 0.5f * (float)vh / tanf(0.5f * fov); }
+static int round_px(float v) { return (int)floorf(v + 0.5f); }
+
+static void frame_fill(uint16_t *fb, uint16_t v) {
+  for (int i = 0; i < W * H; i++) fb[i] = v;
+}
+static int frame_count_not(const uint16_t *fb, uint16_t v) {
+  int n = 0;
+  for (int i = 0; i < W * H; i++) n += fb[i] != v;
+  return n;
+}
+static int frames_differ(const uint16_t *a, const uint16_t *b) {
+  int n = 0;
+  for (int i = 0; i < W * H; i++) n += a[i] != b[i];
+  return n;
+}
+static gfx3d_target_t frame_target(gfx3d_t *g, uint16_t *fb) {
+  gfx3d_target_t t = {fb, W, 0, 0, W - 1, H - 1, false, gfx3d_image_resolve, g};
+  return t;
+}
+
+// BLUE, with one column of WHITE.
+static int sky_col_tex(gfx3d_t *g, int lw, int lh, int col) {
+  for (int y = 0; y < 1 << lh; y++)
+    for (int x = 0; x < 1 << lw; x++) s_sky_px[(y << lw) + x] = x == col ? WHITE : BLUE;
+  return gfx3d_tex_add(g, lw, lh, 1, s_sky_px);
+}
+
+// Each row its own colour, each column the same. Up to 256 rows.
+static uint16_t sky_row_color(int r) { return (uint16_t)(0x0841 + r * 257); }
+static int sky_row_tex(gfx3d_t *g, int lw, int lh) {
+  for (int y = 0; y < 1 << lh; y++)
+    for (int x = 0; x < 1 << lw; x++) s_sky_px[(y << lw) + x] = sky_row_color(y);
+  return gfx3d_tex_add(g, lw, lh, 1, s_sky_px);
+}
+
+static void sky_frame(gfx3d_t *g, uint16_t *fb) {
+  gfx3d_begin(g, false, 0);
+  frame_fill(fb, BG);
+  const gfx3d_target_t t = frame_target(g, fb);
+  gfx3d_end(g, &t);
+}
+
+// Pixels of the frame that are not BLUE and WHITE as a marker showing at screen x = `at`,
+// repeating every w, says they should be.
+static int sky_marker_wrong(const uint16_t *fb, int at, int w) {
+  int bad = 0;
+  for (int y = 0; y < H; y++)
+    for (int x = 0; x < W; x++)
+      bad += fb[y * W + x] != (((x - at) & (w - 1)) == 0 ? WHITE : BLUE);
+  return bad;
+}
+
+static void test_sky_image_scrolls_with_yaw(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  CHECK(gfx3d_set_projection(g, FOV_64, 0.5f, 1000.0f));
+  const float focal = focal_of(FOV_64, H);
+  const int wide = sky_col_tex(g, 10, 4, 100);
+  CHECK(gfx3d_set_sky_image(g, wide, 8));
+  // A column of the texture is at x = column + round(yaw * focal), mod the width. Past pi
+  // it goes on: no jump where a direction's angle would.
+  static const float yaws[] = {0.0f, 0.1f, -0.1f, 0.25f, 1.5f, 3.5f, -3.5f, 9.0f};
+  for (size_t i = 0; i < sizeof yaws / sizeof yaws[0]; i++) {
+    gfx3d_set_camera(g, ORIGIN, yaws[i], 0, 0);
+    sky_frame(g, s_ma);
+    CHECK_EQ_INT(sky_marker_wrong(s_ma, 100 + round_px(yaws[i] * focal), 1024), 0);
+  }
+  gfx3d_set_camera(g, ORIGIN, 0.1f, 0, 0);
+  sky_frame(g, s_ma);
+  const int on_screen = 100 + round_px(0.1f * focal);
+  CHECK(on_screen > 100 && on_screen < W);
+  CHECK_EQ_U32(s_ma[160 * W + on_screen], WHITE);
+  CHECK_EQ_U32(s_ma[160 * W + 100], BLUE);
+
+  // Pixels per radian = focal: at the centre of the view as fast as distant terrain, and the
+  // same way, right for a turn left.
+  static const float turns[] = {0.02f, 0.05f, -0.05f};
+  for (size_t i = 0; i < sizeof turns / sizeof turns[0]; i++) {
+    const float far_point[3] = {0, 0, -900};
+    float sx, sy, d;
+    gfx3d_set_camera(g, ORIGIN, turns[i], 0, 0);
+    CHECK(gfx3d_project(g, far_point, &sx, &sy, &d));
+    const float terrain = sx - 160.0f;
+    const int sky = round_px(turns[i] * focal);
+    CHECK(fabsf(terrain - (float)sky) <= 1.0f);
+    CHECK(terrain * (float)sky > 0.0f);
+  }
+
+  // A texture narrower than the view repeats.
+  const int narrow = sky_col_tex(g, 8, 4, 10);
+  CHECK(gfx3d_set_sky_image(g, narrow, 8));
+  gfx3d_set_camera(g, ORIGIN, 0, 0, 0);
+  sky_frame(g, s_ma);
+  CHECK_EQ_INT(sky_marker_wrong(s_ma, 10, 256), 0);
+  CHECK_EQ_U32(s_ma[W + 10], WHITE);
+  CHECK_EQ_U32(s_ma[W + 266], WHITE);
+
+  // The target clip takes part of the same picture, whichever column it starts at.
+  gfx3d_set_camera(g, ORIGIN, 0.3f, 0, 0);
+  sky_frame(g, s_ma);
+  frame_fill(s_mb, BG);
+  gfx3d_begin(g, false, 0);
+  gfx3d_target_t tc = frame_target(g, s_mb);
+  tc.clip_x0 = 57;
+  tc.clip_x1 = 201;
+  tc.clip_y0 = 20;
+  tc.clip_y1 = 40;
+  gfx3d_end(g, &tc);
+  int wrong = 0;
+  for (int y = 0; y < H; y++)
+    for (int x = 0; x < W; x++) {
+      const bool inside = x >= 57 && x <= 201 && y >= 20 && y <= 40;
+      wrong += s_mb[y * W + x] != (inside ? s_ma[y * W + x] : BG);
+    }
+  CHECK_EQ_INT(wrong, 0);
+
+  // Byte order is the target's.
+  gfx3d_begin(g, false, 0);
+  gfx3d_target_t ts = frame_target(g, s_mb);
+  ts.swap = true;
+  gfx3d_end(g, &ts);
+  wrong = 0;
+  for (int i = 0; i < W * H; i++) wrong += s_mb[i] != disp_px(s_ma[i], true);
+  CHECK_EQ_INT(wrong, 0);
+
+  // Counted from the viewport's first column, with the viewport's focal length.
+  gfx3d_set_viewport(g, 20, 10, 200, 200);
+  CHECK(gfx3d_set_sky_image(g, wide, 8));
+  const float vf = focal_of(FOV_64, 200);
+  gfx3d_set_camera(g, ORIGIN, 0.2f, 0, 0);
+  sky_frame(g, s_ma);
+  const int vat = 20 + 100 + round_px(0.2f * vf);
+  CHECK_EQ_U32(s_ma[60 * W + vat], WHITE);
+  CHECK_EQ_U32(s_ma[60 * W + vat - 1], BLUE);
+  CHECK_EQ_U32(s_ma[9 * W + vat], BG);   // above the viewport
+  CHECK_EQ_U32(s_ma[60 * W + 19], BG);   // left of it
+  gfx3d_set_viewport(g, 0, 0, W, H);
+
+  // gfx3d_look_at: the direction's yaw.
+  CHECK(gfx3d_set_sky_image(g, wide, 8));
+  gfx3d_set_camera(g, ORIGIN, 0.3f, 0, 0);
+  sky_frame(g, s_ma);
+  const float at[3] = {-10.0f * sinf(0.3f), 0.0f, -10.0f * cosf(0.3f)}, up[3] = {0, 1, 0};
+  CHECK(gfx3d_look_at(g, ORIGIN, at, up));
+  sky_frame(g, s_mb);
+  CHECK_EQ_INT(frames_differ(s_ma, s_mb), 0);
+
+  // Arguments, and one sky at a time. A refused call leaves things as they were.
+  CHECK(!gfx3d_set_sky_image(g, 99, 0));
+  CHECK(!gfx3d_set_sky_image(g, wide, -1));
+  CHECK(!gfx3d_set_sky_image(g, wide, 17));
+  sky_frame(g, s_mc);
+  CHECK_EQ_INT(frames_differ(s_mb, s_mc), 0);
+  CHECK(gfx3d_set_sky_image(g, wide, 16));  // just below its last row
+  sky_frame(g, s_mc);
+  CHECK(s_mc[0] != BG);
+  set_sky3(g);  // the image, not bands, while it is set
+  gfx3d_set_camera(g, ORIGIN, 0, 0, 0);
+  frame_fill(s_ma, BG);
+  gfx3d_begin(g, true, RED);  // nor the clear colour
+  const gfx3d_target_t t1 = frame_target(g, s_ma);
+  gfx3d_end(g, &t1);
+  CHECK_EQ_U32(s_ma[200 * W + 160], BLUE);
+  CHECK_EQ_U32(s_ma[200 * W + 100], WHITE);
+  CHECK(gfx3d_set_sky_image(g, -1, 0));  // cleared: bands again
+  sky_frame(g, s_ma);
+  CHECK_EQ_U32(s_ma[10 * W + 160], BLUE);
+  CHECK_EQ_U32(s_ma[200 * W + 160], GREEN);
+  CHECK(gfx3d_set_sky(g, NULL, NULL, 0));  // and with none, the clear colour
+  sky_frame(g, s_ma);
+  CHECK_EQ_U32(s_ma[200 * W + 160], BG);
+  gfx3d_begin(g, true, RED);
+  gfx3d_end(g, &t1);
+  CHECK_EQ_U32(s_ma[200 * W + 160], RED);
+  gfx3d_free(g);
+}
+
+// A row counts from the horizon: rows beyond the texture repeat its edge.
+static int sky_rows_wrong(const uint16_t *fb, int horizon_row, int hs, int nrows) {
+  int bad = 0;
+  for (int y = 0; y < H; y++) {
+    int r = horizon_row + y - hs;
+    r = r < 0 ? 0 : r >= nrows ? nrows - 1 : r;
+    for (int x = 0; x < W; x++) bad += fb[y * W + x] != sky_row_color(r);
+  }
+  return bad;
+}
+
+static void test_sky_image_pitch(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  CHECK(gfx3d_set_projection(g, FOV_64, 0.5f, 1000.0f));
+  const float focal = focal_of(FOV_64, H);
+  const int slot = sky_row_tex(g, 4, 7);
+  CHECK(gfx3d_set_sky_image(g, slot, 64));
+  sky_frame(g, s_ma);
+  CHECK_EQ_INT(sky_rows_wrong(s_ma, 64, 160, 128), 0);
+  CHECK_EQ_U32(s_ma[160 * W], sky_row_color(64));  // row horizon_row is just below the horizon
+  CHECK_EQ_U32(s_ma[159 * W], sky_row_color(63));
+  CHECK_EQ_U32(s_ma[10 * W], sky_row_color(0));    // the edges repeat, past either end
+  CHECK_EQ_U32(s_ma[300 * W], sky_row_color(127));
+
+  static const float pitches[] = {0.1f, -0.1f, 0.3f, -0.45f};
+  for (size_t i = 0; i < sizeof pitches / sizeof pitches[0]; i++) {
+    gfx3d_set_camera(g, ORIGIN, 0.4f, pitches[i], 0);
+    sky_frame(g, s_ma);
+    const int hs = round_px(160.0f + focal * tanf(pitches[i]));
+    CHECK_EQ_INT(sky_rows_wrong(s_ma, 64, hs, 128), 0);
+    // On the true horizon: a far point at the eye's height.
+    const float yaw_dir[3] = {-900.0f * sinf(0.4f), 0.0f, -900.0f * cosf(0.4f)};
+    float sx, sy, d;
+    CHECK(gfx3d_project(g, yaw_dir, &sx, &sy, &d));
+    CHECK(fabsf(sy - (float)hs) <= 1.0f);
+  }
+  // Meander's camera: tan(pitch) = (horizon row on screen - 160) / focal.
+  static const int rows[] = {96, 120, 176, 215};
+  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+    gfx3d_set_camera(g, ORIGIN, 0, atanf((float)(rows[i] - 160) / focal), 0);
+    sky_frame(g, s_ma);
+    CHECK_EQ_INT(sky_rows_wrong(s_ma, 64, rows[i], 128), 0);
+  }
+
+  // A viewport's centre.
+  gfx3d_set_viewport(g, 0, 40, W, 200);
+  gfx3d_set_camera(g, ORIGIN, 0, 0, 0);
+  sky_frame(g, s_ma);
+  CHECK_EQ_U32(s_ma[140 * W + 5], sky_row_color(64));
+  CHECK_EQ_U32(s_ma[39 * W + 5], BG);
+  gfx3d_set_viewport(g, 0, 0, W, H);
+
+  // Roll is not supported: the image stays level, as if there were none.
+  gfx3d_set_camera(g, ORIGIN, 0.2f, 0.1f, 0);
+  sky_frame(g, s_ma);
+  gfx3d_set_camera(g, ORIGIN, 0.2f, 0.1f, 0.4f);
+  sky_frame(g, s_mb);
+  CHECK_EQ_INT(frames_differ(s_ma, s_mb), 0);
+
+  // Straight up and down the horizon is at infinity: all one edge. No value is undefined.
+  const float up[3] = {0, 10, 0}, down[3] = {0, -10, 0}, zup[3] = {0, 0, -1};
+  CHECK(gfx3d_look_at(g, ORIGIN, up, zup));
+  sky_frame(g, s_ma);
+  CHECK_EQ_INT(sky_rows_wrong(s_ma, 64, 1000000, 128), 0);
+  CHECK(gfx3d_look_at(g, ORIGIN, down, zup));
+  sky_frame(g, s_ma);
+  CHECK_EQ_INT(sky_rows_wrong(s_ma, 64, -1000000, 128), 0);
+  gfx3d_set_camera(g, ORIGIN, NAN, NAN, 0);  // draws something, and nothing undefined
+  sky_frame(g, s_ma);
+  CHECK(s_ma[0] != BG);
+  gfx3d_set_camera(g, ORIGIN, INFINITY, 0.1f, 0);
+  sky_frame(g, s_ma);
+  gfx3d_set_camera(g, ORIGIN, 1e30f, 0.1f, 0);
+  sky_frame(g, s_ma);
+  CHECK(s_ma[0] != BG);
+  gfx3d_free(g);
+}
+
+static void test_sky_rows_limit_fill(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  gfx3d_mesh_t *wall = square(2.0f, -5.0f, 0x7BEF, GFX3D_UNLIT);
+  const int image = sky_row_tex(g, 4, 7);
+  for (int kind = 0; kind < 3; kind++) {  // clear colour, bands, image
+    CHECK(gfx3d_set_sky(g, NULL, NULL, 0));
+    CHECK(gfx3d_set_sky_image(g, -1, 0));
+    if (kind == 1) set_sky3(g);
+    if (kind == 2) CHECK(gfx3d_set_sky_image(g, image, 64));
+    // The whole fill, as the reference.
+    gfx3d_set_sky_rows(g, -100000, 100000);
+    frame_fill(s_ma, BG);
+    gfx3d_begin(g, true, RED);
+    const gfx3d_target_t ta = frame_target(g, s_ma);
+    gfx3d_end(g, &ta);
+    CHECK_EQ_INT(s_ma[0] != BG, 1);
+    CHECK_EQ_INT(s_ma[(H - 1) * W + W - 1] != BG, 1);
+
+    // Inclusive rows; those outside are not touched.
+    gfx3d_set_sky_rows(g, 100, 150);
+    frame_fill(s_mb, BG);
+    gfx3d_begin(g, true, RED);
+    const gfx3d_target_t tb = frame_target(g, s_mb);
+    gfx3d_end(g, &tb);
+    int wrong = 0;
+    for (int y = 0; y < H; y++)
+      for (int x = 0; x < W; x++)
+        wrong += s_mb[y * W + x] != (y >= 100 && y <= 150 ? s_ma[y * W + x] : BG);
+    CHECK_EQ_INT(wrong, 0);
+
+    // With the target clip: what both allow.
+    frame_fill(s_mb, BG);
+    gfx3d_begin(g, true, RED);
+    gfx3d_target_t tc = frame_target(g, s_mb);
+    tc.clip_y0 = 120;
+    tc.clip_y1 = 300;
+    tc.clip_x1 = 200;
+    gfx3d_end(g, &tc);
+    wrong = 0;
+    for (int y = 0; y < H; y++)
+      for (int x = 0; x < W; x++)
+        wrong += s_mb[y * W + x] != (y >= 120 && y <= 150 && x <= 200 ? s_ma[y * W + x] : BG);
+    CHECK_EQ_INT(wrong, 0);
+
+    // Records still use the target clip, not these rows.
+    frame_fill(s_mb, BG);
+    gfx3d_begin(g, true, RED);
+    gfx3d_draw(g, wall, ID, ORIGIN, 1.0f, 0.0f, false);
+    gfx3d_end(g, &tb);
+    CHECK_EQ_U32(s_mb[60 * W + 160], 0x7BEF);  // above the rows
+    CHECK_EQ_U32(s_mb[260 * W + 160], 0x7BEF);  // below them
+    CHECK_EQ_U32(s_mb[60 * W + 2], BG);
+    CHECK_EQ_U32(s_mb[125 * W + 2], s_ma[125 * W + 2]);
+    CHECK_EQ_U32(s_mb[260 * W + 2], BG);
+
+    // No rows, one row, rows off the viewport, a range holding it.
+    gfx3d_set_sky_rows(g, 150, 100);
+    frame_fill(s_mb, BG);
+    gfx3d_begin(g, true, RED);
+    gfx3d_end(g, &tb);
+    CHECK_EQ_INT(frame_count_not(s_mb, BG), 0);
+    gfx3d_set_sky_rows(g, 125, 125);
+    frame_fill(s_mb, BG);
+    gfx3d_begin(g, true, RED);
+    gfx3d_end(g, &tb);
+    wrong = 0;
+    for (int y = 0; y < H; y++)
+      for (int x = 0; x < W; x++) wrong += s_mb[y * W + x] != (y == 125 ? s_ma[y * W + x] : BG);
+    CHECK_EQ_INT(wrong, 0);
+    gfx3d_set_sky_rows(g, H, H + 50);
+    frame_fill(s_mb, BG);
+    gfx3d_begin(g, true, RED);
+    gfx3d_end(g, &tb);
+    CHECK_EQ_INT(frame_count_not(s_mb, BG), 0);
+    gfx3d_set_sky_rows(g, 0, H - 1);
+    frame_fill(s_mb, BG);
+    gfx3d_begin(g, true, RED);
+    gfx3d_end(g, &tb);
+    CHECK_EQ_INT(frames_differ(s_mb, s_ma), 0);
+    gfx3d_set_sky_rows(g, -100000, 100000);
+  }
+  gfx3d_mesh_free(wall);
+  gfx3d_free(g);
+
+  // The default is the whole viewport, including one set later, and bands look as they did.
+  g = gfx3d_new(W, H);
+  set_sky3(g);
+  frame_fill(s_ma, BG);
+  gfx3d_begin(g, false, 0);
+  const gfx3d_target_t ta = frame_target(g, s_ma);
+  gfx3d_end(g, &ta);
+  CHECK_EQ_U32(s_ma[10 * W + 160], BLUE);
+  CHECK_EQ_U32(s_ma[120 * W + 160], WHITE);
+  CHECK_EQ_U32(s_ma[300 * W + 160], GREEN);
+  frame_fill(s_mb, BG);
+  gfx3d_set_sky_rows(g, -5, H + 5);  // holding it, the same bands by the other path
+  gfx3d_begin(g, false, 0);
+  const gfx3d_target_t tb2 = frame_target(g, s_mb);
+  gfx3d_end(g, &tb2);
+  CHECK_EQ_INT(frames_differ(s_ma, s_mb), 0);
+  gfx3d_free(g);
+  g = gfx3d_new(W, H);
+  set_sky3(g);
+  gfx3d_set_viewport(g, 0, 100, W, 100);
+  frame_fill(s_ma, BG);
+  gfx3d_begin(g, false, 0);
+  gfx3d_end(g, &ta);
+  CHECK(s_ma[100 * W + 160] != BG);
+  CHECK(s_ma[199 * W + 160] != BG);
+  CHECK_EQ_U32(s_ma[99 * W + 160], BG);
+  CHECK_EQ_U32(s_ma[200 * W + 160], BG);
+  gfx3d_free(g);
+}
+
+// One draw of a textured mesh, with the mirror as it is, over BG.
+static void mir_frame(gfx3d_t *g, uint16_t *fb, const gfx3d_tmesh_t *m) {
+  frame_fill(fb, BG);
+  gfx3d_begin(g, false, 0);
+  gfx3d_draw_tmesh(g, m, NULL, ORIGIN, 1.0f, 0.0f);
+  const gfx3d_target_t t = frame_target(g, fb);
+  gfx3d_end(g, &t);
+}
+
+// n triangles of nv vertices with uv from x and z + y (every value a multiple of 1/8, so exact).
+static gfx3d_tmesh_t *mir_mesh(const float *xyz, int nv, const uint16_t *idx, int nt, int slot,
+                               uint8_t fl, float flip_y_about) {
+  static float pos[3 * 16], uv[2 * 16];
+  static uint16_t col[16];
+  static uint8_t tex[16], f[16];
+  for (int i = 0; i < nv; i++) {
+    pos[3 * i] = xyz[3 * i];
+    // uv from the real y: a reflection's uv are the original's.
+    pos[3 * i + 1] = flip_y_about == flip_y_about ? flip_y_about - xyz[3 * i + 1] : xyz[3 * i + 1];
+    pos[3 * i + 2] = xyz[3 * i + 2];
+    uv[2 * i] = xyz[3 * i] * 0.125f;
+    uv[2 * i + 1] = (xyz[3 * i + 1] + xyz[3 * i + 2]) * 0.125f;
+    col[i] = (uint16_t)(0xAD55 - (uint16_t)(i * 0x0821));
+  }
+  for (int t = 0; t < nt; t++) {
+    tex[t] = (uint8_t)slot;
+    f[t] = fl;
+  }
+  return tm_make(nv, nt, pos, uv, col, idx, tex, f);
+}
+
+static int mir_unique_tex(gfx3d_t *g) {
+  static uint16_t p[64 * 64];
+  make_unique(p, 64, 64);
+  return gfx3d_tex_add(g, 6, 6, 1, p);
+}
+
+#define NO_FLIP NAN
+
+static void test_mirror_tmesh(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const float focal = focal_of(1.0471976f, H);
+  const int white = tex_solid(g, 0, WHITE);
+  const int tiled = mir_unique_tex(g);
+  const float eye[3] = {0, 1, 0};
+  gfx3d_set_camera(g, eye, 0, 0, 0);
+
+  // A vertical quad standing on the plane, facing the camera: above the plane's screen line
+  // and below it, front-facing in both.
+  static const float wall[12] = {-2, 0, -10, 2, 0, -10, 2, 2, -10, -2, 2, -10};
+  static const uint16_t quad[6] = {0, 1, 2, 0, 2, 3}, quad_back[6] = {0, 2, 1, 0, 3, 2};
+  gfx3d_tmesh_t *m = mir_mesh(wall, 4, quad, 2, white, 0, NO_FLIP);
+  mir_frame(g, s_ma, m);
+  const float line = 160.0f + focal * 0.1f;  // y = 0, one under the eye, at depth 10
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 2);
+  CHECK(s_ma[(int)(line - 5.0f) * W + 160] != BG);
+  CHECK_EQ_U32(s_ma[(int)(line + 5.0f) * W + 160], BG);
+  gfx3d_set_mirror(g, true, 0.0f);
+  mir_frame(g, s_mb, m);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 2);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->culled, 0);
+  CHECK_EQ_U32(s_mb[(int)(line - 5.0f) * W + 160], BG);   // nothing above the line
+  CHECK(s_mb[(int)(line + 5.0f) * W + 160] != BG);
+  const float bottom = 160.0f + focal * 0.3f;  // y = -2, three under the eye
+  CHECK(s_mb[(int)(bottom - 3.0f) * W + 160] != BG);
+  CHECK_EQ_U32(s_mb[(int)(bottom + 3.0f) * W + 160], BG);
+  gfx3d_set_mirror(g, false, 0.0f);
+  gfx3d_tmesh_free(m);
+
+  // Its back stays its back.
+  m = mir_mesh(wall, 4, quad_back, 2, white, 0, NO_FLIP);
+  mir_frame(g, s_ma, m);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->culled, 2);
+  gfx3d_set_mirror(g, true, 0.0f);
+  mir_frame(g, s_ma, m);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->culled, 2);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 0);
+  gfx3d_set_mirror(g, false, 0.0f);
+  gfx3d_tmesh_free(m);
+
+  // A roof seen from above: water sees its underside, and the eye does not, and the other way
+  // round for its top.
+  static const float roof[9] = {-5, 3, -15, 5, 3, -15, 0, 3, -5};  // faces down
+  static const uint16_t tri[3] = {0, 1, 2}, tri_back[3] = {0, 2, 1};
+  const float high[3] = {0, 6, 0};
+  gfx3d_set_camera(g, high, 0, -0.4f, 0);
+  gfx3d_tmesh_t *under = mir_mesh(roof, 3, tri, 1, white, 0, NO_FLIP);
+  gfx3d_tmesh_t *top = mir_mesh(roof, 3, tri_back, 1, white, 0, NO_FLIP);
+  mir_frame(g, s_ma, under);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 0);
+  mir_frame(g, s_ma, top);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 1);
+  gfx3d_set_mirror(g, true, 0.0f);
+  mir_frame(g, s_ma, under);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 1);
+  CHECK(frame_count_not(s_ma, BG) > 200);
+  mir_frame(g, s_ma, top);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 0);
+  gfx3d_set_mirror(g, false, 0.0f);
+  gfx3d_tmesh_free(under);
+  gfx3d_tmesh_free(top);
+
+  // To the pixel, the same as the reflected shape drawn plainly, from any direction. Plane 0
+  // keeps the two calculations' rounding the same; with the shape double-sided, facing has no
+  // say in the reference.
+  static const float slab[12] = {-3, 0.5f, -9, 3, 0.25f, -9, 2, 4, -12, -2, 3.5f, -11};
+  static const float aim[][3] = {{0, 0, 0}, {0.3f, -0.2f, 0}, {0.6f, -0.2f, 0}, {0.15f, -0.2f, 0.3f}};
+  gfx3d_tmesh_t *real = mir_mesh(slab, 4, quad, 2, tiled, 0, NO_FLIP);
+  gfx3d_tmesh_t *reflected = mir_mesh(slab, 4, quad, 2, tiled, GFX3D_TM_DOUBLE_SIDED, 0.0f);
+  const float eyes[][3] = {{0, 2, 4}, {-1, 3.5f, 2}, {6, 1.25f, -2}, {3, 2.5f, 8}};
+  for (size_t i = 0; i < sizeof aim / sizeof aim[0]; i++) {
+    gfx3d_set_camera(g, eyes[i], aim[i][0], aim[i][1], aim[i][2]);
+    mir_frame(g, s_ma, reflected);
+    const uint32_t want_pixels = gfx3d_get_stats(g)->pixels;
+    gfx3d_set_mirror(g, true, 0.0f);
+    mir_frame(g, s_mb, real);
+    gfx3d_set_mirror(g, false, 0.0f);
+    CHECK_EQ_INT(frames_differ(s_ma, s_mb), 0);
+    CHECK_EQ_INT(gfx3d_get_stats(g)->pixels, want_pixels);
+    CHECK(want_pixels > 300);
+  }
+  // A plane elsewhere: an unturned camera, to keep them exact.
+  gfx3d_tmesh_free(reflected);
+  reflected = mir_mesh(slab, 4, quad, 2, tiled, GFX3D_TM_DOUBLE_SIDED, 1.5f);
+  gfx3d_set_camera(g, eyes[0], 0, 0, 0);
+  mir_frame(g, s_ma, reflected);
+  CHECK(gfx3d_get_stats(g)->pixels > 100);
+  gfx3d_set_mirror(g, true, 0.75f);
+  mir_frame(g, s_mb, real);
+  gfx3d_set_mirror(g, false, 0.0f);
+  CHECK_EQ_INT(frames_differ(s_ma, s_mb), 0);
+  gfx3d_tmesh_free(reflected);
+  gfx3d_tmesh_free(real);
+
+  // Through the near plane, whose path tests facing on its own: a plate that faces down, from
+  // above, to behind the eye. Its reflection faces the eye and is cut as it should be.
+  static const float plate[9] = {-4, 2, -8, 4, 2, -8, 0, 2, 2};
+  const float over[3] = {0, 3, 0};
+  gfx3d_tmesh_t *down = mir_mesh(plate, 3, tri, 1, tiled, 0, NO_FLIP);
+  gfx3d_tmesh_t *up = mir_mesh(plate, 3, tri_back, 1, tiled, 0, NO_FLIP);
+  gfx3d_tmesh_t *down_refl = mir_mesh(plate, 3, tri, 1, tiled, GFX3D_TM_DOUBLE_SIDED, 0.0f);
+  static const float cut_aim[][2] = {{0, -0.2f}, {0.3f, -0.4f}, {-0.5f, -0.1f}};
+  for (size_t i = 0; i < sizeof cut_aim / sizeof cut_aim[0]; i++) {
+    gfx3d_set_camera(g, over, cut_aim[i][0], cut_aim[i][1], 0);
+    mir_frame(g, s_ma, down);  // from above it shows its back
+    CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 0);
+    CHECK_EQ_INT(gfx3d_get_stats(g)->culled, 1);
+    mir_frame(g, s_ma, up);
+    CHECK(gfx3d_get_stats(g)->drawn >= 1);
+    mir_frame(g, s_ma, down_refl);
+    CHECK_EQ_INT(gfx3d_get_stats(g)->clipped, 1);
+    const uint32_t drawn = gfx3d_get_stats(g)->drawn;
+    CHECK(drawn >= 1);
+    gfx3d_set_mirror(g, true, 0.0f);
+    mir_frame(g, s_mb, down);
+    CHECK_EQ_INT(gfx3d_get_stats(g)->clipped, 1);
+    CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, drawn);
+    CHECK_EQ_INT(frames_differ(s_ma, s_mb), 0);
+    mir_frame(g, s_mb, up);  // its top is the reflection's far side
+    CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 0);
+    CHECK_EQ_INT(gfx3d_get_stats(g)->culled, 1);
+    gfx3d_set_mirror(g, false, 0.0f);
+  }
+  gfx3d_tmesh_free(down);
+  gfx3d_tmesh_free(up);
+  gfx3d_tmesh_free(down_refl);
+
+  // Turning it off gives back the real camera bit for bit, however the values round, and
+  // the camera can be set before or after it goes on.
+  static const float ground[12] = {-30, 0, -2, 30, 0, -2, 30, 7, -60, -30, 7, -60};
+  gfx3d_tmesh_t *hill = mir_mesh(ground, 4, quad, 2, tiled, GFX3D_TM_DOUBLE_SIDED, NO_FLIP);
+  const float odd_eye[3] = {0.1f, 1.1f, 0.7f};
+  gfx3d_set_camera(g, odd_eye, 0.3f, -0.1f, 0);
+  mir_frame(g, s_ma, hill);
+  for (int i = 0; i < 20; i++) {
+    gfx3d_set_mirror(g, true, 123.456f + (float)i * 0.37f);
+    gfx3d_set_mirror(g, true, 0.3f);
+    gfx3d_set_mirror(g, false, 0.0f);
+  }
+  gfx3d_set_mirror(g, false, 7.0f);  // off when off: nothing
+  mir_frame(g, s_mb, hill);
+  CHECK_EQ_INT(frames_differ(s_ma, s_mb), 0);
+  gfx3d_set_mirror(g, true, 0.3f);
+  mir_frame(g, s_mb, hill);
+  CHECK(frames_differ(s_ma, s_mb) > 100);
+  gfx3d_set_camera(g, odd_eye, 0.3f, -0.1f, 0);  // while on: stays reflected
+  mir_frame(g, s_mc, hill);
+  CHECK_EQ_INT(frames_differ(s_mb, s_mc), 0);
+  const float target_at[3] = {0, 0, -30}, up_dir[3] = {0, 1, 0};
+  CHECK(gfx3d_look_at(g, odd_eye, target_at, up_dir));
+  mir_frame(g, s_mc, hill);
+  gfx3d_set_mirror(g, false, 0.0f);
+  CHECK(gfx3d_look_at(g, odd_eye, target_at, up_dir));
+  gfx3d_set_mirror(g, true, 0.3f);
+  mir_frame(g, s_md, hill);
+  CHECK_EQ_INT(frames_differ(s_mc, s_md), 0);
+  gfx3d_set_mirror(g, false, 0.0f);
+  gfx3d_set_camera(g, odd_eye, 0.3f, -0.1f, 0);
+  mir_frame(g, s_mb, hill);
+  CHECK_EQ_INT(frames_differ(s_ma, s_mb), 0);
+  // A plane that is not finite is no mirror.
+  gfx3d_set_mirror(g, true, NAN);
+  mir_frame(g, s_mb, hill);
+  CHECK_EQ_INT(frames_differ(s_ma, s_mb), 0);
+  gfx3d_set_mirror(g, true, INFINITY);
+  mir_frame(g, s_mb, hill);
+  CHECK_EQ_INT(frames_differ(s_ma, s_mb), 0);
+  gfx3d_tmesh_free(hill);
+  gfx3d_free(g);
+}
+
+// Flat meshes are honoured too: the mirror is a reflected camera, so nothing in the flat path
+// had to change for it.
+static void test_mirror_flat_mesh(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const float eye[3] = {1, 2, 4};
+  // A shape in the air, its reflection with the winding reversed, so it faces the same way.
+  static const float shape[12] = {-3, 0.5f, -9, 3, 0.25f, -9, 2, 4, -12, -2, 3.5f, -11};
+  gfx3d_mesh_t *real = gfx3d_mesh_alloc(4, 2), *refl = gfx3d_mesh_alloc(4, 2);
+  memcpy(real->xyz, shape, sizeof shape);
+  memcpy(refl->xyz, shape, sizeof shape);
+  for (int i = 0; i < 4; i++) refl->xyz[3 * i + 1] = -refl->xyz[3 * i + 1];
+  static const uint16_t fwd[6] = {0, 1, 2, 0, 2, 3}, rev[6] = {0, 2, 1, 0, 3, 2};
+  memcpy(real->idx, fwd, sizeof fwd);
+  memcpy(refl->idx, rev, sizeof rev);
+  for (int t = 0; t < 2; t++) {
+    real->color[t] = refl->color[t] = (uint16_t)(0x7BEF + t * 0x1000);
+    real->flags[t] = refl->flags[t] = GFX3D_UNLIT;
+  }
+  CHECK(gfx3d_mesh_finish(real) == NULL);
+  CHECK(gfx3d_mesh_finish(refl) == NULL);
+  static const float aim[][2] = {{0, 0}, {0.3f, -0.2f}, {0.15f, -0.35f}};
+  const gfx3d_target_t ta = frame_target(g, s_ma), tb = frame_target(g, s_mb);
+  for (size_t i = 0; i < sizeof aim / sizeof aim[0]; i++) {
+    gfx3d_set_camera(g, eye, aim[i][0], aim[i][1], 0);
+    frame_fill(s_ma, BG);
+    gfx3d_begin(g, false, 0);
+    gfx3d_draw(g, refl, ID, ORIGIN, 1.0f, 0.0f, false);
+    gfx3d_end(g, &ta);
+    CHECK(gfx3d_get_stats(g)->drawn >= 2);
+    gfx3d_set_mirror(g, true, 0.0f);
+    frame_fill(s_mb, BG);
+    gfx3d_begin(g, false, 0);
+    gfx3d_draw(g, real, ID, ORIGIN, 1.0f, 0.0f, false);
+    gfx3d_end(g, &tb);
+    gfx3d_set_mirror(g, false, 0.0f);
+    CHECK_EQ_INT(frames_differ(s_ma, s_mb), 0);
+    CHECK(gfx3d_get_stats(g)->drawn >= 2);
+  }
+  gfx3d_mesh_free(real);
+  gfx3d_mesh_free(refl);
+
+  // Facing is the reflection's, near clip included: from above, a plate that faces down shows
+  // only in the water.
+  static const float plate[9] = {-4, 2, -8, 4, 2, -8, 0, 2, 2};
+  gfx3d_mesh_t *down = tri_mesh(plate, 0x7BEF, GFX3D_UNLIT);
+  const float over[3] = {0, 3, 0};
+  gfx3d_set_camera(g, over, 0, -0.2f, 0);
+  frame_fill(s_ma, BG);
+  gfx3d_begin(g, false, 0);
+  gfx3d_draw(g, down, ID, ORIGIN, 1.0f, 0.0f, false);
+  gfx3d_end(g, &ta);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->drawn, 0);
+  gfx3d_set_mirror(g, true, 0.0f);
+  gfx3d_begin(g, false, 0);
+  gfx3d_draw(g, down, ID, ORIGIN, 1.0f, 0.0f, false);
+  gfx3d_end(g, &ta);
+  CHECK(gfx3d_get_stats(g)->drawn >= 1);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->clipped, 1);
+  gfx3d_set_mirror(g, false, 0.0f);
+  gfx3d_mesh_free(down);
+
+  // It is lit by the real world's light: the reflection of a sloped face is the colour it is,
+  // not the colour of a face that slopes the other way.
+  static const float slope[12] = {-3, 0, -6, 3, 0, -6, 3, 4, -10, -3, 4, -10};
+  gfx3d_mesh_t *lit = gfx3d_mesh_alloc(4, 2);
+  memcpy(lit->xyz, slope, sizeof slope);
+  memcpy(lit->idx, fwd, sizeof fwd);
+  lit->color[0] = lit->color[1] = 0xFFFF;
+  CHECK(gfx3d_mesh_finish(lit) == NULL);
+  CHECK(gfx3d_set_light(g, 0.0f, 1.0f, 0.2f, 0.1f));
+  const float low[3] = {0, 1, 0};
+  gfx3d_set_camera(g, low, 0, 0, 0);
+  frame_fill(s_ma, BG);
+  gfx3d_begin(g, false, 0);
+  gfx3d_draw(g, lit, ID, ORIGIN, 1.0f, 0.0f, false);
+  gfx3d_end(g, &ta);
+  uint16_t real_colour = BG;
+  for (int i = 0; i < W * H && real_colour == BG; i++) real_colour = s_ma[i];
+  CHECK(real_colour != BG && real_colour != 0xFFFF);
+  gfx3d_set_mirror(g, true, 0.0f);
+  frame_fill(s_ma, BG);
+  gfx3d_begin(g, false, 0);
+  gfx3d_draw(g, lit, ID, ORIGIN, 1.0f, 0.0f, false);
+  gfx3d_end(g, &ta);
+  uint16_t mirror_colour = BG;
+  for (int i = 0; i < W * H && mirror_colour == BG; i++) mirror_colour = s_ma[i];
+  CHECK_EQ_U32(mirror_colour, real_colour);
+  gfx3d_mesh_free(lit);
+
+  // A background turns with the camera and reflects about the horizon.
+  gfx3d_mesh_t *dome = square(40.0f, -100.0f, 0x7BEF, GFX3D_UNLIT);
+  for (int i = 0; i < 4; i++) dome->xyz[3 * i + 1] += 40.0f;  // all above the horizon
+  CHECK(gfx3d_mesh_finish(dome) == NULL);
+  gfx3d_set_mirror(g, false, 0.0f);
+  gfx3d_set_camera(g, low, 0, 0, 0);
+  frame_fill(s_ma, BG);
+  gfx3d_begin(g, false, 0);
+  gfx3d_draw_background(g, dome);
+  gfx3d_end(g, &ta);
+  gfx3d_set_mirror(g, true, 0.0f);
+  frame_fill(s_mb, BG);
+  gfx3d_begin(g, false, 0);
+  gfx3d_draw_background(g, dome);
+  gfx3d_end(g, &tb);
+  int wrong = 0;
+  for (int y = 0; y < H; y++)
+    for (int x = 0; x < W; x++) wrong += s_mb[y * W + x] != s_ma[(H - 1 - y) * W + x];
+  CHECK_EQ_INT(wrong, 0);
+  CHECK(s_mb[300 * W + 160] != BG);
+  gfx3d_mesh_free(dome);
+
+  // gfx3d_project says where the reflection lands.
+  const float p[3] = {1, 2, -10}, q[3] = {1, 8, -10};
+  float sx, sy, d, sx2, sy2, d2;
+  gfx3d_set_camera(g, low, 0.2f, -0.1f, 0);
+  gfx3d_set_mirror(g, true, 5.0f);
+  CHECK(gfx3d_project(g, p, &sx, &sy, &d));
+  gfx3d_set_mirror(g, false, 0.0f);
+  CHECK(gfx3d_project(g, q, &sx2, &sy2, &d2));
+  CHECK_NEAR(sx, sx2, 0.01f);
+  CHECK_NEAR(sy, sy2, 0.01f);
+  CHECK_NEAR(d, d2, 0.001f);
+  gfx3d_free(g);
+}
+
+// A sprite under the mirror: its rows reversed, exactly, at its reflected centre.
+static void test_mirror_sprite_flipped(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  uint16_t img[8 * 16];
+  for (int r = 0; r < 16; r++)
+    for (int c = 0; c < 8; c++) img[r * 8 + c] = (uint16_t)(sky_row_color(r * 4) + (uint16_t)c);
+  img[3 * 8 + 3] = MAGENTA;
+  img[9 * 8 + 5] = MAGENTA;
+  const int slot = gfx3d_image_add(g, 8, 16, MAGENTA, img);
+  CHECK_EQ_INT(slot, 0);
+  const float eye[3] = {0, 1, 0};
+  static const float pitches[] = {0.0f, 0.15f, -0.25f};
+  static const float sizes[] = {1.155f, 3.0f, 9.0f, 0.5f, 0.11f, 0.085f};  // 16 px, up, down, tiny
+  for (int fog = 0; fog < 2; fog++) {
+    gfx3d_set_fog(g, fog != 0, 5.0f, 40.0f, 0x8C71);
+    gfx3d_set_sprite_fog(g, fog != 0);
+    for (size_t p = 0; p < sizeof pitches / sizeof pitches[0]; p++)
+      for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; i++) {
+        gfx3d_set_camera(g, eye, 0.05f, pitches[p], 0);
+        const float at[3] = {1.0f, -2.5f, -20.0f};  // where the reflection has its centre
+        const float real[3] = {1.0f, 2.5f, -20.0f};
+        const gfx3d_target_t ta = frame_target(g, s_ma), tb = frame_target(g, s_mb);
+        frame_fill(s_ma, BG);
+        gfx3d_begin(g, false, 0);
+        CHECK(gfx3d_draw_sprite(g, slot, at, sizes[i], 0, 0, 8, 16, 0.0f));
+        gfx3d_end(g, &ta);
+        const gfx3d_stats_t upright = *gfx3d_get_stats(g);
+        CHECK_EQ_INT(upright.sprites, 1);
+        gfx3d_set_mirror(g, true, 0.0f);
+        frame_fill(s_mb, BG);
+        gfx3d_begin(g, false, 0);
+        CHECK(gfx3d_draw_sprite(g, slot, real, sizes[i], 0, 0, 8, 16, 0.0f));
+        gfx3d_end(g, &tb);
+        const gfx3d_stats_t flipped = *gfx3d_get_stats(g);
+        CHECK_EQ_INT(flipped.sprites, 1);
+        CHECK_EQ_INT(flipped.pixels, upright.pixels);
+        int y0 = H, y1 = -1;
+        for (int y = 0; y < H; y++)
+          for (int x = 0; x < W; x++)
+            if (s_ma[y * W + x] != BG) {
+              y0 = y < y0 ? y : y0;
+              y1 = y > y1 ? y : y1;
+            }
+        CHECK(y1 >= y0);
+        int wrong = 0;
+        for (int y = 0; y < H; y++)
+          for (int x = 0; x < W; x++) {
+            const bool in = y >= y0 && y <= y1;
+            wrong += s_mb[y * W + x] != (in ? s_ma[(y0 + y1 - y) * W + x] : BG);
+          }
+        CHECK_EQ_INT(wrong, 0);
+
+        // The target clip cuts the same picture: the rows it allows, and no others.
+        const int cy0 = (y0 + y1) / 2, cy1 = cy0 + (y1 - y0) / 4;
+        frame_fill(s_mc, BG);
+        gfx3d_begin(g, false, 0);
+        CHECK(gfx3d_draw_sprite(g, slot, real, sizes[i], 0, 0, 8, 16, 0.0f));
+        gfx3d_target_t tc = frame_target(g, s_mc);
+        tc.clip_y0 = cy0;
+        tc.clip_y1 = cy1;
+        gfx3d_end(g, &tc);
+        wrong = 0;
+        for (int y = 0; y < H; y++)
+          for (int x = 0; x < W; x++)
+            wrong += s_mc[y * W + x] != (y >= cy0 && y <= cy1 ? s_mb[y * W + x] : BG);
+        CHECK_EQ_INT(wrong, 0);
+
+        // The bulk call makes the same.
+        const gfx3d_sprite_t bulk = {real[0], real[1], real[2], sizes[i], (uint32_t)slot};
+        frame_fill(s_mc, BG);
+        gfx3d_begin(g, false, 0);
+        CHECK_EQ_INT(gfx3d_draw_sprites(g, &bulk, 1, 0.0f), 1);
+        const gfx3d_target_t tm = frame_target(g, s_mc);
+        gfx3d_end(g, &tm);
+        CHECK_EQ_INT(frames_differ(s_mb, s_mc), 0);
+        gfx3d_set_mirror(g, false, 0.0f);
+      }
+  }
+  gfx3d_set_fog(g, false, 0, 0, 0);
+  gfx3d_set_sprite_fog(g, false);
+
+  // A plant rooted at y = 0.5: on screen its root meets the plane's line, its crown below.
+  uint16_t plant[2 * 8];
+  for (int i = 0; i < 16; i++) plant[i] = i < 8 ? RED : GREEN;  // crown over root
+  const int plant_slot = gfx3d_image_add(g, 2, 8, 0, plant);
+  const float centre[3] = {0.0f, 0.5f + 2.0f, -10.0f};  // 4 high, standing on y = 0.5
+  gfx3d_set_camera(g, eye, 0, 0, 0);
+  gfx3d_set_mirror(g, true, 0.5f);
+  frame_fill(s_ma, BG);
+  gfx3d_begin(g, false, 0);
+  CHECK(gfx3d_draw_sprite(g, plant_slot, centre, 4.0f, 0, 0, 2, 8, 0.0f));
+  const gfx3d_target_t ta = frame_target(g, s_ma);
+  gfx3d_end(g, &ta);
+  const float root[3] = {0.0f, 0.5f, -10.0f}, crown[3] = {0.0f, 4.5f, -10.0f};
+  float sx, root_y, crown_y, d;
+  CHECK(gfx3d_project(g, root, &sx, &root_y, &d));  // reflected: where the root shows
+  CHECK(gfx3d_project(g, crown, &sx, &crown_y, &d));
+  CHECK(crown_y > root_y);
+  CHECK_EQ_U32(s_ma[(int)(root_y + 3.0f) * W + 160], GREEN);
+  CHECK_EQ_U32(s_ma[(int)(crown_y - 3.0f) * W + 160], RED);
+  CHECK_EQ_U32(s_ma[(int)(root_y - 3.0f) * W + 160], BG);
+  CHECK_EQ_U32(s_ma[(int)(crown_y + 3.0f) * W + 160], BG);
+  gfx3d_set_mirror(g, false, 0.0f);
+  gfx3d_free(g);
+}
+
+static void test_mirror_sky_flipped(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  CHECK(gfx3d_set_projection(g, FOV_64, 0.5f, 1000.0f));
+  const float focal = focal_of(FOV_64, H);
+  // Rows and a column to tell left from right, which stay.
+  for (int y = 0; y < 256; y++)
+    for (int x = 0; x < 256; x++) s_sky_px[(y << 8) + x] = (uint16_t)(sky_row_color(y) + (uint16_t)x);
+  const int slot = gfx3d_tex_add(g, 8, 8, 1, s_sky_px);
+  CHECK(gfx3d_set_sky_image(g, slot, 128));
+  static const float pitches[] = {0.0f, 0.12f, -0.2f};
+  const float shift = 0.3f;
+  for (size_t i = 0; i < sizeof pitches / sizeof pitches[0]; i++) {
+    gfx3d_set_camera(g, ORIGIN, shift, pitches[i], 0);
+    sky_frame(g, s_ma);
+    gfx3d_set_mirror(g, true, 0.0f);
+    sky_frame(g, s_mb);
+    gfx3d_set_mirror(g, true, 37.5f);  // the horizon is at infinity: any plane
+    sky_frame(g, s_mc);
+    gfx3d_set_mirror(g, false, 0.0f);
+    CHECK_EQ_INT(frames_differ(s_mb, s_mc), 0);
+    const int hs = round_px(160.0f + focal * tanf(pitches[i]));
+    const int col0 = -round_px(shift * focal);
+    int wrong = 0, compared = 0;
+    for (int y = 0; y < H; y++) {
+      int row = 128 + hs - 1 - y;
+      row = row < 0 ? 0 : row > 255 ? 255 : row;
+      const int other = 2 * hs - 1 - y;  // the real frame's row it reflects
+      for (int x = 0; x < W; x++) {
+        wrong += s_mb[y * W + x] != (uint16_t)(sky_row_color(row) + (uint16_t)((x + col0) & 255));
+        if (other >= 0 && other < H && 128 + other - hs >= 0 && 128 + other - hs <= 255) {
+          compared++;
+          wrong += s_mb[y * W + x] != s_ma[other * W + x];
+        }
+      }
+    }
+    CHECK_EQ_INT(wrong, 0);
+    CHECK(compared > 10000);
+    // Row by row: just below the horizon, the row just above it.
+    CHECK_EQ_U32(s_mb[hs * W + 7], s_ma[(hs - 1) * W + 7]);
+    CHECK_EQ_U32(s_mb[(hs + 9) * W + 7], s_ma[(hs - 10) * W + 7]);
+  }
+
+  // Bands reflect the same way, about the same line.
+  CHECK(gfx3d_set_sky_image(g, -1, 0));
+  set_sky3(g);
+  gfx3d_set_camera(g, ORIGIN, 0, 0, 0);
+  sky_frame(g, s_ma);
+  gfx3d_set_mirror(g, true, 0.0f);
+  sky_frame(g, s_mb);
+  gfx3d_set_mirror(g, false, 0.0f);
+  int wrong = 0;
+  for (int y = 0; y < H; y++)
+    for (int x = 0; x < W; x++) wrong += s_mb[y * W + x] != s_ma[(H - 1 - y) * W + x];
+  CHECK_EQ_INT(wrong, 0);
+  CHECK(s_ma[10 * W] != s_mb[10 * W]);
+  gfx3d_free(g);
+}
+
+// Water's move: a textured quad with its uv in binary fractions, so that a scroll by one is
+// exactly the same as a mesh whose uv already have it.
+static gfx3d_tmesh_t *scroll_quad(int slot, float du, float dv, uint8_t fl) {
+  const float xyz[12] = {-4, -4, -10, 4, -4, -10, 4, 4, -10, -4, 4, -10};
+  const float uv[8] = {du, dv, 1 + du, dv, 1 + du, 1 + dv, du, 1 + dv};
+  const uint16_t col[4] = {0xAD55, 0xAD55, 0xAD55, 0xAD55};
+  const uint16_t idx[6] = {0, 1, 2, 0, 2, 3};
+  const uint8_t tex[2] = {(uint8_t)slot, (uint8_t)slot}, f[2] = {fl, fl};
+  return tm_make(4, 2, xyz, uv, col, idx, tex, f);
+}
+
+static void test_tex_scroll_moves_texture(void) {
+  gfx3d_t *g = gfx3d_new(W, H);
+  const int a = mir_unique_tex(g), b = mir_unique_tex(g);
+  gfx3d_tmesh_t *m = scroll_quad(a, 0, 0, 0);
+  gfx3d_tmesh_t *other = scroll_quad(b, 0, 0, 0);
+  gfx3d_tmesh_t *moved = scroll_quad(a, 0.25f, 0.5f, 0);
+  mir_frame(g, s_ma, m);
+  mir_frame(g, s_mb, moved);
+  CHECK(frames_differ(s_ma, s_mb) > 1000);  // the two pictures differ, or nothing here tests
+
+  // Added to the uv, as if the mesh had it.
+  gfx3d_tex_scroll(g, a, 0.25f, 0.5f);
+  mir_frame(g, s_mc, m);
+  CHECK_EQ_INT(frames_differ(s_mc, s_mb), 0);
+  CHECK(frames_differ(s_mc, s_ma) > 1000);
+  // It stays, across scenes, and only for that texture.
+  mir_frame(g, s_md, m);
+  CHECK_EQ_INT(frames_differ(s_md, s_mb), 0);
+  mir_frame(g, s_md, other);
+  CHECK_EQ_INT(frames_differ(s_md, s_ma), 0);  // b has a's texels, and no scroll
+  gfx3d_tex_scroll(g, a, 0, 0);
+  // An offset, not a step: the last replaces the one before, and 0 puts it back.
+  mir_frame(g, s_mc, m);
+  CHECK_EQ_INT(frames_differ(s_mc, s_ma), 0);
+  gfx3d_tex_scroll(g, a, 0.5f, 0.125f);
+  gfx3d_tex_scroll(g, a, 0.25f, 0.5f);
+  mir_frame(g, s_mc, m);
+  CHECK_EQ_INT(frames_differ(s_mc, s_mb), 0);
+
+  // At raster time: what is set when gfx3d_end runs, after the draw.
+  gfx3d_tex_scroll(g, a, 0, 0);
+  frame_fill(s_mc, BG);
+  gfx3d_begin(g, false, 0);
+  gfx3d_draw_tmesh(g, m, NULL, ORIGIN, 1.0f, 0.0f);
+  gfx3d_tex_scroll(g, a, 0.25f, 0.5f);
+  const gfx3d_target_t tc = frame_target(g, s_mc);
+  gfx3d_end(g, &tc);
+  CHECK_EQ_INT(frames_differ(s_mc, s_mb), 0);
+
+  // Whole repeats drop out, so a long run's total is as good as a short one's. This much
+  // added to a uv directly keeps three bits of fraction, and a uv that needs more shows it.
+  static const float whole[][2] = {{1, 2}, {18, 0}, {-3, -7}, {4096, 65536}, {1048576, 1048576}};
+  const float fine_uv[8] = {0.0171f, 0.0293f, 0.9171f, 0.0293f, 0.9171f, 0.9293f, 0.0171f, 0.9293f};
+  const float fine_xyz[12] = {-4, -4, -10, 4, -4, -10, 4, 4, -10, -4, 4, -10};
+  const uint16_t fine_col[4] = {0xAD55, 0xAD55, 0xAD55, 0xAD55}, fine_idx[6] = {0, 1, 2, 0, 2, 3};
+  const uint8_t fine_tex[2] = {(uint8_t)a, (uint8_t)a};
+  gfx3d_tmesh_t *fine = tm_make(4, 2, fine_xyz, fine_uv, fine_col, fine_idx, fine_tex, NULL);
+  gfx3d_tex_scroll(g, a, 0.25f, 0.5f);
+  mir_frame(g, s_md, fine);
+  for (size_t i = 0; i < sizeof whole / sizeof whole[0]; i++) {
+    gfx3d_tex_scroll(g, a, whole[i][0] + 0.25f, whole[i][1] + 0.5f);
+    mir_frame(g, s_mc, m);
+    CHECK_EQ_INT(frames_differ(s_mc, s_mb), 0);
+    mir_frame(g, s_mc, fine);
+    CHECK_EQ_INT(frames_differ(s_mc, s_md), 0);
+  }
+  gfx3d_tmesh_free(fine);
+  gfx3d_tex_scroll(g, a, -0.75f, -0.5f);  // below zero the same
+  mir_frame(g, s_mc, m);
+  CHECK_EQ_INT(frames_differ(s_mc, s_mb), 0);
+  // Meander's total at the end of its 2.5 minutes, and what its fraction draws.
+  float total = 0.0f;
+  for (int frame = 0; frame < 4500; frame++) total += 0.004f;
+  CHECK(total > 17.0f && total < 19.0f);
+  gfx3d_tex_scroll(g, a, 0.0f, total);
+  mir_frame(g, s_mc, m);
+  gfx3d_tex_scroll(g, a, 0.0f, total - floorf(total));
+  mir_frame(g, s_md, m);
+  CHECK_EQ_INT(frames_differ(s_mc, s_md), 0);
+
+  // Bad values: an unknown slot and a value that is not finite are ignored. The tiniest
+  // negative rounds to a whole repeat: still 0.
+  gfx3d_tex_scroll(g, a, 0.25f, 0.5f);
+  gfx3d_tex_scroll(g, -1, 0.5f, 0.5f);
+  gfx3d_tex_scroll(g, 99, 0.5f, 0.5f);
+  gfx3d_tex_scroll(g, a, NAN, 0.125f);
+  gfx3d_tex_scroll(g, a, 0.125f, INFINITY);
+  mir_frame(g, s_mc, m);
+  CHECK_EQ_INT(frames_differ(s_mc, s_mb), 0);
+  gfx3d_tex_scroll(g, a, -1e-12f, -1e-12f);
+  mir_frame(g, s_mc, m);
+  CHECK_EQ_INT(frames_differ(s_mc, s_ma), 0);
+  gfx3d_tex_scroll(g, a, 0, 0);
+  gfx3d_tmesh_free(m);
+  gfx3d_tmesh_free(moved);
+  gfx3d_tmesh_free(other);
+
+  // A near-clipped piece's uv is in the scene's arena, and moves with the rest. Every value is
+  // exact: the near plane is half-way along the cut edges.
+  const float cut_xyz[9] = {-4, -0.5f, -2, 4, -0.5f, -2, 0, -0.5f, 1};  // depth 0.5 is half way
+  const uint16_t cut_col[3] = {0xAD55, 0xAD55, 0xAD55}, cut_idx[3] = {0, 2, 1};
+  const uint8_t cut_tex[1] = {(uint8_t)a};
+  const float cut_uv[6] = {0, 0, 1, 0, 0.5f, 1};
+  const float cut_moved[6] = {0.25f, 0.5f, 1.25f, 0.5f, 0.75f, 1.5f};
+  gfx3d_tmesh_t *cut = tm_make(3, 1, cut_xyz, cut_uv, cut_col, cut_idx, cut_tex, NULL);
+  gfx3d_tmesh_t *cut_ref = tm_make(3, 1, cut_xyz, cut_moved, cut_col, cut_idx, cut_tex, NULL);
+  gfx3d_tex_scroll(g, a, 0, 0);
+  mir_frame(g, s_ma, cut_ref);
+  CHECK(gfx3d_get_stats(g)->clipped == 1 && gfx3d_get_stats(g)->drawn >= 1);
+  gfx3d_tex_scroll(g, a, 0.25f, 0.5f);
+  mir_frame(g, s_mb, cut);
+  CHECK_EQ_INT(gfx3d_get_stats(g)->clipped, 1);
+  CHECK_EQ_INT(frames_differ(s_ma, s_mb), 0);
+  gfx3d_tmesh_free(cut);
+  gfx3d_tmesh_free(cut_ref);
+  gfx3d_free(g);
+}
+
+// The reflecting frame, against the same thing put together by hand.
+#define WATER_KEY 0x0001  // no colour in this scene
+
+static void reflect_land(gfx3d_t *g, const gfx3d_tmesh_t *hill, int tree) {
+  gfx3d_draw_tmesh(g, hill, NULL, ORIGIN, 1.0f, 0.0f);
+  const gfx3d_sprite_t s = {-4.0f, 3.0f, -25.0f, 6.0f, (uint32_t)tree};
+  gfx3d_draw_sprites(g, &s, 1, 0.0f);
+}
+
+static void test_two_pass_reflection(void) {
+  for (int swap = 0; swap < 2; swap++) {
+    gfx3d_t *g = gfx3d_new_ex(W, H, 512);
+    CHECK(gfx3d_set_projection(g, FOV_64, 0.5f, 1000.0f));
+    const float eye[3] = {0.0f, 2.5f, 0.0f};
+    gfx3d_set_camera(g, eye, 0.05f, -0.06f, 0);
+
+    const int tile = mir_unique_tex(g);
+    int y, x;
+    for (y = 0; y < 8; y++)
+      for (x = 0; x < 8; x++) s_sky_px[(y << 3) + x] = (uint16_t)(0x4208u + (uint16_t)(x * 0x0841 + y * 0x20));
+    const int water_tex = gfx3d_tex_add(g, 3, 3, 1, s_sky_px);
+    const int sky = sky_row_tex(g, 8, 7);
+    CHECK(gfx3d_set_sky_image(g, sky, 64));
+    uint16_t img[4 * 8];
+    for (int i = 0; i < 4 * 8; i++) img[i] = (i % 4 == 0) ? MAGENTA : (uint16_t)(0x2500u + (uint16_t)(i * 97));
+    const int tree = gfx3d_image_add(g, 4, 8, MAGENTA, img);
+
+    // A hill rising from the plane beyond the water, and a tree.
+    static const float hill_xyz[12] = {-40, 0, -30, 40, 0, -30, 25, 14, -45, -25, 14, -45};
+    static const uint16_t quad[6] = {0, 1, 2, 0, 2, 3};
+    gfx3d_tmesh_t *hill = mir_mesh(hill_xyz, 4, quad, 2, tile, 0, NO_FLIP);
+    // Water up to the tree, flagged, and the same without the flag to see what it draws.
+    static const float water_xyz[12] = {-30, 0, -1, 30, 0, -1, 30, 0, -24, -30, 0, -24};
+    gfx3d_tmesh_t *water = mir_mesh(water_xyz, 4, quad, 2, water_tex, GFX3D_TM_BLEND, NO_FLIP);
+    gfx3d_tmesh_t *water_top = mir_mesh(water_xyz, 4, quad, 2, water_tex, 0, NO_FLIP);
+    gfx3d_tex_scroll(g, water_tex, 0.0f, 3.25f);  // moving water
+
+    // The water's rows, from its far edge to the bottom of the screen.
+    const float far_edge[3] = {0.0f, 0.0f, -24.0f};
+    float sx, sy, d;
+    CHECK(gfx3d_project(g, far_edge, &sx, &sy, &d));
+    const int row0 = (int)floorf(sy) - 4, row1 = H - 1;
+    CHECK(row0 > 100 && row0 < 260);
+
+    // The frame.
+    frame_fill(s_ma, BG);
+    gfx3d_target_t t = frame_target(g, s_ma);
+    t.swap = swap != 0;
+    t.clip_y0 = row0;
+    t.clip_y1 = row1;
+    gfx3d_set_sky_rows(g, row0, row1);
+    gfx3d_set_mirror(g, true, 0.0f);
+    gfx3d_begin(g, false, 0);
+    reflect_land(g, hill, tree);
+    gfx3d_end(g, &t);
+    const uint32_t mirror_sprites = gfx3d_get_stats(g)->sprites;
+    CHECK_EQ_INT(mirror_sprites, 1);
+    CHECK(gfx3d_get_stats(g)->drawn >= 1);
+    // Nothing above the water's rows yet.
+    int above = 0;
+    for (int i = 0; i < row0 * W; i++) above += s_ma[i] != BG;
+    CHECK_EQ_INT(above, 0);
+    t.clip_y0 = 0;
+    gfx3d_set_sky_rows(g, 0, row0 - 1);
+    gfx3d_set_mirror(g, false, 0.0f);
+    gfx3d_begin(g, false, 0);
+    reflect_land(g, hill, tree);
+    gfx3d_draw_tmesh(g, water, NULL, ORIGIN, 1.0f, 0.0f);
+    gfx3d_end(g, &t);
+
+    // By hand. The reflection alone, in its own target. With the same clip: a triangle's
+    // attributes step from the first row it draws, so another clip can move a channel by a
+    // level here and there.
+    gfx3d_set_sky_rows(g, -100000, 100000);
+    frame_fill(s_mb, BG);
+    gfx3d_target_t tm = frame_target(g, s_mb);
+    tm.swap = swap != 0;
+    tm.clip_y0 = row0;
+    tm.clip_y1 = row1;
+    gfx3d_set_mirror(g, true, 0.0f);
+    gfx3d_begin(g, false, 0);
+    reflect_land(g, hill, tree);
+    gfx3d_end(g, &tm);
+    gfx3d_set_mirror(g, false, 0.0f);
+    // The real land over the real sky, with a key where it leaves nothing.
+    frame_fill(s_mc, WATER_KEY);
+    gfx3d_target_t tl = frame_target(g, s_mc);
+    tl.swap = swap != 0;
+    gfx3d_set_sky_rows(g, 0, row0 - 1);
+    gfx3d_begin(g, false, 0);
+    reflect_land(g, hill, tree);
+    gfx3d_end(g, &tl);
+    gfx3d_set_sky_rows(g, -100000, 100000);
+    // What the water itself draws, by itself.
+    CHECK(gfx3d_set_sky_image(g, -1, 0));
+    frame_fill(s_md, WATER_KEY);
+    gfx3d_target_t tw = frame_target(g, s_md);
+    tw.swap = swap != 0;
+    gfx3d_begin(g, false, 0);
+    gfx3d_draw_tmesh(g, water_top, NULL, ORIGIN, 1.0f, 0.0f);
+    gfx3d_end(g, &tw);
+
+    // Water is nearest here, so it goes over all the rest; a blend is half of each.
+    int wrong = 0, water_px = 0, reflecting = 0;
+    for (int i = 0; i < W * H; i++) {
+      const int row = i / W;
+      uint16_t under = s_mc[i] != WATER_KEY ? s_mc[i] : row >= row0 ? s_mb[i] : BG;
+      uint16_t want = under;
+      if (s_md[i] != WATER_KEY) {
+        water_px++;
+        const uint32_t c = disp_px(s_md[i], swap != 0), u = disp_px(under, swap != 0);
+        want = disp_px((uint16_t)(((c & 0xF7DEu) + (u & 0xF7DEu)) >> 1), swap != 0);
+      }
+      wrong += s_ma[i] != want;
+    }
+    CHECK_EQ_INT(wrong, 0);
+    CHECK(water_px > 10000);
+
+    // That reflection is in the picture: the hill and the tree show through the water where
+    // the sky alone would have been. Without the mirror pass it would be only sky.
+    frame_fill(s_mc, BG);
+    gfx3d_target_t ts = frame_target(g, s_mc);
+    ts.swap = swap != 0;
+    CHECK(gfx3d_set_sky_image(g, sky, 64));
+    gfx3d_set_mirror(g, true, 0.0f);
+    gfx3d_begin(g, false, 0);
+    gfx3d_end(g, &ts);
+    gfx3d_set_mirror(g, false, 0.0f);
+    for (int i = 0; i < W * H; i++)
+      if (i / W >= row0 && s_md[i] != WATER_KEY && s_mb[i] != s_mc[i]) reflecting++;
+    CHECK(reflecting > 1000);
+
+    gfx3d_tmesh_free(hill);
+    gfx3d_tmesh_free(water);
+    gfx3d_tmesh_free(water_top);
+    gfx3d_free(g);
+  }
+}
+
 int main(void) {
   test_euler_conventions();
   test_basis();
@@ -3481,5 +4641,15 @@ int main(void) {
   test_sprite_fog_off_identical();
   test_sprite_fog_far();
   test_sprite_tiny_fast_path();
+  test_sky_image_scrolls_with_yaw();
+  test_sky_image_pitch();
+  test_sky_rows_limit_fill();
+  test_mirror_tmesh();
+  test_mirror_flat_mesh();
+  test_mirror_sprite_flipped();
+  test_mirror_sky_flipped();
+  test_tex_scroll_moves_texture();
+  test_two_pass_reflection();
+  test_reflection_scene_crc();
   return check_report("test_gfx3d");
 }

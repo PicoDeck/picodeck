@@ -164,3 +164,102 @@ __attribute__((unused)) static gfx3d_stats_t tex_scene_pipeline(uint16_t *fb, bo
   gfx3d_free(g);
   return st;
 }
+
+// A reflecting frame, gfx3d.h's two scenes, through the near plane in both: a sky image, land
+// rising from behind the eye, trees, moving water. Returns the two scenes' stats, added up. `px`
+// as above; a look-at camera, as the turn's sinf and cosf differ between libraries.
+__attribute__((unused)) static gfx3d_stats_t tex_scene_reflection(uint16_t *fb, bool swap, uint16_t *px) {
+  enum { N = 10, NV = (N + 1) * (N + 1), NT = 2 * N * N };
+  static float xyz[3 * NV], uv[2 * NV];
+  static uint16_t col[NV], idx[3 * NT];
+  static uint8_t tex[NT];
+  gfx3d_t *g = gfx3d_new(TEX_SCENE_W, TEX_SCENE_H);
+  int slots[4];
+  tex_scene_add_textures(g, px, slots);
+  for (int y = 0; y < 32; y++)
+    for (int x = 0; x < 64; x++) px[(y << 6) + x] = tex_scene_texel(200, x, y);
+  const int sky = gfx3d_tex_add(g, 6, 5, 1, px);
+  gfx3d_set_sky_image(g, sky, 20);
+  gfx3d_set_projection(g, 1.05f, 0.5f, 1000.0f);
+  gfx3d_set_fog(g, true, 8.0f, 60.0f, 0x8C71);
+  gfx3d_set_sprite_fog(g, true);
+  const float eye[3] = {1.0f, 3.5f, 0.5f}, at[3] = {-1.0f, 2.0f, -16.0f}, up[3] = {0.0f, 1.0f, 0.0f};
+  gfx3d_look_at(g, eye, at, up);
+  // Banks of land to either side of the water, from behind the eye to far away, and rising.
+  uint32_t s = 0x51D7A3Fu;
+  for (int r = 0; r <= N; r++)
+    for (int c = 0; c <= N; c++) {
+      const int v = r * (N + 1) + c;
+      const float side = (float)c - 5.0f;
+      xyz[3 * v] = side * 4.0f;
+      xyz[3 * v + 1] = (side * side) * 0.3f + (float)(r * r) * 0.05f + tex_scene_float(&s, 0, 1) * 0.5f - 1.0f;
+      xyz[3 * v + 2] = 3.0f - 4.0f * (float)r;
+      uv[2 * v] = xyz[3 * v] * 0.25f;
+      uv[2 * v + 1] = xyz[3 * v + 2] * 0.25f;
+      col[v] = (uint16_t)(tex_scene_rand(&s) | 0x4208u);
+    }
+  for (int r = 0; r < N; r++)
+    for (int c = 0; c < N; c++) {
+      const uint16_t a = (uint16_t)(r * (N + 1) + c), b = (uint16_t)(a + 1);
+      const uint16_t d = (uint16_t)(a + N + 1), e = (uint16_t)(d + 1);
+      const uint16_t tri[6] = {a, b, e, a, e, d};
+      const int t = 2 * (r * N + c);
+      for (int k = 0; k < 6; k++) idx[3 * t + k] = tri[k];
+      tex[t] = tex[t + 1] = (uint8_t)slots[(r + c) % 4];
+    }
+  const gfx3d_tmesh_desc_t gd = {NV, NT, xyz, uv, col, idx, tex, NULL};
+  gfx3d_tmesh_t *land = gfx3d_tmesh_new(&gd);
+  static const float wx[12] = {-30, 0, 2, 30, 0, 2, 30, 0, -36, -30, 0, -36};
+  static const float wuv[8] = {0, 0, 7.5f, 0, 7.5f, 9.5f, 0, 9.5f};
+  static const uint16_t wc[4] = {0xFFFF, 0xCE79, 0xAD55, 0xFFFF}, wi[6] = {0, 1, 2, 0, 2, 3};
+  const uint8_t wt[2] = {(uint8_t)slots[0], (uint8_t)slots[0]};
+  const uint8_t wf[2] = {GFX3D_TM_BLEND, GFX3D_TM_BLEND};
+  const gfx3d_tmesh_desc_t wd = {4, 2, wx, wuv, wc, wi, wt, wf};
+  gfx3d_tmesh_t *water = gfx3d_tmesh_new(&wd);
+  gfx3d_tex_scroll(g, slots[0], 0.0f, 3.75f);
+  uint16_t img[16];
+  for (int i = 0; i < 16; i++) img[i] = (i & 5) == 5 ? 0xF81F : (uint16_t)(0x07E0 + 77 * i);
+  const int spr = gfx3d_image_add(g, 4, 4, 0xF81F, img);
+  const gfx3d_sprite_t trees[4] = {{-6.0f, 2.5f, -14.0f, 5.0f, (uint32_t)spr},
+                                   {5.0f, 2.0f, -20.0f, 4.0f, (uint32_t)spr},
+                                   {-9.0f, 3.0f, -28.0f, 0.2f, (uint32_t)spr},
+                                   {2.0f, 1.5f, -9.0f, 3.0f, (uint32_t)spr}};
+  const float sp[3] = {-2.0f, 1.0f, -12.0f};
+  // The water's rows, by where its far edge lands.
+  const float far_edge[3] = {0.0f, 0.0f, -36.0f};
+  float sx, sy, depth;
+  gfx3d_project(g, far_edge, &sx, &sy, &depth);
+  const int row0 = (int)sy - 3;
+  for (int i = 0; i < TEX_SCENE_W * TEX_SCENE_H; i++) fb[i] = 0;
+  gfx3d_target_t t = {fb, TEX_SCENE_W, 0, row0, TEX_SCENE_W - 1, TEX_SCENE_H - 1, swap,
+                      gfx3d_image_resolve, g};
+  const float at0[3] = {0.0f, 0.0f, 0.0f};
+  gfx3d_stats_t sum;
+  for (int pass = 0; pass < 2; pass++) {
+    gfx3d_set_sky_rows(g, pass ? 0 : row0, pass ? row0 - 1 : TEX_SCENE_H - 1);
+    gfx3d_set_mirror(g, !pass, 0.0f);
+    gfx3d_begin(g, false, 0);
+    gfx3d_draw_tmesh(g, land, NULL, at0, 1.0f, 0.0f);
+    gfx3d_draw_sprites(g, trees, 4, 0.0f);
+    gfx3d_draw_sprite(g, spr, sp, 2.0f, 0, 0, 4, 4, 0.0f);
+    if (pass) gfx3d_draw_tmesh(g, water, NULL, at0, 1.0f, 0.0f);
+    t.clip_y0 = pass ? 0 : row0;
+    gfx3d_end(g, &t);
+    const gfx3d_stats_t st = *gfx3d_get_stats(g);
+    if (!pass) {
+      sum = st;
+    } else {
+      sum.tris_in += st.tris_in;
+      sum.culled += st.culled;
+      sum.clipped += st.clipped;
+      sum.drawn += st.drawn;
+      sum.sprites += st.sprites;
+      sum.overflow += st.overflow;
+      sum.pixels += st.pixels;
+    }
+  }
+  gfx3d_tmesh_free(land);
+  gfx3d_tmesh_free(water);
+  gfx3d_free(g);
+  return sum;
+}

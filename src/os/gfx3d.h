@@ -68,8 +68,8 @@ typedef struct {
 typedef struct gfx3d_tmesh gfx3d_tmesh_t;
 
 // A model -> view transform (v = A p + t), with the eye and the light direction
-// in model space for the face-plane tests. Valid until the camera or the light
-// changes.
+// in model space for the face-plane tests. Valid until the camera, the light or
+// the mirror changes.
 typedef struct {
   float A[9], t[3], eye[3], light[3];
   float scale;
@@ -162,6 +162,45 @@ void gfx3d_set_fog(gfx3d_t *g, bool on, float fnear, float ffar, uint16_t color)
 // Angles strictly increase within (-89, 89) degrees (radians). False if not.
 bool gfx3d_set_sky(gfx3d_t *g, const float *angles, const uint16_t *colors,
                    int n);
+// A texture as the sky, instead of bands until it is cleared (tex_slot < 0): mip 0, one texel
+// per screen pixel, copied with no colour multiplied. horizon_row (0..height) is its first row
+// below the horizon. False, changing nothing, for another slot or row. In a scene's first step:
+//   column at screen x = (x - viewport x - round(yaw * focal)) mod width
+//   row at screen y    = horizon_row + (y - horizon_y), the edge rows repeating past the ends
+// where focal = viewport h / 2 / tan(fov_y / 2) is pixels per radian, so at the centre of the
+// view the sky moves as fast as distant terrain, a whole texel at a time, and a turn of
+// 2 pi spans 2 pi * focal texels: the image repeats as often as its width goes into that. And
+//   horizon_y = round(viewport centre y + focal * tan(pitch))
+// is where the true horizon lands. yaw is what gfx3d_set_camera was given, so it may run past
+// pi and the sky goes on scrolling; after gfx3d_look_at it is that direction's, in -pi..pi,
+// and the sky jumps where it wraps. Roll is not supported: the image stays level and ignores
+// it. Mirrored, rows run the other way about the line above row horizon_y:
+//   row at screen y = horizon_row + (horizon_y - 1 - y)
+// so that a frame's reflected sky is its real sky's rows upside down, whatever the plane.
+bool gfx3d_set_sky_image(gfx3d_t *g, int tex_slot, int horizon_row);
+// Rows the sky or clear fill may touch, inclusive; records still use the target clip. y1 < y0
+// is none. The default is the whole viewport, as is any range that holds it.
+void gfx3d_set_sky_rows(gfx3d_t *g, int y0, int y1);
+// World y becomes 2 * plane_y - y for what is drawn while on, flat and textured meshes,
+// sprites and background alike, as the camera is what gets reflected: a triangle faces the eye
+// as its reflection does (GFX3D_TM_DOUBLE_SIDED or not), a sprite stays at its reflected
+// centre and flips vertically, and meshes keep the real world's light. Taken when each thing
+// is drawn; the sky, bands too, mirrors if it is on at gfx3d_end. gfx3d_project gives where the
+// reflection lands, and a gfx3d_xform_t is valid only for the state it was made in. It stays
+// on until turned off, across scenes. Off unless on and plane_y is finite.
+//
+// A reflecting frame is two scenes. (1) target clip and sky rows set to the water's rows,
+// mirror on, draw tall land and trees, end; (2) full clip, sky rows above the water, mirror
+// off, draw everything with water flagged GFX3D_TM_BLEND, end.
+void gfx3d_set_mirror(gfx3d_t *g, bool on, float plane_y);
+// Added to the uv of every triangle using this texture when it is rasterised, so the last
+// offset set before gfx3d_end applies to the whole scene, near-clipped pieces too. An offset,
+// not a step: it replaces the last one, keeps across scenes, and to move water pass a total
+// that grows with the frame number. Only its fraction of a repeat is kept, so a long run's
+// total costs no accuracy. An unknown slot or a value that is not finite is ignored, and so
+// is a call that finds no memory, as the first may make what the first textured draw does. A
+// sky image takes none.
+void gfx3d_tex_scroll(gfx3d_t *g, int slot, float du, float dv);
 
 // ── Scene ──
 void gfx3d_begin(gfx3d_t *g, bool clear, uint16_t clear_color);
@@ -184,7 +223,7 @@ void gfx3d_draw_xf(gfx3d_t *g, const gfx3d_mesh_t *m, const gfx3d_xform_t *xf,
 // Its triangles join flat ones and sprites in the same depth buckets, a record each. Fog
 // mixes into the vertex colours. A triangle the near plane cuts takes a record per piece and
 // a place per piece in GFX3D_TM_FANS; past either, stats.overflow counts it. The first
-// textured draw allocates 24 bytes per record of capacity, and 6 KB; failing that, or the
+// textured draw allocates 24 bytes per record of capacity, and 6.7 KB; failing that, or the
 // vertices' scratch memory, the whole mesh counts as overflow.
 void gfx3d_draw_tmesh(gfx3d_t *g, const gfx3d_tmesh_t *m, const float rot[9],
                       const float pos[3], float scale, float bias);
@@ -210,8 +249,8 @@ int gfx3d_draw_sprites(gfx3d_t *g, const gfx3d_sprite_t *s, int n, float bias);
 // by its depth in 1/31 steps, as a flat triangle's colour does, and the tiny ones too. The
 // fog colour is the one set when gfx3d_end runs. Off, a sprite is drawn exactly as before.
 void gfx3d_set_sprite_fog(gfx3d_t *g, bool on);
-// Fills the viewport ∩ target clip (sky, else the clear colour if any), then
-// rasterises the scene far to near.
+// Fills the viewport ∩ target clip ∩ sky rows (sky, else the clear colour if any), then
+// rasterises the scene far to near in the viewport ∩ target clip.
 void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t);
 bool gfx3d_project(const gfx3d_t *g, const float p[3], float *sx, float *sy,
                    float *depth);
