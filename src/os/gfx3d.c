@@ -572,8 +572,9 @@ GFX3D_LOAD_FUNC static bool img_index(gfx3d_t *g, unsigned slot) {
   gfx3d_image_t *const im = &g->img[slot];
   const uint16_t *const old = im->px;
   const size_t n = (size_t)im->w * im->h;
-  uint16_t pal[256];
-  unsigned k = 0;
+  // The palette as it is found, on the heap: this runs on gfx3d_end's stack, 2 KB.
+  uint16_t *const pal = (uint16_t *)GFX3D_MALLOC(256u * sizeof(uint16_t));
+  unsigned k = pal ? 0u : 257u;
   for (size_t i = 0; i < n && k <= 256u; i++) {
     const unsigned at = pal_find(pal, k, old[i]);
     if (at < k && pal[at] == old[i]) continue;
@@ -582,6 +583,7 @@ GFX3D_LOAD_FUNC static bool img_index(gfx3d_t *g, unsigned slot) {
   }
   uint16_t *const px = k <= 256u ? (uint16_t *)GFX3D_MALLOC(n * sizeof *px + IMG_IDX_BYTES(n, k)) : NULL;
   if (!px) {
+    if (pal) GFX3D_FREE(pal);
     im->ncol = IMG_NO_IDX;
     return false;
   }
@@ -589,6 +591,7 @@ GFX3D_LOAD_FUNC static bool img_index(gfx3d_t *g, unsigned slot) {
   uint8_t *const ix = (uint8_t *)(uintptr_t)idx_at(px, n);
   memcpy((uint16_t *)(uintptr_t)pal_at(px, n), pal, k * sizeof *pal);
   for (size_t i = 0; i < n; i++) ix[i] = (uint8_t)pal_find(pal, k, old[i]);
+  GFX3D_FREE(pal);
   GFX3D_FREE((void *)(uintptr_t)old);
   im->px = px;
   im->ncol = (uint16_t)k;
@@ -2063,9 +2066,10 @@ __attribute__((weak)) bool gfx3d_stack_call(void *lo, size_t bytes, void (*fn)(v
 }
 
 // What gfx3d_end's fills and raster run on, at the end of its lent SRAM. Meander's whole run
-// peaks at 664 B on the device (the `stack` dev command's raster_peak), interrupts' frames
-// included; a Lua scene's, its sprite through Lua's sprite function, 456 B (the hardware E2E's
-// gfx3d_scene); the rest is margin. An overflow is a STKOF HardFault (app_stack_call_lent).
+// peaks at 688 B on the device (the `stack` dev command's raster_peak), interrupts' frames and
+// an image's indices made at its first sprite (img_index, its scratch on the heap) included; a
+// Lua scene's, its sprite through Lua's sprite function, 456 B (the hardware E2E's gfx3d_scene);
+// the rest is margin. An overflow is a STKOF HardFault (app_stack_call_lent).
 #define END_STACK_BYTES 2048u
 
 typedef struct {
