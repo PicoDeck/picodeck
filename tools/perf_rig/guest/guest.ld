@@ -12,7 +12,16 @@ SECTIONS
     . = __sprite_slot + 10564;
     KEEP(*gfx3d.o(.gfx3d_sprite_aux_text))
     KEEP(*gfx3d.o(.gfx3d_sprite_runs_text))
+    KEEP(*gfx3d.o(.gfx3d_load_text))  /* then the indexed blits at their offsets, as there */
+    . = __sprite_slot + 18254;
+    KEEP(*gfx3d.o(.gfx3d_sprite_idx_plain_text))
+    . = __sprite_slot + 19084;
+    KEEP(*gfx3d.o(.gfx3d_sprite_idx_lut_text))
     . = __sprite_slot + 19820;
+    KEEP(*gfx3d.o(.gfx3d_sprite_idx_runs_text))
+    . = __sprite_slot + 20772;
+    KEEP(*gfx3d.o(.gfx3d_sprite_idx_lut_runs_text))
+    . = __sprite_slot + 28012;
     KEEP(*gfx3d.o(.text .text.*))
     *gfx3d_main.o(.text .text.*)
     *start.o(.text .text.*)

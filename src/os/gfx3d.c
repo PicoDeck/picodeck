@@ -5,6 +5,7 @@
 #ifdef __ELF__
 #define DISP_SPRITE_AUX __attribute__((section(".gfx3d_sprite_aux_text")))
 #define DISP_SPRITE_RUNS __attribute__((section(".gfx3d_sprite_runs_text")))
+#define DISP_SPRITE_IDX(part) __attribute__((section(".gfx3d_sprite_idx_" #part "_text")))
 #endif
 #include "display_clip.h"
 #include <math.h>
@@ -53,12 +54,23 @@
 // display_clip.h's table blit through DISP_SPRITE_AUX above; then its replaying blits,
 // DISP_SPRITE_RUNS), then room to grow. So a change to the fill moves nothing else, and a change
 // elsewhere in this file does not move the fill.
+// The blits that draw a sprite from its palette indices (display_clip.h's DISP_SPRITE_IDX) come
+// after them, each where src/hot_gfx.ld puts it: on the cache sets of the code it stands in for.
 #ifdef __ELF__
 #define GFX3D_SPRITE_FUNC __attribute__((section(".gfx3d_sprite_text"), noinline))
 #define GFX3D_SPRITE_AUX __attribute__((section(".gfx3d_sprite_aux_text"), noinline))
 #else
 #define GFX3D_SPRITE_FUNC __attribute__((noinline))
 #define GFX3D_SPRITE_AUX __attribute__((noinline))
+#endif
+
+// What makes an image's indices and its palettes (img_index, spr_palette_make), once an image or a
+// gfx3d_end, has a section of its own, in the room left in the sprite fill's slot: none of it is
+// hot, and there it moves nothing.
+#ifdef __ELF__
+#define GFX3D_LOAD_FUNC __attribute__((section(".gfx3d_load_text"), noinline))
+#else
+#define GFX3D_LOAD_FUNC __attribute__((noinline))
 #endif
 
 // A record's next index, with REC_OTHER set on a record that is no flat triangle, so the
@@ -148,10 +160,20 @@ typedef struct {
   bool scrolled;  // gfx3d_tex_scroll: an offset in `scroll` that is not 0
 } gfx3d_tex_t;
 
+// An image of at most 256 colours is also kept as 8-bit indices into its palette, after its
+// pixels in the same block (idx_at, pal_at), for a sprite's fill (raster_sprite). They are made
+// for its first sprite drawn from them (img_index), not at gfx3d_image_add, so that loading
+// allocates what it did and nothing an app loads after its images moves. ncol, in what was the
+// struct's padding (zero from gfx3d_new_ex), is how many colours: 0 while not looked at,
+// IMG_NO_IDX for an image of more (or whose larger block found no memory), which keeps px only.
 typedef struct {
   uint16_t *px;
   uint16_t w, h, key;
+  uint16_t ncol;
 } gfx3d_image_t;
+#define IMG_NO_IDX 0xFFFFu
+_Static_assert(sizeof(void *) != 4 || sizeof(gfx3d_image_t) == 12,
+               "ncol is in the padding: the context's fields stay on the lines they were");
 
 struct gfx3d {
   int vx, vy, vw, vh;
@@ -515,6 +537,62 @@ int gfx3d_tex_add(gfx3d_t *g, int lg_w, int lg_h, int nmips, const uint16_t *pix
   t->lg_h = (uint8_t)lg_h;
   t->nmips = (uint8_t)nmips;
   return g->ntex++;
+}
+
+// Where an image of n pixels at px keeps its indices, from the first 8-byte boundary after its
+// pixels (an XIP cache line holds 8 of them), and then its palette, ncol host RGB565 colours,
+// ascending. IMG_IDX_BYTES is what they add to the block.
+static inline const uint8_t *idx_at(const uint16_t *px, size_t n) {
+  return (const uint8_t *)(((uintptr_t)(px + n) + 7u) & ~(uintptr_t)7u);
+}
+static inline const uint16_t *pal_at(const uint16_t *px, size_t n) {
+  return (const uint16_t *)(const void *)(((uintptr_t)(idx_at(px, n) + n) + 1u) & ~(uintptr_t)1u);
+}
+#define IMG_IDX_BYTES(n, ncol) (7u + (n) + 1u + 2u * (size_t)(ncol))
+
+// The first of k ascending colours that is not below v (k if none).
+__attribute__((always_inline)) static inline unsigned pal_find(const uint16_t *pal, unsigned k,
+                                                               uint16_t v) {
+  unsigned lo = 0, hi = k;
+  while (lo < hi) {
+    const unsigned m = (lo + hi) / 2u;
+    if (pal[m] < v)
+      lo = m + 1u;
+    else
+      hi = m;
+  }
+  return lo;
+}
+
+// Image `slot`'s indices, made now: its block replaced by one with its pixels, then the indices and
+// the palette (idx_at, pal_at), and ncol set. False, ncol IMG_NO_IDX and the block as it was, for an
+// image of more than 256 colours or when the larger block finds no memory: it is then drawn from
+// RGB565 for good. Only the context's own sprite fill holds the old block's address meanwhile.
+GFX3D_LOAD_FUNC static bool img_index(gfx3d_t *g, unsigned slot) {
+  gfx3d_image_t *const im = &g->img[slot];
+  const uint16_t *const old = im->px;
+  const size_t n = (size_t)im->w * im->h;
+  uint16_t pal[256];
+  unsigned k = 0;
+  for (size_t i = 0; i < n && k <= 256u; i++) {
+    const unsigned at = pal_find(pal, k, old[i]);
+    if (at < k && pal[at] == old[i]) continue;
+    if (k < 256u) memmove(&pal[at + 1u], &pal[at], (k - at) * sizeof *pal), pal[at] = old[i];
+    k++;  // 257: too many
+  }
+  uint16_t *const px = k <= 256u ? (uint16_t *)GFX3D_MALLOC(n * sizeof *px + IMG_IDX_BYTES(n, k)) : NULL;
+  if (!px) {
+    im->ncol = IMG_NO_IDX;
+    return false;
+  }
+  memcpy(px, old, n * sizeof *px);
+  uint8_t *const ix = (uint8_t *)(uintptr_t)idx_at(px, n);
+  memcpy((uint16_t *)(uintptr_t)pal_at(px, n), pal, k * sizeof *pal);
+  for (size_t i = 0; i < n; i++) ix[i] = (uint8_t)pal_find(pal, k, old[i]);
+  GFX3D_FREE((void *)(uintptr_t)old);
+  im->px = px;
+  im->ncol = (uint16_t)k;
+  return true;
 }
 
 int gfx3d_image_add(gfx3d_t *g, int w, int h, uint16_t key, const uint16_t *pixels) {
@@ -1635,13 +1713,38 @@ __attribute__((noinline)) GFX3D_TEX_FUNC static void raster_tex_tri(gfx3d_t *g, 
 // (gfx3d_sram_scratch), for one gfx3d_end (nothing else runs until it returns): the fog's tables
 // (disp_fog_lut), one per level 1..31 at s_fog_lut[(level - 1) * DISP_FOG_LUT_LEN], each made the
 // first time gfx3d_end meets its level; then a magnified keyed sprite's runs (disp_scaled_keyed),
-// of which a 320-pixel row has at most 160. Without that block (s_fog_lut NULL) a sprite's pixels
-// are mixed one by one, to the same values, and every row is sampled.
+// of which a 320-pixel row has at most 160; then the palettes of the images drawn from their
+// indices (spr_pals_t). Without that block (s_fog_lut NULL) a sprite's pixels are mixed one by
+// one, to the same values, every row is sampled, and every image is read as RGB565.
 #define FOG_LUT_BYTES (31u * DISP_FOG_LUT_LEN * sizeof(uint16_t))
 #define SPR_RUNS 160
-#define SPR_LENT_BYTES (FOG_LUT_BYTES + SPR_RUNS * sizeof(disp_run_t))
+#define SPR_PALS_AT (FOG_LUT_BYTES + SPR_RUNS * sizeof(disp_run_t))
+// The palettes' room: what the firmware's block has left before gfx3d_end's stack, rounded so that
+// gfx3d_end's two tests of the block's size stay one instruction each.
+#define SPR_PALS_BYTES 7168u
+#define SPR_LENT_BYTES (SPR_PALS_AT + SPR_PALS_BYTES)
 static uint16_t *s_fog_lut;
-static uint32_t s_fog_made;  // bit l: level l's table is made
+static uint32_t s_fog_made;  // bit l: level l's table is made; bit 0: spr_pals_t is set up
+
+// Each image's palette for this gfx3d_end, made the first time a sprite of it is drawn from its
+// indices (spr_palette): at[2 * slot] in the target's byte order (the plain blits), at[2 * slot + 1]
+// in host order (the fogged ones look it up in the fog's tables). An entry is where it starts in
+// pal, or SPR_PAL_NONE (not made) or SPR_PAL_FULL (no room: drawn from RGB565); pal[at] is the
+// key's index (256: none) and the colours follow.
+#define SPR_PAL_NONE 0xFFFFu
+#define SPR_PAL_FULL 0xFFFEu
+typedef struct {
+  uint16_t at[2 * GFX3D_MAX_IMAGES];
+  uint16_t used;
+  uint16_t pal[(SPR_PALS_BYTES - (2 * GFX3D_MAX_IMAGES + 1) * sizeof(uint16_t)) / sizeof(uint16_t)];
+} spr_pals_t;
+_Static_assert(sizeof(spr_pals_t) <= SPR_PALS_BYTES, "the palettes fit their room");
+_Static_assert(SPR_PALS_AT % 4 == 0, "the palettes follow the runs, aligned");
+_Static_assert(sizeof(((spr_pals_t *)0)->pal) / 2 < SPR_PAL_FULL, "an entry never reads as a mark");
+
+#ifdef GFX3D_TEST
+int gfx3d_test_idx_sprites, gfx3d_test_idx_no_room;
+#endif
 
 // Level `level`'s table for this gfx3d_end, or NULL.
 GFX3D_SPRITE_AUX static const uint16_t *fog_table(const gfx3d_t *g, unsigned level, bool swap) {
@@ -1652,6 +1755,54 @@ GFX3D_SPRITE_AUX static const uint16_t *fog_table(const gfx3d_t *g, unsigned lev
     s_fog_made |= 1u << level;
   }
   return lut;
+}
+
+// Image `slot`'s palette in spr_pals_t for this gfx3d_end, in host order or the target's, made now,
+// with the image's indices if it has none yet (img_index): [0] is the key's index, 256 for none,
+// and the colours follow. NULL for an image without indices, or a palette that finds no room.
+GFX3D_LOAD_FUNC static const uint16_t *spr_palette_make(gfx3d_t *g, unsigned slot, bool host,
+                                                        bool swap) {
+  spr_pals_t *const p = (spr_pals_t *)(void *)((uint8_t *)s_fog_lut + SPR_PALS_AT);
+  if (!(s_fog_made & 1u)) {
+    memset(p->at, 0xFF, sizeof p->at);  // SPR_PAL_NONE
+    p->used = 0;
+    s_fog_made |= 1u;
+  }
+  uint16_t *const at = &p->at[2u * slot + host];
+  if (*at == SPR_PAL_NONE) {
+    if (!g->img[slot].ncol && !img_index(g, slot)) return NULL;
+    const gfx3d_image_t *const im = &g->img[slot];
+    const unsigned n = im->ncol;
+    if (p->used + 1u + n > sizeof p->pal / sizeof p->pal[0]) {
+      *at = SPR_PAL_FULL;
+    } else {
+      uint16_t *const d = &p->pal[p->used];
+      const uint16_t *const src = pal_at(im->px, (size_t)im->w * im->h);
+      const unsigned k = pal_find(src, n, im->key);
+      d[0] = (uint16_t)(im->key && k < n && src[k] == im->key ? k : 256u);
+      for (unsigned i = 0; i < n; i++) d[1u + i] = host ? src[i] : disp_px(src[i], swap);
+      *at = p->used;
+      p->used = (uint16_t)(p->used + 1u + n);
+    }
+  }
+  if (*at == SPR_PAL_FULL) {
+#ifdef GFX3D_TEST
+    gfx3d_test_idx_no_room++;
+#endif
+    return NULL;
+  }
+  return &p->pal[*at];
+}
+
+// The same, in line where it is made already: every sprite but the first of its image asks.
+__attribute__((always_inline)) static inline const uint16_t *spr_palette(gfx3d_t *g, unsigned slot,
+                                                                         bool host, bool swap) {
+  if (s_fog_made & 1u) {
+    const spr_pals_t *const p = (const spr_pals_t *)(void *)((uint8_t *)s_fog_lut + SPR_PALS_AT);
+    const unsigned at = p->at[2u * slot + host];
+    if (at < SPR_PAL_FULL) return &p->pal[at];
+  }
+  return spr_palette_make(g, slot, host, swap);
 }
 
 // A sprite record. The one-texel and 2 x 2 ones, which are most of a valley's, skip the
@@ -1693,6 +1844,37 @@ GFX3D_SPRITE_FUNC static void raster_sprite(gfx3d_t *g, const gfx3d_target_t *t,
     }
     g->stats.pixels += covered;
     return;
+  }
+  // The context's own image, as gfx3d_image_resolve hands it, of at most 256 colours: from its
+  // indices, a byte a texel, through the same sampling to the same pixels, unless its palette
+  // finds no room. Making the indices replaces its block (img_index): its pixels are the new one's.
+  const unsigned slot = r->u.spr.slot;
+  if (s_fog_lut && slot < (unsigned)g->nimg && g->img[slot].ncol != IMG_NO_IDX &&
+      g->img[slot].px == data && g->img[slot].key == key && g->img[slot].w == iw) {
+    const uint16_t *const pal = spr_palette(g, slot, lut != NULL, t->swap);
+    data = g->img[slot].px;
+    if (pal) {
+      const uint8_t *const ix = idx_at(data, (size_t)iw * g->img[slot].h);
+      const unsigned kidx = pal[0];
+#ifdef GFX3D_TEST
+      gfx3d_test_idx_sprites++;
+#endif
+      if (key && h > sh) {  // replayed, as below
+        disp_run_t *const runs = (disp_run_t *)(void *)((uint8_t *)s_fog_lut + FOG_LUT_BYTES);
+        g->stats.pixels += lut ? disp_blit_scaled_rect_idx_lut_runs(t->fb, t->stride, c, x, y, ix, iw,
+                                                                    sx, sy, sw, sh, w, h, kidx,
+                                                                    pal + 1, lut, runs, SPR_RUNS)
+                               : disp_blit_scaled_rect_idx_runs(t->fb, t->stride, c, x, y, ix, iw, sx,
+                                                                sy, sw, sh, w, h, kidx, pal + 1,
+                                                                runs, SPR_RUNS);
+      } else {
+        g->stats.pixels += lut ? disp_blit_scaled_rect_idx_lut(t->fb, t->stride, c, x, y, ix, iw, sx,
+                                                               sy, sw, sh, w, h, kidx, pal + 1, lut)
+                               : disp_blit_scaled_rect_idx(t->fb, t->stride, c, x, y, ix, iw, sx, sy,
+                                                           sw, sh, w, h, kidx, pal + 1);
+      }
+      return;
+    }
   }
   // A keyed sprite taller on screen than its source part repeats source rows: those replay the
   // row above's runs, kept after the fog's tables (with the tables, so lut is set when level is).

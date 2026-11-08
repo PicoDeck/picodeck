@@ -35,14 +35,18 @@
 #define DISP_HOT
 #endif
 // The sections of the out-of-line blits only gfx3d's sprites call: disp_blit_scaled_rect_lut
-// (DISP_SPRITE_AUX), and the two that replay a magnified sprite's runs (DISP_SPRITE_RUNS). gfx3d.c
-// defines them before including this header, to keep them in its sprite fill's slot
+// (DISP_SPRITE_AUX), the two that replay a magnified sprite's runs (DISP_SPRITE_RUNS), and the four
+// that read an image of palette indices, each in a section of its own (DISP_SPRITE_IDX(part)).
+// gfx3d.c defines them before including this header, to keep them in its sprite fill's slot
 // (src/hot_gfx.ld); elsewhere empty.
 #ifndef DISP_SPRITE_AUX
 #define DISP_SPRITE_AUX
 #endif
 #ifndef DISP_SPRITE_RUNS
 #define DISP_SPRITE_RUNS
+#endif
+#ifndef DISP_SPRITE_IDX
+#define DISP_SPRITE_IDX(part)
 #endif
 
 // Inclusive clip rect. Empty when x1 < x0 or y1 < y0.
@@ -1061,6 +1065,151 @@ DISP_HOT DISP_SPRITE_AUX static __attribute__((noinline, unused)) uint32_t disp_
     if (racc >= dh) { racc -= dh; src_row++; }
   }
   return (uint32_t)s.w * (uint32_t)s.h;
+}
+
+// ── Images of palette indices (gfx3d's own sprite images) ───────────────────
+// The sprite blits above for an image held as 8-bit indices into a palette of RGB565 colours,
+// which gfx3d keeps for an image of at most 256: a texel is a byte, so the image fills half the
+// XIP cache lines it did. The same sampling, pixels and return as disp_blit_scaled_rect (fog
+// false) or disp_blit_scaled_rect_lut, and as the replaying blits for the _runs forms. kidx is the key's
+// index, or 256 and above for none (no key, or one the image does not use): the index is compared
+// where the colour was, so a keyed pixel reads no palette. pal is in the target's byte order (each
+// entry already disp_px'd) for the plain blits and in host order for the fogged ones, which look
+// each entry up in lut's tables.
+DISP_HOT static inline __attribute__((always_inline)) uint32_t disp_scaled_idx(
+    uint16_t *fb, int stride, const disp_clip_t *c, int x, int y, const uint8_t *data, int img_w,
+    int sx, int sy, int sw, int sh, int dst_w, int dst_h, unsigned kidx, const uint16_t *pal,
+    const bool fog, const uint16_t *lut) {
+  if (!data || img_w <= 0 || sw <= 0 || sh <= 0 || dst_w <= 0 || dst_h <= 0)
+    return 0;
+  disp_span_t s;
+  if (!disp_clip_rect(c, x, y, dst_w, dst_h, &s)) return 0;
+  const int q = sw / dst_w, rq = sh / dst_h;
+  const uint32_t rm = (uint32_t)(sw % dst_w), dw = (uint32_t)dst_w;
+  const uint32_t rrm = (uint32_t)(sh % dst_h), dh = (uint32_t)dst_h;
+  const int col_start = s.skip_x ? (int)(s.skip_x * sw / dst_w) : 0;
+  const uint32_t acc_start = s.skip_x ? (uint32_t)(s.skip_x * sw % dst_w) : 0;
+  int src_row = s.skip_y ? (int)(s.skip_y * sh / dst_h) : 0;
+  uint32_t racc = s.skip_y ? (uint32_t)(s.skip_y * sh % dst_h) : 0;
+  uint16_t *row = fb + (ptrdiff_t)s.y * stride + s.x;
+  int prev = -1;
+  for (int r = 0; r < s.h; r++, row += stride) {
+    if (kidx > 255u && src_row == prev) {  // opaque: an upscaled row repeats
+      memcpy(row, row - stride, (size_t)s.w * sizeof(uint16_t));
+    } else {
+      prev = src_row;
+      const uint8_t *sp = data + (size_t)(sy + src_row) * img_w + sx + col_start;
+      uint32_t acc = acc_start;
+      uint16_t *d = row;
+      uint16_t *const e = row + s.w;
+      for (; d < e; d++) {
+        const unsigned i = *sp;
+        if (i != kidx) *d = fog ? disp_fog_lut_px(lut, pal[i]) : pal[i];
+        sp += q;
+        acc += rm;
+        if (acc >= dw) { acc -= dw; sp++; }
+      }
+    }
+    src_row += rq;
+    racc += rrm;
+    if (racc >= dh) { racc -= dh; src_row++; }
+  }
+  return (uint32_t)s.w * (uint32_t)s.h;
+}
+
+// disp_scaled_keyed for an image of palette indices: a row that samples the same source row as
+// the row before copies its runs of drawn pixels from it (disp_scaled_keyed has the rules).
+DISP_HOT static inline __attribute__((always_inline)) uint32_t disp_scaled_keyed_idx(
+    uint16_t *fb, int stride, const disp_clip_t *c, int x, int y, const uint8_t *data, int img_w,
+    int sx, int sy, int sw, int sh, int dst_w, int dst_h, unsigned kidx, const uint16_t *pal,
+    const bool fog, const uint16_t *lut, disp_run_t *runs, int cap) {
+  if (!data || img_w <= 0 || sw <= 0 || sh <= 0 || dst_w <= 0 || dst_h <= 0)
+    return 0;
+  disp_span_t s;
+  if (!disp_clip_rect(c, x, y, dst_w, dst_h, &s)) return 0;
+  const int q = sw / dst_w, rq = sh / dst_h;
+  const uint32_t rm = (uint32_t)(sw % dst_w), dw = (uint32_t)dst_w;
+  const uint32_t rrm = (uint32_t)(sh % dst_h), dh = (uint32_t)dst_h;
+  const int col_start = s.skip_x ? (int)(s.skip_x * sw / dst_w) : 0;
+  const uint32_t acc_start = s.skip_x ? (uint32_t)(s.skip_x * sw % dst_w) : 0;
+  int src_row = s.skip_y ? (int)(s.skip_y * sh / dst_h) : 0;
+  uint32_t racc = s.skip_y ? (uint32_t)(s.skip_y * sh % dst_h) : 0;
+  uint16_t *row = fb + (ptrdiff_t)s.y * stride + s.x;
+  int prev = -1, nruns = -1;  // nruns: the row before's runs, -1 when not noted
+  for (int r = 0; r < s.h; r++, row += stride) {
+    if (src_row == prev && nruns >= 0) {
+      const uint16_t *const up = row - stride;
+      for (int k = 0; k < nruns; k++) disp_copy_run(row + runs[k].at, up + runs[k].at, runs[k].n);
+    } else {
+      prev = src_row;
+      const uint8_t *sp = data + (size_t)(sy + src_row) * img_w + sx + col_start;
+      uint32_t acc = acc_start;
+      uint16_t *d = row;
+      uint16_t *const e = row + s.w;
+      int n = 0;
+      while (d < e) {
+        unsigned i = *sp;
+        if (i == kidx) {  // a keyed pixel: nothing drawn
+          d++;
+          sp += q;
+          acc += rm;
+          if (acc >= dw) { acc -= dw; sp++; }
+          continue;
+        }
+        uint16_t *const first = d;
+        do {  // a run of drawn pixels
+          *d = fog ? disp_fog_lut_px(lut, pal[i]) : pal[i];
+          d++;
+          sp += q;
+          acc += rm;
+          if (acc >= dw) { acc -= dw; sp++; }
+        } while (d < e && (i = *sp) != kidx);
+        if (n < cap) {
+          runs[n].at = (uint16_t)(first - row);
+          runs[n].n = (uint16_t)(d - first);
+        }
+        n++;
+      }
+      nruns = n <= cap ? n : -1;
+    }
+    src_row += rq;
+    racc += rrm;
+    if (racc >= dh) { racc -= dh; src_row++; }
+  }
+  return (uint32_t)s.w * (uint32_t)s.h;
+}
+
+// The four, out of line, so that no caller's state competes with their loops for registers.
+DISP_HOT DISP_SPRITE_IDX(plain) static __attribute__((noinline, unused)) uint32_t
+disp_blit_scaled_rect_idx(uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
+                          const uint8_t *data, int img_w, int sx, int sy, int sw, int sh,
+                          int dst_w, int dst_h, unsigned kidx, const uint16_t *pal) {
+  return disp_scaled_idx(fb, stride, c, x, y, data, img_w, sx, sy, sw, sh, dst_w, dst_h, kidx,
+                         pal, false, NULL);
+}
+DISP_HOT DISP_SPRITE_IDX(lut) static __attribute__((noinline, unused)) uint32_t
+disp_blit_scaled_rect_idx_lut(uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
+                              const uint8_t *data, int img_w, int sx, int sy, int sw, int sh,
+                              int dst_w, int dst_h, unsigned kidx, const uint16_t *pal,
+                              const uint16_t *lut) {
+  return disp_scaled_idx(fb, stride, c, x, y, data, img_w, sx, sy, sw, sh, dst_w, dst_h, kidx,
+                         pal, true, lut);
+}
+DISP_HOT DISP_SPRITE_IDX(runs) static __attribute__((noinline, unused)) uint32_t
+disp_blit_scaled_rect_idx_runs(uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
+                               const uint8_t *data, int img_w, int sx, int sy, int sw, int sh,
+                               int dst_w, int dst_h, unsigned kidx, const uint16_t *pal,
+                               disp_run_t *runs, int cap) {
+  return disp_scaled_keyed_idx(fb, stride, c, x, y, data, img_w, sx, sy, sw, sh, dst_w, dst_h,
+                               kidx, pal, false, NULL, runs, cap);
+}
+DISP_HOT DISP_SPRITE_IDX(lut_runs) static __attribute__((noinline, unused)) uint32_t
+disp_blit_scaled_rect_idx_lut_runs(uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
+                                   const uint8_t *data, int img_w, int sx, int sy, int sw, int sh,
+                                   int dst_w, int dst_h, unsigned kidx, const uint16_t *pal,
+                                   const uint16_t *lut, disp_run_t *runs, int cap) {
+  return disp_scaled_keyed_idx(fb, stride, c, x, y, data, img_w, sx, sy, sw, sh, dst_w, dst_h,
+                               kidx, pal, true, lut, runs, cap);
 }
 
 // Nearest-neighbour scale of a whole src_w x src_h image (see above).

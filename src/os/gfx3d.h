@@ -272,6 +272,9 @@ typedef struct {
 } gfx3d_test_tex_info_t;
 void gfx3d_test_tex_tri(gfx3d_t *g, const gfx3d_target_t *t, int slot, int level,
                         const gfx3d_test_vert_t v[3], bool blend, gfx3d_test_tex_info_t *info);
+// Sprites gfx3d_end drew from their images' palette indices, and those it drew from RGB565 as
+// their palettes found no room in the lent block: counted, never reset.
+extern int gfx3d_test_idx_sprites, gfx3d_test_idx_no_room;
 #endif
 // Fast memory for one mesh's vertices during a draw call, or for gfx3d_end's sprite fog
 // tables and stack, or NULL. Weak in gfx3d.c (none); the firmware lends the video decoder's

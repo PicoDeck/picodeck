@@ -28,7 +28,22 @@ SECTIONS
         . = __hot_gfx_sprite__ + 10564;
         *src/os/gfx3d.c.o(.gfx3d_sprite_aux_text)
         *src/os/gfx3d.c.o(.gfx3d_sprite_runs_text)
-        . = __hot_gfx_sprite__ + 19820;
+        /* Then the code that draws a context's own image from its palette indices, which it
+           does in place of those blits (and of raster_sprite's own loops): each blit on the cache
+           sets of the one it stands in for, 8 or 16 KB on from it, so that an app whose images
+           are all indexed keeps the sets busy that it always did. Before them what makes the
+           indices and palettes, which runs once an image or a gfx3d_end. The slot ends 8 KB
+           later than it did (28012, not 19820), so nothing after it moved. */
+        *src/os/gfx3d.c.o(.gfx3d_load_text)
+        . = __hot_gfx_sprite__ + 18254;  /* raster_sprite's own keyed loop + 16 KB */
+        *src/os/gfx3d.c.o(.gfx3d_sprite_idx_plain_text)
+        . = __hot_gfx_sprite__ + 19084;  /* disp_blit_scaled_rect_lut + 8 KB */
+        *src/os/gfx3d.c.o(.gfx3d_sprite_idx_lut_text)
+        . = __hot_gfx_sprite__ + 19820;  /* disp_blit_scaled_rect_keyed + 8 KB */
+        *src/os/gfx3d.c.o(.gfx3d_sprite_idx_runs_text)
+        . = __hot_gfx_sprite__ + 20772;  /* disp_blit_scaled_rect_lut_runs + 8 KB */
+        *src/os/gfx3d.c.o(.gfx3d_sprite_idx_lut_runs_text)
+        . = __hot_gfx_sprite__ + 28012;
         *src/os/gfx3d.c.o(.text* .rodata*)
         *src/os/lua_bridge_gfx3d.c.o(.text* .rodata*)
         *src/fonts/font.c.o(.text* .rodata*)

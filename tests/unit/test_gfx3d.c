@@ -14,10 +14,11 @@
 #define HALF_PI 1.5707964f
 
 // The lent SRAM (gfx3d_sram_scratch, weak in gfx3d.c): off unless a test sets it. As large as
-// the firmware's (s_jpeg_sram): gfx3d_end wants 7936 B for the sprite fog's tables and 640 B for
-// a magnified keyed sprite's runs after them (SPR_LENT), and 2048 B for its stack.
+// the firmware's (s_jpeg_sram): gfx3d_end wants 7936 B for the sprite fog's tables, 640 B for a
+// magnified keyed sprite's runs and 7168 B for the images' palettes after them (SPR_LENT), and
+// 2048 B for its stack.
 static char s_lent[17884] __attribute__((aligned(8)));
-enum { SPR_LENT = 31 * 128 * 2 + 160 * 4 };
+enum { SPR_LENT = 31 * 128 * 2 + 160 * 4 + 7168 };
 static size_t s_lent_bytes;
 static int s_lent_calls;
 void *gfx3d_sram_scratch(size_t *bytes) {
@@ -3564,6 +3565,111 @@ static void test_end_stack_changes_nothing(void) {
   gfx3d_free(g);
 }
 
+// A target whose sprite function hands a copy of each image's RGB565 pixels: what it draws
+// never comes from the context's palette indices.
+static uint16_t *s_copies[GFX3D_MAX_IMAGES];
+static bool copy_resolve(void *ud, int slot, const uint16_t **data, int *w, int *h, uint16_t *key) {
+  if (!gfx3d_image_resolve(ud, slot, data, w, h, key)) return false;
+  if (!s_copies[slot]) {
+    s_copies[slot] = (uint16_t *)malloc((size_t)*w * (size_t)*h * sizeof(uint16_t));
+    memcpy(s_copies[slot], *data, (size_t)*w * (size_t)*h * sizeof(uint16_t));
+  }
+  *data = s_copies[slot];
+  return true;
+}
+static void copies_free(void) {
+  for (int i = 0; i < GFX3D_MAX_IMAGES; i++) free(s_copies[i]), s_copies[i] = NULL;
+}
+
+// An image of n distinct colours (n <= w * h), the key among them in a third of its pixels when
+// keyed.
+static int idx_image(gfx3d_t *g, int w, int h, int n, bool keyed, uint32_t seed) {
+  uint16_t *px = (uint16_t *)malloc((size_t)w * (size_t)h * sizeof(uint16_t));
+  for (int i = 0; i < w * h; i++) {
+    seed = seed * 1103515245u + 12345u;
+    const int k = i < n ? i : (int)((seed >> 8) % (uint32_t)n);  // every colour at least once
+    uint16_t v = (uint16_t)(0x0841 + k * 97);  // distinct for k < 675, never the key below
+    if (keyed && (i * 7 + i / w) % 3 == 0) v = MAGENTA;
+    px[i] = v;
+  }
+  const int slot = gfx3d_image_add(g, w, h, keyed ? MAGENTA : 0, px);
+  free(px);
+  return slot;
+}
+
+// gfx3d keeps an image of at most 256 colours as palette indices too, and with the lent block
+// a sprite of the context's own image (as gfx3d_image_resolve hands it) is drawn from them: the
+// same pixels and stats as from its RGB565 pixels (copy_resolve) and as with no lent block, for
+// every path a sprite takes (minified, magnified and so replayed, fogged and not, mirrored, the
+// key in the image or not), both byte orders, and an image of 257 colours (RGB565 only). A
+// context whose palettes do not all fit the block draws those sprites from RGB565, the same.
+static void test_sprite_indexed_images_change_nothing(void) {
+  enum { N = 500 };
+  static gfx3d_sprite_t sp[N];
+  static uint16_t want[W * H], got[W * H];
+  for (int ctx = 0; ctx < 2; ctx++) {
+    gfx3d_t *g = gfx3d_new(W, H);
+    int nimg;
+    if (ctx == 0) {  // the shapes a scene has, and one too many colours to index
+      spr_images(g);  // 8 x 8 keyed, 3 x 5 opaque
+      CHECK_EQ_INT(idx_image(g, 24, 40, 200, true, 1), 2);
+      CHECK_EQ_INT(idx_image(g, 20, 20, 257, true, 2), 3);
+      CHECK_EQ_INT(idx_image(g, 16, 16, 256, false, 3), 4);
+      CHECK_EQ_INT(idx_image(g, 1, 1, 1, false, 4), 5);
+      nimg = 6;
+    } else {  // more palette than the lent block holds
+      for (int i = 0; i < 40; i++) CHECK_EQ_INT(idx_image(g, 16, 16, 250, i % 2 == 0, 10u + i), i);
+      nimg = 40;
+    }
+    spr_make(sp, N);
+    for (int i = 0; i < N; i++) sp[i].slot = (uint32_t)(i % nimg);
+    const float cam[3] = {1.0f, 2.5f, 3.0f};
+    gfx3d_set_camera(g, cam, 0.2f, -0.05f, 0.0f);
+    gfx3d_set_fog(g, true, 3, 70, 0x4A69);
+    int from_indices = 0;
+    for (int pass = 0; pass < 8; pass++) {
+      const bool swap = pass & 1, mirror = pass & 2, fog = pass & 4;
+      gfx3d_set_mirror(g, mirror, 0.0f);
+      gfx3d_set_sprite_fog(g, fog);
+      gfx3d_stats_t want_st = {0};
+      for (int k = 0; k < 4; k++) {  // no block, own; block, copies; no block, copies; block, own
+        s_lent_bytes = k == 1 || k == 3 ? sizeof s_lent : 0;
+        gfx3d_target_t t = spr_target(g, k ? got : want);
+        t.swap = swap;
+        if (k == 1 || k == 2) t.sprite = copy_resolve;
+        gfx3d_begin(g, true, BG);
+        CHECK(gfx3d_draw_sprites(g, sp, N, 0.25f) > 100);
+        gfx3d_test_idx_sprites = gfx3d_test_idx_no_room = 0;
+        gfx3d_end(g, &t);
+        const gfx3d_stats_t st = *gfx3d_get_stats(g);
+        if (k == 0) {
+          want_st = st;
+        } else {
+          CHECK(memcmp(want, got, sizeof want) == 0);
+          CHECK(st.pixels == want_st.pixels && st.sprites == want_st.sprites);
+        }
+        if (k < 3) CHECK_EQ_INT(gfx3d_test_idx_sprites, 0);
+        if (k == 3) {
+          // The palettes stay in their room: past it (the stack's, not taken here) nothing moved
+          // from gfx3d_sram_scratch's fill.
+          bool tail = true;
+          for (size_t b = SPR_LENT; b < sizeof s_lent; b++) tail = tail && s_lent[b] == (char)0xA5;
+          CHECK(tail);
+          from_indices += gfx3d_test_idx_sprites;
+          CHECK(gfx3d_test_idx_sprites > 50);
+          if (ctx == 1) CHECK(gfx3d_test_idx_no_room > 50);  // and some found no room
+          else CHECK_EQ_INT(gfx3d_test_idx_no_room, 0);
+        }
+      }
+    }
+    CHECK(from_indices > 400);
+    gfx3d_set_mirror(g, false, 0.0f);
+    s_lent_bytes = 0;
+    copies_free();
+    gfx3d_free(g);
+  }
+}
+
 static void test_sprite_tiny_fast_path(void) {
   static uint16_t fb[W * H];
   uint16_t img[16];
@@ -4813,6 +4919,7 @@ int main(void) {
   test_sprite_fog_far();
   test_sprite_fog_tables_change_nothing();
   test_end_stack_changes_nothing();
+  test_sprite_indexed_images_change_nothing();
   test_sprite_tiny_fast_path();
   test_sky_image_scrolls_with_yaw();
   test_sky_image_pitch();
