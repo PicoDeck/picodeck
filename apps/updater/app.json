@@ -4,5 +4,6 @@
     "description": "Check for and install firmware updates",
     "version": "1.0",
     "author": "PicoDeck",
-    "requirements": ["http", "root-filesystem", "system-update"]
+    "requirements": ["http", "root-filesystem", "system-update"],
+    "category": "system"
 }

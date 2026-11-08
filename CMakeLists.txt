@@ -64,6 +64,21 @@ endif()
 picodeck_generate_update_pubkey(${CMAKE_BINARY_DIR}/generated/ota_pubkey.c
                              ${PICODECK_UPDATE_PUBKEY_PEM})
 
+# ── The files the firmware owns on the SD card (issue #92) ────────────────────
+# The App Store, System Update and /system/lib, packed into the image by
+# tools/card_files.py (the one list of what is bundled) and written to the card
+# at boot by src/os/card_files.c. Runs on every build; the .c is rewritten only
+# when the bundle changes, so an unchanged bundle recompiles nothing.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(PICODECK_CARD_FILES_C ${CMAKE_BINARY_DIR}/generated/card_files_data.c)
+add_custom_target(picodeck_card_files
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/card_files.py
+            --repo ${CMAKE_SOURCE_DIR} --out ${PICODECK_CARD_FILES_C}
+    BYPRODUCTS ${PICODECK_CARD_FILES_C}
+    COMMENT "Bundling the firmware's card files"
+    VERBATIM)
+set_source_files_properties(${PICODECK_CARD_FILES_C} PROPERTIES GENERATED TRUE)
+
 # ── Lua 5.4 ──────────────────────────────────────────────────────────────────
 # Lua is added as a git submodule or downloaded into third_party/lua-5.4/
 # See README.md for setup instructions.
@@ -352,6 +367,8 @@ add_executable(picodeck
     src/os/ota_update.c
     src/os/ota_verify.c
     ${CMAKE_BINARY_DIR}/generated/ota_pubkey.c
+    src/os/card_files.c
+    ${PICODECK_CARD_FILES_C}
     src/fonts/font.c
     src/fonts/font_registry.c
     src/fonts/font_6x8.c
@@ -588,6 +605,16 @@ pico_generate_pio_header(picodeck ${CMAKE_CURRENT_SOURCE_DIR}/src/drivers/lcd_sp
 
 # Generate UF2, map, and disassembly
 pico_add_extra_outputs(picodeck)
+add_dependencies(picodeck picodeck_card_files)
+
+# System Update and the boot refuse an image over OTA_MAX_SIZE: fail the build
+# instead (after pico_add_extra_outputs, whose POST_BUILD writes picodeck.bin).
+add_custom_command(TARGET picodeck POST_BUILD
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_image_size.py
+            $<TARGET_FILE_DIR:picodeck>/picodeck.bin
+            --header ${CMAKE_SOURCE_DIR}/src/os/ota_verify.h
+    COMMENT "Checking the image against OTA_MAX_SIZE"
+    VERBATIM)
 
 # ── Compiler flags ────────────────────────────────────────────────────────────
 
@@ -646,7 +673,6 @@ set_property(TARGET picodeck APPEND PROPERTY LINK_DEPENDS ${_hot_ld})
 # gfx3d, display and fonts at their own fixed cache sets (src/hot_gfx.ld).
 target_link_options(picodeck PRIVATE "LINKER:-T,${CMAKE_SOURCE_DIR}/src/hot_gfx.ld")
 set_property(TARGET picodeck APPEND PROPERTY LINK_DEPENDS ${CMAKE_SOURCE_DIR}/src/hot_gfx.ld)
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_custom_command(TARGET picodeck POST_BUILD
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/check_hot_text.py
             --nm ${CMAKE_NM} $<TARGET_FILE:picodeck>
