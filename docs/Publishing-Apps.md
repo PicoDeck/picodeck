@@ -36,9 +36,9 @@ If you set [`min_firmware`](App-Json-Reference.md#min_firmware), use a released 
 
 ## Bundle the libraries you use
 
-**Do not rely on `/system/lib` for an app you publish.** The libraries there (`download`, `panels`, `widgets`, the Spleen font) are plain files on the card, and nothing installs them: not the firmware, not a firmware update and not the store. Your own card has them because you copied them; other people's may not, and `picocalc.sys.loadlib("download")` then returns `nil, "cannot open /system/lib/download.lua"`.
+From firmware v0.7.0 the firmware writes the libraries in `/system/lib` (`download`, `panels`, `widgets`, the Spleen font) to every card, and a firmware update brings their new versions. Older firmware puts nothing there, so on a card set up without them `picocalc.sys.loadlib("download")` returns `nil, "cannot open /system/lib/download.lua"`. If your app supports firmware before v0.7.0, or must keep one version of a library whatever the firmware ships, bundle a copy; otherwise set [`min_firmware`](App-Json-Reference.md#min_firmware) to `0.7.0` and use `/system/lib`.
 
-Copy the library into your app instead, and load it with [`require`](Standard-Lua-Libraries.md#requirename), which looks in your app's folder first:
+To bundle one, copy the library into your app, and load it with [`require`](Standard-Lua-Libraries.md#requirename), which looks in your app's folder first:
 
 ```
 myapp/
@@ -51,7 +51,7 @@ myapp/
 local download = require("download")
 ```
 
-Your copy also keeps working if a later version of the library changes. A font is the same: copy the `.pfn` into your app and load it with `picocalc.display.loadFont(APP_DIR .. "/spleen-5x8.pfn")`.
+Your copy keeps working when a later firmware changes the library. A font is the same: copy the `.pfn` into your app and load it with `picocalc.display.loadFont(APP_DIR .. "/spleen-5x8.pfn")`.
 
 ## Pointing a device at another indexer
 

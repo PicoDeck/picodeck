@@ -422,7 +422,7 @@ JSON is not loaded this way. `picocalc.json` is a built-in namespace, always pre
 local data = picocalc.json.decode(raw)
 ```
 
-The libraries in the repo's [`system/lib/`](https://github.com/PicoDeck/picodeck/tree/master/system/lib) are the ones that exist. Each is a plain file that has to be present on the SD card at `/system/lib/`; release packaging does not install them for you:
+The libraries in the repo's [`system/lib/`](https://github.com/PicoDeck/picodeck/tree/master/system/lib) are the ones that exist. From firmware v0.7.0 the firmware writes them to the card at `/system/lib/` at its first boot and after every firmware update, and overwrites any edit to them there:
 
 | Name | File | Docs |
 |------|------|------|
@@ -430,7 +430,7 @@ The libraries in the repo's [`system/lib/`](https://github.com/PicoDeck/picodeck
 | `"panels"` | `panels.lua` | [Library-Panels](Library-Panels.md) |
 | `"widgets"` | `widgets.lua` | [Library-Widgets](Library-Widgets.md) |
 
-`require` (see [Standard-Lua-Libraries](Standard-Lua-Libraries.md)) also searches `/system/lib`, after your app's folder. Since nothing installs these files on a user's card, [a published app should bundle what it uses](Publishing-Apps.md#bundle-the-libraries-you-use).
+`require` (see [Standard-Lua-Libraries](Standard-Lua-Libraries.md)) also searches `/system/lib`, after your app's folder. Firmware before v0.7.0 does not write them, so [a published app that supports it should bundle what it uses](Publishing-Apps.md#bundle-the-libraries-you-use). To try a change to one of these libraries, put your copy in your app's folder: a copy left in `/system/lib` is overwritten at the next boot.
 
 ---
 

@@ -4,7 +4,7 @@ title: "Library Widgets"
 
 A toolkit of ready-made form widgets for Lua apps: labels, buttons, checkboxes, radio groups, text fields, text areas, dropdowns and scrolling lists, plus a focus group that moves between them. Each widget is a Lua object that holds its own state, reacts to keys and draws itself, through [`picocalc.ui`](API-UI.md).
 
-The library's source is [`system/lib/widgets.lua`](https://github.com/PicoDeck/picodeck/blob/master/system/lib/widgets.lua) in the repo; it must be on the SD card at `/system/lib/widgets.lua`. Load it with:
+The library's source is [`system/lib/widgets.lua`](https://github.com/PicoDeck/picodeck/blob/master/system/lib/widgets.lua) in the repo; from firmware v0.7.0 the firmware writes it to the card at `/system/lib/widgets.lua`. Load it with:
 
 ```lua
 local W = picocalc.sys.loadlib("widgets")

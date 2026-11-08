@@ -222,19 +222,19 @@ This produces `build/picodeck.uf2`.
 
 ## Prepare your SD card
 
-Format the SD card as FAT32 and copy this repository's `apps/` and `system/` folders to its root. Flashing puts nothing on the card, and a blank card shows an empty launcher, with no App Store: the store is an app in `apps/`. The libraries in `system/lib/` are what `picocalc.sys.loadlib` loads; nothing else installs them.
+Format the SD card as FAT32. The firmware writes the App Store (`apps/store`), System Update (`apps/updater`) and the shared libraries (`system/lib`, what `picocalc.sys.loadlib` loads) to the card at its first boot and after every firmware update, from copies built into the image (`tools/card_files.py`, `src/os/card_files.c`). They belong to the firmware: edits to them on the card are overwritten. Copy any other app from this repository's `apps/` folder to the card's `/apps/`.
 
 ```
 SD:/
 ├── apps/
-│   ├── hello/
-│   │   ├── app.json
-│   │   └── main.lua
-│   └── store/
+│   ├── store/      (written by the firmware)
+│   ├── updater/    (written by the firmware)
+│   └── hello/      (copied by you)
 │       ├── app.json
 │       └── main.lua
 ├── system/
-│   └── lib/    (download.lua, panels.lua, widgets.lua, fonts/)
+│   ├── firmware_files.txt   (what the firmware last wrote)
+│   └── lib/    (download.lua, panels.lua, widgets.lua, fonts/: written by the firmware)
 └── data/       (created automatically)
 ```
 
@@ -242,7 +242,7 @@ SD:/
 
 ### Upgrading from v0.2.0 or earlier
 
-Flashing the firmware does not update the SD card. Follow "Upgrading a device" in the [v0.3.0 release notes](https://github.com/PicoDeck/picodeck/releases/tag/v0.3.0): replace `SD:/apps/` with this release's `apps/`, move each first-party app's `SD:/data/<old id>` folder to its new `net.picodeck.<app>` id, and rebuild the native apps (`make -C apps/c64`, `make -C apps/gbc`, and C-Dogs from `PicoDeck/cdogs`), because their data path is compiled in.
+Flashing the firmware does not move your data or update the other apps. Follow "Upgrading a device" in the [v0.3.0 release notes](https://github.com/PicoDeck/picodeck/releases/tag/v0.3.0): replace `SD:/apps/` with this release's `apps/`, move each first-party app's `SD:/data/<old id>` folder to its new `net.picodeck.<app>` id, and rebuild the native apps (`make -C apps/c64`, `make -C apps/gbc`, and C-Dogs from `PicoDeck/cdogs`), because their data path is compiled in.
 
 ---
 

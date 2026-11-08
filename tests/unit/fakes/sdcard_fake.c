@@ -205,9 +205,22 @@ int sdcard_fsize_handle(sdfile_t fh) {
     return fh ? (int)((fake_handle_t *)fh)->file->len : -1;
 }
 
+// As on the device: f_stat succeeds on a directory too, size 0.
 int sdcard_fsize(const char *path) {
     fake_file_t *f = lookup(path);
-    return f ? (int)f->len : -1;
+    if (f)
+        return (int)f->len;
+    return sdfake_dir_exists(path) ? 0 : -1;
+}
+
+bool sdcard_stat(const char *path, sdcard_stat_t *out) {
+    fake_file_t *f = lookup(path);
+    if (!f && !sdfake_dir_exists(path))
+        return false;
+    memset(out, 0, sizeof(*out));
+    out->size = f ? (uint32_t)f->len : 0;
+    out->is_dir = f == NULL;
+    return true;
 }
 
 bool sdcard_fexists(const char *path) {

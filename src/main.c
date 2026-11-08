@@ -520,6 +520,7 @@ void __attribute__((naked)) isr_hardfault(void) {
 #include "hardware.h"
 #include "os/app_identity.h"
 #include "os/appconfig.h"
+#include "os/card_files.h"
 #include "os/config.h"
 #include "os/core1_alloc.h"
 #include "os/crashlog.h"
@@ -1713,6 +1714,13 @@ static inline void core1_relay_watchdog(void) {
     watchdog_update();
 }
 
+// app_stack_run_os() adapter: the App Store, System Update and /system/lib from
+// the image to the card (card_files.h). FatFS and sd_atomic_write's paths go
+// deeper than the 4 KB MSP should carry at boot.
+static void boot_card_files(void *arg) {
+  (void)card_files_sync(&g_card_bundle, (card_files_result_t *)arg);
+}
+
 // app_stack_run_os() adapter: Core 0 RNG seed + CA bundle parse at boot.
 static void boot_crypto_init(void *arg) {
   (void)arg;
@@ -2417,6 +2425,20 @@ int main(void) {
 
   // Load persisted settings from /system/config.json
   config_load();
+  watchdog_update();
+
+  // The files the firmware owns on the card (issue #92): written before WiFi
+  // starts (the radio is off, so the SD bus can run at full speed) and before
+  // the launcher's app scan, so a fresh card lists the store on its first boot.
+  // A failure is logged and retried next boot; it never stops this one.
+  {
+    card_files_result_t cf;
+    if (!app_stack_run_os(boot_card_files, &cf))
+      printf("[CARD] no OS stack: card files not checked\n");
+    else if (cf.failed > 0)
+      crashlog_write("SYSTEM FILES", NULL, "boot: writing the firmware's card files",
+                     cf.error);
+  }
   watchdog_update();
 
   // Idle screen dimming (burn-in protection). Config "dim_timeout_s"
