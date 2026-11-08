@@ -280,24 +280,25 @@ A reflecting frame is two scenes: the reflection, drawn into the water's rows on
 ```lua
 local disp = picocalc.display
 -- wy0..wy1: the screen rows the water covers this frame, from project() of its edges.
+-- Each beginScene fills its sky rows with the sky (bands or image), else skyColor.
 disp.setClipRect(0, wy0, 320, wy1 - wy0 + 1)
 g3.setSkyRows(wy0, wy1)
 g3.setMirror(true, waterY)
-g3.beginScene()
+g3.beginScene(skyColor)
 -- draw what stands above the water and could show in it
 g3.endScene()
 
 disp.clearClipRect()
 g3.setSkyRows(0, wy0 - 1)
 g3.setMirror(false)
-g3.beginScene()
+g3.beginScene(skyColor)
 -- draw everything, the water's triangles flagged BLEND
 g3.endScene()
 disp.flush()
 ```
 
 - Leave out of the second scene whatever lies wholly under the water (a river bed): drawn after the reflection, it would cover it.
-- The reflection costs about as much as what it draws: mirror only what is tall enough to show. On the device a reflection took a quarter to a third of a reflecting frame in a native app's valley scene ([Native Loading](Native-Loading.md#3d) has the figures).
+- The reflection costs about as much as what it draws: mirror only what is tall enough to show. On the device a reflection took a quarter to a third of a reflecting frame in a native app's valley scene ([Native Loading](Native-Loading.md#reflections) has the figures).
 
 ---
 

@@ -248,6 +248,7 @@ The simulator has its own display code, so it can differ in any primitive. These
 | Native `getBackBuffer` pointer | One fixed address, whose buffer never swaps | Changes at every `flush()`; fetch it each frame |
 | Native `flushRows`, `flushRegion` | Present the whole buffer | Send just those rows |
 | Native `graphics->pixels` | NULL for a valid image | The pixels |
+| `gfx3d`'s fast memory | None to borrow (no video decoder): fogged sprites are mixed per pixel, magnified sprites sample every row, a native app's sprite images are never indexed and keep their size, and `endScene` / `end` run on the app's stack. The same pixels | The video decoder's SRAM, while no video player exists ([Native Loading](Native-Loading.md#fast-memory)): faster, and an image of at most 256 colours grows at its first draw |
 
 ### Input
 

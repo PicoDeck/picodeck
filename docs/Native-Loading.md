@@ -20,7 +20,7 @@ Most modules have the same names on both sides, but the native table is not a co
 |--------|-----------------|
 | Sprites, spritesheets, tilemaps, animation and particles (`picocalc.graphics`); scenes, camera and save slots (`picocalc.game`) | Nothing: write your own |
 | `picocalc.chargrid`, `picocalc.noise`, `picocalc.json`, `picocalc.repl`, and the `/system/lib` libraries | Nothing |
-| `picocalc.gfx3d`: flat-shaded meshes, a light, sky bands, background scenery | [`api->gfx3d`](#3d) is the same renderer with textured meshes and whole-image sprites instead: bake your light into the vertex colours |
+| `picocalc.gfx3d`: flat-shaded meshes, a light, sky bands, background scenery, the viewport | [`api->gfx3d`](#3d) is the same renderer: textured meshes, the sky image, the mirror and sprite fog as in Lua, and whole-image sprites drawn many to a call. Bake your light into the vertex colours |
 | `picocalc.sysconfig` | No system-config table. The file `/system/config.json` is readable (see [below](#native-apps-have-full-access)) |
 | `sys.sleep` | Loop on `sys->getTimeMs()`, calling `sys->poll()`, or pace frames with `perf->setTargetFPS` and `perf->endFrame` |
 | `sys.getClock` (wall clock and time zone) | Nothing: `sys->getTimeMs()` and `getTimeUs()` count from boot |
@@ -228,7 +228,9 @@ void picodeck_main(const PicoCalcAPI *api, const char *app_dir,
 
 ### 3D
 
-`api->gfx3d` (version 11) is the renderer behind [`picocalc.gfx3d`](API-3D.md), with textures: meshes whose pixels are a texel times the interpolated vertex colour, whole-image sprites facing the camera, fog, a sky image, a mirror plane for reflections and scrolling textures. There is no depth buffer: a scene is painted far to near, by depth buckets. `os.h` documents every call above `picocalc_gfx3d_t`.
+`api->gfx3d` (version 11) is the renderer behind [`picocalc.gfx3d`](API-3D.md): textured meshes, whole-image sprites facing the camera, fog, a sky image, a mirror plane for reflections and scrolling textures. There is no depth buffer: a scene is painted far to near, by depth buckets. `os.h` documents every call above `picocalc_gfx3d_t`.
+
+**A texel multiplies.** A textured pixel is the texel times the vertex colour interpolated across the triangle, where a channel at its maximum in both (31, or 63 for green) means ×1.5, saturating. So a vertex colour of `0xAD55` (21, 42, 21: two thirds) leaves a texel about as it is, `0xFFFF` makes it half again as bright, and black makes it black. There is no light: bake yours into the vertex colours. Fog mixes into them as each draw call works it out.
 
 ```c
 if (api->version < 11) return;
@@ -259,7 +261,45 @@ The things to know:
 - Textures and images belong to the context, and meshes to no context: a mesh's texture slots are read in the context that draws it. `destroy` leaves your meshes alive.
 - An app normally has one context. A second works, but the two share about 24 KB of fast memory for a scene's records, and alternating them copies it at each `begin`. Playing an MP3 takes that memory for the rest of the run ([Writing Fast Apps](Writing-Fast-Apps.md)).
 - Whatever you still hold when `picodeck_main` returns is freed, a scene left open included.
-- **An image of at most 256 colours grows once.** The first `end` that draws it makes a second copy of it as 8-bit palette indices, which halves what its sprites read: its block grows from `w * h * 2` to about `w * h * 3 + 2 * colours + 8` bytes. The old block is freed after the new one is made, so for a moment both are held (plus 512 bytes), and its hole stays in the heap. That frame pays for the indexing, longer for a big image. If the memory is not there, the image stays as it was for good, drawn as fast as before. Count it in `min_psram_kb`.
+- **An image of at most 256 colours grows once.** The first `end` that draws it makes a second copy of it as 8-bit palette indices, which halves what its sprites read: its block grows from `w * h * 2` to about `w * h * 3 + 2 * colours + 8` bytes. The old block is freed after the new one is made, so for a moment both are held (plus 512 bytes), and its hole stays in the heap. That frame pays for the indexing, longer for a big image. If the memory is not there, the image stays as it was for good, drawn as fast as before. Count it in `min_psram_kb`. In a benchmark's valley of 27 sprite images it took 28 KB of indices and 3 KB of palettes more, and made the frames over its flower bed 12% shorter.
+- **Small sprites are cheap.** A sprite of at most 2 × 2 pixels on screen skips the blitter's setup and draws the same pixels, so thousands of far trees or flowers cost little more than their filing.
+
+#### Reflections
+
+A reflecting frame is two scenes:
+
+```c
+// Water at y = 0 covers screen rows wy0..wy1 this frame. Each begin fills its sky rows with
+// the sky image, if one is set, else `sky`.
+api->display->setClipRect(0, wy0, 320, wy1 - wy0 + 1);
+g3->setSkyRows(g, wy0, wy1);
+g3->setMirror(g, true, 0.0f);
+g3->begin(g, true, sky);
+// drawMesh / drawSprites: what stands above the water and could show in it
+g3->end(g);                                   // the reflection, in the water's rows
+
+api->display->clearClipRect();
+g3->setSkyRows(g, 0, wy0 - 1);
+g3->setMirror(g, false, 0.0f);
+g3->begin(g, true, sky);
+// everything, the water's triangles flagged PC3D_TM_BLEND
+g3->end(g);                                   // the frame, the water blended over the reflection
+```
+
+The mirror reflects the camera, so every draw path is mirrored: a triangle faces the eye as its reflection does, a sprite flips upside down, and the sky image mirrors when the mirror is on at `end`. Leave out of the second scene whatever lies wholly under the water (a river bed): drawn after the reflection, it would cover it. Turning the mirror off restores the camera exactly.
+
+What it costs is what the first scene draws. Measured on the device at 300 MHz with music, in a valley benchmark, before the renderer's tuning (which has since cut those frames by about 30%): the reflection took 37.9 ms of a 124.6 ms frame along the river (30%: about 530 mirrored triangles and 230 trees, the trees 16.5 ms of it) and 31.4 of 129.4 ms in the descent (24%). So mirror only what is tall enough to show: in that valley, land with a point over 5 m above the water, and the trees.
+
+#### Fast memory
+
+On the device gfx3d borrows two blocks of SRAM, its largest speed-ups, as a native app's stack and data are in PSRAM behind the shared cache:
+
+- **The video decoder's 17.5 KB, while no video player exists.** Each draw call keeps its vertices there (meshes of up to about 890 vertices), and `end` runs its fills and raster on a 2 KB stack in it, mixes fogged sprites through tables made there, copies a magnified sprite's repeated rows from the row above, and keeps the indexed images' palettes there. Measured in that valley at 300 MHz with music: the stack alone made frames 11-17% shorter, the fog tables 3-5%, the row copies 3% where flowers are magnified. A video player (`video->newPlayer`) takes the block back until it is freed.
+- **The MP3 decoder's 24 KB, until the app first loads an MP3.** A scene's first records live there ([Writing Fast Apps](Writing-Fast-Apps.md)).
+
+The picture is the same with or without them, and in the [simulator](Simulator-and-Testing.md#simulator-vs-device), which has no video decoder to borrow from: there fogged sprites are mixed per pixel, every row is sampled, images are never indexed (so never grow), and `end` runs on your stack.
+
+Music shares the cache too. The second core now polls a file player's stream only when its buffer has room for more, rather than every millisecond from flash: in the valley at 300 MHz, 22.05 kHz mono QOA music cost 1.6% of frame time, where it had cost 10.9% ([API Audio and Sound](API-Audio-and-Sound.md#fileplayer)).
 
 ## Compilation
 
