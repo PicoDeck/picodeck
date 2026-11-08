@@ -838,7 +838,10 @@ typedef struct {
 //   so to move water pass a total that grows with the frame number.
 // imageAdd(w, h, key, pixels): a w x h (1..1024) sprite image with colour key `key`
 //   (0: none), copied. Its slot counting from 0, or -1 (bad arguments, 64 images, out
-//   of memory).
+//   of memory). An image of at most 256 colours grows, inside the end() that first draws
+//   it, to about w*h*3 + 2*colours + 8 B (from w*h*2), with old + new + 512 B held for a
+//   moment and the old block's hole left; that frame pays the indexing. Without the memory
+//   it stays as it was, for good. Count it in min_psram_kb.
 // setSkyImage(tex_slot, horizon_row): a texture as the background instead of a clear,
 //   copied a texel per pixel with no colour multiplied, until it is cleared (tex_slot
 //   < 0). horizon_row (0..height) is its first row below the horizon. It scrolls with
