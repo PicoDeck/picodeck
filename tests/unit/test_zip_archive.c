@@ -13,11 +13,7 @@
 
 int g_watchdog_feeds;  // fakes/feedcount/hardware/watchdog.h
 
-// zip_util.c also calls these; the tests never reach them.
-bool sdcard_stat(const char *path, sdcard_stat_t *out) {
-  (void)path; (void)out;
-  return false;
-}
+// zip_util.c also calls this; the tests never reach it (sdcard_stat is the fake's).
 bool sdcard_disk_info(uint32_t *out_free_kb, uint32_t *out_total_kb) {
   (void)out_free_kb; (void)out_total_kb;
   return false;

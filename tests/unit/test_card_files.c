@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <string.h>
 
+int g_watchdog_feeds;  // fakes/feedcount/hardware/watchdog.h
+
 // ── A small bundle, in two of the roots ──────────────────────────────────────
 
 static const uint8_t k_app[] = "{\"id\":\"net.picodeck.store\"}";
@@ -256,19 +258,70 @@ static void test_short_write_keeps_old_file_and_retries(void) {
   CHECK(m && strstr(m, "id " ID_B "\n") != NULL);
 }
 
-// Review Focus 4: power lost mid-write on the device.
-static void test_interrupted_rename_is_repaired_next_run(void) {
+// Review Focus 4: power lost between sd_atomic_write's two moves, as the card is
+// left: <path> moved aside to <path>.bak, <path>.tmp partly written.
+static void stage_power_cut(const char *marker) {
   sdfake_reset();
   card_files_result_t r;
   sync(&k_bundle_a, &r);
-  put_str("/apps/store/main.lua", "older");
-  sdfake_fail_rename_after(0);
-  CHECK(!sync(&k_bundle_b, &r));
-  CHECK(r.failed >= 1);
+  put_str(CARD_FILES_MARKER, marker);
+  CHECK(sdcard_rename("/apps/store/main.lua", "/apps/store/main.lua.bak"));
+  put_str("/apps/store/main.lua.tmp", "ret");
+}
+
+static void test_interrupted_rename_is_repaired_next_run(void) {
+  // A firmware update's first boot: the marker still names the old bundle.
+  stage_power_cut(k_marker_a);
+  card_files_result_t r;
   CHECK(sync(&k_bundle_b, &r));
   CHECK(has_bundle());
   const char *m = sdfake_get(CARD_FILES_MARKER, NULL);
   CHECK(m && strstr(m, "id " ID_B "\n") != NULL);
+  // The same firmware repairing a file: the marker already names this bundle.
+  stage_power_cut(k_marker_a);
+  CHECK(sync(&k_bundle_a, &r));
+  CHECK_EQ_INT(r.written, 1);
+  CHECK(has_bundle());
+}
+
+// Review Focus 1, on FatFS's terms: f_stat finds a directory too. A directory
+// the marker names (it can only get there by hand, or by a later bundle making
+// a file into a directory) is never deleted, and never fails the run, which
+// would leave the card rewriting itself on every boot.
+static void test_marker_listed_directories_are_never_deleted(void) {
+  sdfake_reset();
+  card_files_result_t r;
+  sync(&k_bundle_a, &r);
+  CHECK(sdcard_mkdir("/apps/store/olddir"));
+  char marker[512];
+  snprintf(marker, sizeof(marker), "%s/system/lib/fonts\n/apps/store/olddir\n", k_marker_a);
+  put_str(CARD_FILES_MARKER, marker);
+  CHECK(sync(&k_bundle_b, &r));
+  CHECK_EQ_INT(r.failed, 0);
+  CHECK_EQ_INT(r.deleted, 0);
+  CHECK(sdfake_dir_exists("/system/lib/fonts"));
+  CHECK(sdfake_dir_exists("/apps/store/olddir"));
+  const char *m = sdfake_get(CARD_FILES_MARKER, NULL);
+  CHECK(m && strstr(m, "id " ID_B "\n") != NULL);
+}
+
+// The boot's 10 s watchdog: each file is fed for, as the SD layer feeds only
+// between 64 KB pieces and every bundled file is smaller.
+static void test_feeds_the_watchdog_per_file(void) {
+  sdfake_reset();
+  g_watchdog_feeds = 0;
+  card_files_result_t r;
+  CHECK(sync(&k_bundle_a, &r));
+  CHECK(g_watchdog_feeds >= 3);
+  char marker[512];
+  snprintf(marker, sizeof(marker), "%s/apps/store/a.lua\n/apps/store/b.lua\n", k_marker_a);
+  put_str(CARD_FILES_MARKER, marker);
+  put_str("/apps/store/a.lua", "a");
+  put_str("/apps/store/b.lua", "b");
+  g_watchdog_feeds = 0;
+  CHECK(sync(&k_bundle_b, &r));
+  CHECK_EQ_INT(r.deleted, 2);
+  CHECK(g_watchdog_feeds >= 3 + 2);
 }
 
 static void test_marker_write_failure_is_reported(void) {
@@ -296,6 +349,8 @@ int main(void) {
   test_one_unwritable_file_does_not_stop_the_rest();
   test_short_write_keeps_old_file_and_retries();
   test_interrupted_rename_is_repaired_next_run();
+  test_marker_listed_directories_are_never_deleted();
+  test_feeds_the_watchdog_per_file();
   test_marker_write_failure_is_reported();
   return check_report("test_card_files");
 }

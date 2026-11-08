@@ -267,7 +267,7 @@ picodeck_unit_test(test_appconfig SOURCES ${SRC}/os/appconfig.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})
 # The files the firmware owns on the card (issue #92): written at boot.
 picodeck_unit_test(test_card_files SOURCES ${SRC}/os/card_files.c ${SD_FAKE}
-                INCLUDES ${SD_INCLUDES})
+                INCLUDES ${FEEDCOUNT} ${SD_INCLUDES})
 # Gamepad bindings: key names, the one-button-per-key rule, the JSON files.
 picodeck_unit_test(test_gamepad_map SOURCES ${SRC}/os/gamepad_map.c ${SD_FAKE}
                 INCLUDES ${SD_INCLUDES})

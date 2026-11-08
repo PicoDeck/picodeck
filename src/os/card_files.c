@@ -2,6 +2,7 @@
 // tests/unit/test_card_files.c over the in-memory SD fake.
 #include "card_files.h"
 
+#include "hardware/watchdog.h"
 #include "sd_atomic.h"
 #include "umm_malloc.h"
 
@@ -10,6 +11,16 @@
 
 #define MARKER_HEADER "picodeck-card-files 1\n"
 #define ID_LEN 64
+
+// A regular file's size, or -1 when there is none. FatFS's f_stat succeeds on
+// a directory too (size 0): a directory is never the file we want, and never
+// ours to delete.
+static int file_size(const char *path) {
+    sdcard_stat_t st;
+    if (!sdcard_stat(path, &st) || st.is_dir)
+        return -1;
+    return (int)st.size;
+}
 
 static void note_failure(card_files_result_t *r, const char *what, const char *path) {
     if (r->failed++ == 0)
@@ -100,11 +111,12 @@ static void delete_stale(const card_bundle_t *b, char *paths, card_files_result_
         char *end = strchr(line, '\n');
         if (end)
             *end = '\0';
-        if (*line && owned(b, line) && !in_bundle(b, line) && sdcard_fsize(line) >= 0) {
+        if (*line && owned(b, line) && !in_bundle(b, line) && file_size(line) >= 0) {
             if (sdcard_delete(line))
                 r->deleted++;
             else
                 note_failure(r, "delete", line);
+            watchdog_update();  // the boot's 10 s watchdog: a failing card is slow
         }
         line = end ? end + 1 : NULL;
     }
@@ -123,15 +135,18 @@ bool card_files_sync(const card_bundle_t *b, card_files_result_t *r) {
     char made[CARD_FILES_PATH_MAX + 1] = "";
     for (int i = 0; i < b->count; i++) {
         const card_file_t *f = &b->files[i];
-        if (same && sdcard_fsize(f->path) == (int)f->len)
+        if (same && file_size(f->path) == (int)f->len)
             continue;
         if (!make_parents(f->path, made, sizeof(made)) ||
             !sd_atomic_write(f->path, (const char *)f->data, (int)f->len)) {
             note_failure(r, "write", f->path);
-            continue;
+        } else {
+            r->written++;
+            r->bytes += f->len;
         }
-        r->written++;
-        r->bytes += f->len;
+        // The SD layer feeds only between 64 KB pieces, and no bundled file is
+        // that big; a failing card can take seconds per file.
+        watchdog_update();
     }
 
     if (parsed && !same)
