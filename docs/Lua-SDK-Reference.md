@@ -8,7 +8,7 @@ This page lists every Lua API available to PicoDeck apps, with a link to its ref
 
 - [Global Variables and Permissions](Global-Variables-and-Permissions.md) — `APP_DIR` and friends, requirements, the sandbox
 - [`app.json` Reference](App-Json-Reference.md) — every manifest field
-- [API 3D](API-3D.md) — Flat-shaded 3D meshes, camera, light, fog, sky and sprites (`picocalc.gfx3d`)
+- [API 3D](API-3D.md) — Flat-shaded and textured 3D meshes, camera, light, fog, sky bands or image, sprites and reflections (`picocalc.gfx3d`)
 - [API Audio and Sound](API-Audio-and-Sound.md) — Audio Playback (WAV, MP3, QOA) & Tones
 - [API Chargrid](API-Chargrid.md) — Character-cell grids: text, shapes, palettes and ramps drawn in one call (`picocalc.chargrid`), and deterministic noise (`picocalc.noise`)
 - [API Crypto](API-Crypto.md) — Cryptographic Primitives

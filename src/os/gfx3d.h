@@ -65,7 +65,15 @@ typedef struct {
   const uint8_t *tex;     // ntris: slot from gfx3d_tex_add
   const uint8_t *flags;   // ntris, or NULL for none
 } gfx3d_tmesh_desc_t;
-typedef struct gfx3d_tmesh gfx3d_tmesh_t;
+// What gfx3d_tmesh_new made: one block, read only by gfx3d.c but for the counts and the
+// bounding sphere (model space), which the Lua bridge's mesh:getInfo() reports.
+typedef struct gfx3d_tmesh {
+  int nverts, ntris;
+  float center[3], radius;
+  float *xyz, *uv;
+  uint16_t *color, *idx;
+  uint8_t *tex, *flags;
+} gfx3d_tmesh_t;
 
 // A model -> view transform (v = A p + t), with the eye and the light direction
 // in model space for the face-plane tests. Valid until the camera, the light or

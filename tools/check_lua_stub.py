@@ -69,6 +69,7 @@ OWNERS = {
     ("lua_bridge_crypto.c", "l_ecdh_methods"): ("PicoDeckEcdh", True),
     ("lua_bridge_gfx3d.c", "l_gfx3d_lib"): ("picocalc.gfx3d", False),
     ("lua_bridge_gfx3d.c", "l_mesh_methods"): ("PicoDeckMesh", True),
+    ("lua_bridge_gfx3d.c", "l_tmesh_methods"): ("PicoDeckTexturedMesh", True),
     ("lua_bridge_fs.c", "l_fs_lib"): ("picocalc.fs", False),
     ("lua_bridge_fs.c", "l_fs_file_methods"): ("PicoDeckFile", True),
     ("lua_bridge_terminal.c", "terminal_funcs"): ("picocalc.terminal", False),

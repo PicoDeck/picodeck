@@ -360,14 +360,7 @@ const char *gfx3d_mesh_finish(gfx3d_mesh_t *m) {
 
 // ── Textured meshes ─────────────────────────────────────────────────────────
 
-struct gfx3d_tmesh {
-  int nverts, ntris;
-  float center[3], radius;
-  float *xyz, *uv;
-  uint16_t *color, *idx;
-  uint8_t *tex, *flags;
-};
-
+// gfx3d_tmesh_t is in gfx3d.h.
 gfx3d_tmesh_t *gfx3d_tmesh_new(const gfx3d_tmesh_desc_t *d) {
   if (!d || d->nverts < 1 || d->nverts > GFX3D_MAX_VERTS || d->ntris < 1 ||
       d->ntris > GFX3D_MAX_TRIS || !d->xyz || !d->uv || !d->color || !d->idx ||
