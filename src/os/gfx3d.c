@@ -1747,6 +1747,7 @@ _Static_assert(sizeof(((spr_pals_t *)0)->pal) / 2 < SPR_PAL_FULL, "an entry neve
 
 #ifdef GFX3D_TEST
 int gfx3d_test_idx_sprites, gfx3d_test_idx_no_room;
+int gfx3d_test_idx_by_slot[GFX3D_MAX_IMAGES];
 #endif
 
 // Level `level`'s table for this gfx3d_end, or NULL.
@@ -1861,6 +1862,7 @@ GFX3D_SPRITE_FUNC static void raster_sprite(gfx3d_t *g, const gfx3d_target_t *t,
       const unsigned kidx = pal[0];
 #ifdef GFX3D_TEST
       gfx3d_test_idx_sprites++;
+      gfx3d_test_idx_by_slot[slot]++;
 #endif
       if (key && h > sh) {  // replayed, as below
         disp_run_t *const runs = (disp_run_t *)(void *)((uint8_t *)s_fog_lut + FOG_LUT_BYTES);
@@ -2066,11 +2068,13 @@ __attribute__((weak)) bool gfx3d_stack_call(void *lo, size_t bytes, void (*fn)(v
 }
 
 // What gfx3d_end's fills and raster run on, at the end of its lent SRAM. Meander's whole run
-// peaks at 688 B on the device (the `stack` dev command's raster_peak), interrupts' frames and
+// peaks at 744 B on the device (the `stack` dev command's raster_peak), interrupts' frames and
 // an image's indices made at its first sprite (img_index, its scratch on the heap) included; a
 // Lua scene's, its sprite through Lua's sprite function, 456 B (the hardware E2E's gfx3d_scene);
 // the rest is margin. An overflow is a STKOF HardFault (app_stack_call_lent).
 #define END_STACK_BYTES 2048u
+_Static_assert(SPR_LENT_BYTES + END_STACK_BYTES == GFX3D_LENT_BYTES,
+               "gfx3d.h's GFX3D_LENT_BYTES is gfx3d_end's whole lent layout");
 
 typedef struct {
   gfx3d_t *g;
@@ -2100,8 +2104,9 @@ void gfx3d_end(gfx3d_t *g, const gfx3d_target_t *t) {
                     t->clip_x1 < g->vx + g->vw - 1 ? t->clip_x1 : g->vx + g->vw - 1,
                     t->clip_y1 < g->vy + g->vh - 1 ? t->clip_y1 : g->vy + g->vh - 1}};
   if (e.c.x1 < e.c.x0 || e.c.y1 < e.c.y0) return;
-  // The lent SRAM, for this call: the sprite fill's tables and runs at its start (fog_table),
-  // and at its end the stack the rest runs on, as the app's own stack is PSRAM.
+  // The lent SRAM, for this call: the sprite fill's tables, runs and images' palettes at its start
+  // (fog_table, spr_pals_t), and at its end the stack the rest runs on, as the app's own stack is
+  // PSRAM.
   size_t have = 0;
   uint8_t *const lent = (uint8_t *)gfx3d_sram_scratch(&have);
   s_fog_lut = lent && have >= SPR_LENT_BYTES ? (uint16_t *)(void *)lent : NULL;

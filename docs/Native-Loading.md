@@ -259,6 +259,7 @@ The things to know:
 - Textures and images belong to the context, and meshes to no context: a mesh's texture slots are read in the context that draws it. `destroy` leaves your meshes alive.
 - An app normally has one context. A second works, but the two share about 24 KB of fast memory for a scene's records, and alternating them copies it at each `begin`. Playing an MP3 takes that memory for the rest of the run ([Writing Fast Apps](Writing-Fast-Apps.md)).
 - Whatever you still hold when `picodeck_main` returns is freed, a scene left open included.
+- **An image of at most 256 colours grows once.** The first `end` that draws it makes a second copy of it as 8-bit palette indices, which halves what its sprites read: its block grows from `w * h * 2` to about `w * h * 3 + 2 * colours + 8` bytes. The old block is freed after the new one is made, so for a moment both are held (plus 512 bytes), and its hole stays in the heap. That frame pays for the indexing, longer for a big image. If the memory is not there, the image stays as it was for good, drawn as fast as before. Count it in `min_psram_kb`.
 
 ## Compilation
 

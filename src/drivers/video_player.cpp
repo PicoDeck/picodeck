@@ -12,6 +12,7 @@ extern "C" {
 #include "../os/config.h"
 #include "../os/idle_dim.h"
 #include "../os/app_stack.h"
+#include "../os/gfx3d.h"
 }
 
 #include <stdio.h>
@@ -110,6 +111,9 @@ typedef struct {
 // and quant tables all get single-cycle SRAM access instead of going through
 // the 16KB XIP cache (which thrashes against 24KB of JPEGDEC flash code).
 static JPEGDEC s_jpeg_sram;
+// gfx3d_end takes all of its lent layout, and so its stack and its sprite fill's tables, runs and
+// palettes, only from a block this large: a JPEGDEC that shrank would drop them without a word.
+static_assert(sizeof(s_jpeg_sram) >= GFX3D_LENT_BYTES, "s_jpeg_sram holds gfx3d_end's lent layout");
 // Players alive (created, not yet destroyed): while there are none,
 // s_jpeg_sram is lent to chargrid shader runs and gfx3d draw calls, each for
 // that one C call. JPEGDEC holds only its JPEGIMAGE, which openRAM clears

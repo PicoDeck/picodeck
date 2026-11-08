@@ -33,15 +33,23 @@ SECTIONS
            sets of the one it stands in for, 8 or 16 KB on from it, so that an app whose images
            are all indexed keeps the sets busy that it always did. Before them what makes the
            indices and palettes, which runs once an image or a gfx3d_end. The slot ends 8 KB
-           later than it did (28012, not 19820), so nothing after it moved. */
+           later than it did (28012, not 19820), so nothing after it moved.
+           tools/check_hot_text.py fails the build unless each blit is at its symbol below.
+           Each has a little room before the next (230, 92, 10 B, then 6.2 KB): one that outgrows
+           it fails the link here. Then move it and what follows by 8 KB (the slot 8 KB longer,
+           its following offsets 8 KB on: every set kept), or else to other sets, and measure. */
         *src/os/gfx3d.c.o(.gfx3d_load_text)
-        . = __hot_gfx_sprite__ + 18254;  /* raster_sprite's own keyed loop + 16 KB */
+        . = __hot_gfx_sprite__ + 18256;  /* raster_sprite's own keyed loop + 16 KB */
+        __hot_gfx_idx_plain__ = .;
         *src/os/gfx3d.c.o(.gfx3d_sprite_idx_plain_text)
         . = __hot_gfx_sprite__ + 19084;  /* disp_blit_scaled_rect_lut + 8 KB */
+        __hot_gfx_idx_lut__ = .;
         *src/os/gfx3d.c.o(.gfx3d_sprite_idx_lut_text)
         . = __hot_gfx_sprite__ + 19820;  /* disp_blit_scaled_rect_keyed + 8 KB */
+        __hot_gfx_idx_runs__ = .;
         *src/os/gfx3d.c.o(.gfx3d_sprite_idx_runs_text)
         . = __hot_gfx_sprite__ + 20772;  /* disp_blit_scaled_rect_lut_runs + 8 KB */
+        __hot_gfx_idx_lut_runs__ = .;
         *src/os/gfx3d.c.o(.gfx3d_sprite_idx_lut_runs_text)
         . = __hot_gfx_sprite__ + 28012;
         *src/os/gfx3d.c.o(.text* .rodata*)

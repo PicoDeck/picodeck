@@ -144,6 +144,11 @@ void gfx3d_free(gfx3d_t *g);
 int gfx3d_tex_add(gfx3d_t *g, int lg_w, int lg_h, int nmips, const uint16_t *pixels);
 // A w x h (1..1024) host RGB565 image with colour key `key`, copied into the
 // context. The slot, or -1 (bad arguments, GFX3D_MAX_IMAGES, out of memory).
+// An image of at most 256 colours is also kept as palette indices, made inside gfx3d_end for its
+// first sprite drawn there with the lent block: its block grows from w * h * 2 to about
+// w * h * 3 + 2 * colours + 8 B, the old block freed afterwards (a hole of its size), with a peak
+// of old + new + 512 B meanwhile, and that frame pays the scan. If that memory is not there, the
+// image stays RGB565 for good, as fast as before. Count it in an app's min_psram_kb.
 int gfx3d_image_add(gfx3d_t *g, int w, int h, uint16_t key, const uint16_t *pixels);
 // A gfx3d_sprite_fn for gfx3d_image_add's images: pass the context as `g`.
 bool gfx3d_image_resolve(void *g, int slot, const uint16_t **data, int *w, int *h,
@@ -273,14 +278,23 @@ typedef struct {
 void gfx3d_test_tex_tri(gfx3d_t *g, const gfx3d_target_t *t, int slot, int level,
                         const gfx3d_test_vert_t v[3], bool blend, gfx3d_test_tex_info_t *info);
 // Sprites gfx3d_end drew from their images' palette indices, and those it drew from RGB565 as
-// their palettes found no room in the lent block: counted, never reset.
+// their palettes found no room in the lent block: counted, never reset. gfx3d_test_idx_by_slot
+// counts the first by image slot.
 extern int gfx3d_test_idx_sprites, gfx3d_test_idx_no_room;
+extern int gfx3d_test_idx_by_slot[GFX3D_MAX_IMAGES];
+// The allocator a test may give gfx3d.c (GFX3D_MALLOC=gfx3d_test_malloc), defined by the test.
+void *gfx3d_test_malloc(size_t bytes);
 #endif
-// Fast memory for one mesh's vertices during a draw call, or for gfx3d_end's sprite fog
-// tables and stack, or NULL. Weak in gfx3d.c (none); the firmware lends the video decoder's
-// SRAM while no player exists. Nothing in it outlives the call, so nothing else may run
-// meanwhile.
+// Fast memory for one mesh's vertices during a draw call, or for gfx3d_end's sprite fill (the fog
+// tables, a magnified sprite's runs, the images' palettes) and its stack, or NULL. Weak in gfx3d.c
+// (none); the firmware lends the video decoder's SRAM while no player exists. Nothing in it
+// outlives the call, so nothing else may run meanwhile.
 void *gfx3d_sram_scratch(size_t *bytes);
+// What gfx3d_end uses of that block when it holds this much: the sprite fill's 15,744 B, then a
+// 2 KB stack. With less it runs on the app's stack, and with under 15,744 B its sprites go the
+// slower ways too (mixed pixel by pixel, every row sampled, RGB565), so a lender keeps its block
+// at least this large (video_player.cpp checks it at build time).
+#define GFX3D_LENT_BYTES 17792u
 // Runs fn(arg) with [lo, lo + bytes) as its stack, a part of what gfx3d_sram_scratch lent, and
 // returns true; false, having run nothing, where it cannot. gfx3d_end runs its fills and its
 // raster this way. Weak in gfx3d.c (false); the firmware moves the app's PSP there

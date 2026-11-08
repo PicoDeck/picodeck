@@ -40,7 +40,13 @@ HOT_GFX = ["gfx3d_draw", "gfx3d_draw_xf", "gfx3d_draw_tmesh", "gfx3d_end", "l_gf
 # Functions src/hot_gfx.ld pins in a section of their own, each at the symbol that marks its
 # place: function, symbol. A pin that slipped (the section attribute lost, the function inlined
 # or renamed) lets an edit elsewhere in gfx3d.c move it to other cache sets again.
-PINNED_GFX = [("process_mesh", "__hot_gfx_start__"), ("raster_sprite", "__hot_gfx_sprite__")]
+PINNED_GFX = [("process_mesh", "__hot_gfx_start__"), ("raster_sprite", "__hot_gfx_sprite__"),
+              # The blits that draw a sprite from palette indices, each on the cache sets of
+              # the code it stands in for (a GCC clone's ".constprop.N" name counts as its own).
+              ("disp_blit_scaled_rect_idx", "__hot_gfx_idx_plain__"),
+              ("disp_blit_scaled_rect_idx_lut", "__hot_gfx_idx_lut__"),
+              ("disp_blit_scaled_rect_idx_runs", "__hot_gfx_idx_runs__"),
+              ("disp_blit_scaled_rect_idx_lut_runs", "__hot_gfx_idx_lut_runs__")]
 
 # libgcc the SDK's script would copy to SRAM for nothing (src/hot_text.ld).
 COLD_LIBGCC = ["__aeabi_unwind_cpp_pr0", "_Unwind_VRS_Pop", "__gnu_unwind_execute",
@@ -99,7 +105,8 @@ def main():
             elif not gfx <= addr < gfx_end:
                 errors.append(f"gfx: {f} at {addr:#x} is outside {gfx:#x}-{gfx_end:#x}")
         for f, at in PINNED_GFX:
-            addr, want = syms.get(f), syms.get(at)
+            clones = [v for k, v in syms.items() if k.startswith(f + ".")]
+            addr, want = syms.get(f, clones[0] if len(clones) == 1 else None), syms.get(at)
             if addr is None or want is None:
                 errors.append(f"gfx: no symbol {f if addr is None else at} (update PINNED_GFX)")
             elif addr != want:

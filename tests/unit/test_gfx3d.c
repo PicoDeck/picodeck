@@ -13,12 +13,23 @@
 #define H 320
 #define HALF_PI 1.5707964f
 
+// gfx3d.c's allocator in this build (GFX3D_MALLOC, tests/unit/CMakeLists.txt): host malloc,
+// counted, failing the allocation that s_alloc_fail_at counts down to (1: the next; 0: none).
+static int s_allocs, s_alloc_fail_at;
+void *gfx3d_test_malloc(size_t bytes) {
+  s_allocs++;
+  if (s_alloc_fail_at && --s_alloc_fail_at == 0) return NULL;
+  return malloc(bytes);
+}
+
 // The lent SRAM (gfx3d_sram_scratch, weak in gfx3d.c): off unless a test sets it. As large as
 // the firmware's (s_jpeg_sram): gfx3d_end wants 7936 B for the sprite fog's tables, 640 B for a
 // magnified keyed sprite's runs and 7168 B for the images' palettes after them (SPR_LENT), and
 // 2048 B for its stack.
 static char s_lent[17884] __attribute__((aligned(8)));
 enum { SPR_LENT = 31 * 128 * 2 + 160 * 4 + 7168 };
+_Static_assert(SPR_LENT + 2048 == GFX3D_LENT_BYTES && sizeof s_lent >= GFX3D_LENT_BYTES,
+               "the lent layout these tests size their blocks by");
 static size_t s_lent_bytes;
 static int s_lent_calls;
 void *gfx3d_sram_scratch(size_t *bytes) {
@@ -3581,15 +3592,15 @@ static void copies_free(void) {
   for (int i = 0; i < GFX3D_MAX_IMAGES; i++) free(s_copies[i]), s_copies[i] = NULL;
 }
 
-// An image of n distinct colours (n <= w * h), the key among them in a third of its pixels when
-// keyed.
+// An image of exactly n distinct colours (n <= w * h, n < 654), and keyed, the key as well in a
+// third of its other pixels: pixel i < n is colour i, so the key never takes a colour's only pixel.
 static int idx_image(gfx3d_t *g, int w, int h, int n, bool keyed, uint32_t seed) {
   uint16_t *px = (uint16_t *)malloc((size_t)w * (size_t)h * sizeof(uint16_t));
   for (int i = 0; i < w * h; i++) {
     seed = seed * 1103515245u + 12345u;
     const int k = i < n ? i : (int)((seed >> 8) % (uint32_t)n);  // every colour at least once
-    uint16_t v = (uint16_t)(0x0841 + k * 97);  // distinct for k < 675, never the key below
-    if (keyed && (i * 7 + i / w) % 3 == 0) v = MAGENTA;
+    uint16_t v = (uint16_t)(0x0841 + k * 97);  // distinct for k < 654 (then it wraps), never the key
+    if (keyed && i >= n && (i * 7 + i / w) % 3 == 0) v = MAGENTA;
     px[i] = v;
   }
   const int slot = gfx3d_image_add(g, w, h, keyed ? MAGENTA : 0, px);
@@ -3613,7 +3624,7 @@ static void test_sprite_indexed_images_change_nothing(void) {
     if (ctx == 0) {  // the shapes a scene has, and one too many colours to index
       spr_images(g);  // 8 x 8 keyed, 3 x 5 opaque
       CHECK_EQ_INT(idx_image(g, 24, 40, 200, true, 1), 2);
-      CHECK_EQ_INT(idx_image(g, 20, 20, 257, true, 2), 3);
+      CHECK_EQ_INT(idx_image(g, 20, 20, 256, true, 2), 3);  // and the key: 257
       CHECK_EQ_INT(idx_image(g, 16, 16, 256, false, 3), 4);
       CHECK_EQ_INT(idx_image(g, 1, 1, 1, false, 4), 5);
       nimg = 6;
@@ -3627,6 +3638,7 @@ static void test_sprite_indexed_images_change_nothing(void) {
     gfx3d_set_camera(g, cam, 0.2f, -0.05f, 0.0f);
     gfx3d_set_fog(g, true, 3, 70, 0x4A69);
     int from_indices = 0;
+    memset(gfx3d_test_idx_by_slot, 0, sizeof gfx3d_test_idx_by_slot);
     for (int pass = 0; pass < 8; pass++) {
       const bool swap = pass & 1, mirror = pass & 2, fog = pass & 4;
       gfx3d_set_mirror(g, mirror, 0.0f);
@@ -3663,9 +3675,56 @@ static void test_sprite_indexed_images_change_nothing(void) {
       }
     }
     CHECK(from_indices > 400);
+    if (ctx == 0) {
+      // Slot 3 has 257 colours (256 and the key): never drawn from indices; the others are, slot 4
+      // with 256.
+      CHECK_EQ_INT(gfx3d_test_idx_by_slot[3], 0);
+      CHECK(gfx3d_test_idx_by_slot[0] > 0 && gfx3d_test_idx_by_slot[2] > 0 &&
+            gfx3d_test_idx_by_slot[4] > 0);
+    }
     gfx3d_set_mirror(g, false, 0.0f);
     s_lent_bytes = 0;
     copies_free();
+    gfx3d_free(g);
+  }
+}
+
+// An image whose indices cannot be made, its 512 B scratch or its larger block finding no memory,
+// stays RGB565 for good: the same pixels as with no lent block, and no allocation at a later
+// gfx3d_end (it is not tried again).
+static void test_sprite_index_alloc_failure(void) {
+  enum { N = 200 };
+  static gfx3d_sprite_t sp[N];
+  static uint16_t want[W * H], got[W * H];
+  for (int fail = 1; fail <= 2; fail++) {  // the scratch, then the block
+    gfx3d_t *g = gfx3d_new(W, H);
+    CHECK_EQ_INT(idx_image(g, 24, 40, 200, true, 7), 0);
+    spr_make(sp, N);
+    for (int i = 0; i < N; i++) sp[i].slot = 0;
+    const float cam[3] = {1.0f, 2.5f, 3.0f};
+    gfx3d_set_camera(g, cam, 0.2f, -0.05f, 0.0f);
+    gfx3d_set_fog(g, true, 3, 70, 0x4A69);
+    gfx3d_set_sprite_fog(g, true);
+    for (int frame = 0; frame < 3; frame++) {
+      for (int k = 0; k < 2; k++) {  // no block, then the block
+        s_lent_bytes = k ? sizeof s_lent : 0;
+        gfx3d_target_t t = spr_target(g, k ? got : want);
+        t.swap = true;
+        gfx3d_begin(g, true, BG);
+        CHECK(gfx3d_draw_sprites(g, sp, N, 0.25f) > 50);
+        gfx3d_test_idx_sprites = 0;
+        s_allocs = 0;
+        s_alloc_fail_at = k && frame == 0 ? fail : 0;
+        gfx3d_end(g, &t);
+        s_alloc_fail_at = 0;
+        if (k) {
+          CHECK_EQ_INT(gfx3d_test_idx_sprites, 0);
+          CHECK_EQ_INT(s_allocs, frame == 0 ? fail : 0);  // tried once, at the first frame
+          CHECK(memcmp(want, got, sizeof want) == 0);
+        }
+      }
+    }
+    s_lent_bytes = 0;
     gfx3d_free(g);
   }
 }
@@ -4920,6 +4979,7 @@ int main(void) {
   test_sprite_fog_tables_change_nothing();
   test_end_stack_changes_nothing();
   test_sprite_indexed_images_change_nothing();
+  test_sprite_index_alloc_failure();
   test_sprite_tiny_fast_path();
   test_sky_image_scrolls_with_yaw();
   test_sky_image_pitch();

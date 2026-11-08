@@ -13,7 +13,7 @@ SECTIONS
     KEEP(*gfx3d.o(.gfx3d_sprite_aux_text))
     KEEP(*gfx3d.o(.gfx3d_sprite_runs_text))
     KEEP(*gfx3d.o(.gfx3d_load_text))  /* then the indexed blits at their offsets, as there */
-    . = __sprite_slot + 18254;
+    . = __sprite_slot + 18256;
     KEEP(*gfx3d.o(.gfx3d_sprite_idx_plain_text))
     . = __sprite_slot + 19084;
     KEEP(*gfx3d.o(.gfx3d_sprite_idx_lut_text))
