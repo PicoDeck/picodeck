@@ -606,11 +606,63 @@ static void test_nan_rate_still_plays(void) {
 // takes nothing from the shared PSRAM heap, where a block left behind would
 // split the space a later app may need in one piece.
 size_t umm_fake_live(void);
+void umm_fake_fail(bool fail);
+
+// The WAV buffer (FILEPLAYER_BUFFER_SIZE) is made for an app's first player
+// (fileplayer_create, or fileplayer_init from the Lua bridge) and goes with the
+// app: fileplayer_reset is every app's teardown (native_teardown, lua_runner),
+// and hands the launcher the heap as it was. Kept, it stayed wherever the app's
+// heap had room, and once the app's own blocks were freed it split the heap:
+// after one Meander run 5,887 KB were free but the largest block was 3,047 KB,
+// and its second launch (3,502 KB in one block) was refused until a reboot.
+// First in main(): nothing of the fileplayer's exists yet, as at boot.
+static void test_teardown_gives_the_heap_back(void) {
+  sdfake_reset();
+  ring_reset();
+  const size_t boot = umm_fake_live();
+  put_qoa("/a.qoa", 12000, 2, 22050, 7);
+  // An app that frees its player, then its teardown.
+  fileplayer_t *p = fileplayer_create();
+  CHECK(p != NULL);
+  CHECK(fileplayer_load(p, "/a.qoa"));
+  CHECK(fileplayer_play(p, 1));
+  for (int i = 0; i < 5; i++) { fileplayer_update(); drain(44); }
+  CHECK(s_pushed > 0);  // the buffer was read into
+  fileplayer_destroy(p);
+  fileplayer_reset();
+  CHECK_EQ_INT((int)umm_fake_live(), (int)boot);
+  // The next app: its player makes the buffer again and plays the whole file;
+  // it never frees the player, and its teardown still gives everything back.
+  ring_reset();
+  p = fileplayer_create();
+  CHECK(p != NULL);
+  CHECK(fileplayer_load(p, "/a.qoa"));
+  CHECK(fileplayer_play(p, 1));
+  run(p, 44, 100000);
+  CHECK_EQ_INT(s_pushed, 12000);
+  CHECK_EQ_INT(s_dropped, 0);
+  fileplayer_reset();
+  CHECK_EQ_INT((int)umm_fake_live(), (int)boot);
+  // A Lua app: the bridge's fileplayer_init at its start, the teardown at its end.
+  fileplayer_init();
+  fileplayer_reset();
+  CHECK_EQ_INT((int)umm_fake_live(), (int)boot);
+  // No memory for the buffer: no player, nothing kept, and the next try works.
+  umm_fake_fail(true);
+  CHECK(fileplayer_create() == NULL);
+  umm_fake_fail(false);
+  CHECK_EQ_INT((int)umm_fake_live(), (int)boot);
+  p = fileplayer_create();
+  CHECK(p != NULL);
+  fileplayer_reset();
+  CHECK_EQ_INT((int)umm_fake_live(), (int)boot);
+}
+
 static void test_qoa_needs_no_heap(void) {
   setup();
-  size_t base = umm_fake_live();
   put_qoa("/a.qoa", 12000, 2, 22050, 7);
-  fileplayer_t *p = fileplayer_create();
+  fileplayer_t *p = fileplayer_create();  // and the WAV buffer, until the teardown
+  size_t base = umm_fake_live();
   CHECK(fileplayer_load(p, "/a.qoa"));
   CHECK(fileplayer_play(p, 1));
   for (int i = 0; i < 5; i++) { fileplayer_update(); drain(44); }
@@ -1093,6 +1145,7 @@ static void test_seek_while_held_drops_the_old_audio(void) {
 }
 
 int main(void) {
+  test_teardown_gives_the_heap_back();  // first: before any setup() made the buffer
   test_core1_gate_sees_the_active_player();
   test_core1_gate_idle_while_the_ring_is_full();
   test_flow_control_plays_every_frame();

@@ -62,8 +62,9 @@ def leaky(sim_module_factory):
 
     sim = sim_module_factory(setup=setup, extra_args=["--real-umm"])
     # One run of each first: the first launch of an app kind makes one-time
-    # OS allocations that are never freed (the MOD engine's buffers, the
-    # file player's WAV buffer, ...), so they must predate the baseline.
+    # OS allocations that are never freed (the MOD engine's buffers, ...), so
+    # they must predate the baseline. (The file player's WAV buffer goes with
+    # the app now: test_fileplayer.py::test_an_app_gives_the_wav_buffer_back.)
     _run(sim, "native_leaky", r"^LEAKY ")
     _mem(sim)
     before = _mem(sim)

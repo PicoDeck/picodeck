@@ -35,6 +35,10 @@ static atomic_bool s_initialized;
 
 static fileplayer_t s_players[FILEPLAYER_MAX_INSTANCES];
 static fileplayer_t *s_active_player = NULL;
+// Made for an app's first player (fileplayer_init) and freed by its teardown
+// (fileplayer_reset), so no player outlives it. Core 1 reads it only for the
+// active player, under s_lock. Kept for good, as it once was, it stayed where
+// the app's heap had room and split the heap the launcher got back.
 static uint8_t *s_wav_buffer = NULL;
 
 // Parse the header window at the start of f (RIFF chunk walk in wav.c).
@@ -152,31 +156,42 @@ void fileplayer_reset(void) {
         files[i] = s_players[i].file;
     memset(s_players, 0, sizeof(s_players));
     s_active_player = NULL;
+    // The buffer goes with the app that made it (no player is left to read it).
+    uint8_t *buffer = s_wav_buffer;
+    s_wav_buffer = NULL;
     mutex_exit(&s_lock);
     if (stream)
         audio_stop_stream();
     for (int i = 0; i < FILEPLAYER_MAX_INSTANCES; i++)
         if (files[i])
             sdcard_fclose(files[i]);
+    if (buffer)
+        umm_free(buffer);
 }
 
+// The lock and the player table once; the WAV buffer whenever there is none
+// (each app's first player: fileplayer_reset frees it).
 void fileplayer_init(void) {
-    if (atomic_load(&s_initialized)) return;
+    if (!atomic_load(&s_initialized)) {
+        memset(s_players, 0, sizeof(s_players));
+        mutex_init(&s_lock);
+        // Published last: Core 1's update checks it before touching the lock.
+        atomic_store(&s_initialized, true);
+    }
+    if (s_wav_buffer) return;  // only Core 0 sets it
 
     printf("[FILEPLAYER] Allocating WAV buffer (%d bytes)...\n", WAV_BUFFER_SIZE);
-    s_wav_buffer = umm_malloc(WAV_BUFFER_SIZE);
-    printf("[FILEPLAYER] WAV buffer allocated: %s\n", s_wav_buffer ? "OK" : "FAILED");
-    if (!s_wav_buffer) return;
-
-    memset(s_players, 0, sizeof(s_players));
-    mutex_init(&s_lock);
-    // Published last: Core 1's update checks it before touching the lock.
-    atomic_store(&s_initialized, true);
+    uint8_t *buffer = umm_malloc(WAV_BUFFER_SIZE);
+    printf("[FILEPLAYER] WAV buffer allocated: %s\n", buffer ? "OK" : "FAILED");
+    if (!buffer) return;
+    mutex_enter_blocking(&s_lock);
+    s_wav_buffer = buffer;
+    mutex_exit(&s_lock);
 }
 
 fileplayer_t *fileplayer_create(void) {
     fileplayer_init();  // native apps reach here without the Lua bridge
-    if (!atomic_load(&s_initialized)) return NULL;
+    if (!atomic_load(&s_initialized) || !s_wav_buffer) return NULL;
     fileplayer_t *found = NULL;
     mutex_enter_blocking(&s_lock);
     for (int i = 0; i < FILEPLAYER_MAX_INSTANCES; i++) {
