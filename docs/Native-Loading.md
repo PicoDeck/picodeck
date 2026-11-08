@@ -269,8 +269,8 @@ The things to know:
 A reflecting frame is two scenes:
 
 ```c
-// Water at y = 0 covers screen rows wy0..wy1 this frame. Each begin fills its sky rows with
-// the sky image, if one is set, else `sky`.
+// Water at y = 0 covers screen rows wy0..wy1 this frame. Each scene's end fills its sky rows
+// with the sky image, if one is set, else with the colour its begin was given (`sky`).
 api->display->setClipRect(0, wy0, 320, wy1 - wy0 + 1);
 g3->setSkyRows(g, wy0, wy1);
 g3->setMirror(g, true, 0.0f);

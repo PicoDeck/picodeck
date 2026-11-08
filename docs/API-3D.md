@@ -225,7 +225,7 @@ Builds a textured mesh from a table, copying its arrays:
 | `tex` | A texture slot per triangle, or one for every triangle. Each must already exist |
 | `flags` | Optional: `BLEND`, `DOUBLE_SIDED` and `NO_FOG` added together, per triangle or one for all |
 
-- **Returns:** a textured mesh. It costs 22 bytes a vertex and 8 a triangle of PSRAM and is freed when collected. The first textured mesh an app draws (or its first `scrollTexture`) also allocates about 105 KB for the scene's textured records: 24 bytes for each of the 4096, and 6.7 KB.
+- **Returns:** a textured mesh. It costs 22 bytes a vertex and 8 a triangle of PSRAM and is freed when collected. While it is built, a copy of the same size waits on the Lua heap until the next collection, so building one needs about twice that for a moment, besides your tables. The first textured mesh an app draws (or its first `scrollTexture`) also allocates about 105 KB for the scene's textured records: 24 bytes for each of the 4096, and 6.7 KB.
 
 ```lua
 local floor = g3.newTexturedMesh {
@@ -280,7 +280,8 @@ A reflecting frame is two scenes: the reflection, drawn into the water's rows on
 ```lua
 local disp = picocalc.display
 -- wy0..wy1: the screen rows the water covers this frame, from project() of its edges.
--- Each beginScene fills its sky rows with the sky (bands or image), else skyColor.
+-- Each scene's endScene fills its sky rows with the sky (bands or image), else with
+-- the colour its beginScene was given.
 disp.setClipRect(0, wy0, 320, wy1 - wy0 + 1)
 g3.setSkyRows(wy0, wy1)
 g3.setMirror(true, waterY)
@@ -308,7 +309,7 @@ Camera, projection, light, fog, viewport and mirror settings apply to the `draw*
 ---
 
 ### Errors
-`draw`, `drawBasis`, `drawBackground`, `drawSprite`, `drawTextured` and `endScene` raise when called outside `beginScene()`/`endScene()`. `setFog` raises unless `0 <= near < far`. `lookAt` raises when `eye` equals `target`, or when `up` is parallel to the view direction. `drawBasis` raises when `forward` or `up` is the zero vector, or when they are parallel. `addTexture` raises on a size or level count out of range, on a string of the wrong length, and when the app has 64 textures already; `scrollTexture`, `setSkyImage` and `newTexturedMesh` raise on a slot `addTexture` has not returned, and `newTexturedMesh` names the field it found wrong. Texture slots and the sizes are identifiers: they must be exact integers.
+`draw`, `drawBasis`, `drawBackground`, `drawSprite`, `drawTextured` and `endScene` raise when called outside `beginScene()`/`endScene()`. `setFog` raises unless `0 <= near < far`. `lookAt` raises when `eye` equals `target`, or when `up` is parallel to the view direction. `drawBasis` raises when `forward` or `up` is the zero vector, or when they are parallel. `addTexture` raises on a size or level count out of range, on a string of the wrong length, and when the app has 64 textures already; `scrollTexture`, `setSkyImage` and `newTexturedMesh` raise on a slot `addTexture` has not returned, and `newTexturedMesh` names the field it found wrong. Texture slots are identifiers, and `lgW`, `lgH` and `nmips` are not sizes but exponents and a count that lay out the pixel string: like byte counts, all of them must be exact integers (`addTexture(5.5, ...)` raises rather than rounding, as no rounding could make the string's length right).
 
 ---
 

@@ -259,9 +259,13 @@ static tmesh_ud_t *check_tmesh(lua_State *L, int idx) {
 static int l_tmesh_gc(lua_State *L) {
   tmesh_ud_t *u = (tmesh_ud_t *)lb_checkudata(L, 1, TMESH_MT);
   if (!u->m) return 0;
-  // A mesh the open scene holds is finalised only by lua_close, which runs
-  // every finaliser: the scene's records name it, so the scene ends with it
-  // and a later finaliser's endScene() raises instead of reading freed uv.
+  // The open scene may hold this mesh, its records naming it. lua_close runs
+  // every finaliser, held or not; and in one collection a newer object's
+  // finaliser may drawTextured a mesh whose own finaliser runs next. Either
+  // way, if the scene's anchors hold it, the scene ends here: the app's (or a
+  // later finaliser's) endScene() then raises "call beginScene() first"
+  // instead of reading freed uv. Safe; the scan costs O(s_nsprites) for each
+  // textured mesh finalised while a scene is open, nothing otherwise.
   if (s_in_scene) {
     lua_getfield(L, LUA_REGISTRYINDEX, SPRITES_KEY);
     for (int i = 1; i <= s_nsprites && s_in_scene; i++) {

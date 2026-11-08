@@ -8,6 +8,8 @@ this holds them to the same sections, in the same order, at the same offsets.
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE = ROOT / "src" / "hot_gfx.ld"
 RIG = ROOT / "tools" / "perf_rig" / "guest" / "guest.ld"
@@ -30,6 +32,12 @@ def layout(text: str) -> list:
             out.append(("at", int(m.group(2))))
         else:
             out.append(("slot",))
+    # Every `. = <slot> ...` must have been read: one written another way (hex, a sum, no
+    # spaces where they are expected) would drop out of both lists alike and pass unseen.
+    assigns = len(re.findall(r"\.\s*=\s*" + re.escape(slot) + r"\b", text))
+    read = sum(1 for t in out if t[0] == "at")
+    assert assigns == read, (f"{assigns} assignments `. = {slot} ...`, {read} read: "
+                             f"write each as `. = {slot} + <decimal>;`")
     return out
 
 
@@ -51,6 +59,16 @@ def test_a_slot_size_that_differs_is_seen():
     first = re.search(r"__sprite_slot \+ (\d+);", rig)
     moved = rig.replace(first.group(0), f"__sprite_slot + {int(first.group(1)) + 8};", 1)
     assert layout(moved) != layout(FIRMWARE.read_text())
+
+
+def test_an_offset_written_another_way_fails():
+    # Both scripts with the same offset in hex would parse alike without the guard.
+    for path in (FIRMWARE, RIG):
+        text = path.read_text()
+        m = re.search(r"(\w+) \+ (\d+);", text)
+        hexed = text.replace(m.group(0), f"{m.group(1)} + {hex(int(m.group(2)))};", 1)
+        with pytest.raises(AssertionError, match="assignments"):
+            layout(hexed)
 
 
 def test_a_section_out_of_order_is_seen():
