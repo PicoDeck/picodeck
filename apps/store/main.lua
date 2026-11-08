@@ -528,8 +528,8 @@ fetch_catalog = function()
 
     conn:setConnectTimeout(15)
     conn:setReadTimeout(30)
-    -- Large ring (PSRAM): nothing slows the sender on the device; 32 KB
-    -- if the heap cannot spare it.
+    -- Large ring (PSRAM): the whole catalog fits, so the server is never
+    -- held back; 32 KB if the heap cannot spare it.
     if not conn:setReadBufferSize(256 * 1024) then
         conn:setReadBufferSize(32 * 1024)
     end
@@ -612,8 +612,8 @@ local function download_file_with_redirects(url, dest_path, redirect_count, on_c
 
     conn:setConnectTimeout(30)
     conn:setReadTimeout(60)
-    -- Large ring (PSRAM): nothing slows the sender on the device; 32 KB
-    -- if the heap cannot spare it.
+    -- Large ring (PSRAM): it absorbs the SD card's pauses, so the server
+    -- is slowed only when they outlast it; 32 KB if the heap cannot spare it.
     if not conn:setReadBufferSize(256 * 1024) then
         conn:setReadBufferSize(32 * 1024)
     end

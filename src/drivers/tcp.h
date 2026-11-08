@@ -41,11 +41,13 @@
 
 #define TCP_MAX_CONNECTIONS   4
 #define TCP_RECV_BUF_DEFAULT  8192
-// Unconsumed bytes in Mongoose past which the socket fails: the device's
-// TCP stack ignores is_full, so a reader that falls this far behind would
-// run Core 1's Mongoose pool out (as HTTP_RECV_OVERFLOW in http.c). A protocol
-// with its own flow control keeps what it lets the peer send ahead under this
-// plus the ring (apps/ssh's channel window: test_ssh_transport checks it).
+// Unconsumed bytes in Mongoose past which the socket fails, before Core 1's
+// Mongoose pool runs out (as HTTP_RECV_OVERFLOW in http.c). The device's TCP
+// stack offers the peer only what is left of its receive budget (16 KB,
+// MG_TCPIP_RCVBUF in mongoose.c), so a reader that falls behind slows the peer
+// down and stays under this: c->recv ends at most one TLS record (16 KB) above
+// the budget. apps/ssh's channel window keeps the peer under it too
+// (test_ssh_transport checks it).
 #define TCP_RECV_OVERFLOW     (32u * 1024u)
 // Bytes tcp_write has taken that have not left for the network, past which it
 // returns -1. Sending stops at the peer's window, at what the retransmission

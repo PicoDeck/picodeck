@@ -51,16 +51,19 @@ enum { CH_SIZE = 0, CH_DATA, CH_DATA_CRLF, CH_TRAILER, CH_DONE };
 
 // A response head this large without its blank line is refused.
 #define HTTP_HEAD_MAX (HTTP_HEADER_BUF_MAX + 1024)
-// Body bytes Mongoose may hold beyond the ring before the transfer is failed
-// (there is no TCP backpressure on the device stack; see the report).
+// Body bytes Mongoose may hold beyond the ring before the transfer is failed.
 // Under Core 1's 128 KB Mongoose pool: one HTTPS connection uses ~35-40 KB
 // and growing nc->recv reallocates (old + new live at once), so the guard
 // fires before the pool runs out and the transfer fails with a clear error.
+// Flow control keeps a well-behaved server under it (below); it is what is
+// left for one that sends past the window.
 #define HTTP_RECV_OVERFLOW (32u * 1024u)
-// Ask Mongoose to stop reading (nc->is_full) past this much unconsumed
-// data.  Only the socket build (MG_ARCH_UNIX, the simulator) honours it;
-// the device's built-in TCP stack has no receive window, so there the
-// overflow guard is what stops a reader that falls behind.
+// Ask Mongoose to stop reading (nc->is_full) past this much unconsumed data.
+// The socket build (MG_ARCH_UNIX, the simulator) stops reading the socket; the
+// device's built-in TCP stack offers the server only what is left of
+// MG_TCPIP_RCVBUF (this much) after what it holds, so a reader that falls
+// behind slows the server down. c->recv can still end one TLS record (16 KB)
+// above this: 16 + 16 KB, HTTP_RECV_OVERFLOW (see MG_TCPIP_RCVBUF).
 #define HTTP_RECV_PAUSE (16u * 1024u)
 // How long http_alloc waits for a slot that is being released.
 #define HTTP_ALLOC_WAIT_MS 100

@@ -4870,6 +4870,30 @@ void mg_multicast_restore(struct mg_connection *c, uint8_t *from) {
 #define MG_TCPIP_WIN 6000  // TCP window size
 #endif
 
+// PicoDeck patch: flow control. 7.20 offered MG_TCPIP_WIN on every segment
+// whatever the connection held, and nothing here looks at is_full, so a reader
+// slower than its sender (the app store writing to the SD card at 1 MHz while
+// the radio is on, ~80 KB/s) had c->recv and the raw TLS in c->rtls grow until
+// Core 1's pool ran out: "partial: oom", or "TLS recv error" once a record had
+// been cut short. Now a connection offers what is left of MG_TCPIP_RCVBUF after
+// what it holds unread (c->recv, c->rtls), at most MG_TCPIP_WIN, so the sender
+// slows to the app's pace; data that arrives beyond the window (sent before it
+// shut) is still taken. Once the app has made room for another
+// MG_TCPIP_RWIN_STEP, a window update goes out by itself: a sender may wait for
+// it rather than probe (Mongoose's own never probes). The budget is the drivers'
+// is_full mark (HTTP_RECV_PAUSE, TCP_RECV_PAUSE: 16 KB). mbedTLS gathers a
+// record in its own buffer, out of c->rtls, so the window cannot count it, and
+// decrypts it into c->recv whole even past is_full (handle_tls_recv's first
+// record): c->recv can end one record (16 KB) above the budget, which is the
+// 32 KB the drivers accept (HTTP_RECV_OVERFLOW, TCP_RECV_OVERFLOW). A record
+// still needs no room here: it is gathered in mbedTLS's buffer.
+#ifndef MG_TCPIP_RCVBUF
+#define MG_TCPIP_RCVBUF (16 * 1024)
+#endif
+#ifndef MG_TCPIP_RWIN_STEP
+#define MG_TCPIP_RWIN_STEP 1460  // one full-size segment (RFC-9293, 3.8.6.2.2)
+#endif
+
 // PicoDeck patch: resend TCP data, from upstream 5c34018 (2026-08-07, "add
 // optional TCP retransmission"; 7.20 through 7.23 resend nothing, so one frame
 // lost after the driver took it left a hole the peer waited on for ever).
@@ -4930,6 +4954,7 @@ struct connstate {
   uint32_t txq_una;      // Oldest unacknowledged sequence number
   uint64_t txq_timer;    // When to resend (RFC-6298, 5)
   struct mg_iobuf txq;   // Sent, not acknowledged: the bytes from txq_una
+  uint16_t rwin;         // PicoDeck patch: the window last offered the peer
 };
 
 #if defined(__DCC__)
@@ -6022,7 +6047,7 @@ static bool rx_udp(struct mg_tcpip_if *ifp, struct pkt *pkt) {
 static size_t tx_tcp(struct mg_tcpip_if *ifp, uint8_t *l2_dst,
                      struct mg_addr *ip_src, struct mg_addr *ip_dst,
                      uint8_t flags, uint32_t seq, uint32_t ack, const void *buf,
-                     size_t len) {
+                     size_t len, uint16_t win) {  // PicoDeck patch: win
   uint8_t *l2p = (uint8_t *) ifp->tx.buf;
   struct ip *ip = NULL;
   struct tcp *tcp;
@@ -6063,7 +6088,7 @@ static size_t tx_tcp(struct mg_tcpip_if *ifp, uint8_t *l2_dst,
   tcp->seq = seq;
   tcp->ack = ack;
   tcp->flags = flags;
-  tcp->win = mg_htons(MG_TCPIP_WIN);
+  tcp->win = mg_htons(win);
   tcp->off = (uint8_t) (hlen / 4 << 4);
 #if MG_ENABLE_IPV6
   if (ip_dst->is_ip6) {
@@ -6077,6 +6102,24 @@ static size_t tx_tcp(struct mg_tcpip_if *ifp, uint8_t *l2_dst,
               mg_print_ip_port, ip_dst, tcp->flags, len));
   return driver_output(
       ifp, mg_l2_footer(ifp->l2type, PDIFF(l2p, tcp) + hlen + len, l2p));
+}
+
+// PicoDeck patch: the window a connection can offer (see MG_TCPIP_RCVBUF)
+static uint16_t rcv_win(const struct mg_connection *c) {
+  size_t held = c->recv.len + c->rtls.len;
+  size_t room = held < MG_TCPIP_RCVBUF ? MG_TCPIP_RCVBUF - held : 0;
+  return (uint16_t) (room < MG_TCPIP_WIN ? room : MG_TCPIP_WIN);
+}
+
+// PicoDeck patch: a connection's segment, offering its window
+static size_t tx_tcp_c(struct mg_connection *c, uint8_t flags, uint32_t seq,
+                       uint32_t ack, const void *buf, size_t len) {
+  struct connstate *s = (struct connstate *) (c + 1);
+  uint16_t win = rcv_win(c);
+  size_t sent = tx_tcp(c->mgr->ifp, s->mac, &c->loc, &c->rem, flags, seq, ack,
+                       buf, len, win);
+  if (sent != 0 && sent != (size_t) -1) s->rwin = win;
+  return sent;
 }
 
 static size_t tx_tcp_ctrlresp(struct mg_tcpip_if *ifp, struct pkt *pkt,
@@ -6100,7 +6143,8 @@ static size_t tx_tcp_ctrlresp(struct mg_tcpip_if *ifp, struct pkt *pkt,
   ipd.port = pkt->tcp->sport;
   if ((l2addr = get_return_l2addr(ifp, &ipd, false, pkt)) == NULL)
     return 0;  // safety net for lousy networks
-  return tx_tcp(ifp, l2addr, &ips, &ipd, flags, seqno, ackno, NULL, 0);
+  return tx_tcp(ifp, l2addr, &ips, &ipd, flags, seqno, ackno, NULL, 0,
+                MG_TCPIP_WIN);
 }
 
 static size_t tx_tcp_rst(struct mg_tcpip_if *ifp, struct pkt *pkt, bool toack) {
@@ -6239,8 +6283,8 @@ long mg_io_send(struct mg_connection *c, const void *buf, size_t len) {
         return MG_IO_WAIT;
       }
     }
-    sent = tx_tcp(ifp, s->mac, &c->loc, &c->rem, TH_PUSH | TH_ACK,
-                  mg_htonl(s->seq), mg_htonl(s->ack), buf, len);
+    sent = tx_tcp_c(c, TH_PUSH | TH_ACK,
+                    mg_htonl(s->seq), mg_htonl(s->ack), buf, len);
     if (sent == 0 || sent == (size_t) -1) {
       if (s->retransmit) mg_iobuf_del(&s->txq, s->txq.len - len, len);
       return sent == 0 ? MG_IO_WAIT : MG_IO_ERR;
@@ -6286,8 +6330,8 @@ static void txq_resend(struct mg_connection *c, bool fast) {
   uint64_t rto = MG_TCPIP_RTX_MS;
   uint8_t i;
   if (len > s->dmss) len = s->dmss;
-  sent = tx_tcp(ifp, s->mac, &c->loc, &c->rem, TH_PUSH | TH_ACK,
-                mg_htonl(s->txq_una), mg_htonl(s->ack), s->txq.buf, len);
+  sent = tx_tcp_c(c, TH_PUSH | TH_ACK,
+                  mg_htonl(s->txq_una), mg_htonl(s->ack), s->txq.buf, len);
   if (sent == (size_t) -1) {
     mg_error(c, "retransmit");
     return;
@@ -6329,8 +6373,13 @@ static void handle_tls_recv(struct mg_connection *c) {
       mg_error(c, "oom");
       break;
     }
-    // Decrypt data directly into c->recv
-    n = mg_tls_recv(c, io->buf != NULL ? &io->buf[io->len] : io->buf,
+    // Decrypt data directly into c->recv. PicoDeck patch: with no room (NULL,
+    // or a c->recv exactly full) pass NULL, as mg_tls_recv takes only that for
+    // "read the record, there is nowhere to put it yet" (n == 0, below). A full
+    // buffer passed its end and 0 bytes, and the 0 that mbedTLS gave back was
+    // taken for an error: "TLS recv error" whenever an app fell behind by
+    // exactly a buffer's worth.
+    n = mg_tls_recv(c, io->size > io->len ? &io->buf[io->len] : NULL,
                     io->size - io->len);
     if (n == MG_IO_ERR) {
       mg_error(c, "TLS recv error");
@@ -6360,8 +6409,8 @@ static void read_conn(struct mg_connection *c, struct pkt *pkt) {
     uint8_t flags = TH_ACK;
     if (mg_ntohl(pkt->tcp->seq) != s->ack) {
       MG_VERBOSE(("ignoring FIN, %x != %x", mg_ntohl(pkt->tcp->seq), s->ack));
-      tx_tcp(c->mgr->ifp, s->mac, &c->loc, &c->rem, TH_ACK, mg_htonl(s->seq),
-             mg_htonl(s->ack), "", 0);
+      tx_tcp_c(c, TH_ACK, mg_htonl(s->seq),
+               mg_htonl(s->ack), "", 0);
       return;
     }
     // If we initiated the closure, we reply with ACK upon receiving FIN
@@ -6381,14 +6430,14 @@ static void read_conn(struct mg_connection *c, struct pkt *pkt) {
       c->is_draining = 1;
       settmout(c, MIP_TTYPE_FIN);
     }
-    tx_tcp(c->mgr->ifp, s->mac, &c->loc, &c->rem, flags, mg_htonl(s->seq),
-           mg_htonl(s->ack), "", 0);
+    tx_tcp_c(c, flags, mg_htonl(s->seq),
+             mg_htonl(s->ack), "", 0);
     if (pkt->pay.len == 0) return;  // if no data, we're done
   } else if (pkt->pay.len <= 1 && mg_ntohl(pkt->tcp->seq) == s->ack - 1) {
     // Keep-Alive (RFC-9293 3.8.4, allow erroneous implementations)
     MG_VERBOSE(("%lu keepalive ACK", c->id));
-    tx_tcp(c->mgr->ifp, s->mac, &c->loc, &c->rem, TH_ACK, mg_htonl(s->seq),
-           mg_htonl(s->ack), NULL, 0);
+    tx_tcp_c(c, TH_ACK, mg_htonl(s->seq),
+             mg_htonl(s->ack), NULL, 0);
     return;                        // no data to process
   } else if (pkt->pay.len == 0) {  // this is an ACK
     if (s->fin_rcvd && s->ttype == MIP_TTYPE_FIN) s->twclosure = true;
@@ -6399,8 +6448,8 @@ static void read_conn(struct mg_connection *c, struct pkt *pkt) {
     // and holds back what Nagle is keeping for that ACK. Seen on the device: 1
     // burst in 100 stalled like this. 7.20 said "ignoring duplicate pkt" here.
     MG_VERBOSE(("SEQ != ACK: %x %x", seq, s->ack));
-    tx_tcp(c->mgr->ifp, s->mac, &c->loc, &c->rem, TH_ACK, mg_htonl(s->seq),
-           mg_htonl(s->ack), "", 0);
+    tx_tcp_c(c, TH_ACK, mg_htonl(s->seq),
+             mg_htonl(s->ack), "", 0);
     return;  // drop it
   } else if (io->size - io->len < pkt->pay.len &&
              !mg_iobuf_resize(io, io->len + pkt->pay.len)) {
@@ -6422,8 +6471,8 @@ static void read_conn(struct mg_connection *c, struct pkt *pkt) {
   if (s->unacked > MG_TCPIP_WIN / 2 && s->acked != s->ack) {
     // Send ACK immediately
     MG_VERBOSE(("%lu imm ACK %lu", c->id, s->acked));
-    tx_tcp(c->mgr->ifp, s->mac, &c->loc, &c->rem, TH_ACK, mg_htonl(s->seq),
-           mg_htonl(s->ack), NULL, 0);
+    tx_tcp_c(c, TH_ACK, mg_htonl(s->seq),
+             mg_htonl(s->ack), NULL, 0);
     s->unacked = 0;
     s->acked = s->ack;
     if (s->ttype != MIP_TTYPE_KEEPALIVE) settmout(c, MIP_TTYPE_KEEPALIVE);
@@ -6942,8 +6991,8 @@ static void mg_tcpip_poll(struct mg_tcpip_if *ifp, uint64_t now) {
         continue;
       } else if (s->ttype == MIP_TTYPE_ACK && s->acked != s->ack) {
         MG_VERBOSE(("%lu ack %x %x", c->id, s->seq, s->ack));
-        tx_tcp(ifp, s->mac, &c->loc, &c->rem, TH_ACK, mg_htonl(s->seq),
-               mg_htonl(s->ack), NULL, 0);
+        tx_tcp_c(c, TH_ACK, mg_htonl(s->seq),
+                 mg_htonl(s->ack), NULL, 0);
         s->acked = s->ack;
       } else if (s->ttype == MIP_TTYPE_SYN) {
         mg_error(c, "Connection timeout");
@@ -6955,8 +7004,8 @@ static void mg_tcpip_poll(struct mg_tcpip_if *ifp, uint64_t now) {
           mg_error(c, "keepalive");
         } else {
           MG_VERBOSE(("%lu keepalive", c->id));
-          tx_tcp(ifp, s->mac, &c->loc, &c->rem, TH_ACK, mg_htonl(s->seq - 1),
-                 mg_htonl(s->ack), NULL, 0);
+          tx_tcp_c(c, TH_ACK, mg_htonl(s->seq - 1),
+                   mg_htonl(s->ack), NULL, 0);
         }
       }
 
@@ -7024,9 +7073,8 @@ void mg_tcpip_free(struct mg_tcpip_if *ifp) {
 }
 
 static void send_syn(struct mg_connection *c) {
-  struct connstate *s = (struct connstate *) (c + 1);
   uint32_t isn = mg_htonl((uint32_t) mg_ntohs(c->loc.port));
-  tx_tcp(c->mgr->ifp, s->mac, &c->loc, &c->rem, TH_SYN, isn, 0, NULL, 0);
+  tx_tcp_c(c, TH_SYN, isn, 0, NULL, 0);
 }
 
 static void l2addr_resolved(struct mg_connection *c) {
@@ -7133,8 +7181,8 @@ static void init_closure(struct mg_connection *c) {
       c->is_connecting == false) {  // For TCP conns,
     // PicoDeck patch: a FIN the driver refused goes again on the next poll;
     // the timer was started regardless, so it never went at all
-    if (tx_tcp(c->mgr->ifp, s->mac, &c->loc, &c->rem, TH_FIN | TH_ACK,
-               mg_htonl(s->seq), mg_htonl(s->ack), NULL, 0) != 0)
+    if (tx_tcp_c(c, TH_FIN | TH_ACK,
+                 mg_htonl(s->seq), mg_htonl(s->ack), NULL, 0) != 0)
       settmout(c, MIP_TTYPE_FIN);
   }
 }
@@ -7170,6 +7218,13 @@ void mg_mgr_poll(struct mg_mgr *mgr, int ms) {
     // order is important, TLS conn close with > 1 record in buffer (below)
     if (is_tls && (c->rtls.len > 0 || mg_tls_pending(c) > 0))
       c->is_tls_hs ? mg_tls_handshake(c) : handle_tls_recv(c);
+    // PicoDeck patch: say so when the app has made room (see MG_TCPIP_RCVBUF)
+    if (!c->is_udp && !c->is_listening && !c->is_connecting &&
+        !c->is_resolving && !c->is_arplooking && !c->is_closing &&
+        !s->fin_rcvd && rcv_win(c) >= s->rwin + MG_TCPIP_RWIN_STEP) {
+      tx_tcp_c(c, TH_ACK, mg_htonl(s->seq), mg_htonl(s->ack), NULL, 0);
+      s->acked = s->ack;
+    }
     if (can_write(c)) write_conn(c);
     if (is_tls && c->send.len == 0) mg_tls_flush(c);
     // PicoDeck patch: the FIN goes after everything else has been acknowledged

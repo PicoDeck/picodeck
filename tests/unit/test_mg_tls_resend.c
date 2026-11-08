@@ -8,6 +8,10 @@
 //
 // The memory figures are this 64-bit host's: pointers make Mongoose's structures
 // larger than on the device. What they are compared with is what counts.
+//
+// The receive window (MG_TCPIP_RCVBUF) is tested from the other end: the server
+// streams to a client that reads as the HTTP driver does, at the SD card's pace,
+// in trickles, or not at all.
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -149,14 +153,18 @@ static uint8_t *s_stream;
 static size_t s_stream_len;
 static uint32_t s_srv_closed;
 static uint32_t s_srv_errors;
+static struct mg_connection *s_srv_conn;  // the server's end of the latest one
 
 static void srv_fn(struct mg_connection *c, int ev, void *ev_data) {
   if (ev == MG_EV_ACCEPT) {
-    struct mg_tls_opts o;
-    memset(&o, 0, sizeof(o));
-    o.cert = mg_str(s_cert);
-    o.key = mg_str(s_cert);
-    mg_tls_init(c, &o);
+    s_srv_conn = c;
+    if (c->fn_data == NULL) {  // the TLS listener's (the plain one has a tag)
+      struct mg_tls_opts o;
+      memset(&o, 0, sizeof(o));
+      o.cert = mg_str(s_cert);
+      o.key = mg_str(s_cert);
+      mg_tls_init(c, &o);
+    }
   } else if (ev == MG_EV_READ) {
     size_t n = c->recv.len;
     if (s_stream_len + n <= MAX_STREAM) {
@@ -169,21 +177,67 @@ static void srv_fn(struct mg_connection *c, int ev, void *ev_data) {
     (void) ev_data;
   } else if (ev == MG_EV_CLOSE) {
     s_srv_closed++;
+    if (c == s_srv_conn) s_srv_conn = NULL;
   }
+}
+
+// The server sends: its buffers are the host's, not Core 1's pool.
+static void srv_send(const void *buf, size_t len) {
+  s_client_side = false;
+  CHECK(s_srv_conn != NULL && mg_send(s_srv_conn, buf, len));
+  s_client_side = true;
 }
 
 // ── The client ──────────────────────────────────────────────────────────────
 
+// A reader takes what arrives the way the HTTP driver does (http.c): as much
+// as the app has room for, at most `rate` bytes a millisecond (the store
+// writing to the SD card at 1 MHz: ~80), and is_full while 16 KB or more is
+// left unread (HTTP_RECV_PAUSE). What the HTTP driver can be left holding
+// before it fails the transfer: HTTP_RECV_OVERFLOW.
+#define READER_PAUSE (16u * 1024u)
+#define READER_OVERFLOW (32u * 1024u)
+// mbedTLS gathers a record in its own buffer, where the window cannot count it,
+// and puts it in c->recv whole, so c->recv may end a record above the pause.
+// Servers send records of up to 16 KB: 16 + 16 KB, just READER_OVERFLOW. This
+// server's are at most MBEDTLS_SSL_OUT_CONTENT_LEN (the firmware's 8 KB).
+#define READER_RECV_MAX (READER_PAUSE + MBEDTLS_SSL_OUT_CONTENT_LEN)
+#define MAX_DOWN (1024u * 1024u)
+static uint8_t *s_down;
+
 typedef struct {
   bool hs_done;
   char err[64];
+  bool reader;          // take what arrives (below); off: leave it in c->recv
+  size_t rate;          // bytes a millisecond; 0: the app has stopped reading
+  size_t burst;         // or, with a period: this much once every period
+  uint64_t period;
+  uint64_t last_ms;
+  size_t got;           // bytes taken, into s_down
+  size_t peak_recv;     // the most c->recv held
 } cli_app_t;
+
+static void reader_take(struct mg_connection *c, cli_app_t *a) {
+  size_t n = a->period ? (s_now / a->period != a->last_ms / a->period ? a->burst : 0)
+                       : (size_t) (s_now - a->last_ms) * a->rate;
+  a->last_ms = s_now;
+  if (c->recv.len > a->peak_recv) a->peak_recv = c->recv.len;
+  if (n > c->recv.len) n = c->recv.len;
+  if (a->got + n > MAX_DOWN) n = MAX_DOWN - a->got;
+  if (n > 0) {
+    memcpy(s_down + a->got, c->recv.buf, n);
+    a->got += n;
+    mg_iobuf_del(&c->recv, 0, n);
+  }
+  c->is_full = c->recv.len >= READER_PAUSE;
+}
 
 static void cli_fn(struct mg_connection *c, int ev, void *ev_data) {
   cli_app_t *a = (cli_app_t *) c->fn_data;
   if (a == NULL) return;
   if (ev == MG_EV_TLS_HS) a->hs_done = true;
   if (ev == MG_EV_ERROR) snprintf(a->err, sizeof(a->err), "%s", (char *) ev_data);
+  if (a->reader && (ev == MG_EV_READ || ev == MG_EV_POLL)) reader_take(c, a);
 }
 
 static void side_up(side_t *s, uint32_t ip, uint8_t mac_last,
@@ -211,6 +265,9 @@ static void rig_up(void) {
   s_client_side = false;
   side_up(&s_srv, SERVER_IP, 10, srv_tx);
   CHECK(mg_listen(&s_srv.mgr, "tcp://0.0.0.0:443", srv_fn, NULL) != NULL);
+  CHECK(mg_listen(&s_srv.mgr, "tcp://0.0.0.0:80", srv_fn, (void *) "plain") !=
+        NULL);
+  s_srv_conn = NULL;
   s_client_side = true;
   run_ms(2100);
   CHECK_EQ_INT(s_cli.ifp.state, MG_TCPIP_STATE_READY);
@@ -470,6 +527,146 @@ static void test_open_close_loop_against_silent_peers(void) {
   rig_down();
 }
 
+// ── Tests: the receive window ───────────────────────────────────────────────
+
+static void reader_start(cli_app_t *a, size_t rate) {
+  a->reader = true;
+  a->rate = rate;
+  a->last_ms = s_now;
+}
+
+// Runs until the reader has `want` bytes, an error, or `limit_ms`; returns the
+// lowest the client's pool got.
+static size_t run_until_read(cli_app_t *a, size_t want, uint64_t limit_ms) {
+  size_t pool_min = pool_free();
+  uint64_t t;
+  for (t = 0; t < limit_ms && a->got < want && a->err[0] == '\0'; t++) {
+    run_ms(1);
+    if (pool_free() < pool_min) pool_min = pool_free();
+  }
+  return pool_min;
+}
+
+static bool down_is(const uint8_t *buf, size_t n, const cli_app_t *a) {
+  return a->got == n && memcmp(s_down, buf, n) == 0;
+}
+
+static void slow_tls_download(size_t rate, size_t n) {
+  static uint8_t buf[MAX_DOWN];
+  cli_app_t a;
+  size_t pool0, pool_min;
+  rig_up();
+  pool0 = pool_free();
+  tls_connect(&a);
+  run_ms(100);
+  CHECK(a.hs_done);
+  reader_start(&a, rate);
+  pattern(buf, n);
+  srv_send(buf, n);
+  pool_min = run_until_read(&a, n, n / rate + 5000);
+  CHECK_STR(a.err, "");
+  CHECK(down_is(buf, n, &a));
+  CHECK(a.peak_recv <= READER_RECV_MAX);
+  printf("%zu KiB over TLS at %zu B/ms: c->recv peak %zu B, pool peak %zu B\n",
+         n / 1024, rate, a.peak_recv, pool0 - pool_min);
+  rig_down();
+}
+
+// The store's download on the device: the server sends far faster than the app
+// can write to the SD card (1 MHz while the radio is on, ~80 KB/s). The window
+// has to hold the server back. Before, the device took all it was sent, the
+// raw TLS piled up behind the full c->recv and Core 1's pool ran out: "partial:
+// oom", or "TLS recv error" once a record had been cut short.
+static void test_a_slow_reader_gets_a_large_download_whole(void) {
+  slow_tls_download(80, MAX_DOWN);
+}
+
+// Whatever the pace, c->recv stays within what the HTTP driver accepts: how
+// many records mbedTLS has taken in when the window shuts depends on it.
+static void test_any_slow_reader_stays_within_the_drivers_limit(void) {
+  static const size_t rates[] = {20, 50, 150, 400, 1000, 2500};
+  size_t i;
+  for (i = 0; i < sizeof(rates) / sizeof(rates[0]); i++)
+    slow_tls_download(rates[i], 256 * 1024);
+}
+
+// An app that has fallen behind and reads a little now and then: each read lets
+// a little more in, and mbedTLS gathers it into a record (in its own buffer,
+// where the window does not count it). When the record is whole it lands in
+// c->recv on top of what is there: c->recv may end at most a record (16 KB)
+// above where the window shuts, and that has to stay within the 32 KB the
+// drivers accept.
+static void test_a_trickling_reader_stays_within_the_drivers_limit(void) {
+  static uint8_t buf[256 * 1024];
+  cli_app_t a;
+  rig_up();
+  tls_connect(&a);
+  run_ms(100);
+  CHECK(a.hs_done);
+  reader_start(&a, 0);
+  pattern(buf, sizeof(buf));
+  srv_send(buf, sizeof(buf));
+  run_ms(3000);  // behind: the window has shut
+  a.burst = 1500, a.period = 100;
+  run_until_read(&a, 64 * 1024, 20000);
+  CHECK_STR(a.err, "");
+  CHECK(a.got >= 64 * 1024);
+  CHECK(a.peak_recv <= READER_RECV_MAX);
+  printf("trickling reader: c->recv peak %zu B\n", a.peak_recv);
+  rig_down();
+}
+
+// The app stops reading altogether: the window shuts and the server waits. A
+// Mongoose server (this one) never probes a shut window, so when the app reads
+// again the client has to say so by itself.
+static void test_a_reader_that_stops_holds_the_server_back(void) {
+  static uint8_t buf[256 * 1024];
+  cli_app_t a;
+  struct mg_connection *c;
+  rig_up();
+  c = tls_connect(&a);
+  run_ms(100);
+  CHECK(a.hs_done);
+  reader_start(&a, 0);
+  pattern(buf, sizeof(buf));
+  srv_send(buf, sizeof(buf));
+  run_ms(5000);
+  CHECK_STR(a.err, "");
+  CHECK(conn_alive(c));
+  CHECK(a.peak_recv <= READER_RECV_MAX);
+  CHECK(s_srv_conn != NULL);
+  if (s_srv_conn != NULL) {
+    CHECK_EQ_INT(((struct connstate *) (s_srv_conn + 1))->win, 0);
+    CHECK(s_srv_conn->send.len > sizeof(buf) / 2);  // still the server's
+  }
+  printf("stopped reader: c->recv %zu B (peak %zu), c->rtls %zu B\n",
+         c->recv.len, a.peak_recv, c->rtls.len);
+  reader_start(&a, 64 * 1024);  // the app catches up
+  run_until_read(&a, sizeof(buf), 3000);
+  CHECK_STR(a.err, "");
+  CHECK(down_is(buf, sizeof(buf), &a));
+  rig_down();
+}
+
+// Plain HTTP (a LAN server): the bytes go straight to c->recv.
+static void test_a_slow_plain_reader_gets_a_large_download_whole(void) {
+  static uint8_t buf[MAX_DOWN];
+  cli_app_t a;
+  memset(&a, 0, sizeof(a));
+  rig_up();
+  CHECK(mg_connect(&s_cli.mgr, "tcp://192.168.1.10:80", cli_fn, &a) != NULL);
+  run_ms(100);
+  CHECK(s_srv_conn != NULL);
+  reader_start(&a, 80);
+  pattern(buf, sizeof(buf));
+  srv_send(buf, sizeof(buf));
+  run_until_read(&a, sizeof(buf), 20000);
+  CHECK_STR(a.err, "");
+  CHECK(down_is(buf, sizeof(buf), &a));
+  CHECK(a.peak_recv <= READER_OVERFLOW);
+  rig_down();
+}
+
 static char *read_file(const char *path) {
   FILE *f = fopen(path, "rb");
   char *buf;
@@ -490,6 +687,7 @@ int main(void) {
   s_cert = read_file(PICODECK_ROOT "/tests/e2e/certs/selfsigned.pem");
   CHECK(s_cert != NULL);
   s_stream = (uint8_t *) malloc(MAX_STREAM);
+  s_down = (uint8_t *) malloc(MAX_DOWN);
   core1_alloc_init(pool, sizeof(pool));
   mg_log_set(MG_LL_NONE);
 
@@ -501,7 +699,13 @@ int main(void) {
   test_the_queue_outlives_tls();
   test_a_silent_peer_holds_almost_nothing();
   test_open_close_loop_against_silent_peers();
+  test_a_slow_reader_gets_a_large_download_whole();
+  test_any_slow_reader_stays_within_the_drivers_limit();
+  test_a_trickling_reader_stays_within_the_drivers_limit();
+  test_a_reader_that_stops_holds_the_server_back();
+  test_a_slow_plain_reader_gets_a_large_download_whole();
 
+  free(s_down);
   free(s_stream);
   free(s_cert);
   return check_report("test_mg_tls_resend");
