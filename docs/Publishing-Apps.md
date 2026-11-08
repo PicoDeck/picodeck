@@ -68,3 +68,10 @@ To return to the default, remove the key the same way:
 picocalc.sysconfig.set("store_url")
 picocalc.sysconfig.save()
 ```
+
+The Store still downloads each app from its GitHub release. An indexer that serves the release assets itself sets `store_download_base` too: the Store then fetches `<base>/<repo>/releases/download/<tag>/<asset>`, and checks each download against the catalog's `sha256` as before.
+
+```lua
+picocalc.sysconfig.set("store_download_base", "http://192.168.1.10:8000")
+picocalc.sysconfig.save()
+```

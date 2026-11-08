@@ -56,9 +56,14 @@ local SCR_NO_WIFI    = 8
 
 local current_screen = SCR_LOADING
 local last_screen = nil
+local dirty = true          -- redraw the current screen on the next frame
 local frame = 0
 local error_msg = ""
 local current_conn = nil
+
+-- The main loop redraws only when the screen changes or this is set: call it
+-- whenever what the current screen shows changes (a key press, new data).
+local function invalidate() dirty = true end
 
 -- ── Catalog and app data ───────────────────────────────────────────────────
 
@@ -92,6 +97,18 @@ local download_conn_id = 0
 local download_retries = 0
 local download_retry_needed = false
 local download_app = nil    -- app being downloaded
+local RETRY_DELAY_MS = 2000 -- times the attempt number
+
+-- Catalog fetch state. A fresh card has no cached catalog, so a failed fetch
+-- (on the device: TLS refused until SNTP has set the clock) is retried.
+local catalog_err = nil     -- why the last fetch failed, shown on an empty list
+local catalog_attempts = 0
+local CATALOG_RETRY_MS = {2000, 4000, 8000, 15000, 30000}
+local WIFI_WAIT_MS = 20000  -- for a join to finish before giving up
+
+-- One network step waiting for WiFi (and, for a retry, for its delay):
+-- {fn, not_before, deadline, on_timeout}. Run by the main loop.
+local deferred = nil
 
 -- Firmware update state (merged from updater)
 local fw_info = nil         -- firmware info from catalog
@@ -189,6 +206,63 @@ local function catalog_endpoint()
         print("[STORE] Ignoring invalid store_url: " .. override)
     end
     return CATALOG_HOST, CATALOG_PORT, CATALOG_SSL, CATALOG_PATH
+end
+
+-- Release assets come from GitHub. A staging indexer that serves its own
+-- (and the E2E tests) set another base:
+-- picocalc.sysconfig.set("store_download_base", "http://192.168.1.10:8000")
+-- gives http://192.168.1.10:8000/<repo>/releases/download/<tag>/<asset>.
+local function release_asset_url(repo, tag, asset)
+    local base = picocalc.sysconfig.get("store_download_base")
+    if not base or not parse_url(base) then base = "https://github.com" end
+    return base:gsub("/+$", "") .. "/" .. repo .. "/releases/download/" ..
+           tag .. "/" .. asset
+end
+
+-- ── WiFi ───────────────────────────────────────────────────────────────────
+-- The launcher starts the join for an "http" app but does not wait for it,
+-- and the store itself drops WiFi around each verify/unpack, so every
+-- network step goes through run_online.
+
+local function online()
+    return net.getStatus() == net.kStatusConnected
+end
+
+-- Rejoin the saved network if WiFi is down (a no-op while joining or up).
+local function wifi_up()
+    if not online() then net.setEnabled(true) end
+end
+
+-- Run fn once WiFi is up and delay_ms have passed: now, if both already
+-- hold. on_timeout runs instead if WiFi is still down WIFI_WAIT_MS after
+-- the delay. Replaces any step already waiting.
+local function run_online(fn, delay_ms, on_timeout)
+    delay_ms = delay_ms or 0
+    if delay_ms <= 0 and online() then
+        deferred = nil
+        fn()
+        return
+    end
+    wifi_up()
+    local now = sys.getTimeMs()
+    deferred = {fn = fn, not_before = now + delay_ms,
+                deadline = now + delay_ms + WIFI_WAIT_MS,
+                on_timeout = on_timeout}
+end
+
+-- The main loop's half of run_online.
+local function run_deferred()
+    local d = deferred
+    if not d then return end
+    local now = sys.getTimeMs()
+    if now < d.not_before then return end
+    if online() then
+        deferred = nil
+        d.fn()
+    elseif now >= d.deadline then
+        deferred = nil
+        if d.on_timeout then d.on_timeout() end
+    end
 end
 
 -- Parse a JSON string array: "key": ["a", "b", "c"]
@@ -377,22 +451,78 @@ end
 
 -- ── Network: Fetch catalog ─────────────────────────────────────────────────
 
-local function fetch_catalog()
-    current_screen = SCR_LOADING
-    download_stage = "catalog"
+local function load_catalog(body)
+    catalog = parse_catalog_json(body)
+    catalog_apps = catalog.apps
+    scan_installed()
+    compute_updates()
+    apply_filter()
+    invalidate()
+    sys.log("[STORE] Catalog: " .. #catalog_apps .. " apps")
+end
 
-    local status = net.getStatus()
-    if status ~= net.kStatusConnected then
-        current_screen = SCR_NO_WIFI
+local fetch_catalog  -- forward: a failed fetch schedules the next one
+
+-- The list screen of the current tab.
+local function tab_screen()
+    if current_tab == TAB_UPDATES then return SCR_UPDATES end
+    if current_tab == TAB_INSTALLED then return SCR_INSTALLED end
+    return SCR_BROWSE
+end
+
+-- A catalog fetch ended: leave the loading screen, but not a screen the
+-- user moved to while a retry waited.
+local function catalog_done()
+    if current_screen == SCR_LOADING then current_screen = tab_screen() end
+    download_stage = nil
+    invalidate()
+end
+
+local function no_wifi()
+    catalog_err = "WiFi not connected"
+    if current_screen == SCR_LOADING then current_screen = SCR_NO_WIFI end
+    invalidate()
+end
+
+-- A fetch failed. Show the cached catalog if there is one; with none (a
+-- fresh card) the list would stay empty until a relaunch, so retry with a
+-- growing delay, and say why on the empty list (Enter retries at once).
+local function catalog_failed(err)
+    -- sys.log: on the device's serial log as [APP], so the cause on a
+    -- device (e.g. "clock not set") can be read there.
+    sys.log("[STORE] Catalog fetch failed: " .. tostring(err))
+    current_conn = nil
+    catalog_done()
+    if catalog then return end
+    local cached = fs.exists(CACHE_FILE) and fs.readFile(CACHE_FILE)
+    if cached and #cached > 0 then
+        ui.toast("Offline: showing the saved catalog", ui.TOAST_INFO)
+        load_catalog(cached)
         return
     end
+    catalog_err = tostring(err)
+    catalog_attempts = catalog_attempts + 1
+    local delay = CATALOG_RETRY_MS[catalog_attempts]
+    if delay then run_online(fetch_catalog, delay, no_wifi) end
+end
+
+fetch_catalog = function()
+    if current_screen == SCR_BROWSE or current_screen == SCR_NO_WIFI then
+        current_screen = SCR_LOADING
+    end
+    invalidate()
+    if not online() then
+        -- Still joining (the launcher starts it as the store launches) or
+        -- down: wait for it rather than give up.
+        run_online(fetch_catalog, 0, no_wifi)
+        return
+    end
+    download_stage = "catalog"
 
     local host, port, ssl, path = catalog_endpoint()
-    local conn = net.http.new(host, port, ssl)
+    local conn, conn_err = net.http.new(host, port, ssl)
     if not conn then
-        error_msg = "Cannot connect to catalog server"
-        ui.toast(error_msg, ui.TOAST_ERROR)
-        current_screen = SCR_BROWSE
+        catalog_failed(conn_err or "cannot connect")
         return
     end
 
@@ -420,16 +550,12 @@ local function fetch_catalog()
         current_conn = nil
 
         if http_status ~= 200 then
-            error_msg = "Catalog fetch failed: HTTP " .. tostring(http_status)
-            ui.toast(error_msg, ui.TOAST_ERROR)
-            -- Try cached catalog
-            if fs.exists(CACHE_FILE) then
-                body = fs.readFile(CACHE_FILE) or ""
-            end
-            if #body == 0 then
-                current_screen = SCR_BROWSE
-                return
-            end
+            catalog_failed("HTTP " .. tostring(http_status))
+            return
+        end
+        if #body == 0 then
+            catalog_failed("empty response")
+            return
         end
 
         -- Cache the catalog
@@ -440,36 +566,23 @@ local function fetch_catalog()
             fs.close(cf)
         end
 
-        catalog = parse_catalog_json(body)
-        catalog_apps = catalog.apps
-        scan_installed()
-        compute_updates()
-        apply_filter()
-
-        current_screen = SCR_BROWSE
-        download_stage = nil
+        catalog_err = nil
+        catalog_attempts = 0
+        load_catalog(body)
+        catalog_done()
     end)
 
+    -- Fires only for a failed request; getError says why ("clock not set",
+    -- a timeout, "network down").
     conn:setConnectionClosedCallback(function()
-        current_conn = nil
-        if download_stage == "catalog" then
-            -- Try cached
-            if fs.exists(CACHE_FILE) then
-                local data = fs.readFile(CACHE_FILE)
-                if data and #data > 0 then
-                    catalog = parse_catalog_json(data)
-                    catalog_apps = catalog.apps
-                    scan_installed()
-                    compute_updates()
-                    apply_filter()
-                end
-            end
-            current_screen = SCR_BROWSE
-            download_stage = nil
-        end
+        catalog_failed(conn:getError() or "connection closed")
     end)
 
-    conn:get(path, {["User-Agent"] = "PicoDeck-Store/1.1"})
+    local ok, get_err = conn:get(path, {["User-Agent"] = "PicoDeck-Store/1.1"})
+    if not ok then
+        conn:close()
+        catalog_failed(get_err or "request failed")
+    end
 end
 
 -- ── Network: Download straight to a file ───────────────────────────────────
@@ -636,6 +749,7 @@ local function download_file_with_redirects(url, dest_path, redirect_count, on_c
         if not fs.ensureReady() then
             fs.setSlowMode(false)
             sys.resumeBackground()
+            wifi_up()
             on_complete(false, "SD card not responding")
             return
         end
@@ -644,6 +758,9 @@ local function download_file_with_redirects(url, dest_path, redirect_count, on_c
 
         fs.setSlowMode(false)
         sys.resumeBackground()
+        -- Rejoin: the disconnect cleared the network, and nothing else in
+        -- this session would bring it back for the next download.
+        wifi_up()
     end)
 
     conn:setConnectionClosedCallback(function()
@@ -652,11 +769,16 @@ local function download_file_with_redirects(url, dest_path, redirect_count, on_c
         if download_complete then return end
         if download_stage then
             close_and_delete()
-            on_complete(false, "Connection closed")
+            on_complete(false, conn:getError() or "Connection closed")
         end
     end)
 
-    conn:get(path, {["User-Agent"] = "PicoDeck-Store/1.0"})
+    local ok, get_err = conn:get(path, {["User-Agent"] = "PicoDeck-Store/1.0"})
+    if not ok then
+        conn:close()
+        if current_conn == conn then current_conn = nil end
+        on_complete(false, get_err or "request failed")
+    end
 end
 
 -- Fetch a small text body (a checksum file) into memory, following
@@ -713,12 +835,26 @@ local function fetch_small_text(url, redirect_count, on_done)
     conn:setConnectionClosedCallback(function()
         finish(nil, conn:getError() or "Connection closed")
     end)
-    conn:get(path, {["User-Agent"] = "PicoDeck-Store/1.1"})
+    local ok, get_err = conn:get(path, {["User-Agent"] = "PicoDeck-Store/1.1"})
+    if not ok then finish(nil, get_err or "request failed") end
 end
 
 -- ── App installation ───────────────────────────────────────────────────────
 
-local function install_app(app)
+-- A download that cannot go on: back to the tab's list, saying why.
+local function download_failed(msg)
+    sys.log("[STORE] " .. msg)
+    deferred = nil
+    download_stage = nil
+    download_retry_needed = false
+    error_msg = msg
+    ui.toast(msg, ui.TOAST_ERROR)
+    current_screen = tab_screen()
+    invalidate()
+end
+
+-- is_retry: the main loop's retry, which keeps download_retries counting.
+local function install_app(app, is_retry)
     if not app or not app.repo or not app.release_tag or not app.asset then
         error_msg = "Missing download information"
         ui.toast(error_msg, ui.TOAST_ERROR)
@@ -765,11 +901,10 @@ local function install_app(app)
     download_app = app
     download_received = 0
     download_total = (app.size_kb or 0) * 1024
-    download_retries = 0
+    if not is_retry then download_retries = 0 end
     download_retry_needed = false
 
-    local url = "https://github.com/" .. app.repo ..
-                "/releases/download/" .. app.release_tag .. "/" .. app.asset
+    local url = release_asset_url(app.repo, app.release_tag, app.asset)
 
     local zip_path = CACHE_DIR .. "/" .. app.id .. ".zip"
     fs.mkdir(CACHE_DIR)
@@ -841,7 +976,7 @@ local function install_app(app)
         end)
     end
 
-    do_download()
+    run_online(do_download, 0, function() download_failed("WiFi not connected") end)
 end
 
 -- ── App removal ────────────────────────────────────────────────────────────
@@ -875,24 +1010,22 @@ end
 
 -- ── Firmware update (merged from updater) ──────────────────────────────────
 
-local function start_firmware_update()
+-- is_retry: the main loop's retry, which keeps download_retries counting.
+local function start_firmware_update(is_retry)
     if not fw_info then return end
 
     current_screen = SCR_DOWNLOADING
     download_stage = "firmware"
     download_received = 0
     download_total = (fw_info.size_kb or 0) * 1024
-    download_retries = 0
+    if not is_retry then download_retries = 0 end
     download_retry_needed = false
 
     local tag = fw_info.release_tag
     local repo = fw_info.repo or "PicoDeck/picodeck"
-    local url = "https://github.com/" .. repo ..
-                "/releases/download/" .. tag .. "/picodeck.bin"
-    fw_hash_url = "https://github.com/" .. repo ..
-                  "/releases/download/" .. tag .. "/picodeck.sha256"
-    local fw_sig_url = "https://github.com/" .. repo ..
-                       "/releases/download/" .. tag .. "/picodeck.sig"
+    local url = release_asset_url(repo, tag, "picodeck.bin")
+    fw_hash_url = release_asset_url(repo, tag, "picodeck.sha256")
+    local fw_sig_url = release_asset_url(repo, tag, "picodeck.sig")
 
     if fs.exists(BIN_PATH) then fs.delete(BIN_PATH) end
     if fs.exists(HASH_PATH) then fs.delete(HASH_PATH) end
@@ -902,63 +1035,66 @@ local function start_firmware_update()
     -- valid /system/update.sig (ECDSA signature by the PicoDeck update key), so
     -- fetch both (small, in memory) before the image; a release missing
     -- either is not offered for install.
-    fetch_small_text(fw_hash_url, 0, function(body, herr)
-        local hash = body and body:match("^%s*(%x+)%s*$")
-        if not hash or #hash ~= 64 then
-            print("[STORE] Firmware checksum download failed: " ..
-                  tostring(herr or "no SHA-256 in response"))
-            download_retry_needed = true
-            return
-        end
-      fetch_small_text(fw_sig_url, 0, function(sig, serr)
-        -- DER ECDSA P-256 signature: 8..72 bytes, starts with SEQUENCE.
-        if not sig or #sig < 8 or #sig > 128 or sig:byte(1) ~= 0x30 then
-            print("[STORE] Firmware signature download failed: " ..
-                  tostring(serr or "no signature in response"))
-            download_retry_needed = true
-            return
-        end
-
-        download_file_with_redirects(url, BIN_PATH, 0, function(ok, err)
-            if not ok then
-                print("[STORE] Firmware download failed: " .. tostring(err))
+    local function attempt()
+        fetch_small_text(fw_hash_url, 0, function(body, herr)
+            local hash = body and body:match("^%s*(%x+)%s*$")
+            if not hash or #hash ~= 64 then
+                print("[STORE] Firmware checksum download failed: " ..
+                      tostring(herr or "no SHA-256 in response"))
+                download_retry_needed = true
+                return
+            end
+          fetch_small_text(fw_sig_url, 0, function(sig, serr)
+            -- DER ECDSA P-256 signature: 8..72 bytes, starts with SEQUENCE.
+            if not sig or #sig < 8 or #sig > 128 or sig:byte(1) ~= 0x30 then
+                print("[STORE] Firmware signature download failed: " ..
+                      tostring(serr or "no signature in response"))
                 download_retry_needed = true
                 return
             end
 
-            -- Verify size
-            local actual = fs.size(BIN_PATH)
-            if actual and actual < 256 then
-                fs.delete(BIN_PATH)
-                download_retry_needed = true
-                return
-            end
+            download_file_with_redirects(url, BIN_PATH, 0, function(ok, err)
+                if not ok then
+                    print("[STORE] Firmware download failed: " .. tostring(err))
+                    download_retry_needed = true
+                    return
+                end
 
-            local hf = fs.open(HASH_PATH, "w")
-            if not hf then
-                fs.delete(BIN_PATH)
-                download_retry_needed = true
-                return
-            end
-            fs.write(hf, hash:lower() .. "\n")
-            fs.close(hf)
+                -- Verify size
+                local actual = fs.size(BIN_PATH)
+                if actual and actual < 256 then
+                    fs.delete(BIN_PATH)
+                    download_retry_needed = true
+                    return
+                end
 
-            local sf = fs.open(SIG_PATH, "w")
-            if not sf then
-                fs.delete(BIN_PATH)
-                fs.delete(HASH_PATH)
-                download_retry_needed = true
-                return
-            end
-            fs.write(sf, sig)
-            fs.close(sf)
+                local hf = fs.open(HASH_PATH, "w")
+                if not hf then
+                    fs.delete(BIN_PATH)
+                    download_retry_needed = true
+                    return
+                end
+                fs.write(hf, hash:lower() .. "\n")
+                fs.close(hf)
 
-            download_complete = true
-            download_stage = nil
-            current_screen = SCR_FW_CONFIRM
+                local sf = fs.open(SIG_PATH, "w")
+                if not sf then
+                    fs.delete(BIN_PATH)
+                    fs.delete(HASH_PATH)
+                    download_retry_needed = true
+                    return
+                end
+                fs.write(sf, sig)
+                fs.close(sf)
+
+                download_complete = true
+                download_stage = nil
+                current_screen = SCR_FW_CONFIRM
+            end)
+          end)
         end)
-      end)
-    end)
+    end
+    run_online(attempt, 0, function() download_failed("WiFi not connected") end)
 end
 
 -- ── Drawing helpers ────────────────────────────────────────────────────────
@@ -1029,7 +1165,8 @@ local function draw_loading()
     display.clear(BLACK)
     ui.drawHeader("App Store")
     ui.drawSpinner(W / 2, 140, 12, frame)
-    draw_centered(165, "Loading catalog...", WHITE, BLACK)
+    draw_centered(165, online() and "Loading catalog..." or
+                  "Waiting for WiFi...", WHITE, BLACK)
     display.flush()
 end
 
@@ -1060,7 +1197,13 @@ local function draw_browse()
     local item_h = 30
     local visible_count = math.floor((H - list_y - 24) / item_h)
 
-    if #filtered_apps == 0 then
+    if #filtered_apps == 0 and not catalog then
+        draw_centered(list_y + 40, "Couldn't load the catalog", RED, BLACK)
+        draw_centered(list_y + 58, truncate(catalog_err or "", W - 16), GRAY, BLACK)
+        local retrying = deferred and deferred.fn == fetch_catalog
+        draw_centered(list_y + 84, retrying and "Trying again..." or
+                      "Enter: Try again", CYAN, BLACK)
+    elseif #filtered_apps == 0 then
         draw_centered(list_y + 40, "No apps available", GRAY, BLACK)
     else
         -- Clamp selection and scroll
@@ -1301,7 +1444,9 @@ local function draw_downloading()
     draw_centered(174, string.format("%d%%  (%s / %s)", pct,
         format_size(kb_done), format_size(kb_total)), WHITE, BLACK)
 
-    if download_retries > 0 then
+    if deferred and not online() then
+        draw_centered(200, "Waiting for WiFi...", YELLOW, BLACK)
+    elseif download_retries > 0 then
         draw_centered(200, "Retry " .. download_retries .. "/" .. MAX_RETRIES, YELLOW, BLACK)
     end
 
@@ -1334,17 +1479,18 @@ local function handle_input()
     input.update()
     local pressed = input.getButtonsPressed()
     if pressed == 0 then return end
+    invalidate()  -- the selection, scroll, filter or tab may change
 
     -- ESC: exit or go back
     if pressed & input.BTN_ESC ~= 0 then
         if current_conn then current_conn:close(); current_conn = nil end
 
         if current_screen == SCR_DETAIL then
-            current_screen = current_tab == TAB_BROWSE and SCR_BROWSE
-                          or current_tab == TAB_UPDATES and SCR_UPDATES
-                          or SCR_INSTALLED
+            current_screen = tab_screen()
             return
         elseif current_screen == SCR_DOWNLOADING then
+            deferred = nil  -- a retry or a wait for WiFi
+            download_retry_needed = false
             download_stage = nil
             current_screen = SCR_BROWSE
             return
@@ -1352,7 +1498,8 @@ local function handle_input()
             current_screen = SCR_UPDATES
             return
         elseif current_screen == SCR_BROWSE or current_screen == SCR_UPDATES
-               or current_screen == SCR_INSTALLED or current_screen == SCR_NO_WIFI then
+               or current_screen == SCR_INSTALLED or current_screen == SCR_NO_WIFI
+               or current_screen == SCR_LOADING then
             return true  -- exit app
         end
     end
@@ -1402,7 +1549,10 @@ local function handle_input()
 
     -- Enter: select item
     if pressed & input.BTN_ENTER ~= 0 then
-        if current_screen == SCR_NO_WIFI then
+        if current_screen == SCR_NO_WIFI
+           or (current_screen == SCR_BROWSE and not catalog) then
+            deferred = nil  -- this replaces a retry that was waiting
+            catalog_attempts = 0
             fetch_catalog()
             return
         end
@@ -1508,44 +1658,63 @@ while true do
     local should_exit = handle_input()
     if should_exit then return end
 
-    -- Handle download retry
+    -- Handle download retry: after a delay (a refused TLS handshake, on the
+    -- device, needs the clock first) and with WiFi up again.
     if download_retry_needed and current_screen == SCR_DOWNLOADING then
         download_retry_needed = false
         download_retries = download_retries + 1
         if download_retries <= MAX_RETRIES then
             print("[STORE] Retry " .. download_retries .. "/" .. MAX_RETRIES)
             download_received = 0
-
-            if download_stage == "firmware" then
-                start_firmware_update()
-            elseif download_app then
-                install_app(download_app)
-            end
+            invalidate()
+            local firmware = download_stage == "firmware"
+            local app = download_app
+            run_online(function()
+                if firmware then
+                    start_firmware_update(true)
+                elseif app then
+                    install_app(app, true)
+                end
+            end, RETRY_DELAY_MS * download_retries,
+            function() download_failed("WiFi not connected") end)
         else
-            error_msg = "Failed after " .. MAX_RETRIES .. " attempts"
-            ui.toast(error_msg, ui.TOAST_ERROR)
-            current_screen = SCR_BROWSE
+            download_failed("Failed after " .. MAX_RETRIES .. " attempts")
         end
     end
 
+    run_deferred()
+
+    -- No WiFi screen: fetch as soon as it is up (joined late, or set up in
+    -- the system menu meanwhile).
+    if current_screen == SCR_NO_WIFI and not deferred and online() then
+        fetch_catalog()
+    end
+
     -- Draw
-    local needs_draw = (current_screen ~= last_screen)
+    local needs_draw = dirty or (current_screen ~= last_screen)
     if current_screen == SCR_DOWNLOADING or current_screen == SCR_LOADING then
         frame = frame + 1
         needs_draw = true
     end
 
     if needs_draw then
-        if current_screen == SCR_LOADING then draw_loading()
-        elseif current_screen == SCR_NO_WIFI then draw_no_wifi()
-        elseif current_screen == SCR_BROWSE then draw_browse()
-        elseif current_screen == SCR_UPDATES then draw_updates()
-        elseif current_screen == SCR_INSTALLED then draw_installed()
-        elseif current_screen == SCR_DETAIL then draw_detail()
-        elseif current_screen == SCR_DOWNLOADING then draw_downloading()
-        elseif current_screen == SCR_FW_CONFIRM then draw_fw_confirm()
+        -- Snapshot first: display.flush() runs the service pass, so an HTTP
+        -- callback can change the screen (the catalog arriving under the
+        -- loading screen) or set dirty while it is drawn. Recording
+        -- current_screen afterwards would mark the new screen drawn and
+        -- leave the old one up.
+        local screen = current_screen
+        dirty = false
+        if screen == SCR_LOADING then draw_loading()
+        elseif screen == SCR_NO_WIFI then draw_no_wifi()
+        elseif screen == SCR_BROWSE then draw_browse()
+        elseif screen == SCR_UPDATES then draw_updates()
+        elseif screen == SCR_INSTALLED then draw_installed()
+        elseif screen == SCR_DETAIL then draw_detail()
+        elseif screen == SCR_DOWNLOADING then draw_downloading()
+        elseif screen == SCR_FW_CONFIRM then draw_fw_confirm()
         end
-        last_screen = current_screen
+        last_screen = screen
     end
 
     sys.sleep(33)  -- ~30 FPS

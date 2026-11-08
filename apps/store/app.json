@@ -2,7 +2,7 @@
     "id": "net.picodeck.store",
     "name": "App Store",
     "description": "Browse, install, and update apps and firmware",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "author": "PicoDeck",
     "requirements": ["http", "root-filesystem", "sysconfig", "system-update"],
     "category": "system",

@@ -28,6 +28,8 @@
 //                            "bl"; missing (or "0") is off
 //   "editor_font"          — the editor app's font
 //   "store_url"            — the app store's catalog URL, instead of the default
+//   "store_download_base"  — where the app store downloads release assets,
+//                            instead of https://github.com
 // =============================================================================
 
 // The pool is static SRAM, and the SRAM heap is only ~3 KB: grow it with
