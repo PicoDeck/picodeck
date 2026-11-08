@@ -95,6 +95,7 @@ These are the keys the OS and its apps read, and when they read them. Values are
 | `"bt_enabled"` | `"1"`: on. No key is off, and the menu removes the key for Off | At boot | Bluetooth controllers (system menu → Settings → Bluetooth; see [API Gamepad](API-Gamepad.md#bluetooth-controllers)) |
 | `"dev_mode"` | `"1"`: on | At boot, and the menu changes it live | Developer rows in the system menu (Settings → Developer Mode) |
 | `"store_url"` | A catalog URL, up to 127 characters | By the Store app, when it fetches | Points the Store at another catalog, for testing one |
+| `"store_download_base"` | An `http://` or `https://` URL, up to 127 characters; default `https://github.com` | By the Store app, at each download | Where the Store downloads release assets: `<base>/<repo>/releases/download/<tag>/<asset>`, for an indexer that serves its own |
 | `"editor_font"` | A font number | By the Editor app, when it starts | The Editor's last font |
 
 Nothing reads any other key, such as a `timezone`: an unknown key is stored and ignored, and it takes room in the 1 KB store.
