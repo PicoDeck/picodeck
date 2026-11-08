@@ -38,6 +38,13 @@ CASES = [
     "download_relative_redirects",
     "download_reports_the_real_error",
     "download_progress_totals",
+    # 1 MiB from the LAN to the SD card at 1 MHz (~80 KB/s), several times
+    # slower than the server: the receive window has to hold it back
+    # (MG_TCPIP_RCVBUF). Without it the transfer failed once the 256 KB ring
+    # was full, with "receive buffer overflow (the app is not reading)" here
+    # (plain HTTP) and "partial: oom" or "TLS recv error" over HTTPS: the
+    # store's large installs (#78).
+    "download_lib_big",
 ]
 
 

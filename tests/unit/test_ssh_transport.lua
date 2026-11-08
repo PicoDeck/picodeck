@@ -754,11 +754,12 @@ end
 
 -- ── How far the server can get ahead ─────────────────────────────────────────
 
--- The device's TCP layer fails a reader more than TCP_UNREAD_LIMIT bytes behind, and
--- nothing slows the sender there: its stack advertises a fixed window and ignores a full
--- buffer. So the channel window this client grants is the only flow control there is.
--- A server that uses all of it, into a reader that has stalled, has to stay under the
--- limit, framing included, and the credit has to go on coming as the reader catches up.
+-- The device's TCP layer fails a reader more than TCP_UNREAD_LIMIT bytes behind. Its
+-- stack now offers the peer only what it has room for (TCP flow control), but the
+-- channel window this client grants keeps a server under the limit too, as it did when
+-- that was all there was. A server that uses all of it, into a reader that has stalled,
+-- has to stay under the limit, framing included, and the credit has to go on coming as
+-- the reader catches up.
 local function test_window_stays_under_the_tcp_limit()
     for _, size in ipairs({"max", 4096, 1024, 256, 64}) do
         local what = "packets of " .. size .. ": "

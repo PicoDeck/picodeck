@@ -129,7 +129,7 @@ name). Failures read `"TLS: certificate not trusted …"`, `"… expired"` or
 verifying connection is refused with an error starting `"clock not set"` until
 SNTP has set the time; retry a few seconds later.
 
-HTTP connections are objects with method syntax (`conn:get(...)`, `conn:read()`, etc.). Callbacks are fired automatically — you do not need to poll manually. The receive ring holds 4 KB by default: read as data arrives. A device has no brake on the sender, so a response whose unread part passes the ring plus 32 KB fails with `receive buffer overflow (the app is not reading)`.
+HTTP connections are objects with method syntax (`conn:get(...)`, `conn:read()`, etc.). Callbacks are fired automatically — you do not need to poll manually. The receive ring holds 4 KB by default: read as data arrives. An app that reads more slowly than the server sends (writing each piece to the SD card, say) slows the server down to its pace: once the ring is full and 16 KB more is waiting, the device tells the server to wait (TCP flow control). An app that stops reading pauses the transfer until it reads again (bytes waiting for the ring count as activity, so the read timeout does not fire).
 
 ### picocalc.network functions
 

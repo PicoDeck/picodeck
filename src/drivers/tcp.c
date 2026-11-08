@@ -472,8 +472,7 @@ static void tcp_drain(struct mg_connection *nc, tcp_conn_t *c) {
     spin_unlock(s_lock, save);
 
     if (len > 0) mg_iobuf_del(io, 0, len);
-    // Stop reading while the app lags (honoured by the socket build only;
-    // see HTTP_RECV_PAUSE in http.c).
+    // Stop reading while the app lags (see HTTP_RECV_PAUSE in http.c).
     nc->is_full = io->len >= TCP_RECV_PAUSE;
 }
 
