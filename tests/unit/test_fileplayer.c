@@ -273,6 +273,27 @@ static void test_core1_gate_idle_while_the_ring_is_full(void) {
   fileplayer_destroy(p);
 }
 
+// The gate reads the active player without the lock, and fileplayer_reset() zeroes the
+// players before it clears s_active_player, so Core 1 can see a player that still reads
+// playing with a block_align of 0. The gate then reads busy (the update, under the lock,
+// finds no player: one tick's walk) and divides by nothing: under UBSan a division by
+// zero ends the test here.
+static void test_core1_gate_with_a_zeroed_block_align(void) {
+  setup();
+  put_wav("/a.wav", 22050, 2, 22050, 1000);
+  fileplayer_t *p = fileplayer_create();
+  CHECK(fileplayer_load(p, "/a.wav"));
+  CHECK(fileplayer_play(p, 1));
+  for (int t = 0; t < 16 && s_held; t++)  // play() holds the stream until the ring is full
+    fileplayer_update();
+  CHECK(!s_held);  // so the gate gets past the stream's room to the arithmetic
+  const uint16_t align = p->block_align;
+  p->block_align = 0;  // what Core 1 reads once the memset has passed this field
+  CHECK(!fileplayer_core1_idle());
+  p->block_align = align;
+  fileplayer_destroy(p);
+}
+
 static void test_flow_control_plays_every_frame(void) {
   setup();
   put_wav("/a.wav", 22050, 2, 22050, 1000);   // 1 s stereo
@@ -1148,6 +1169,7 @@ int main(void) {
   test_teardown_gives_the_heap_back();  // first: before any setup() made the buffer
   test_core1_gate_sees_the_active_player();
   test_core1_gate_idle_while_the_ring_is_full();
+  test_core1_gate_with_a_zeroed_block_align();
   test_flow_control_plays_every_frame();
   test_mono_and_rate_flow_control();
   test_full_ring_reads_nothing();

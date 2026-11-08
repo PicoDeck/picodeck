@@ -809,12 +809,6 @@ DISP_HOT static inline uint32_t disp_blit_scaled_rect(
 // of the way to the host RGB565 colour `fog`, per channel,
 // (c * (31 - level) + fog * level + 15) / 31, so 0 is the image and 31 the fog. Same
 // sampling, same return. gfx3d's sprites; a level of 0 is better sent to the plain blit.
-// Nearest-neighbour stretch of the source rect (sx, sy, sw, sh) of an
-// img_w-wide image to dst_w x dst_h at (x, y), skipping `key` pixels (0 =
-// opaque). Destination pixel (dx, dy) of the unclipped rect samples source
-// (sx + dx*sw/dst_w, sy + dy*sh/dst_h) — exact integer division, stepped with
-// a remainder DDA across each row. The source rect must lie inside the image
-// (callers clamp).
 DISP_HOT static inline uint32_t disp_blit_scaled_rect_fog(
     uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
     const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,

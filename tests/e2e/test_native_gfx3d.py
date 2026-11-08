@@ -270,7 +270,11 @@ f:close()
 """
 
 
+# 10 launches, each a few seconds on the device: with 11 it took 65.9 s in Task 19, over
+# pytest.ini's 60 s, and a timeout mid-transfer leaves the port closed for every hardware test
+# after it.
 @pytest.mark.hardware
+@pytest.mark.timeout(180)
 def test_gfx3d_leak_freed_on_the_device(target):
     target.stage_lua_app("gfx3d_mem", MEM_APP, id="com.test.gfx3d.mem")
 
@@ -280,10 +284,12 @@ def test_gfx3d_leak_freed_on_the_device(target):
         assert target.wait_for_exit(timeout=20)["result"] == "returned"
         return tuple(map(int, target.read_file("/data/com.test.gfx3d.mem/mem.txt").split()))
 
-    for mode in LEAK_MODES:
+    for mode in LEAK_MODES:  # one-time allocations predate the baseline
         _start(target, mode)
         assert target.wait_for_exit(timeout=20)["result"] == "returned"
-    mem()
+    # No warm-up run of the Lua app before it: its first launch leaves nothing behind now that
+    # the WAV buffer goes with the app, and in the simulator under --real-umm the first reading
+    # equals every later one to the byte.
     free0, largest0 = mem()
     for mode in LEAK_MODES:
         _start(target, mode)

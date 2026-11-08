@@ -167,7 +167,7 @@ Every firmware that has `api->version` (v0.0.8 on) has these tables, so they nee
 
 `api->gfx3d` sits after `gamepad`, so older firmware does not have the field at all. Three calls join the end of `picocalc_sys_t`, so an older table does not have them either:
 
-- `sys->getFirmwareId()`: the source revision the firmware was built from, such as `"b3881b9"`, with `-dirty` when a tracked file differed. It is a string that lasts as long as the app does. A build from a folder with no git says `"unknown"`.
+- `sys->getFirmwareId()`: the source revision the firmware was built from, such as `"b3881b9"`, with `-dirty` when a tracked file differed. It is a string that lasts as long as the app does. A build from a folder that is in no git repository says `"unknown"`; one from a folder inside another repository (a source tarball unpacked in a checkout of something else) reports that repository's commit.
 - `sys->getClockKhz()`: the system clock now, which [`system_clock_khz`](App-Json-Reference.md#system_clock_khz) and video playback change. The simulator always says 125000.
 - `sys->resetIdleTimer()`: as [`picocalc.sys.resetIdleTimer`](API-System-and-Config.md). An app that shows moving pictures with no keys pressed calls it each frame, or the screen dims after 60 s.
 

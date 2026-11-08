@@ -906,8 +906,11 @@ typedef struct {
 // begin(clear, color): starts a scene, dropping the last one, and clears the stats.
 //   Without a sky or clear, end paints over what is there.
 // drawMesh(m, rot, pos, scale, bias): world = rot * (scale * p) + pos, rot NULL being
-//   the identity. bias is added to the depth it sorts by, in world units: positive is
-//   behind. Past the scene's capacity triangles count in stats.overflow.
+//   the identity. scale should be > 0: a negative one inverts the mesh through pos and
+//   leaves its triangles facing inward, so single-sided ones cull where its outside faces
+//   the camera (a closed mesh shows the inside of its far half), and 0 draws nothing.
+//   bias is added to the depth it sorts by, in world units: positive is behind. Past the
+//   scene's capacity triangles count in stats.overflow.
 // drawSprites(s, n, bias): sprites facing the camera, each a whole image from imageAdd
 //   centred on (x, y, z), `size` its world height. Returns how many were filed. A slot
 //   that is no image or a size that is not positive is skipped uncounted; a position

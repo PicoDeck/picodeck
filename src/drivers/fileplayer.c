@@ -513,16 +513,22 @@ float fileplayer_get_rate(const fileplayer_t *player) {
  * floor(F * rate) * block_align bytes. Reading more (as the old code did,
  * 4 KB every tick at SD speed) only made audio_push_samples drop what did
  * not fit while position raced to EOF: a long WAV "finished" in seconds. */
-// What one update may read or decode with `ring_free` frames free in the stream ring.
-static __force_inline uint32_t fit_bytes(const fileplayer_t *p, uint32_t limit,
-                                         uint32_t ring_free) {
+// What one update may read or decode with `ring_free` frames free in the stream ring, for
+// frames of `align` bytes (the player's block_align: the gate passes its own copy).
+static __force_inline uint32_t fit_bytes_by(const fileplayer_t *p, uint32_t align,
+                                            uint32_t limit, uint32_t ring_free) {
     float rate = p->rate < 0.1f ? 0.1f : p->rate;
     uint32_t in_frames = (uint32_t)((float)ring_free * rate);
     uint32_t remaining = p->position < limit ? limit - p->position : 0;
     uint32_t n = FILEPLAYER_READ_MAX;
-    if (n / p->block_align > in_frames) n = in_frames * p->block_align;
+    if (n / align > in_frames) n = in_frames * align;
     if (n > remaining) n = remaining;
-    return n - n % p->block_align;  // whole frames: an odd step swaps L/R
+    return n - n % align;  // whole frames: an odd step swaps L/R
+}
+
+static __force_inline uint32_t fit_bytes(const fileplayer_t *p, uint32_t limit,
+                                         uint32_t ring_free) {
+    return fit_bytes_by(p, p->block_align, limit, ring_free);
 }
 
 static uint32_t bytes_that_fit(const fileplayer_t *p, uint32_t limit) {
@@ -562,9 +568,13 @@ typedef struct {
 } fp_callback_t;
 
 // The data's whole frames: where a pass with no loop range ends. Force-inlined, so Core 1's
-// gate shares it and stays call-free into flash.
+// gate shares it and stays call-free into flash. `align` is the player's block_align.
+static __force_inline uint32_t whole_frames_by(const fileplayer_t *p, uint32_t align) {
+    return p->data_size - p->data_size % align;
+}
+
 static __force_inline uint32_t whole_frames(const fileplayer_t *p) {
-    return p->data_size - p->data_size % p->block_align;
+    return whole_frames_by(p, p->block_align);
 }
 
 // Where a pass that runs to `end` stops: there, or the end of the data for a player that is
@@ -828,7 +838,11 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
 // (the update releases it), at a pass's end, with stop-on-underrun (the stop is due on the
 // tick that sees one) or with a loop range (rare, and its pass end costs 64-bit arithmetic:
 // SRAM). Reads the player and the ring without the lock: a stale answer costs one tick's
-// delay or one tick's walk, and the next tick asks again.
+// delay or one tick's walk, and the next tick asks again. The one divisor, block_align, is
+// copied once and a 0 reads busy before anything divides by it: fileplayer_reset() zeroes
+// the players before it clears s_active_player, so this can see a player that still reads
+// playing with its later fields 0. (A plain copy: one ldrh. A volatile or atomic read adds
+// a zero-extend, and 4 bytes more here move every RAM function and the .bss after it.)
 bool __time_critical_func(fileplayer_core1_idle)(void) {
     const fileplayer_t *const p = s_active_player;
     if (p == NULL)
@@ -838,10 +852,13 @@ bool __time_critical_func(fileplayer_core1_idle)(void) {
     const uint32_t room = audio_stream_core1_room();
     if (room == AUDIO_STREAM_NO_ROOM)
         return false;
-    const uint32_t limit = limit_of(p, whole_frames(p));  // pass_limit() with no loop range
+    const uint32_t align = p->block_align;
+    if (align == 0)
+        return false;
+    const uint32_t limit = limit_of(p, whole_frames_by(p, align));  // pass_limit(), no range
+    const uint32_t budget = fit_bytes_by(p, align, limit, room);
     const uint32_t remaining = p->position < limit ? limit - p->position : 0;
-    const uint32_t budget = fit_bytes(p, limit, room);
-    return remaining >= p->block_align && budget < FILEPLAYER_READ_MIN && budget < remaining;
+    return remaining >= align && budget < FILEPLAYER_READ_MIN && budget < remaining;
 }
 
 // Called from Core 1 every tick: tops the stream ring up from the active

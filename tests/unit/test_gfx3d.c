@@ -1787,8 +1787,9 @@ static void test_tex_swap_is_only_byte_order(void) {
   static uint16_t tex[64 * 16];
   for (int i = 0; i < 64 * 16; i++) tex[i] = (uint16_t)(i * 2654435761u >> 16);
   const int slot = gfx3d_tex_add(g, 6, 4, 1, tex);
-  int drew = 0;
+  int drew = 0;  // triangles that drew something: begin clears the stats for each
   for (int n = 0; n < 400; n++) {
+    gfx3d_begin(g, false, 0);
     const bool flat_depth = (n & 1) != 0, blend = (n & 2) != 0;
     const gfx3d_test_vert_t v[3] = {
         tv(trandf(-40, TW + 40), trandf(-40, TH + 40), 0.5f, trandf(-3, 3), trandf(-3, 3), (uint16_t)trand()),
@@ -1911,7 +1912,8 @@ static void test_tex_clip(void) {
           CHECK_EQ_INT(checked, w * h);
         }
       }
-  // Nothing on screen, and an empty clip, walk nothing.
+  // Nothing on screen walks nothing. (No empty clip: tex_tri is never given one, as gfx3d_end
+  // returns before drawing anything when the clip rect and the viewport do not meet.)
   gfx3d_begin(g, false, 0);
   gfx3d_target_t t = tex_target(s_tb, false);
   gfx3d_test_tex_info_t info;
