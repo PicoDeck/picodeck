@@ -60,3 +60,37 @@ def test_context_gc_cannot_be_reached_by_a_later_finalizer(simulator):
     simulator.wait_for_log(r"^AFTER:READY$", timeout=10)
     outcome2 = simulator.wait_for_exit(timeout=10)
     assert outcome2.get("result") == "returned", outcome2
+
+
+# ── A textured mesh finalised at lua_close while its scene is open ──────────
+#
+# A scene reads its textured meshes' uv at endScene, so the bridge holds every
+# mesh drawn until the next beginScene. lua_close finalises everything all the
+# same, newest first: here the mesh before HOLD, and the context (made first)
+# last. HOLD's endScene must then find no scene, not raster records that name
+# the freed mesh (a read of freed memory: ASan's report on the ASan build).
+GC_TMESH_APP = """
+local g3 = picocalc.gfx3d
+local tex = g3.addTexture(0, 0, 1, string.pack("<I2", 0xF800))  -- the context, first
+HOLD = setmetatable({}, {__gc = function()
+    local ok, err = pcall(g3.endScene)
+    picocalc.sys.log("G3TGC:END " .. tostring(ok) .. " " .. tostring(err))
+end})
+MESH = g3.newTexturedMesh{xyz = {-1,-1,-5, 1,-1,-5, 0,1,-5}, uv = {0,0, 1,0, 0,1},
+                          color = 0xFFFF, idx = {1,2,3}, tex = tex}
+g3.beginScene(0)
+g3.drawTextured(MESH, 0, 0, 0, 0, 0, 0)
+picocalc.sys.log("G3TGC:READY")
+"""
+
+
+@pytest.mark.sd(fixtures=[], reserve=1)
+def test_textured_mesh_finalised_at_close_ends_its_scene(simulator):
+    stage_lua_app(simulator.sd_card_path, "g3tgc_test", GC_TMESH_APP)
+    seq = simulator.get_log_buffer(tail=1).get("next_seq", 0)
+    simulator.launch_app("g3tgc_test")
+    simulator.wait_for_log(r"^G3TGC:READY$", timeout=10, since_seq=seq)
+    line = simulator.wait_for_log(r"^G3TGC:END ", timeout=10, since_seq=seq)
+    assert "G3TGC:END false" in line and "beginScene" in line, line
+    outcome = simulator.wait_for_exit(timeout=10)
+    assert outcome.get("result") == "returned", outcome

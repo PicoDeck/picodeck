@@ -194,7 +194,7 @@ This is what is known to differ. The Lua bridge is the firmware's own code; the 
 | PIO PSRAM | `pioPsramSize()` is 0, writes return 0, reads return nil. Native: `pioAvailable()` is false and the other `pio*` calls do nothing | 8 MB, apps from `0x48000` |
 | Bluetooth pads | A scripted radio (`bt sim ...`, below) | Real pads |
 | USB Disk Mode | Does nothing | [Works](Getting-started-on-a-device.md#5-copy-your-own-apps) |
-| `system_clock_khz` | Accepted, with no effect on speed | Changes the clock, and can [drop WiFi](App-Json-Reference.md#system_clock_khz) |
+| `system_clock_khz` | Accepted, with no effect on speed. Native `sys->getClockKhz()` always says 125000 | Changes the clock, and can [drop WiFi](App-Json-Reference.md#system_clock_khz) |
 | Watchdog | None | Resets a stuck app |
 | Backlight | `display.setBrightness` and idle dim change a level nothing draws (the `get_backlight` method reads it). Idle dim is off unless `--idle-dim` | The real backlight. Dims after 60 s, and the waking key is swallowed |
 
@@ -248,6 +248,7 @@ The simulator has its own display code, so it can differ in any primitive. These
 | Native `getBackBuffer` pointer | One fixed address, whose buffer never swaps | Changes at every `flush()`; fetch it each frame |
 | Native `flushRows`, `flushRegion` | Present the whole buffer | Send just those rows |
 | Native `graphics->pixels` | NULL for a valid image | The pixels |
+| `gfx3d`'s fast memory | None to borrow (no video decoder): fogged sprites are mixed per pixel, magnified sprites sample every row, a native app's sprite images are never indexed and keep their size, and `endScene` / `end` run on the app's stack. The same pixels | The video decoder's SRAM, while no video player exists ([Native Loading](Native-Loading.md#fast-memory)): faster, and an image of at most 256 colours grows at its first draw |
 
 ### Input
 

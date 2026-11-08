@@ -4,11 +4,13 @@ title: "API 3D"
 
 ## picocalc.gfx3d
 
-A small retained-mode 3D renderer for flat-shaded, low-poly scenes: triangle meshes, a camera, one directional light, distance fog, horizon-aligned sky bands, background scenery and camera-facing sprites.
+A small retained-mode 3D renderer for low-poly scenes: flat-shaded and textured triangle meshes, a camera, one directional light, distance fog, a sky of horizon-aligned colour bands or an image, background scenery, camera-facing sprites and a mirror plane for reflections.
 
-Your Lua code builds meshes once and then, every frame, sets the camera and calls `draw` for each object between `beginScene()` and `endScene()`. Transform, culling, lighting, fog, clipping and depth ordering all run in C. `draw` does its work at once and keeps no reference to the mesh.
+Your Lua code builds meshes once and then, every frame, sets the camera and calls `draw` for each object between `beginScene()` and `endScene()`. Transform, culling, lighting, fog, clipping and depth ordering all run in C. `draw` does its work at once and keeps no reference to the mesh; `drawTextured` keeps its mesh until the next `beginScene()` ([Textured meshes](#textured-meshes)).
 
 Objects are drawn far to near (painter's order), with no depth buffer. Keep triangles reasonably short, so that long faces don't sort in front of objects above them. Use `bias` or `sortAsOne` for objects that sit on other geometry.
+
+Native apps have the same renderer through [`api->gfx3d`](Native-Loading.md#3d): textured meshes, the sky image, the mirror and sprite fog as here, and whole-image sprites drawn many to a call; no flat meshes, light, sky bands, background scenery or viewport.
 
 ### Conventions
 
@@ -32,8 +34,9 @@ Set per app, on first use:
 | Near / far planes | 0.5 / 1000 |
 | Camera | At the origin, looking along −z |
 | Light | Towards (0.3, 1, 0.5), ambient 0.25 |
-| Fog | Off |
-| Sky | Off |
+| Fog | Off, and for sprites off even with fog on |
+| Sky | Off: no bands, no image, every row of the viewport |
+| Mirror | Off |
 
 ### Functions
 
@@ -153,7 +156,7 @@ Draws a camera-facing image centred at `(x, y, z)`, `size` world units tall, sor
 ---
 
 #### `picocalc.gfx3d.endScene()`
-Fills the viewport (sky or clear colour) and draws everything, far to near, into the back buffer. Call `picocalc.display.flush()` afterwards as usual; you can draw a HUD on top first.
+Fills the viewport (sky or clear colour) and draws everything, far to near, into the back buffer, inside the display's clip rect. Call `picocalc.display.flush()` afterwards as usual; you can draw a HUD on top first.
 
 ---
 
@@ -180,13 +183,133 @@ Fills the viewport (sky or clear colour) and draws everything, far to near, into
 
 ---
 
+### Textured meshes
+
+A textured mesh has a texture slot and two texture coordinates per vertex, and a colour per vertex instead of per triangle. Its triangles sort with flat ones and sprites in the same scene.
+
+**A textured pixel is the texel times the vertex colour**, interpolated across the triangle, where a channel at its maximum in both (31, or 63 for green) means ×1.5, saturating. So a vertex colour of `0xAD55` leaves a texel about as it is, white makes it half again as bright, and black makes it black. There is no light for textured meshes: bake the lighting into the vertex colours. Fog mixes into the vertex colours (unless the triangle is `NO_FOG`).
+
+Texels are sampled nearest-neighbour and repeat outside 0-1. A triangle draws from level 0 while its longest edge on screen shows under about 2.8 texels per pixel, then from one level smaller for each doubling of that. It draws without perspective correction only where its depth varies so little that the picture stays within about a texel of the correct one.
+
+#### `picocalc.gfx3d.addTexture(lgW, lgH, nmips, pixels)`
+Adds a texture of `2^lgW × 2^lgH` texels, copying them.
+
+- `lgW`, `lgH` (integers, 0-10): the size as powers of two, so 1 to 1024 texels a side. Textures need not be square.
+- `nmips` (integer): 1 for one level, or more for mip levels after it, each half the size of the last, at most `min(lgW, lgH) + 1` in all.
+- `pixels` (string): every level's texels, level 0 first, row by row, two bytes each, little-endian RGB565: the format of `img:getPixels()`, so a power-of-two image's pixels can be passed as they are. Its length must be exactly 2 bytes per texel.
+- **Returns:** the texture's slot, an integer counting from 0.
+
+An app has at most 64 textures, kept until it exits; each costs 2 bytes a texel of PSRAM.
+
+```lua
+local img = picocalc.graphics.image.load(APP_DIR .. "/grass.png")  -- 64 x 64
+local grass = g3.addTexture(6, 6, 1, img:getPixels())
+```
+
+---
+
+#### `picocalc.gfx3d.scrollTexture(slot, du, dv)`
+Adds `du`, `dv` (in repeats of the texture) to the texture coordinates of every triangle that uses it, when the scene is drawn. It is an offset, not a step: it replaces the last one and lasts across scenes. To move water, pass a total that grows with the frame number, such as `scrollTexture(water, 0, frame * 0.004)`. The last call before `endScene()` applies to the whole scene.
+
+---
+
+#### `picocalc.gfx3d.newTexturedMesh(desc)`
+Builds a textured mesh from a table, copying its arrays:
+
+| Field | |
+|---|---|
+| `xyz` | Flat `{x1, y1, z1, x2, ...}`, at most 4096 vertices |
+| `uv` | Two numbers per vertex `{u1, v1, u2, ...}`, in repeats of the texture |
+| `color` | One RGB565 colour per vertex, or one integer for every vertex |
+| `idx` | Flat 1-based vertex indices, three per triangle, counter-clockwise from the front; at most 8192 triangles |
+| `tex` | A texture slot per triangle, or one for every triangle. Each must already exist |
+| `flags` | Optional: `BLEND`, `DOUBLE_SIDED` and `NO_FOG` added together, per triangle or one for all |
+
+- **Returns:** a textured mesh. It costs 22 bytes a vertex and 8 a triangle of PSRAM and is freed when collected. While it is built, a copy of the same size waits on the Lua heap until the next collection, so building one needs about twice that for a moment, besides your tables. The first textured mesh an app draws (or its first `scrollTexture`) also allocates about 105 KB for the scene's textured records: 24 bytes for each of the 4096, and 6.7 KB.
+
+```lua
+local floor = g3.newTexturedMesh {
+    xyz = { -10, 0, 10,  10, 0, 10,  10, 0, -10,  -10, 0, -10 },
+    uv = { 0, 0,  10, 0,  10, 10,  0, 10 },  -- the texture ten times each way
+    color = 0xAD55,                          -- the texels as they are
+    idx = { 1, 2, 3,  1, 3, 4 },
+    tex = grass,
+}
+```
+
+---
+
+#### `texturedMesh:getInfo()`
+- **Returns:** `nverts, ntris, cx, cy, cz, radius`, as `mesh:getInfo()` does.
+
+---
+
+#### `picocalc.gfx3d.drawTextured(mesh, x, y, z, yaw, pitch, roll [, scale [, bias]])`
+Draws one instance of a textured mesh, as `draw` does a flat one. A textured scene reads the mesh's texture coordinates when `endScene()` draws it, so **the scene keeps the mesh** until the next `beginScene()`: a mesh you drop after drawing it is collected only after that. A frame holds 4096 triangles and sprites, as for flat meshes; a triangle the near plane cuts takes one per piece.
+
+---
+
+#### `picocalc.gfx3d.setSkyImage(slot, horizonRow)` / `picocalc.gfx3d.setSkyImage(nil)`
+Fills the background with a texture instead of sky bands or the clear colour, until `setSkyImage(nil)`. Its texels are copied a texel per pixel, with no colour multiplied, from level 0. `horizonRow` (0 to the texture's height) is its first row below the horizon.
+
+- The image follows the camera's yaw and pitch: at the centre of the view it moves as fast as distant scenery, a whole texel at a time, and repeats across. Roll is not followed: the image stays level.
+- Rows above and below the texture repeat its top and bottom rows.
+- Precisely: the column at screen `x` is `(x − viewport x − round(yaw · focal)) mod width`, where `focal = viewport height / 2 / tan(fovY / 2)` is pixels per radian, and the row at screen `y` is `horizonRow + y − horizonY`, where `horizonY` is the screen row of the true horizon. After `lookAt` the yaw is the view's direction in −π to π, so the image jumps where that wraps; `setCamera`'s yaw can go on past π.
+
+---
+
+#### `picocalc.gfx3d.setSkyRows(y0, y1)`
+Limits the rows the sky or the clear colour fills at `endScene()` to `y0` to `y1`, inclusive (none if `y1 < y0`). Triangles and sprites still draw inside the clip rect. A range that holds the viewport is the default: `setSkyRows(0, 319)` undoes it.
+
+---
+
+#### `picocalc.gfx3d.setMirror(on [, planeY])`
+While on, everything drawn is reflected in the horizontal plane `y = planeY` (default 0): meshes, textured meshes, background scenery and sprites (flipped upside down). Each triangle faces the eye as its reflection does, and meshes keep the real world's light. It is taken when each thing is drawn, and the sky, bands or image, mirrors if it is on at `endScene()`. `project` gives where the reflection lands. It stays on, across scenes, until `setMirror(false)`, which restores the camera exactly.
+
+---
+
+#### `picocalc.gfx3d.setSpriteFog(on)`
+Off by default. On, with the scene's fog on, each sprite's pixels mix towards the fog colour by the sprite's depth, as a triangle's colour does. The fog colour is the one set when `endScene()` runs.
+
+---
+
+### Reflections
+
+A reflecting frame is two scenes: the reflection, drawn into the water's rows only, then the frame itself, with the water blended over the reflection.
+
+```lua
+local disp = picocalc.display
+-- wy0..wy1: the screen rows the water covers this frame, from project() of its edges.
+-- Each scene's endScene fills its sky rows with the sky (bands or image), else with
+-- the colour its beginScene was given.
+disp.setClipRect(0, wy0, 320, wy1 - wy0 + 1)
+g3.setSkyRows(wy0, wy1)
+g3.setMirror(true, waterY)
+g3.beginScene(skyColor)
+-- draw what stands above the water and could show in it
+g3.endScene()
+
+disp.clearClipRect()
+g3.setSkyRows(0, wy0 - 1)
+g3.setMirror(false)
+g3.beginScene(skyColor)
+-- draw everything, the water's triangles flagged BLEND
+g3.endScene()
+disp.flush()
+```
+
+- Leave out of the second scene whatever lies wholly under the water (a river bed): drawn after the reflection, it would cover it.
+- The reflection costs about as much as what it draws: mirror only what is tall enough to show. On the device a reflection took a quarter to a third of a reflecting frame in a native app's valley scene ([Native Loading](Native-Loading.md#reflections) has the figures).
+
+---
+
 ### State timing
-Camera, projection, light, fog and viewport settings apply to the `draw*` calls made after they are set — changing one mid-frame affects only later calls in that same frame, not ones already made. The sky is the exception: it is filled once, at `endScene()`, from the camera as it is at that point, not as it was during the frame's `draw` calls.
+Camera, projection, light, fog, viewport and mirror settings apply to the `draw*` calls made after they are set — changing one mid-frame affects only later calls in that same frame, not ones already made. The sky is the exception: it is filled once, at `endScene()`, from the camera as it is at that point, not as it was during the frame's `draw` calls. So are the sky rows, the sky image, sprite fog's colour and texture scrolling: the values at `endScene()` apply.
 
 ---
 
 ### Errors
-`draw`, `drawBasis`, `drawBackground`, `drawSprite` and `endScene` raise when called outside `beginScene()`/`endScene()`. `setFog` raises unless `0 <= near < far`. `lookAt` raises when `eye` equals `target`, or when `up` is parallel to the view direction. `drawBasis` raises when `forward` or `up` is the zero vector, or when they are parallel.
+`draw`, `drawBasis`, `drawBackground`, `drawSprite`, `drawTextured` and `endScene` raise when called outside `beginScene()`/`endScene()`. `draw`, `drawBasis` and `drawTextured` raise "scale must be positive" for a `scale` that is not greater than 0. `setFog` raises unless `0 <= near < far`. `lookAt` raises when `eye` equals `target`, or when `up` is parallel to the view direction. `drawBasis` raises when `forward` or `up` is the zero vector, or when they are parallel. `addTexture` raises on a size or level count out of range, on a string of the wrong length, and when the app has 64 textures already; `scrollTexture`, `setSkyImage` and `newTexturedMesh` raise on a slot `addTexture` has not returned, and `newTexturedMesh` names the field it found wrong. Texture slots are identifiers, and `lgW`, `lgH` and `nmips` are not sizes but exponents and a count that lay out the pixel string: like byte counts, all of them must be exact integers (`addTexture(5.5, ...)` raises rather than rounding, as no rounding could make the string's length right).
 
 ---
 
@@ -194,13 +317,16 @@ Camera, projection, light, fog and viewport settings apply to the `draw*` calls 
 | Constant | Meaning |
 |---|---|
 | `picocalc.gfx3d.DOUBLE_SIDED` | Draw the triangle's back too, lit as its own side |
-| `picocalc.gfx3d.UNLIT` | Ignore the light: always full colour |
+| `picocalc.gfx3d.UNLIT` | Ignore the light: always full colour (flat meshes only: a textured mesh has no light) |
 | `picocalc.gfx3d.NO_FOG` | Ignore fog |
+| `picocalc.gfx3d.BLEND` | Draw the textured triangle 50% over what is behind it, such as water (textured meshes only) |
 
 ### Performance notes
 - **Submit nearest objects first.** A frame holds 4096 triangles and sprites; the rest are dropped and counted in `overflow`, so submitting near-first means the dropped ones are the distant ones.
 - **Each `draw` costs one Lua→C call, plus work per vertex and per visible triangle.** Group static scenery into a few meshes rather than many tiny ones, and draw meshes built in world coordinates with one `drawList` call: on the device each `draw` call adds roughly 20-65 µs of overhead, so 70 of them cost several milliseconds a frame.
 - **Allocate meshes once, not every frame.** For smooth frame times, create tables up front and consider `collectgarbage("generational")`.
+- **Textured frames are mostly fill.** Time goes on the pixels drawn, a texel read for each, so large near triangles and big sprites cost more than many small far ones. Use mip levels for textures seen at a distance.
+- **`endScene()` borrows fast memory.** While no video player exists, the renderer draws the scene on a stack in the video decoder's SRAM, with fogged sprites mixed through tables kept there and magnified sprites' repeated rows copied rather than read again. Creating a video player gives that up until it is collected; the picture is the same either way.
 
 Measured on the device (RP2350 at 200 MHz, a 320×240 viewport with sky and fog, a track strip in 8-segment chunks):
 

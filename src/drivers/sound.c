@@ -182,6 +182,16 @@ void __time_critical_func(sound_mixer_process)(int32_t *out_l, int32_t *out_r, i
     mix_unlock();
 }
 
+/* Core 1's tick gate (audio_core1_idle): true when no voice has a callback
+ * waiting for sound_pump_callbacks. From RAM, reading only SRAM: the gate
+ * runs every 1 ms tick and must not walk flash. */
+bool __time_critical_func(sound_core1_idle)(void) {
+    for (int p = 0; p < SOUND_MAX_PLAYERS; p++)
+        if (s_context.players[p].finish_pending || s_context.players[p].loop_pending)
+            return false;
+    return true;
+}
+
 /* Fires deferred finish/loop callbacks — call from the Core 1 work pump
  * (NOT from the mixer ISR; callbacks trampoline into Lua). */
 void sound_pump_callbacks(void) {

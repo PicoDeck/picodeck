@@ -159,7 +159,71 @@ bool app_stack_active(void) {
   return (control & 2u) != 0;
 }
 
+static uint32_t s_lent_peak, s_lent_size;
+
+// Naked trampoline: sp_call(top, limit, fn, arg), in Thread mode on the PSP.
+//   1. saves r4, r5 and LR on the app stack; r4 keeps its SP, r5 its PSPLIM
+//   2. PSPLIM = 0, then SP = top, then PSPLIM = limit (below the new SP). With the
+//      limit at 0 in between, the move is never under the limit in force wherever
+//      the two stacks lie (an app stack in SRAM above the lent region too), and an
+//      interrupt at any step stacks its frame safely
+//   3. fn(arg) runs on the new stack
+//   4. the same way back: PSPLIM = 0, the old SP, the old limit; return.
+// Four registers pushed keeps the app stack 8-byte aligned (AAPCS).
+__attribute__((naked, noinline))
+static void sp_call(uint32_t top, uint32_t limit, void (*fn)(void *), void *arg) {
+  __asm__ volatile(
+      "push   {r4, r5, r6, lr} \n\t"
+      "mov    r4, sp           \n\t"
+      "mrs    r5, psplim       \n\t"
+      "movs   r6, #0           \n\t"
+      "msr    psplim, r6       \n\t"
+      "mov    sp, r0           \n\t"
+      "msr    psplim, r1       \n\t"
+      "mov    r0, r3           \n\t"
+      "blx    r2               \n\t"
+      "movs   r1, #0           \n\t"
+      "msr    psplim, r1       \n\t"
+      "mov    sp, r4           \n\t"
+      "msr    psplim, r5       \n\t"
+      "pop    {r4, r5, r6, pc} \n\t");
+}
+
+bool app_stack_call_lent(uint8_t *lo, uint32_t size, void (*fn)(void *), void *arg) {
+  if (!app_stack_active()) return false;
+  uint32_t *const bottom = align_up4(lo);
+  const uint32_t top = ((uint32_t)(uintptr_t)(lo + size)) & ~7u;
+  const uint32_t limit = ((uint32_t)(uintptr_t)(bottom + GUARD_WORDS) + 7u) & ~7u;
+  if (top <= limit) return false;
+  paint_words(bottom, (uint32_t *)(uintptr_t)top);
+  uint8_t *const base = g_app_stack_base;
+  const uint32_t base_size = g_app_stack_size;
+  g_app_stack_base = lo;
+  g_app_stack_size = size;
+  sp_call(top, limit, fn, arg);
+  g_app_stack_base = base;
+  g_app_stack_size = base_size;
+  const uint32_t used = used_above(bottom + GUARD_WORDS, (const uint32_t *)(uintptr_t)top);
+  if (used > s_lent_peak) s_lent_peak = used;
+  s_lent_size = size;
+  return true;
+}
+
+uint32_t app_stack_lent_peak(void) { return s_lent_peak; }
+uint32_t app_stack_lent_size(void) { return s_lent_size; }
+
 #else  // PICODECK_SIMULATOR: no PSP; run on the host stack.
+
+bool app_stack_call_lent(uint8_t *lo, uint32_t size, void (*fn)(void *), void *arg) {
+  (void)lo;
+  (void)size;
+  (void)fn;
+  (void)arg;
+  return false;
+}
+
+uint32_t app_stack_lent_peak(void) { return 0; }
+uint32_t app_stack_lent_size(void) { return 0; }
 
 void app_stack_run(uint8_t *base, uint32_t size, app_stack_owner_t owner,
                    void (*fn)(void *), void *arg) {

@@ -1,6 +1,7 @@
-"""gfx3d on the device: frame cost at 200-1600 triangles, and the golden
+"""gfx3d on the device: frame cost at 200-1600 triangles, the golden
 scene rendered on hardware matches the simulator's (shared rasteriser;
-edges may differ by float rounding, so a small tolerance)."""
+edges may differ by float rounding, so a small tolerance), and the Lua
+contract cases pass there too."""
 import io
 import json
 import time
@@ -9,7 +10,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from helpers import GOLDEN_DIR
+from helpers import FIXTURE_APPS, GOLDEN_DIR, lua_case_names
 from hw_target import HW_APPS_DIR
 
 pytestmark = [pytest.mark.hardware, pytest.mark.timeout(900)]
@@ -50,3 +51,20 @@ def test_scene_matches_simulator_golden(target):
     target.wait_for_exit(timeout=15)
     differs = (np.abs(got - want).max(axis=2) > 24).mean()
     assert differs < 0.01, f"{differs:.2%} of pixels differ from the simulator golden"
+
+
+LUA_APP = "gfx3d_test"
+
+
+def test_lua_contract_cases_on_the_device(target):
+    """test_gfx3d.py's cases (tests/e2e/apps/gfx3d_test, the textured ones included) on the
+    device, with the same check. test_gfx3d.py runs them through the simulator-only lua_suite
+    fixture, so --target hw deselects every one of them."""
+    cases = lua_case_names(LUA_APP)
+    app_id = json.loads((FIXTURE_APPS / LUA_APP / "app.json").read_text())["id"]
+    target.push_app(FIXTURE_APPS / LUA_APP, LUA_APP)
+    try:
+        run = target.run_lua_app(LUA_APP, timeout=180)
+        run.assert_all_passed(cases)
+    finally:
+        target.delete_file(f"/data/{app_id}")

@@ -1,8 +1,10 @@
 // picocalc.gfx3d — Lua binding for the gfx3d renderer (src/os/gfx3d.c).
 // One context per app, allocated on first use and freed by lua_close through
-// a registry-anchored userdata. draw*() transform at once and keep no mesh
-// pointer, so a mesh collected before endScene() is harmless; sprite images
-// are anchored in a registry table until the next beginScene().
+// a registry-anchored userdata. draw*() transform at once and keep no flat
+// mesh pointer, so a flat mesh collected before endScene() is harmless. A
+// textured mesh's records refer to its uv until endScene(), so drawTextured
+// anchors the mesh, as drawSprite anchors its image, in a registry table until
+// the next beginScene().
 #include "lua_bridge_internal.h"
 #include "gfx3d.h"
 #include "../drivers/display.h"
@@ -12,13 +14,27 @@
 #include <math.h>
 
 #define MESH_MT "picocalc.gfx3d.mesh"
+#define TMESH_MT "picocalc.gfx3d.texturedmesh"
 #define CTX_MT "picocalc.gfx3d.context"
 #define CTX_KEY "picodeck.gfx3d.ctx"
+// The scene's anchors, 1..s_nsprites: drawSprite's images, at their slots,
+// and drawTextured's meshes.
 #define SPRITES_KEY "picodeck.gfx3d.sprites"
+
+// Lua's flag for a textured triangle drawn 50% over what is there. The flat
+// flags keep their values (DOUBLE_SIDED, UNLIT, NO_FOG), so one set of names
+// serves both kinds of mesh; the bridge maps them to GFX3D_TM_*.
+#define LB_BLEND 8u
+_Static_assert((LB_BLEND & GFX3D_FLAG_MASK) == 0, "BLEND is a flag of its own");
+#define LB_TM_FLAGS (LB_BLEND | GFX3D_DOUBLE_SIDED | GFX3D_NO_FOG)
 
 typedef struct {
   gfx3d_mesh_t *m;  // NULL once collected
 } mesh_ud_t;
+
+typedef struct {
+  gfx3d_tmesh_t *m;  // NULL once collected
+} tmesh_ud_t;
 
 typedef struct {
   gfx3d_t *g;  // NULL once collected
@@ -27,6 +43,7 @@ typedef struct {
 static gfx3d_t *s_g;  // this app's context, NULL until first use
 static bool s_in_scene;
 static bool s_closing;  // the live context was just freed (lua_close order)
+static uint8_t s_ntex;  // textures in s_g: slots 0..s_ntex-1
 static int s_nsprites;
 static uint32_t s_us_geom, s_us_raster;
 
@@ -184,6 +201,198 @@ static int l_gfx3d_newMesh(lua_State *L) {
   return 1;
 }
 
+// ── Textures and textured meshes ────────────────────────────────────────────
+
+// Argument `arg` as a slot addTexture returned (an identifier: an exact integer).
+static int check_tex_slot(lua_State *L, int arg) {
+  const lua_Integer slot = luaL_checkinteger(L, arg);
+  if (slot < 0 || slot >= s_ntex)
+    luaL_argerror(L, arg, lua_pushfstring(L, "no texture %d", (int)slot));
+  return (int)slot;
+}
+
+// addTexture(lgW, lgH, nmips, pixels): 2^lgW x 2^lgH texels then nmips - 1
+// levels, each half the last, as little-endian RGB565 (img:getPixels' format),
+// copied. Returns the slot, counting from 0.
+static int l_gfx3d_addTexture(lua_State *L) {
+  const lua_Integer lw = luaL_checkinteger(L, 1), lh = luaL_checkinteger(L, 2);
+  const lua_Integer nm = luaL_checkinteger(L, 3);
+  size_t len;
+  const char *px = luaL_checklstring(L, 4, &len);
+  if (lw < 0 || lw > 10) return luaL_argerror(L, 1, "lgW must be 0..10");
+  if (lh < 0 || lh > 10) return luaL_argerror(L, 2, "lgH must be 0..10");
+  const lua_Integer most = (lw < lh ? lw : lh) + 1;
+  if (nm < 1 || nm > most)
+    return luaL_argerror(L, 3, lua_pushfstring(L, "nmips must be 1..%d", (int)most));
+  size_t texels = 0;
+  for (lua_Integer k = 0; k < nm; k++) texels += (size_t)1u << (lw - k + lh - k);
+  if (len != 2u * texels)
+    return luaL_argerror(L, 4, lua_pushfstring(L,
+        "expected %d bytes (%d texels of little-endian RGB565), got %d",
+        (int)(2u * texels), (int)texels, (int)len));
+  gfx3d_t *g = ctx(L);
+  if (s_ntex >= GFX3D_MAX_TEXTURES)
+    return luaL_error(L, "gfx3d.addTexture: %d textures already", GFX3D_MAX_TEXTURES);
+  // A Lua string's bytes are aligned for any type; gfx3d_tex_add copies them.
+  const int slot = gfx3d_tex_add(g, (int)lw, (int)lh, (int)nm, (const uint16_t *)(const void *)px);
+  if (slot < 0) return luaL_error(L, "gfx3d.addTexture: out of memory");
+  s_ntex = (uint8_t)(slot + 1);
+  lua_pushinteger(L, slot);
+  return 1;
+}
+
+// scrollTexture(slot, du, dv): an offset in repeats, read when the scene is
+// drawn: it replaces the last one.
+static int l_gfx3d_scrollTexture(lua_State *L) {
+  const int slot = check_tex_slot(L, 1);
+  const float du = lb_checkfloat(L, 2), dv = lb_checkfloat(L, 3);
+  gfx3d_tex_scroll(ctx(L), slot, du, dv);
+  return 0;
+}
+
+static tmesh_ud_t *check_tmesh(lua_State *L, int idx) {
+  tmesh_ud_t *u = (tmesh_ud_t *)lb_checkudata(L, idx, TMESH_MT);
+  if (!u->m) luaL_error(L, "attempt to use a freed mesh");
+  return u;
+}
+
+static int l_tmesh_gc(lua_State *L) {
+  tmesh_ud_t *u = (tmesh_ud_t *)lb_checkudata(L, 1, TMESH_MT);
+  if (!u->m) return 0;
+  // The open scene may hold this mesh, its records naming it. lua_close runs
+  // every finaliser, held or not; and in one collection a newer object's
+  // finaliser may drawTextured a mesh whose own finaliser runs next. Either
+  // way, if the scene's anchors hold it, the scene ends here: the app's (or a
+  // later finaliser's) endScene() then raises "call beginScene() first"
+  // instead of reading freed uv. Safe; the scan costs O(s_nsprites) for each
+  // textured mesh finalised while a scene is open, nothing otherwise.
+  if (s_in_scene) {
+    lua_getfield(L, LUA_REGISTRYINDEX, SPRITES_KEY);
+    for (int i = 1; i <= s_nsprites && s_in_scene; i++) {
+      lua_rawgeti(L, -1, i);
+      if (lua_rawequal(L, -1, 1)) s_in_scene = false;
+      lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+  }
+  gfx3d_tmesh_free(u->m);
+  u->m = NULL;
+  return 0;
+}
+
+static int l_tmesh_getInfo(lua_State *L) {
+  const gfx3d_tmesh_t *m = check_tmesh(L, 1)->m;
+  lua_pushinteger(L, m->nverts);
+  lua_pushinteger(L, m->ntris);
+  lua_pushnumber(L, m->center[0]);
+  lua_pushnumber(L, m->center[1]);
+  lua_pushnumber(L, m->center[2]);
+  lua_pushnumber(L, m->radius);
+  return 6;
+}
+
+// The description's fields, on the stack at these places (names, not literal
+// indices: they are not arguments).
+enum { F_XYZ = 2, F_UV, F_COLOR, F_IDX, F_TEX, F_FLAGS, F_SCRATCH };
+
+// Field `f`'s array length, or -1 for a single integer when `one` allows it.
+static lua_Integer field_len(lua_State *L, int f, const char *name, bool one) {
+  const int t = lua_type(L, f);
+  if (one && t == LUA_TNUMBER) return -1;
+  if (t != LUA_TTABLE)
+    luaL_argerror(L, 1, lua_pushfstring(L, one ? "%s: integer or table expected, got %s"
+                                               : "%s: table expected, got %s",
+                                        name, luaL_typename(L, f)));
+  return (lua_Integer)lua_rawlen(L, f);
+}
+
+// Field `f` as an exact integer: one value for every vertex or triangle.
+static lua_Integer field_int(lua_State *L, int f, const char *name) {
+  int ok;
+  const lua_Integer v = lua_tointegerx(L, f, &ok);
+  if (!ok) luaL_argerror(L, 1, lua_pushfstring(L, "%s: integer expected", name));
+  return v;
+}
+
+// newTexturedMesh{xyz=, uv=, color=, idx=, tex= [, flags=]}: xyz and uv per
+// vertex, color per vertex (or one for all), idx 1-based, three a triangle,
+// tex and flags per triangle (or one for all). Copied.
+static int l_gfx3d_newTexturedMesh(lua_State *L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  lua_settop(L, 1);
+  static const char *const names[] = {"xyz", "uv", "color", "idx", "tex", "flags"};
+  for (int i = 0; i < 6; i++) lua_getfield(L, 1, names[i]);  // F_XYZ..F_FLAGS
+
+  const lua_Integer nv3 = field_len(L, F_XYZ, "xyz", false);
+  if (nv3 < 3 || nv3 % 3 || nv3 / 3 > GFX3D_MAX_VERTS)
+    return luaL_argerror(L, 1, lua_pushfstring(L,
+        "xyz: expected 3..%d coordinates, a multiple of 3", 3 * GFX3D_MAX_VERTS));
+  const int nv = (int)(nv3 / 3);
+  if (field_len(L, F_UV, "uv", false) != 2 * nv)
+    return luaL_argerror(L, 1, "uv: expected two per vertex");
+  const lua_Integer ncol = field_len(L, F_COLOR, "color", true);
+  if (ncol >= 0 && ncol != nv) return luaL_argerror(L, 1, "color: expected one colour per vertex");
+  const lua_Integer nt3 = field_len(L, F_IDX, "idx", false);
+  if (nt3 < 3 || nt3 % 3 || nt3 / 3 > GFX3D_MAX_TRIS)
+    return luaL_argerror(L, 1, lua_pushfstring(L,
+        "idx: expected 3..%d vertex indices, a multiple of 3", 3 * GFX3D_MAX_TRIS));
+  const int nt = (int)(nt3 / 3);
+  const lua_Integer ntex = field_len(L, F_TEX, "tex", true);
+  if (ntex >= 0 && ntex != nt) return luaL_argerror(L, 1, "tex: expected one texture per triangle");
+  const bool no_flags = lua_isnil(L, F_FLAGS);
+  const lua_Integer nfl = no_flags ? -1 : field_len(L, F_FLAGS, "flags", true);
+  if (nfl >= 0 && nfl != nt)
+    return luaL_argerror(L, 1, "flags: expected one flags value per triangle");
+
+  // The arrays gfx3d_tmesh_new copies, in a block the collector frees, so an
+  // argument error below leaks nothing.
+  const size_t bytes = sizeof(float) * 5u * (size_t)nv + sizeof(uint16_t) * (size_t)nv +
+                       sizeof(uint16_t) * 3u * (size_t)nt + 2u * (size_t)nt;
+  float *const xyz = (float *)lua_newuserdatauv(L, bytes, 0);  // F_SCRATCH
+  float *const uv = xyz + 3 * nv;
+  uint16_t *const color = (uint16_t *)(void *)(uv + 2 * nv);
+  uint16_t *const idx = color + nv;
+  uint8_t *const tex = (uint8_t *)(void *)(idx + 3 * nt);
+  uint8_t *const flags = tex + nt;
+  for (int i = 0; i < 3 * nv; i++) xyz[i] = tab_float(L, F_XYZ, i + 1, 1, "xyz");
+  for (int i = 0; i < 2 * nv; i++) uv[i] = tab_float(L, F_UV, i + 1, 1, "uv");
+  const lua_Integer c0 = ncol < 0 ? field_int(L, F_COLOR, "color") : 0;
+  for (int i = 0; i < nv; i++) {
+    const lua_Integer c = ncol < 0 ? c0 : tab_int(L, F_COLOR, i + 1, 1, "color");
+    if (c < 0 || c > 0xFFFF) return luaL_argerror(L, 1, "color: colour out of range 0..65535");
+    color[i] = (uint16_t)c;
+  }
+  for (int i = 0; i < 3 * nt; i++) {
+    const lua_Integer v = tab_int(L, F_IDX, i + 1, 1, "idx");
+    if (v < 1 || v > nv)
+      return luaL_argerror(L, 1, lua_pushfstring(L,
+          "idx[%d]: vertex %d out of range 1..%d", i + 1, (int)v, nv));
+    idx[i] = (uint16_t)(v - 1);
+  }
+  const lua_Integer t0 = ntex < 0 ? field_int(L, F_TEX, "tex") : 0;
+  const lua_Integer f0 = nfl < 0 && !no_flags ? field_int(L, F_FLAGS, "flags") : 0;
+  for (int t = 0; t < nt; t++) {
+    const lua_Integer s = ntex < 0 ? t0 : tab_int(L, F_TEX, t + 1, 1, "tex");
+    if (s < 0 || s >= s_ntex)
+      return luaL_argerror(L, 1, lua_pushfstring(L, "tex: no texture %d", (int)s));
+    tex[t] = (uint8_t)s;
+    const lua_Integer f = nfl < 0 ? f0 : tab_int(L, F_FLAGS, t + 1, 1, "flags");
+    if (f < 0 || (f & ~(lua_Integer)LB_TM_FLAGS))
+      return luaL_argerror(L, 1, "flags must combine BLEND, DOUBLE_SIDED and NO_FOG");
+    flags[t] = (uint8_t)(((f & LB_BLEND) ? GFX3D_TM_BLEND : 0u) |
+                         ((f & GFX3D_DOUBLE_SIDED) ? GFX3D_TM_DOUBLE_SIDED : 0u) |
+                         ((f & GFX3D_NO_FOG) ? GFX3D_TM_NO_FOG : 0u));
+  }
+
+  tmesh_ud_t *u = (tmesh_ud_t *)lua_newuserdatauv(L, sizeof *u, 0);
+  u->m = NULL;
+  luaL_setmetatable(L, TMESH_MT);
+  const gfx3d_tmesh_desc_t d = {nv, nt, xyz, uv, color, idx, tex, flags};
+  u->m = gfx3d_tmesh_new(&d);  // everything it checks has been checked
+  if (!u->m) return luaL_error(L, "gfx3d.newTexturedMesh: out of memory");
+  return 1;
+}
+
 // ── Camera, projection, light, fog, sky ─────────────────────────────────────
 
 static int l_gfx3d_setViewport(lua_State *L) {
@@ -276,6 +485,44 @@ static int l_gfx3d_setSky(lua_State *L) {
   if (!gfx3d_set_sky(ctx(L), ang, col, n))
     return luaL_argerror(L, 1,
         "band angles must increase and lie within +-89 degrees");
+  return 0;
+}
+
+// setSkyImage(slot, horizonRow) / setSkyImage(nil): a texture as the sky, in
+// place of the bands, its row horizonRow the first below the horizon.
+static int l_gfx3d_setSkyImage(lua_State *L) {
+  if (lua_isnoneornil(L, 1)) {
+    gfx3d_set_sky_image(ctx(L), -1, 0);
+    return 0;
+  }
+  const int slot = check_tex_slot(L, 1);
+  const lua_Integer row = lb_checkint(L, 2);
+  if (!gfx3d_set_sky_image(ctx(L), slot, (int)row))
+    return luaL_argerror(L, 2, "horizonRow must be 0..the texture's height");
+  return 0;
+}
+
+// setSkyRows(y0, y1): the rows the sky or the clear colour may fill.
+static int l_gfx3d_setSkyRows(lua_State *L) {
+  const lua_Integer y0 = lb_checkint(L, 1), y1 = lb_checkint(L, 2);
+  gfx3d_set_sky_rows(ctx(L), (int)y0, (int)y1);
+  return 0;
+}
+
+// setMirror(on [, planeY]): what is drawn while on is reflected in y = planeY.
+static int l_gfx3d_setMirror(lua_State *L) {
+  luaL_checkany(L, 1);
+  const bool on = lua_toboolean(L, 1);
+  const float y = lb_optfloat(L, 2, 0.0f);
+  if (on && !isfinite(2.0f * y)) return luaL_argerror(L, 2, "planeY is out of range");
+  gfx3d_set_mirror(ctx(L), on, y);
+  return 0;
+}
+
+// setSpriteFog(on): sprites take the scene's fog too.
+static int l_gfx3d_setSpriteFog(lua_State *L) {
+  luaL_checkany(L, 1);
+  gfx3d_set_sprite_fog(ctx(L), lua_toboolean(L, 1));
   return 0;
 }
 
@@ -415,6 +662,26 @@ static int l_gfx3d_drawSprite(lua_State *L) {
   return 0;
 }
 
+// drawTextured(mesh, x, y, z, yaw, pitch, roll [, scale [, bias]])
+static int l_gfx3d_drawTextured(lua_State *L) {
+  need_scene(L, "drawTextured");
+  const gfx3d_tmesh_t *m = check_tmesh(L, 1)->m;
+  const float pos[3] = {lb_checkfloat(L, 2), lb_checkfloat(L, 3), lb_checkfloat(L, 4)};
+  float rot[9];
+  gfx3d_rot_euler(rot, lb_checkfloat(L, 5), lb_checkfloat(L, 6), lb_checkfloat(L, 7));
+  const float scale = lb_optfloat(L, 8, 1.0f), bias = lb_optfloat(L, 9, 0.0f);
+  if (!(scale > 0.0f)) return luaL_argerror(L, 8, "scale must be positive");
+  if (s_nsprites >= 0xFFFE) return 0;  // no anchor left: as drawSprite, nothing drawn
+  lua_getfield(L, LUA_REGISTRYINDEX, SPRITES_KEY);
+  lua_pushvalue(L, 1);
+  lua_rawseti(L, -2, ++s_nsprites);
+  lua_pop(L, 1);
+  const uint32_t t0 = now_us();
+  gfx3d_draw_tmesh(s_g, m, rot, pos, scale, bias);
+  s_us_geom += now_us() - t0;
+  return 0;
+}
+
 static bool resolve_sprite(void *ud, int slot, const uint16_t **data, int *w,
                            int *h, uint16_t *key) {
   lua_State *L = (lua_State *)ud;
@@ -480,11 +747,16 @@ static int l_gfx3d_getStats(lua_State *L) {
 
 static const luaL_Reg l_mesh_methods[] = {{"getInfo", l_mesh_getInfo}, {NULL, NULL}};
 static const luaL_Reg l_mesh_meta[] = {{"__gc", l_mesh_gc}, {NULL, NULL}};
+static const luaL_Reg l_tmesh_methods[] = {{"getInfo", l_tmesh_getInfo}, {NULL, NULL}};
+static const luaL_Reg l_tmesh_meta[] = {{"__gc", l_tmesh_gc}, {NULL, NULL}};
 static const luaL_Reg l_ctx_methods[] = {{NULL, NULL}};
 static const luaL_Reg l_ctx_meta[] = {{"__gc", l_ctx_gc}, {NULL, NULL}};
 
 static const luaL_Reg l_gfx3d_lib[] = {
     {"newMesh", l_gfx3d_newMesh},
+    {"addTexture", l_gfx3d_addTexture},
+    {"scrollTexture", l_gfx3d_scrollTexture},
+    {"newTexturedMesh", l_gfx3d_newTexturedMesh},
     {"setViewport", l_gfx3d_setViewport},
     {"setProjection", l_gfx3d_setProjection},
     {"setCamera", l_gfx3d_setCamera},
@@ -492,12 +764,17 @@ static const luaL_Reg l_gfx3d_lib[] = {
     {"setLight", l_gfx3d_setLight},
     {"setFog", l_gfx3d_setFog},
     {"setSky", l_gfx3d_setSky},
+    {"setSkyImage", l_gfx3d_setSkyImage},
+    {"setSkyRows", l_gfx3d_setSkyRows},
+    {"setMirror", l_gfx3d_setMirror},
+    {"setSpriteFog", l_gfx3d_setSpriteFog},
     {"beginScene", l_gfx3d_beginScene},
     {"draw", l_gfx3d_draw},
     {"drawBasis", l_gfx3d_drawBasis},
     {"drawList", l_gfx3d_drawList},
     {"drawBackground", l_gfx3d_drawBackground},
     {"drawSprite", l_gfx3d_drawSprite},
+    {"drawTextured", l_gfx3d_drawTextured},
     {"endScene", l_gfx3d_endScene},
     {"project", l_gfx3d_project},
     {"getStats", l_gfx3d_getStats},
@@ -507,9 +784,11 @@ void lua_bridge_gfx3d_init(lua_State *L) {
   s_g = NULL;
   s_in_scene = false;
   s_closing = false;
+  s_ntex = 0;
   s_nsprites = 0;
   s_us_geom = s_us_raster = 0;
   lb_register_type(L, MESH_MT, l_mesh_methods, l_mesh_meta);
+  lb_register_type(L, TMESH_MT, l_tmesh_methods, l_tmesh_meta);
   lb_register_type(L, CTX_MT, l_ctx_methods, l_ctx_meta);
   lua_newtable(L);
   lua_setfield(L, LUA_REGISTRYINDEX, SPRITES_KEY);
@@ -521,5 +800,7 @@ void lua_bridge_gfx3d_init(lua_State *L) {
   lua_setfield(L, -2, "UNLIT");
   lua_pushinteger(L, GFX3D_NO_FOG);
   lua_setfield(L, -2, "NO_FOG");
+  lua_pushinteger(L, LB_BLEND);
+  lua_setfield(L, -2, "BLEND");
   lua_pop(L, 1);
 }

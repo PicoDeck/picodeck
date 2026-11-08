@@ -16,7 +16,9 @@
 #include "native_loader.h"   // native_file_adopt / native_file_drop
 #include "sdcard.h"
 #include "font_registry.h"
+#include "idle_dim.h"
 #include "hal/hal_timing.h"
+#include "hardware/clocks.h"
 
 // The simulator's drivers, declared as unicorn_trampolines.c declares them
 // (their headers pull in firmware-only code).
@@ -66,7 +68,9 @@ bool sim_native_should_exit(void) {
 //     in, swapped, unless a drawing call wrote the back buffer since the last
 //     present: the Unicorn trampolines' EMU_FB_BASE rule, so an app that
 //     mixes raw pixels and drawing calls in one frame sees the drawing win;
-//   * fs->open adopts the handle, so the launcher's teardown closes it;
+//   * fs->open adopts the handle, so the launcher's teardown closes it, and
+//     gfx3d's contexts and meshes are tracked as the firmware's per-launch table
+//     tracks them;
 //   * entries the simulator has no implementation for stay NULL:
 //     sys->reboot and fs->browse.
 // No function-pointer casts: WebAssembly traps an indirect call whose type
@@ -273,6 +277,10 @@ static void napi_set_audio_callback(void (*cb)(void)) {
     atomic_store(&g_native_audio_callback, cb);
 }
 
+uint32_t sim_native_clock_khz(void) { return clock_get_hz(clk_sys) / 1000u; }
+
+static void napi_reset_idle_timer(void) { idle_dim_note_activity(); }
+
 static const picocalc_sys_t s_sys = {
     .getTimeMs = hal_get_time_ms,
     .getTimeUs = hal_get_time_us,
@@ -285,6 +293,9 @@ static const picocalc_sys_t s_sys = {
     .poll = sim_native_poll,
     .shouldExit = sim_native_should_exit,
     .setAudioCallback = napi_set_audio_callback,
+    .getFirmwareId = firmware_id,
+    .getClockKhz = sim_native_clock_khz,
+    .resetIdleTimer = napi_reset_idle_timer,
 };
 
 static const picocalc_input_t s_input = {
@@ -377,6 +388,20 @@ static const picocalc_audio_t s_audio = {
     .pushSamples = audio_push_samples,
 };
 
+// ── 3D ─────────────────────────────────────────────────────────────────────
+
+static pc3d_t napi_gfx3d_create(int capacity) {
+    return native_res_adopt(NATIVE_RES_GFX3D, g_gfx3d_api.create(capacity));
+}
+static void napi_gfx3d_destroy(pc3d_t g) { native_res_drop(NATIVE_RES_GFX3D, g); }
+static pc3dmesh_t napi_gfx3d_mesh_new(const pc3d_mesh_desc_t *d) {
+    return native_res_adopt(NATIVE_RES_GFX3D_MESH, g_gfx3d_api.meshNew(d));
+}
+static void napi_gfx3d_mesh_free(pc3dmesh_t m) { native_res_drop(NATIVE_RES_GFX3D_MESH, m); }
+static void napi_gfx3d_end(pc3d_t g) { g_gfx3d_api.end(g); s_drawn = true; }
+
+static picocalc_gfx3d_t s_gfx3d;
+
 void sim_native_api_wire(PicoCalcAPI *api) {
     api->display = &s_display;
     api->sys = &s_sys;
@@ -384,6 +409,13 @@ void sim_native_api_wire(PicoCalcAPI *api) {
     api->perf = &s_perf;
     api->fs = &s_fs;
     api->audio = &s_audio;
+    s_gfx3d = g_gfx3d_api;
+    s_gfx3d.create = napi_gfx3d_create;
+    s_gfx3d.destroy = napi_gfx3d_destroy;
+    s_gfx3d.meshNew = napi_gfx3d_mesh_new;
+    s_gfx3d.meshFree = napi_gfx3d_mesh_free;
+    s_gfx3d.end = napi_gfx3d_end;
+    api->gfx3d = &s_gfx3d;
 }
 
 // ── App lifetime ───────────────────────────────────────────────────────────

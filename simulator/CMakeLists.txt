@@ -399,6 +399,8 @@ set(PICODECK_CORE_SOURCES
     ${PICODECK_ROOT}/src/os/lua_bridge_graphics.c
     ${PICODECK_ROOT}/src/os/lua_bridge_3d.c
     ${PICODECK_ROOT}/src/os/gfx3d.c
+    ${PICODECK_ROOT}/src/os/gfx3d_api.c
+    ${PICODECK_ROOT}/src/os/firmware_id.c
     ${PICODECK_ROOT}/src/os/lua_bridge_gfx3d.c
     ${PICODECK_ROOT}/src/os/color256.c
     ${PICODECK_ROOT}/src/os/chargrid.c
@@ -535,6 +537,9 @@ set_source_files_properties(${PICODECK_ROOT}/src/os/lua_bridge_chargrid.c PROPER
 # The boot splash's frames: no FMA contraction, so they match the device.
 set_source_files_properties(${PICODECK_ROOT}/src/os/splash_render.c PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
+
+include(${PICODECK_ROOT}/cmake/picodeck_firmware_id.cmake)
+picodeck_firmware_id(picodeck_simulator ${PICODECK_ROOT})
 
 target_include_directories(picodeck_simulator PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

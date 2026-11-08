@@ -627,11 +627,11 @@ static const picocalc_gamepad_t s_gamepad_impl = {
 
 static void sim_wire_g_api(void) {
     memset(&g_api, 0, sizeof(g_api));
-    sim_native_api_wire(&g_api);  // display, sys, input, perf, fs, audio
+    sim_native_api_wire(&g_api);  // display, sys, input, perf, fs, audio, gfx3d
     g_api.soundplayer = &s_soundplayer_impl;
     g_api.http        = &s_http_impl;
     g_api.appconfig   = &s_appconfig_impl;
-    g_api.version     = 10; // 10 = gamepad->getAxis; 9 = gamepad; 8 = http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts (matches src/main.c)
+    g_api.version     = 11; // 11 = gfx3d, sys->getFirmwareId/getClockKhz/resetIdleTimer; 10 = gamepad->getAxis; 9 = gamepad; 8 = http->setInsecure, tcp->connectEx; 7 = video seek/OSD; 6 = fonts (matches src/main.c)
     g_api.gamepad     = &s_gamepad_impl;
 }
 

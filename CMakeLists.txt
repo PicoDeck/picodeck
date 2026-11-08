@@ -302,6 +302,8 @@ add_executable(picodeck
     src/os/lua_bridge_graphics.c
     src/os/lua_bridge_3d.c
     src/os/gfx3d.c
+    src/os/gfx3d_api.c
+    src/os/firmware_id.c
     src/os/lua_bridge_gfx3d.c
     src/os/color256.c
     src/os/chargrid.c
@@ -405,6 +407,9 @@ add_executable(picodeck
     third_party/miniz/miniz_tdef.c
     third_party/miniz/miniz_zip.c
 )
+
+include(${CMAKE_SOURCE_DIR}/cmake/picodeck_firmware_id.cmake)
+picodeck_firmware_id(picodeck ${CMAKE_SOURCE_DIR})
 
 target_include_directories(picodeck PRIVATE
     src/usb/

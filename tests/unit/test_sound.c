@@ -363,14 +363,17 @@ static void test_park_waits_for_a_callback_flag(void) {
   sound_player_set_finish_callback(p, count_fired, NULL);
   sound_player_play(p, 1);
   s_fired = 0;
+  CHECK(sound_core1_idle());  // playing, nothing for the pump yet
   for (int i = 0; i < 8 && p->playing; i++)
     mix();
   CHECK(!p->playing && p->finish_pending);
+  CHECK(!sound_core1_idle());  // Core 1's gate runs the full tick, so the pump delivers it
 
   sound_player_t parked;
   CHECK(!sound_player_park(p, &parked, NULL));
   sound_pump_callbacks();
   CHECK_EQ_INT((int)(s_fired), 1);
+  CHECK(sound_core1_idle());
   CHECK(sound_player_park(p, &parked, NULL));
   CHECK(!p->finish_callback && !p->finish_pending);
   CHECK(parked.finish_callback == count_fired);

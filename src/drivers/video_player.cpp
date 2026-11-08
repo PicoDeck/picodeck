@@ -11,6 +11,8 @@ extern "C" {
 #include "../os/launcher.h"
 #include "../os/config.h"
 #include "../os/idle_dim.h"
+#include "../os/app_stack.h"
+#include "../os/gfx3d.h"
 }
 
 #include <stdio.h>
@@ -109,6 +111,9 @@ typedef struct {
 // and quant tables all get single-cycle SRAM access instead of going through
 // the 16KB XIP cache (which thrashes against 24KB of JPEGDEC flash code).
 static JPEGDEC s_jpeg_sram;
+// gfx3d_end takes all of its lent layout, and so its stack and its sprite fill's tables, runs and
+// palettes, only from a block this large: a JPEGDEC that shrank would drop them without a word.
+static_assert(sizeof(s_jpeg_sram) >= GFX3D_LENT_BYTES, "s_jpeg_sram holds gfx3d_end's lent layout");
 // Players alive (created, not yet destroyed): while there are none,
 // s_jpeg_sram is lent to chargrid shader runs and gfx3d draw calls, each for
 // that one C call. JPEGDEC holds only its JPEGIMAGE, which openRAM clears
@@ -124,6 +129,15 @@ extern "C" void *charshader_sram(size_t *bytes) {
 
 extern "C" void *gfx3d_sram_scratch(size_t *bytes) {
     return charshader_sram(bytes);
+}
+
+// gfx3d_end's fills and raster run on a stack in the block's end (gfx3d_stack_call), while it
+// is lent and only inside it: the app's own stack is PSRAM.
+extern "C" bool gfx3d_stack_call(void *lo, size_t bytes, void (*fn)(void *), void *arg) {
+    uint8_t *const b = (uint8_t *)&s_jpeg_sram, *const p = (uint8_t *)lo;
+    if (s_players || p < b || bytes > sizeof(s_jpeg_sram) || p > b + sizeof(s_jpeg_sram) - bytes)
+        return false;
+    return app_stack_call_lent(p, (uint32_t)bytes, fn, arg);
 }
 
 // --- Adaptive quality: 2x nearest-neighbor upscale callback ---

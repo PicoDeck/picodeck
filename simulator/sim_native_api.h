@@ -7,6 +7,7 @@
 // platform/web_native.c).
 
 #include <stdbool.h>
+#include <stdint.h>
 
 // A native app's sys->poll(): poll the keyboard, run a queued dev command,
 // then take an exit request (the system menu's Exit App, or the dev `exit`
@@ -17,13 +18,17 @@ void sim_native_poll(void);
 // the request), as on firmware.
 bool sim_native_should_exit(void);
 
+// A native app's sys->getClockKhz(): what the simulator's clock_get_hz says, as its
+// audiostat does (125 MHz). Nothing here changes with system_clock_khz.
+uint32_t sim_native_clock_khz(void);
+
 // Around one native app run: each clears the exit request.
 void sim_native_app_begin(void);
 void sim_native_app_end(void);
 
 #include "os.h"
 
-// Point api's display, sys, input, perf, fs and audio tables at the
+// Point api's display, sys, input, perf, fs, audio and gfx3d tables at the
 // simulator's host implementations (sim_native_api.c). The other tables are
 // left as they are.
 void sim_native_api_wire(PicoCalcAPI *api);

@@ -16,7 +16,9 @@
 //     10) when that says so; its buttons (none held)
 //     and the labels of A's two slots (default: F4 and unbound), and that a
 //     label kept from startup still reads the same after many more calls
-//     (on the device the names are flash strings).
+//     (on the device the names are flash strings);
+//   - the gfx3d table (API version 11, after `gamepad`). What is in it is
+//     tests/e2e/native/gfx3d_probe.c's.
 // It also logs one "PERF ..." line (not a PROBE line) for
 // test_native.py::test_native_app_does_not_inherit_perf_pacing: the state
 // perf->getFPS() and an unpaced perf->endFrame() see at app start.
@@ -37,7 +39,7 @@
     X(appconfig, picocalc_appconfig_t) X(crypto, picocalc_crypto_t)      \
     X(graphics, picocalc_graphics_t) X(video, picocalc_video_t)          \
     X(modplayer, picocalc_modplayer_t) X(zip, picocalc_zip_t)          \
-    X(gamepad, picocalc_gamepad_t)
+    X(gamepad, picocalc_gamepad_t) X(gfx3d, picocalc_gfx3d_t)
 
 typedef struct {
     const char *name;

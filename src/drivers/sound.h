@@ -50,6 +50,9 @@ void sound_init(void);
  * fires deferred finish/loop callbacks from the Core 1 work pump. */
 void sound_mixer_process(int32_t *out_l, int32_t *out_r, int frames);
 void sound_pump_callbacks(void);
+// Core 1's tick gate (audio_core1_idle, while the output runs): true when no voice has a
+// callback waiting for sound_pump_callbacks. Reads only SRAM, from RAM.
+bool sound_core1_idle(void);
 
 sound_sample_t *sound_sample_create(void);
 /* Frees the sample. Any player still pointing at it is stopped and detached

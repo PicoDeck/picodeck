@@ -10,8 +10,8 @@ PicoCalcAPI and its sub-tables exist three times:
 A mismatch shifts every field after it; `version`, the tail field, then reads
 as garbage (this has happened). The checks:
 
-  - every picocalc_*_t, pczip_stat_t and PicoCalcAPI declaration is the same
-    in (1) and (2), member by member (comments and spacing ignored);
+  - every picocalc_*_t, pc3d_*_t, pczip_stat_t and PicoCalcAPI declaration is the
+    same in (1) and (2), member by member (comments and spacing ignored);
   - PICODECK_API_VERSION in sdk/native/os.h equals g_api.version in src/main.c;
   - g_api.version in src/main.c equals the version the trampolines write, and
     they write it at offsetof(PicoCalcAPI, version) with api_struct_size ==
@@ -82,7 +82,7 @@ def parse_structs(*headers: Path) -> dict[str, list[str]]:
 def abi_structs(structs: dict) -> dict:
     return {k: v for k, v in structs.items()
             if k == "PicoCalcAPI" or k == "pczip_stat_t"
-            or re.fullmatch(r"picocalc_\w+_t", k)}
+            or re.fullmatch(r"(picocalc|pc3d)_\w+_t", k)}
 
 
 def api_layout(headers=None) -> dict:

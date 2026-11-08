@@ -595,10 +595,13 @@ static void dev_command_run(void *arg) {
                    g_app_stack_owner == APP_STACK_LUA ? "lua" : "native",
                    (unsigned long)app_stack_high_water(base, size),
                    (unsigned long)size);
-        // Peak of the last launcher-side command on the OS command stack.
-        printf(" os_cmd_peak=%lu os_cmd_size=%lu\n",
+        // Peak of the last launcher-side command on the OS command stack, and the largest of
+        // gfx3d_end's raster on its lent SRAM stack since boot.
+        printf(" os_cmd_peak=%lu os_cmd_size=%lu raster_peak=%lu raster_size=%lu\n",
                (unsigned long)app_stack_os_last_peak(),
-               (unsigned long)APP_STACK_OS_SIZE);
+               (unsigned long)APP_STACK_OS_SIZE,
+               (unsigned long)app_stack_lent_peak(),
+               (unsigned long)app_stack_lent_size());
     } else if (strcmp(s_cmd_buf, "ver") == 0) {
         printf("[DEV] PicoDeck build %s %s\n", __DATE__, __TIME__);
     } else if (strcmp(s_cmd_buf, "status") == 0) {

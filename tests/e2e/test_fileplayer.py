@@ -17,6 +17,7 @@ only: set_sd_busy) checks what those fields say about a stall.
 """
 
 import io
+import json
 import math
 import re
 import struct
@@ -237,3 +238,33 @@ def test_audiostat_reports_a_stall(simulator):
     target.write_file(f"/data/{GAPS_ID}/stop", b"1")
     outcome = simulator.wait_for_exit(timeout=30)
     assert outcome["result"] == "returned", outcome
+
+
+@pytest.mark.sd(fixtures=["mem_report"], reserve=1)  # stages heap_probe
+def test_an_app_gives_the_wav_buffer_back(sim_factory, test_sd_card):
+    """The file player's 8 KB WAV buffer is made for an app (at a Lua app's start, by the
+    bridge; at a native app's first filePlayerNew) and goes with it (fileplayer_reset, in both
+    runners' teardown). Kept for good, it stayed where the first app's heap had room and split
+    the heap every later app got: on the device one Meander run left 5,887 KB free but 3,047 KB
+    in one block, and its second launch was refused until a reboot. With the firmware's
+    allocator (--real-umm), the largest block the launcher has after a Lua app is the one it
+    had at boot."""
+    probe = test_sd_card / "apps" / "heap_probe"
+    probe.mkdir()
+    # Never runs: the launcher refuses it, saying how large its largest free block is.
+    (probe / "app.json").write_text(json.dumps(
+        {"id": "com.test.heap_probe", "name": "Heap Probe", "min_psram_kb": 1 << 20}))
+    (probe / "main.lua").write_text("return\n")
+    sim = sim_factory(test_sd_card, extra_args=["--real-umm"])
+
+    def largest_kb():
+        sim.launch_app("heap_probe")
+        out = sim.wait_for_exit(timeout=20)
+        assert out.get("result") == "load_failed", out
+        return int(re.search(r"largest block (\d+)K", out["error"]).group(1))
+
+    boot = largest_kb()
+    for run in range(2):
+        sim.launch_app("mem_report")
+        assert sim.wait_for_exit(timeout=20).get("result") == "returned"
+        assert largest_kb() == boot, f"after mem_report run {run + 1}"

@@ -3042,12 +3042,27 @@ local PicoDeckMesh = {}
 ---@return number radius
 function PicoDeckMesh:getInfo() end
 
+---A textured mesh from `picocalc.gfx3d.newTexturedMesh`. It is freed when collected;
+---a scene that draws it keeps it until the next `beginScene()`.
+---@class PicoDeckTexturedMesh : userdata
+local PicoDeckTexturedMesh = {}
+
+---Return the vertex and triangle counts and the bounding sphere, which culling tests.
+---@return integer nverts
+---@return integer ntris
+---@return number cx
+---@return number cy
+---@return number cz
+---@return number radius
+function PicoDeckTexturedMesh:getInfo() end
+
 ---A small retained-mode 3D renderer. Coordinates are right-handed with y up, and
 ---the camera looks along negative z. Angles are radians, colours RGB565.
 ---@class picocalc.gfx3d
 ---@field DOUBLE_SIDED integer Draw the triangle's back too, lit as its own side
----@field UNLIT integer Ignore the light: always full colour
+---@field UNLIT integer Ignore the light: always full colour (flat meshes only)
 ---@field NO_FOG integer Ignore fog
+---@field BLEND integer A textured triangle drawn 50% over what is behind it, such as water (textured meshes only)
 picocalc.gfx3d = {}
 
 ---Build a mesh.
@@ -3057,6 +3072,50 @@ picocalc.gfx3d = {}
 ---@param flags? integer|integer[] `DOUBLE_SIDED`, `UNLIT` and `NO_FOG` added together, for all triangles or one value per triangle
 ---@return PicoDeckMesh
 function picocalc.gfx3d.newMesh(verts, tris, colors, flags) end
+
+---Add a texture to this app's renderer, copying its texels. A textured pixel is the
+---texel times the vertex colour, where a channel at its maximum in both means x1.5.
+---@param lgW integer Width 2^lgW texels, 0-10
+---@param lgH integer Height 2^lgH texels, 0-10
+---@param nmips integer Levels: 1, or more, each half the last (at most min(lgW, lgH) + 1)
+---@param pixels string Every level's texels, row by row, two bytes each, little-endian RGB565 (`img:getPixels`' format)
+---@return integer slot The texture's slot, from 0; at most 64 textures
+function picocalc.gfx3d.addTexture(lgW, lgH, nmips, pixels) end
+
+---Offset a texture by `du`, `dv` repeats when the scene is drawn. It replaces the last
+---offset rather than adding to it: to move water, pass a total that grows each frame.
+---@param slot integer
+---@param du number
+---@param dv number
+function picocalc.gfx3d.scrollTexture(slot, du, dv) end
+
+---Build a textured mesh, copying the arrays.
+---@param desc {xyz: number[], uv: number[], color: integer|integer[], idx: integer[], tex: integer|integer[], flags?: integer|integer[]} `xyz` 3 and `uv` 2 numbers per vertex (uv in texture repeats); `color` one RGB565 per vertex, or one for all; `idx` 1-based, three per triangle, counter-clockwise = front; `tex` a slot per triangle, or one for all; `flags` `BLEND`, `DOUBLE_SIDED` and `NO_FOG` added together, per triangle or one for all. At most 4096 vertices and 8192 triangles
+---@return PicoDeckTexturedMesh
+function picocalc.gfx3d.newTexturedMesh(desc) end
+
+---Fill the background with a texture instead of sky bands or the clear colour, a texel
+---per pixel with no colour multiplied, scrolling with yaw and pitch.
+---`setSkyImage(nil)` turns it off.
+---@param slot integer
+---@param horizonRow integer The texture's first row below the horizon, 0 to its height
+---@overload fun(off?: nil)
+function picocalc.gfx3d.setSkyImage(slot, horizonRow) end
+
+---Limit the rows the sky or the clear colour fills at `endScene()`, inclusive. Rows
+---that hold the viewport are the default.
+---@param y0 integer
+---@param y1 integer
+function picocalc.gfx3d.setSkyRows(y0, y1) end
+
+---Reflect what is drawn from now on in the plane y = `planeY`, until it is turned off.
+---@param on boolean
+---@param planeY? number Default 0
+function picocalc.gfx3d.setMirror(on, planeY) end
+
+---Fog sprites too (off by default): each mixes towards the fog colour by its depth.
+---@param on boolean
+function picocalc.gfx3d.setSpriteFog(on) end
 
 ---Set the screen rectangle the scene is drawn into. It is clipped to the screen, and
 ---it is an error if nothing is left.
@@ -3175,6 +3234,19 @@ function picocalc.gfx3d.drawBackground(mesh) end
 ---@param sh? integer Source rect height (default: the rest of the image)
 ---@param bias? number Default 0
 function picocalc.gfx3d.drawSprite(image, x, y, z, size, sx, sy, sw, sh, bias) end
+
+---Draw one instance of a textured mesh, as `draw` does a mesh. The scene keeps the
+---mesh until the next `beginScene()`. Raises outside `beginScene()`/`endScene()`.
+---@param mesh PicoDeckTexturedMesh
+---@param x number
+---@param y number
+---@param z number
+---@param yaw number
+---@param pitch number
+---@param roll number
+---@param scale? number Default 1; must be positive
+---@param bias? number World units added to the depth used for ordering (default 0): positive draws it behind
+function picocalc.gfx3d.drawTextured(mesh, x, y, z, yaw, pitch, roll, scale, bias) end
 
 ---Fill the viewport (sky or clear colour) and draw everything, far to near, into the
 ---back buffer. Call `display.flush()` afterwards as usual.

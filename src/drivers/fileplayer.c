@@ -35,6 +35,10 @@ static atomic_bool s_initialized;
 
 static fileplayer_t s_players[FILEPLAYER_MAX_INSTANCES];
 static fileplayer_t *s_active_player = NULL;
+// Made for an app's first player (fileplayer_init) and freed by its teardown
+// (fileplayer_reset), so no player outlives it. Core 1 reads it only for the
+// active player, under s_lock. Kept for good, as it once was, it stayed where
+// the app's heap had room and split the heap the launcher got back.
 static uint8_t *s_wav_buffer = NULL;
 
 // Parse the header window at the start of f (RIFF chunk walk in wav.c).
@@ -152,31 +156,42 @@ void fileplayer_reset(void) {
         files[i] = s_players[i].file;
     memset(s_players, 0, sizeof(s_players));
     s_active_player = NULL;
+    // The buffer goes with the app that made it (no player is left to read it).
+    uint8_t *buffer = s_wav_buffer;
+    s_wav_buffer = NULL;
     mutex_exit(&s_lock);
     if (stream)
         audio_stop_stream();
     for (int i = 0; i < FILEPLAYER_MAX_INSTANCES; i++)
         if (files[i])
             sdcard_fclose(files[i]);
+    if (buffer)
+        umm_free(buffer);
 }
 
+// The lock and the player table once; the WAV buffer whenever there is none
+// (each app's first player: fileplayer_reset frees it).
 void fileplayer_init(void) {
-    if (atomic_load(&s_initialized)) return;
+    if (!atomic_load(&s_initialized)) {
+        memset(s_players, 0, sizeof(s_players));
+        mutex_init(&s_lock);
+        // Published last: Core 1's update checks it before touching the lock.
+        atomic_store(&s_initialized, true);
+    }
+    if (s_wav_buffer) return;  // only Core 0 sets it
 
     printf("[FILEPLAYER] Allocating WAV buffer (%d bytes)...\n", WAV_BUFFER_SIZE);
-    s_wav_buffer = umm_malloc(WAV_BUFFER_SIZE);
-    printf("[FILEPLAYER] WAV buffer allocated: %s\n", s_wav_buffer ? "OK" : "FAILED");
-    if (!s_wav_buffer) return;
-
-    memset(s_players, 0, sizeof(s_players));
-    mutex_init(&s_lock);
-    // Published last: Core 1's update checks it before touching the lock.
-    atomic_store(&s_initialized, true);
+    uint8_t *buffer = umm_malloc(WAV_BUFFER_SIZE);
+    printf("[FILEPLAYER] WAV buffer allocated: %s\n", buffer ? "OK" : "FAILED");
+    if (!buffer) return;
+    mutex_enter_blocking(&s_lock);
+    s_wav_buffer = buffer;
+    mutex_exit(&s_lock);
 }
 
 fileplayer_t *fileplayer_create(void) {
     fileplayer_init();  // native apps reach here without the Lua bridge
-    if (!atomic_load(&s_initialized)) return NULL;
+    if (!atomic_load(&s_initialized) || !s_wav_buffer) return NULL;
     fileplayer_t *found = NULL;
     mutex_enter_blocking(&s_lock);
     for (int i = 0; i < FILEPLAYER_MAX_INSTANCES; i++) {
@@ -498,14 +513,26 @@ float fileplayer_get_rate(const fileplayer_t *player) {
  * floor(F * rate) * block_align bytes. Reading more (as the old code did,
  * 4 KB every tick at SD speed) only made audio_push_samples drop what did
  * not fit while position raced to EOF: a long WAV "finished" in seconds. */
-static uint32_t bytes_that_fit(const fileplayer_t *p, uint32_t limit) {
+// What one update may read or decode with `ring_free` frames free in the stream ring, for
+// frames of `align` bytes (the player's block_align: the gate passes its own copy).
+static __force_inline uint32_t fit_bytes_by(const fileplayer_t *p, uint32_t align,
+                                            uint32_t limit, uint32_t ring_free) {
     float rate = p->rate < 0.1f ? 0.1f : p->rate;
-    uint32_t in_frames = (uint32_t)((float)audio_ring_free() * rate);
+    uint32_t in_frames = (uint32_t)((float)ring_free * rate);
     uint32_t remaining = p->position < limit ? limit - p->position : 0;
     uint32_t n = FILEPLAYER_READ_MAX;
-    if (n / p->block_align > in_frames) n = in_frames * p->block_align;
+    if (n / align > in_frames) n = in_frames * align;
     if (n > remaining) n = remaining;
-    return n - n % p->block_align;  // whole frames: an odd step swaps L/R
+    return n - n % align;  // whole frames: an odd step swaps L/R
+}
+
+static __force_inline uint32_t fit_bytes(const fileplayer_t *p, uint32_t limit,
+                                         uint32_t ring_free) {
+    return fit_bytes_by(p, p->block_align, limit, ring_free);
+}
+
+static uint32_t bytes_that_fit(const fileplayer_t *p, uint32_t limit) {
+    return fit_bytes(p, limit, audio_ring_free());
 }
 
 // Convert br bytes of 16-bit PCM at pcm to stereo and push them.
@@ -540,6 +567,22 @@ typedef struct {
     void *arg;
 } fp_callback_t;
 
+// The data's whole frames: where a pass with no loop range ends. Force-inlined, so Core 1's
+// gate shares it and stays call-free into flash. `align` is the player's block_align.
+static __force_inline uint32_t whole_frames_by(const fileplayer_t *p, uint32_t align) {
+    return p->data_size - p->data_size % align;
+}
+
+static __force_inline uint32_t whole_frames(const fileplayer_t *p) {
+    return whole_frames_by(p, p->block_align);
+}
+
+// Where a pass that runs to `end` stops: there, or the end of the data for a player that is
+// already past it (a seek beyond the range plays out the file). Force-inlined, as above.
+static __force_inline uint32_t limit_of(const fileplayer_t *p, uint32_t end) {
+    return p->position <= end ? end : p->data_size;
+}
+
 /* Loop range. setLoopRange(start, end) is in seconds; the pass runs to
  * `end`, then continues from `start` (the first pass starts wherever the
  * player is, normally 0). Both become frame-aligned byte positions in the
@@ -551,7 +594,7 @@ typedef struct {
  * frame (up to 5119) at every wrap, so a start on a frame boundary
  * (multiples of 5120 samples) wraps cheapest. */
 static void loop_bounds(const fileplayer_t *p, uint32_t *start, uint32_t *end) {
-    uint32_t size = p->data_size - p->data_size % p->block_align;
+    uint32_t size = whole_frames(p);
     *start = 0;
     *end = size;
     if (!p->loop)
@@ -566,12 +609,11 @@ static void loop_bounds(const fileplayer_t *p, uint32_t *start, uint32_t *end) {
     }
 }
 
-// Where this pass stops: the loop end, or the end of the data for a player
-// that is already past it (a seek beyond the range plays out the file).
+// Where this pass stops: limit_of the loop end (the data's whole frames without a range).
 static uint32_t pass_limit(const fileplayer_t *p) {
     uint32_t start, end;
     loop_bounds(p, &start, &end);
-    return p->position <= end ? end : p->data_size;
+    return limit_of(p, end);
 }
 
 // Where the next pass starts.
@@ -787,10 +829,36 @@ static fp_callback_t qoa_update_locked(fileplayer_t *p) {
     return cb;
 }
 
-// Core 1's tick gate. A player in PSRAM is not read for this: a stopped one is
-// no longer active, and a paused one costs the walk it always did.
+// Core 1's tick gate. Idle with no active player, and while the active one plays mid-pass
+// with the ring too full for its next read or decode: the update would only find that
+// (update_locked's and qoa_update_locked's first test) and return, after the underrun check,
+// which then waits for the next full tick (at most 16 ms; it latches what it finds, so nothing
+// is missed). So with music playing most ticks skip the full tick and its walk through flash:
+// at 22.05 kHz mono a decode is due about every 12 ms. Never idle while the stream is held
+// (the update releases it), at a pass's end, with stop-on-underrun (the stop is due on the
+// tick that sees one) or with a loop range (rare, and its pass end costs 64-bit arithmetic:
+// SRAM). Reads the player and the ring without the lock: a stale answer costs one tick's
+// delay or one tick's walk, and the next tick asks again. The one divisor, block_align, is
+// copied once and a 0 reads busy before anything divides by it: fileplayer_reset() zeroes
+// the players before it clears s_active_player, so this can see a player that still reads
+// playing with its later fields 0. (A plain copy: one ldrh. A volatile or atomic read adds
+// a zero-extend, and 4 bytes more here move every RAM function and the .bss after it.)
 bool __time_critical_func(fileplayer_core1_idle)(void) {
-    return s_active_player == NULL;
+    const fileplayer_t *const p = s_active_player;
+    if (p == NULL)
+        return true;
+    if (p->state != FILEPLAYER_STATE_PLAYING || !p->file || p->stop_on_underrun || p->loop)
+        return false;
+    const uint32_t room = audio_stream_core1_room();
+    if (room == AUDIO_STREAM_NO_ROOM)
+        return false;
+    const uint32_t align = p->block_align;
+    if (align == 0)
+        return false;
+    const uint32_t limit = limit_of(p, whole_frames_by(p, align));  // pass_limit(), no range
+    const uint32_t budget = fit_bytes_by(p, align, limit, room);
+    const uint32_t remaining = p->position < limit ? limit - p->position : 0;
+    return remaining >= align && budget < FILEPLAYER_READ_MIN && budget < remaining;
 }
 
 // Called from Core 1 every tick: tops the stream ring up from the active

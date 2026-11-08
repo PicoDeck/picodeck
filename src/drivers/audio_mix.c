@@ -363,6 +363,10 @@ uint32_t audio_ring_free(void) {
   return s_stream_on ? audio_ring_space(&s_ring) : 0;
 }
 
+uint32_t __time_critical_func(audio_stream_core1_room)(void) {
+  return s_stream_on && !s_stream_held ? audio_ring_space(&s_ring) : AUDIO_STREAM_NO_ROOM;
+}
+
 void audio_stream_debug(uint32_t *isr_count, uint32_t *underruns,
                         uint32_t *ring_used) {
   if (isr_count)

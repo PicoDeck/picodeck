@@ -6,9 +6,26 @@ SECTIONS
   /* Text at gfx3d.c's firmware address, its functions first and in object
      order, so its lines fall in the same cache sets as in the firmware. */
   .text TEXT_BASE : {
+    KEEP(*gfx3d.o(.gfx3d_mesh_text))  /* first, as in src/hot_gfx.ld */
+    __sprite_slot = .;                  /* then a sprite's fill in its slot, as there */
+    KEEP(*gfx3d.o(.gfx3d_sprite_text))
+    . = __sprite_slot + 10564;
+    KEEP(*gfx3d.o(.gfx3d_sprite_aux_text))
+    KEEP(*gfx3d.o(.gfx3d_sprite_runs_text))
+    KEEP(*gfx3d.o(.gfx3d_load_text))  /* then the indexed blits at their offsets, as there */
+    . = __sprite_slot + 18256;
+    KEEP(*gfx3d.o(.gfx3d_sprite_idx_plain_text))
+    . = __sprite_slot + 19084;
+    KEEP(*gfx3d.o(.gfx3d_sprite_idx_lut_text))
+    . = __sprite_slot + 19820;
+    KEEP(*gfx3d.o(.gfx3d_sprite_idx_runs_text))
+    . = __sprite_slot + 20772;
+    KEEP(*gfx3d.o(.gfx3d_sprite_idx_lut_runs_text))
+    . = __sprite_slot + 28012;
     KEEP(*gfx3d.o(.text .text.*))
     *gfx3d_main.o(.text .text.*)
     *start.o(.text .text.*)
+    *gfx3d.o(.gfx3d_tex_text)  /* after what a flat scene runs, as in src/hot_gfx.ld */
   }
   /* Code the firmware keeps in SRAM: .time_critical*, and newlib's sqrtf. */
   .ramtext RAMTEXT_BASE : {

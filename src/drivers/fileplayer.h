@@ -100,7 +100,8 @@ void fileplayer_set_rate(fileplayer_t *player, float rate);
 float fileplayer_get_rate(const fileplayer_t *player);
 
 void fileplayer_update(void);
-bool fileplayer_core1_idle(void);  // false while a player is active (runs from RAM)
+// Core 1's tick gate: false while the active player has work this tick (runs from RAM).
+bool fileplayer_core1_idle(void);
 // True if the stream starved while this player was playing since the last
 // call (or play()); reading clears it.
 bool fileplayer_did_underrun(fileplayer_t *player);

@@ -1,0 +1,7 @@
+{
+    "id": "com.test.native_gfx3d",
+    "name": "Native gfx3d Probe",
+    "description": "E2E fixture: the 3D table, one behaviour per mode, chosen by the app name (source: tests/e2e/native/gfx3d_probe.c)",
+    "version": "1.0",
+    "author": "PicoDeck E2E"
+}
