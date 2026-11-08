@@ -1,7 +1,8 @@
 // See gfx3d.h. Built at -O2 with -ffp-contract=off on every target (shared
 // triangle edges must evaluate bit-identically).
 #include "gfx3d.h"
-// The out-of-line blits only a sprite's fill calls go in the fill's slot (GFX3D_SPRITE_AUX).
+// The out-of-line blits only a sprite's fill calls go in the fill's slot in src/hot_gfx.ld:
+// display_clip.h puts them in these sections (DISP_SPRITE_AUX, DISP_SPRITE_RUNS, DISP_SPRITE_IDX).
 #ifdef __ELF__
 #define DISP_SPRITE_AUX __attribute__((section(".gfx3d_sprite_aux_text")))
 #define DISP_SPRITE_RUNS __attribute__((section(".gfx3d_sprite_runs_text")))

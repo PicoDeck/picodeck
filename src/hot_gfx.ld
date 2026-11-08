@@ -20,7 +20,7 @@ SECTIONS
            slot, and nothing else moves them.
            Outgrowing either part fails the link here ("cannot move location counter
            backwards"): widen it by 8 KB, and the perf rig's (tools/perf_rig/guest/guest.ld)
-           with it. The sizes are 8 KB more than what the code needed when it was pinned
+           with it (tests/unit/test_hot_gfx_slots.py fails while the two differ). The sizes are 8 KB more than what the code needed when it was pinned
            (raster_sprite 2372 B; the slot 3436 B), so every function kept its cache set, the
            sets repeating every 8 KB. */
         __hot_gfx_sprite__ = .;

@@ -21,6 +21,7 @@
 #ifndef DISPLAY_CLIP_H
 #define DISPLAY_CLIP_H
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -922,7 +923,10 @@ static inline __attribute__((always_inline)) void disp_copy_run(uint16_t *d, con
 
 // The replaying blits' body (disp_blit_scaled_rect_keyed, disp_blit_scaled_rect_lut_runs): the
 // pixels and return of disp_blit_scaled_rect (lut NULL) or disp_blit_scaled_rect_fog (lut from
-// disp_fog_lut), key not 0. A row samples its source row and notes its runs of drawn pixels in
+// disp_fog_lut), for a key that is NOT 0. To those blits 0 is no key; here it would be a colour
+// to skip, black. A sprite with no key is drawn by those (raster_sprite chooses); the assert
+// stops a caller that passes 0 in the host tests and debug simulators, and costs the firmware
+// nothing (NDEBUG). A row samples its source row and notes its runs of drawn pixels in
 // runs[0..cap); a row that samples the same source row as the row before copies those runs from
 // it instead: the same pixels, as nothing else draws between, read from the framebuffer's SRAM
 // rather than the image's PSRAM. A row of more runs than cap (cap 0: no runs) is sampled again.
@@ -933,6 +937,7 @@ DISP_HOT static inline __attribute__((always_inline)) uint32_t disp_scaled_keyed
     const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,
     int dst_w, int dst_h, uint16_t key, bool swap, const uint16_t *lut,
     disp_run_t *runs, int cap) {
+  assert(key != 0);  // 0 is no key elsewhere: see above
   if (!data || img_w <= 0 || sw <= 0 || sh <= 0 || dst_w <= 0 || dst_h <= 0)
     return 0;
   disp_span_t s;
@@ -989,9 +994,9 @@ DISP_HOT static inline __attribute__((always_inline)) uint32_t disp_scaled_keyed
   return (uint32_t)s.w * (uint32_t)s.h;
 }
 
-// disp_blit_scaled_rect for a key that is not 0, its repeated rows replayed from runs[0..cap)
-// (disp_scaled_keyed). Out of line, so that no caller's state competes with its loops for
-// registers.
+// disp_blit_scaled_rect for a key that is not 0 (asserted), its repeated rows replayed from
+// runs[0..cap) (disp_scaled_keyed). Out of line, so that no caller's state competes with its loops
+// for registers.
 DISP_HOT DISP_SPRITE_RUNS static __attribute__((noinline, unused)) uint32_t
 disp_blit_scaled_rect_keyed(uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
                             const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,
@@ -1001,8 +1006,8 @@ disp_blit_scaled_rect_keyed(uint16_t *fb, int stride, const disp_clip_t *c, int 
                            swap, NULL, runs, cap);
 }
 
-// disp_blit_scaled_rect_lut for a key that is not 0, its repeated rows replayed from runs[0..cap)
-// (disp_scaled_keyed): the same pixels and the same return.
+// disp_blit_scaled_rect_lut for a key that is not 0 (asserted), its repeated rows replayed from
+// runs[0..cap) (disp_scaled_keyed): the same pixels and the same return.
 DISP_HOT DISP_SPRITE_RUNS static __attribute__((noinline, unused)) uint32_t
 disp_blit_scaled_rect_lut_runs(uint16_t *fb, int stride, const disp_clip_t *c, int x, int y,
                                const uint16_t *data, int img_w, int sx, int sy, int sw, int sh,

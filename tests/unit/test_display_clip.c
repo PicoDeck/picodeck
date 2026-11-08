@@ -11,6 +11,9 @@
 #include "display_clip.h"
 
 #include <limits.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +31,13 @@ static uint16_t *screen(uint16_t *canvas) { return canvas + OY * CW + OX; }
 
 static void reset(uint16_t fill) {
   for (int i = 0; i < CW * CH; i++) s_got[i] = s_want[i] = fill;
+}
+
+// Both canvases filled with a value that differs from pixel to pixel and row to row, so a pixel
+// a blit leaves alone (a keyed one) shows what was there, and a pixel copied from the wrong place
+// (a keyed hole copied from the row above) does not look like it.
+static void reset_pattern(void) {
+  for (int i = 0; i < CW * CH; i++) s_got[i] = s_want[i] = (uint16_t)(i * 37);
 }
 
 static int s_first_diff_logged;
@@ -828,7 +838,8 @@ static void holey_image(uint16_t *img) {
 // disp_blit_scaled_rect_lut_runs disp_blit_scaled_rect_fog, their repeated rows copied run by run
 // from the row above: the same pixels and area, minified and magnified, clipped, upright and
 // upside down, with a stride that keeps the rows aligned alike and one that does not, and with
-// room for no runs, too few and enough.
+// room for no runs, too few and enough. Over a patterned screen: over one colour, a replay that
+// copied keyed holes from the row above as well as the runs made the same pixels.
 static void test_blit_scaled_rect_keyed_replays_runs(void) {
   uint16_t img[RIW * RIH], lut[DISP_FOG_LUT_LEN];
   holey_image(img);
@@ -847,7 +858,7 @@ static void test_blit_scaled_rect_keyed_replays_runs(void) {
     const int rs = odd ? CW - 1 : CW;  // an odd stride: rows aligned alternately
     const disp_clip_t view = up ? (disp_clip_t){c.x0, 0, c.x1, c.y1 - c.y0} : c;
     const int stride = up ? -rs : rs, vy = up ? c.y1 - (y + dh - 1) : y;
-    reset(0x1234);
+    reset_pattern();
     uint16_t *const want_fb = screen(s_want) + (up ? (ptrdiff_t)c.y1 * rs : 0);
     uint16_t *const got_fb = screen(s_got) + (up ? (ptrdiff_t)c.y1 * rs : 0);
     const uint32_t want_area =
@@ -867,6 +878,37 @@ static void test_blit_scaled_rect_keyed_replays_runs(void) {
   }
   CHECK_EQ_INT(bad, 0);
   CHECK_EQ_INT(bad_area, 0);
+}
+
+// The replaying blits take a key that is not 0: to every other blit 0 is no key, and here it would
+// skip black pixels. Each asserts it, so a caller passing 0 stops (in a child: the assert aborts).
+static void test_keyed_blits_assert_a_key(void) {
+#ifdef NDEBUG
+  printf("  keyed blits' key check: compiled out (NDEBUG)\n");
+#else
+  const uint16_t img[4] = {1, 0, 2, 3};
+  uint16_t lut[DISP_FOG_LUT_LEN];
+  disp_fog_lut(lut, 0, 1, false);
+  for (int fog = 0; fog < 2; fog++) {
+    fflush(stdout);
+    const pid_t pid = fork();
+    if (pid == 0) {
+      if (!freopen("/dev/null", "w", stderr)) _exit(2);  // the assert's message
+      disp_run_t runs[4];
+      const disp_clip_t c = {0, 0, SW - 1, SH - 1};
+      if (fog)
+        disp_blit_scaled_rect_lut_runs(screen(s_got), CW, &c, 0, 0, img, 2, 0, 0, 2, 2, 4, 4, 0, lut,
+                                       runs, 4);
+      else
+        disp_blit_scaled_rect_keyed(screen(s_got), CW, &c, 0, 0, img, 2, 0, 0, 2, 2, 4, 4, 0, false,
+                                    runs, 4);
+      _exit(0);
+    }
+    int st = 0;
+    CHECK(pid > 0 && waitpid(pid, &st, 0) == pid);
+    CHECK(WIFSIGNALED(st) && WTERMSIG(st) == SIGABRT);
+  }
+#endif
 }
 
 // The palette blits (gfx3d's sprite images held as indices): disp_blit_scaled_rect_idx is
@@ -923,7 +965,7 @@ static void test_blit_scaled_rect_idx_matches_rgb565(void) {
     const int rs = odd ? CW - 1 : CW;
     const disp_clip_t view = up ? (disp_clip_t){c.x0, 0, c.x1, c.y1 - c.y0} : c;
     const int stride = up ? -rs : rs, vy = up ? c.y1 - (y + dh - 1) : y;
-    for (int p = 0; p < CW * CH; p++) s_got[p] = s_want[p] = (uint16_t)(p * 37);  // keyed shows it
+    reset_pattern();
     uint16_t *const want_fb = screen(s_want) + (up ? (ptrdiff_t)c.y1 * rs : 0);
     uint16_t *const got_fb = screen(s_got) + (up ? (ptrdiff_t)c.y1 * rs : 0);
     const uint32_t want_area =
@@ -1232,6 +1274,7 @@ int main(void) {
   test_fog_lut_is_the_mix();
   test_blit_scaled_rect_lut_matches_fog();
   test_blit_scaled_rect_keyed_replays_runs();
+  test_keyed_blits_assert_a_key();
   test_blit_scaled_rect_idx_matches_rgb565();
   test_vline_gradient_matches_reference();
   test_vline_gradient_reaches_both_ends_and_huge_coords();
