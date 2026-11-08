@@ -24,30 +24,28 @@ USB powers only the Pico board. The screen and keyboard run from the PicoCalc's 
 
 ## 2. Put apps on the card
 
-Flashing the firmware puts nothing on the card, and **no apps are built into the firmware**. A blank card boots to an empty launcher that says `No apps in this category.` There is no App Store on it either: the store is itself an app on the card. So the first step is to copy some apps over by hand.
+The firmware writes three things to the card itself: the **App Store** (`/apps/store`), **System Update** (`/apps/updater`) and the shared Lua libraries (`/system/lib`). It does so at the first boot, and again at the first boot after every firmware update. So a blank card boots to a launcher whose System tab lists App Store and System Update, and the App Store installs the rest. These files belong to the firmware: an edit to them is overwritten, and one you delete comes back at the next boot. Firmware before v0.7.0 puts nothing on the card: copy `apps/store`, `apps/updater` and `system/` from that release's **Source code (zip)** by hand.
 
-From the same release page, download **Source code (zip)** and unpack it. Copy two of its folders to the root of the card:
-
-- `apps/`: the first-party apps, the App Store and System Update among them.
-- `system/`: it holds `lib/`, the shared Lua libraries. Nothing else installs these, and some first-party apps need them.
+The other first-party apps (the editor, file manager, calculator, games and demos) are in the release's **Source code (zip)**: copy the ones you want from its `apps/` folder to `/apps/` on the card.
 
 The card then looks like this. `/data` and any missing top-level folders are created when the card is mounted.
 
 ```
 SD:/
 ├── apps/
-│   ├── store/          the App Store
-│   ├── updater/        System Update
-│   ├── hello/
+│   ├── store/          the App Store (written by the firmware)
+│   ├── updater/        System Update (written by the firmware)
+│   ├── hello/          an app you copied
 │   │   ├── app.json
 │   │   └── main.lua
 │   └── ...
 ├── data/               each app's saved data, created as needed
 └── system/
-    └── lib/            download.lua, panels.lua, widgets.lua, fonts/
+    ├── firmware_files.txt   what the firmware last wrote to the card
+    └── lib/            download.lua, panels.lua, widgets.lua, fonts/ (written by the firmware)
 ```
 
-You can copy less: `store/` alone gets you the App Store. The launcher lists at most 64 apps. [`apps/gbc`](https://github.com/PicoDeck/picodeck/tree/master/apps/gbc) has no program until you build it, so it does not appear.
+The launcher lists at most 64 apps. [`apps/gbc`](https://github.com/PicoDeck/picodeck/tree/master/apps/gbc) has no program until you build it, so it does not appear.
 
 ## 3. First boot
 
@@ -86,7 +84,7 @@ For repeated copies while developing, the [dev commands](Simulator-and-Testing.m
 
 ## 6. Keep it up to date
 
-**System Update** ([`apps/updater`](https://github.com/PicoDeck/picodeck/tree/master/apps/updater)) and the App Store install new firmware over WiFi, signed releases only. Updating the firmware does not touch the card: to get newer first-party apps or libraries, copy `apps/` and `system/` from the new release's source zip, or update what the App Store lists.
+**System Update** ([`apps/updater`](https://github.com/PicoDeck/picodeck/tree/master/apps/updater)) and the App Store install new firmware over WiFi, signed releases only. A firmware update brings the App Store, System Update and the libraries that go with it: the first boot after it writes them to the card. For the other first-party apps, copy them again from the new release's source zip, or update what the App Store lists.
 
 To flash by hand again without reaching for BOOTSEL, turn on **Settings > Developer Mode**; the system menu then has **Reboot to Flash**, which brings up the `RP2350` drive.
 
@@ -98,6 +96,6 @@ To flash by hand again without reaching for BOOTSEL, turn on **Settings > Develo
 | `SD card not found!` | No card, or it is not FAT32. Press Enter to retry once it is in. |
 | `No apps in this category.` | Nothing usable in that tab. On every tab: the card is blank, or the apps are not at `/apps/<dir>/`. A folder needs a `main.lua` or `main.elf` to be listed. |
 | A new app is not listed | The launcher reads `/apps` at boot, when an app exits, and after USB Disk Mode. Reboot from the system menu. |
-| `panels library not found` (Panels Demo), or `loadlib` returns `nil, "cannot open /system/lib/..."` | `system/lib` is not on the card. Copy it. |
+| `panels library not found` (Panels Demo), or `loadlib` returns `nil, "cannot open /system/lib/..."` | The firmware could not write `/system/lib` at boot (a full or failing card): `/system/error.log` has a `SYSTEM FILES` entry saying why, and the next boot tries again. Firmware before v0.7.0 never writes it: copy `system/lib` from the release's source zip. |
 | `Cannot launch app: invalid app id in app.json` | See the [id rules](App-Json-Reference.md#id). |
 | An error screen in your app | Press Esc. The same text is in `/system/error.log` on the card. See [Crash Logging and Watchdog](Crash-Logging-and-Watchdog.md), which also covers `Boot failed N times - halted`. |

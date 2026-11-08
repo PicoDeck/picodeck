@@ -137,7 +137,7 @@ Every first-party app is a working example in the [`apps/`](https://github.com/P
 | [`3dtest`](https://github.com/PicoDeck/picodeck/tree/master/apps/3dtest) | A spinning solid drawn with the display primitives, and an FPS counter |
 | [`graphicstest`](https://github.com/PicoDeck/picodeck/tree/master/apps/graphicstest) | Image loading and drawing |
 | [`fonttest`](https://github.com/PicoDeck/picodeck/tree/master/apps/fonttest) | Built-in fonts and a loaded `.pfn` |
-| [`panels_demo`](https://github.com/PicoDeck/picodeck/tree/master/apps/panels_demo) | The [Panels](Library-Panels.md) library. Needs `/system/lib/panels.lua` on the card |
+| [`panels_demo`](https://github.com/PicoDeck/picodeck/tree/master/apps/panels_demo) | The [Panels](Library-Panels.md) library, from `/system/lib/panels.lua`, which the firmware writes to the card |
 | [`terminal_example`](https://github.com/PicoDeck/picodeck/tree/master/apps/terminal_example) | The [terminal](API-Terminal.md) widget |
 | [`calculator`](https://github.com/PicoDeck/picodeck/tree/master/apps/calculator) | An app split into modules with [`require`](Standard-Lua-Libraries.md#requirename) |
 | [`editor`](https://github.com/PicoDeck/picodeck/tree/master/apps/editor), [`filemanager`](https://github.com/PicoDeck/picodeck/tree/master/apps/filemanager) | Tools with the `root-filesystem` [requirement](Global-Variables-and-Permissions.md#app-requirements) |
