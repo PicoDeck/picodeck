@@ -360,12 +360,40 @@ def test_doc_partial_redraw_example(simulator):
 
 # ── Apps sized to their bounds ───────────────────────────────────────────────
 
+# The Text Editor's terminal (PicoDeck/editor, which was apps/editor here):
+# 53 columns, 23 rows and 5000 lines of scrollback, drawn between
+# ui.drawHeader's 21 rows and the footer (302 - 21 = 281 px holds 23 rows of
+# 12). The app echoes what is typed, Enter as a new line, as the Editor's
+# bottom row does when you type past the end of the window.
+TYPING_TOP, TYPING_BOTTOM = 21, 302
+TYPING_ROWS = (TYPING_BOTTOM - TYPING_TOP) // 12
+TYPING_APP = """
+local input, disp = picocalc.input, picocalc.display
+local term = picocalc.terminal.new(53, {rows}, 5000)
+term:setFont("scientifica")
+term:setRenderBounds({top}, {bottom})
+term:setCursorVisible(true)
+term:setCursorBlink(true)
+term:setWordWrap(false)
+term:render()
+disp.flush()
+picocalc.sys.log("TYPING_READY")
+while true do
+    input.update()
+    if input.getButtonsPressed() & input.BTN_ENTER ~= 0 then term:write("\\n") end
+    local ch = input.getChar()
+    if ch and ch ~= "\\n" and ch:byte() >= 32 and ch:byte() <= 126 then term:write(ch) end
+    term:render()
+    disp.flush()
+    picocalc.sys.sleep(16)
+end
+"""
+
+
 def typed_line_shows(sim, app, first_row_y, last_row):
     """Type more lines than fit, then one more of marks: its row must show."""
-    sim.launch_app(app, hidden=False)
-    time.sleep(0.6)
-    sim.keypress("esc")     # the file browser it starts in
-    time.sleep(0.3)
+    sim.launch_app(app)
+    sim.wait_for_log("TYPING_READY", timeout=10)
     for _ in range(last_row + 6):
         seq = sim.keypress("enter")["input_seq"]
         sim.wait_input_consumed(seq)
@@ -383,11 +411,15 @@ def typed_line_shows(sim, app, first_row_y, last_row):
     return changed
 
 
-@pytest.mark.sd(fixtures=[], extra=[("apps/editor", "apps/editor")])
-def test_editor_shows_the_row_it_is_typing_on(simulator):
-    """It asked for 24 rows inside bounds that hold 23, so its last row never
-    drew: the line being typed at the bottom of the window was invisible."""
-    assert typed_line_shows(simulator, "editor", 21, 22) > 20
+@pytest.mark.sd(fixtures=[])
+def test_typing_row_at_the_bottom_shows(simulator, test_sd_card):
+    """The Editor once asked for 24 rows inside bounds that hold 23, so its
+    last row never drew: the line being typed at the bottom of the window was
+    invisible. A terminal sized to its bounds shows it."""
+    code = TYPING_APP.format(rows=TYPING_ROWS, top=TYPING_TOP, bottom=TYPING_BOTTOM)
+    stage_lua_app(test_sd_card, "term_typing", code)
+    last_row = (TYPING_BOTTOM - TYPING_TOP) // 12 - 1  # the bounds' last row
+    assert typed_line_shows(simulator, "term_typing", TYPING_TOP, last_row) > 20
 
 
 @pytest.mark.sd(fixtures=[])

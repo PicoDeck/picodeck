@@ -116,8 +116,9 @@ static int l_input_clearState(lua_State *L) {
 //
 // kbd_get_buttons_pressed() reports one edge per physical press and never
 // repeats, so apps that want held-to-scroll had to hand-roll a delay/rate timer
-// against sys.getTimeMs(). apps/minesweeper, apps/editor, apps/filemanager,
-// apps/store and apps/wikipedia each carry their own copy of that logic.
+// against sys.getTimeMs(). Minesweeper, the Text Editor, the File Manager
+// (now in their own repositories), apps/store and apps/wikipedia each carried
+// their own copy of that logic.
 //
 // getChar() does repeat (the STM32 firmware emits HOLD events), which is why
 // text fields already feel right and only button-driven UIs needed this.

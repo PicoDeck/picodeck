@@ -26,7 +26,7 @@ USB powers only the Pico board. The screen and keyboard run from the PicoCalc's 
 
 The firmware writes three things to the card itself: the **App Store** (`/apps/store`), **System Update** (`/apps/updater`) and the shared Lua libraries (`/system/lib`). It does so at the first boot, and again at the first boot after every firmware update. So a blank card boots to a launcher whose System tab lists App Store and System Update, and the App Store installs the rest. These files belong to the firmware: an edit to them is overwritten, and one you delete comes back at the next boot. Firmware before v0.7.0 puts nothing on the card: copy `apps/store`, `apps/updater` and `system/` from that release's **Source code (zip)** by hand.
 
-The other first-party apps (the editor, file manager, calculator, games and demos) are in the release's **Source code (zip)**: copy the ones you want from its `apps/` folder to `/apps/` on the card.
+The App Store installs the other first-party apps: Minesweeper, Neurogram, the Calculator, the Text Editor, the File Manager, DOS/86 and Burn-In Fixer, among others. The demos and test apps are in the release's **Source code (zip)**: copy the ones you want from its `apps/` folder to `/apps/` on the card.
 
 The card then looks like this. `/data` and any missing top-level folders are created when the card is mounted.
 
@@ -84,7 +84,7 @@ For repeated copies while developing, the [dev commands](Simulator-and-Testing.m
 
 ## 6. Keep it up to date
 
-**System Update** ([`apps/updater`](https://github.com/PicoDeck/picodeck/tree/master/apps/updater)) and the App Store install new firmware over WiFi, signed releases only. A firmware update brings the App Store, System Update and the libraries that go with it: the first boot after it writes them to the card. For the other first-party apps, copy them again from the new release's source zip, or update what the App Store lists.
+**System Update** ([`apps/updater`](https://github.com/PicoDeck/picodeck/tree/master/apps/updater)) and the App Store install new firmware over WiFi, signed releases only. A firmware update brings the App Store, System Update and the libraries that go with it: the first boot after it writes them to the card. The App Store lists updates for the apps it installed; copy a demo again from the new release's source zip.
 
 To flash by hand again without reaching for BOOTSEL, turn on **Settings > Developer Mode**; the system menu then has **Reboot to Flash**, which brings up the `RP2350` drive.
 

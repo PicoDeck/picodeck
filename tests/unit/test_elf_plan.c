@@ -505,8 +505,8 @@ static void test_real_apps(void) {
   check_real_elf("apps/hello_c/main.elf", true);
   check_real_elf("sdk/native/main.elf", true);
   check_real_elf("apps/c64/main.elf", true);
-  check_real_elf("apps/dos86/main.elf", true);
   // Gitignored / out-of-tree builds: checked when present.
+  check_real_elf("apps/dos86/main.elf", false);
   check_real_elf("apps/gbc/main.elf", false);
   check_real_elf("apps/tic-80/main.elf", false);
   check_real_elf("apps/doom/main.elf", false);

@@ -97,4 +97,4 @@ Leave it out unless you know your minimum, and then use a version that has been 
 
 Where the store installs your app: `/apps/<dirname>/`. It defaults to the last segment of the id, must be 1 to 32 characters of `A-Z a-z 0-9 _ -`, and belongs to the first repository to publish it (`dirname-claimed-by:<repo>`). The store **deletes that folder** before it extracts the new version, so an app must not keep data there: use `picocalc.fs.appPath`, which is under `/data`.
 
-These are reserved, since PicoDeck ships them (`dirname-reserved`): `store`, `updater`, `filemanager`, `editor`, `terminal_example`, `calculator`, `system`, `data`, `.staging`. That rules out an id such as `com.example.store` unless you set another `dirname`.
+These are reserved, since PicoDeck ships them (`dirname-reserved`): `store`, `updater`, `terminal_example`, `system`, `data`, `.staging`. That rules out an id such as `com.example.store` unless you set another `dirname`.
