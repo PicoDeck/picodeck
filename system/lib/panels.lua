@@ -1319,8 +1319,9 @@ function Comic:update()
         self:hwAudioTriggers()
         self.dirty = false
         self.drewThisFrame = false
-        -- At rest unless a key is scrolling it: this path has no live motion.
-        self.idleThisFrame = input.getButtons() == 0 and not self.scrollAnim
+        -- At rest unless a key or the gamepad is scrolling it: this path has
+        -- no live motion.
+        self.idleThisFrame = readHeld() == 0 and not self.scrollAnim
         return
     end
 
