@@ -334,8 +334,8 @@ static void test_hidden_name_valid(void) {
 
 // Every committed app.json parses to a valid id.
 static void test_real_manifests(void) {
-  static const char *k_apps[] = {"hello", "hello_c", "editor", "snake", "store",
-                                 "guinea_pig", "panels_demo", "c64", "dos86"};
+  static const char *k_apps[] = {"hello", "hello_c", "snake", "store",
+                                 "guinea_pig", "panels_demo", "c64"};
   for (size_t i = 0; i < sizeof(k_apps) / sizeof(k_apps[0]); i++) {
     char path[512];
     snprintf(path, sizeof(path), "%s/apps/%s/app.json", PICODECK_ROOT, k_apps[i]);

@@ -1,7 +1,7 @@
 // picocalc.json — JSON encode/decode for Lua apps.
 //
 // Added because there was no JSON anywhere in the Lua SDK: every app that
-// needed structured persistence hand-rolled a serializer (apps/calculator,
+// needed structured persistence hand-rolled a serializer (the Calculator,
 // apps/picoforge, apps/ssh, ...), the launcher carries its own minimal parser,
 // and game.save's flat encoder silently turned nested tables into `null`.
 //

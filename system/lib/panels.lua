@@ -39,7 +39,7 @@ local Panels = {}
 -- ── Capability probes ───────────────────────────────────────────────────────
 -- The clip rect and partial flush are SDK additions that ship alongside this
 -- library; probe so the library degrades (layers overhang their panels) rather
--- than crashes on older firmware. Same pattern as apps/nonogram.
+-- than crashes on older firmware. Same pattern as Neurogram (PicoDeck/neurogram).
 
 local CAP = {
     clip      = type(disp.setClipRect) == "function"

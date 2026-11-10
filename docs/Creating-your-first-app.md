@@ -125,13 +125,13 @@ Put an `icon.png` (or `icon.bmp`) next to `app.json`. The launcher draws it at 2
 
 ### Sample apps
 
-Every first-party app is a working example in the [`apps/`](https://github.com/PicoDeck/picodeck/tree/master/apps) folder of the PicoDeck repository. These are the ones to read first. All of them are Lua apps unless marked, and all run in the simulator.
+Every first-party app is a working example: in the [`apps/`](https://github.com/PicoDeck/picodeck/tree/master/apps) folder of the PicoDeck repository, or in its own repository for the ones the App Store installs. These are the ones to read first. All of them are Lua apps unless marked, and all run in the simulator.
 
 | App | Shows |
 |---|---|
 | [`hello`](https://github.com/PicoDeck/picodeck/tree/master/apps/hello) | The smallest drawing demo |
 | [`snake`](https://github.com/PicoDeck/picodeck/tree/master/apps/snake) | A complete small game |
-| [`minesweeper`](https://github.com/PicoDeck/picodeck/tree/master/apps/minesweeper) | A complete grid game |
+| [`minesweeper`](https://github.com/PicoDeck/minesweeper) | A complete grid game |
 | [`platformer_demo`](https://github.com/PicoDeck/picodeck/tree/master/apps/platformer_demo) | The [game framework](API-Game.md): camera, scenes, saves |
 | [`guinea_pig`](https://github.com/PicoDeck/picodeck/tree/master/apps/guinea_pig) | A bigger game, with art and sound |
 | [`3dtest`](https://github.com/PicoDeck/picodeck/tree/master/apps/3dtest) | A spinning solid drawn with the display primitives, and an FPS counter |
@@ -139,8 +139,8 @@ Every first-party app is a working example in the [`apps/`](https://github.com/P
 | [`fonttest`](https://github.com/PicoDeck/picodeck/tree/master/apps/fonttest) | Built-in fonts and a loaded `.pfn` |
 | [`panels_demo`](https://github.com/PicoDeck/picodeck/tree/master/apps/panels_demo) | The [Panels](Library-Panels.md) library, from `/system/lib/panels.lua`, which the firmware writes to the card |
 | [`terminal_example`](https://github.com/PicoDeck/picodeck/tree/master/apps/terminal_example) | The [terminal](API-Terminal.md) widget |
-| [`calculator`](https://github.com/PicoDeck/picodeck/tree/master/apps/calculator) | An app split into modules with [`require`](Standard-Lua-Libraries.md#requirename) |
-| [`editor`](https://github.com/PicoDeck/picodeck/tree/master/apps/editor), [`filemanager`](https://github.com/PicoDeck/picodeck/tree/master/apps/filemanager) | Tools with the `root-filesystem` [requirement](Global-Variables-and-Permissions.md#app-requirements) |
+| [`calculator`](https://github.com/PicoDeck/calculator) | An app split into modules with [`require`](Standard-Lua-Libraries.md#requirename) |
+| [`editor`](https://github.com/PicoDeck/editor), [`filemanager`](https://github.com/PicoDeck/filemanager) | Tools with the `root-filesystem` [requirement](Global-Variables-and-Permissions.md#app-requirements) |
 | [`llmchat`](https://github.com/PicoDeck/picodeck/tree/master/apps/llmchat), [`wikipedia`](https://github.com/PicoDeck/picodeck/tree/master/apps/wikipedia) | Network apps with the `http` requirement |
 | [`systest`](https://github.com/PicoDeck/picodeck/tree/master/apps/systest) | A tour of the system APIs |
 | [`sdk/native`](https://github.com/PicoDeck/picodeck/tree/master/sdk/native) | **Native, C.** The template to [start a native app](Native-Loading.md) from |
