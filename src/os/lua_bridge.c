@@ -548,10 +548,9 @@ static void lua_service(lua_State *L, bool force) {
     lua_service_full(L);
   if (kbd_consume_menu_press()) {
     system_menu_show(L);
-    // The menu's own close (system_menu.c) clears raw key state but leaves
-    // both repeat clocks armed: a direction held when the menu opened, and
-    // held again when it closed, would otherwise repeat at once from its
-    // pre-menu deadline, as input.clearState() would without its reset.
+    // The menu hides what is held across it, but the repeat clocks keep
+    // their pre-menu deadlines until the app reads them again: restart them
+    // so nothing armed before the menu can fire after it.
     lb_input_repeat_reset();
     lb_gamepad_repeat_reset();
   }
