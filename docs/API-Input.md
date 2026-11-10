@@ -83,7 +83,7 @@ end
 ---
 
 #### `picocalc.input.setRepeat(delay_ms [, rate_ms])`
-Configures key auto-repeat for `getButtonsRepeated()`, for this app only: every app starts at the defaults of 200 ms and 80 ms. It has no effect on the keyboard's own repeats, which `getChar()` and `pollEvent()` report (about every 100 ms after the first 300 ms).
+Configures key auto-repeat for `getButtonsRepeated()`, for this app only: every app starts at the defaults of 200 ms and 80 ms. It also times `picocalc.gamepad.getButtonsRepeated()` and the D-pad in `picocalc.gamepad.getNavPressed()`, so `setRepeat(0)` turns off list auto-repeat for a controller too. It has no effect on the keyboard's own repeats, which `getChar()` and `pollEvent()` report (about every 100 ms after the first 300 ms).
 
 - **Parameters:**
   - `delay_ms` (number): Milliseconds a button must be held before repeating starts. `0` disables auto-repeat.

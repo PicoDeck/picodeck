@@ -546,8 +546,14 @@ static void lua_service(lua_State *L, bool force) {
   if (force || g_lua_service_pending ||
       (uint32_t)(service_now_us() - s_last_full_pass_us) >= LUA_SERVICE_DUE_US)
     lua_service_full(L);
-  if (kbd_consume_menu_press())
+  if (kbd_consume_menu_press()) {
     system_menu_show(L);
+    // The menu hides what is held across it, but the repeat clocks keep
+    // their pre-menu deadlines until the app reads them again: restart them
+    // so nothing armed before the menu can fire after it.
+    lb_input_repeat_reset();
+    lb_gamepad_repeat_reset();
+  }
 }
 
 void lua_bridge_service(lua_State *L) { lua_service(L, true); }

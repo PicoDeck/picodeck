@@ -48,6 +48,7 @@ static kbd_padmap_t s_padmap = KBD_PAD_DEFAULT_MAP;
 // (kbd_event_queue.h, "Hidden keys"). The HAL's staged events go through the
 // same filter as the device's FIFO items; button masks are masked by it below.
 static kbd_hide_t s_hide;
+static uint32_t s_poll_count; // foreground polls (kbd_poll_count)
 
 bool kbd_init(void) {
     printf("[KBD] Keyboard initialized (simulator)\n");
@@ -70,6 +71,7 @@ static uint32_t hide_buttons(uint32_t level) {
 }
 
 void kbd_poll(void) {
+    s_poll_count++;
 #ifdef __EMSCRIPTEN__
     // Input-polling loops that never flush must still let key events arrive.
     web_yield_if_due();
@@ -271,6 +273,10 @@ float kbd_get_pad_axis(int axis) {
 
 uint32_t kbd_get_pad_nav_pressed(void) {
     return pad_nav_buttons(pad_sources_pressed());
+}
+
+uint32_t kbd_poll_count(void) {
+    return s_poll_count;
 }
 
 void kbd_set_pad_map(const kbd_padmap_t *map) {

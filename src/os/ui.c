@@ -443,10 +443,21 @@ static bool ui_text_input_run(const char *prompt, const char *default_val,
     // The menu key cancels, like Esc, and takes the latch.
     if (kbd_consume_menu_press()) break;
     uint32_t btns = kbd_get_buttons_pressed();
+    // A controller, as the launcher reads it: A accepts, B cancels.
+    uint32_t nav  = kbd_get_pad_nav_pressed();
     char c        = kbd_get_char();
 
-    if (btns & BTN_ESC) break;
-    if (c == '\n') { accepted = true; break; }  // Enter = 0x0A
+    if ((btns | nav) & BTN_ESC) break;
+    // Characters reach kbd_get_char one per poll from a backlog, but button
+    // edges arrive all at once: typing 'c' then Enter in the same poll gives
+    // the BTN_ENTER edge now but 'c' now and '\n' only on a later poll. A
+    // physical Enter always leaves a '\n' behind the characters typed before
+    // it, so take a keyboard Enter from its char, not its button edge (else
+    // the dialog could accept before 'c' is added, and leave that '\n'
+    // behind for the app's next getChar). A pad A is its own nav edge; a
+    // bare BTN_ENTER with no char pending can only be an injected button
+    // with no matching char (e.g. a dev tool's keypress), so accept that too.
+    if (c == '\n' || (nav & BTN_ENTER) || (!c && (btns & BTN_ENTER))) { accepted = true; break; }  // Enter = 0x0A
     if (c == '\b') {
       if (len > 0) { len--; dirty = true; }
     } else if (c >= 32 && c < 127 && len < MAX_CHARS) {
@@ -507,7 +518,8 @@ static bool ui_confirm_run(const char *message) {
 
   dlg_draw_message(DLG_X + 10, DY + 14, COLS, text, DLG_BG, DLG_MAX_LINES);
 
-  const char *hint = "Enter=Yes  Esc=No";
+  const char *hint = pad_sources_connected() ? "A/Enter=Yes  B/Esc=No"
+                                             : "Enter=Yes  Esc=No";
   int hw = display_text_width(hint);
   display_draw_text(DLG_X + (DLG_W - hw) / 2, DY + DH - 14,
                     hint, DLG_DIM, DLG_BG);
@@ -525,14 +537,17 @@ static bool ui_confirm_run(const char *message) {
     // "Save changes?"), so it never answers a dialog. It is still taken, or
     // it would open the system menu once the dialog had been answered.
     kbd_consume_menu_press();
-    uint32_t btns = kbd_get_buttons_pressed();
+    // A controller answers too (A = Enter, B = Esc), as in the launcher.
+    // kbd_discard_pending above made a button held at entry quiet: only a
+    // fresh press after this dialog opened gives an edge.
+    uint32_t btns = kbd_get_buttons_pressed() | kbd_get_pad_nav_pressed();
     char c        = kbd_get_char();
     if (!armed) {
       // Consume (and ignore) everything until the grace period is over and
-      // Enter is up, so a held or queued Enter cannot count.
+      // Enter and A are up, so a held or queued Enter or A cannot count.
       uint32_t now = to_ms_since_boot(get_absolute_time());
       armed = (now - shown_ms >= UI_CONFIRM_GRACE_MS) &&
-              !(kbd_get_buttons() & BTN_ENTER);
+              !(kbd_get_buttons() & BTN_ENTER) && !(kbd_get_pad() & PAD_A);
       watchdog_update();
       sleep_ms(20);
       continue;

@@ -153,6 +153,49 @@ def test_panels_full_lifecycle(sim_factory, test_sd_card):
     _wait_for(simulator, "PT EXIT quit")
 
 
+def _pad_tap(sim, state):
+    """One press edge from the test pad, read by a frame: hold, let a whole
+    frame run, release, let another run. The paused clock never retires a
+    timed hold, so the release is explicit."""
+    sim.pad(state)
+    _frame_barrier(sim)
+    sim.pad("none")
+    _frame_barrier(sim)
+
+
+def test_panels_driven_by_a_controller(sim_factory, test_sd_card):
+    """The test pad (a controller's path) steps panels, picks a choice with
+    A and leaves with B, as the keyboard's Down, Enter and Esc do."""
+    _stage_panels_lib(test_sd_card)
+    simulator = _paused_sim(sim_factory, test_sd_card)
+
+    simulator.launch_app("panels_test")
+    _wait_for(simulator, "PANELS:SEQ 1")
+    simulator.set_time_multiplier(0)
+    _advance(simulator, TRANSITION_MS)
+
+    _pad_tap(simulator, "down")          # panel 1 -> panel 2
+    _advance(simulator, ADVANCE_MS)
+    _pad_tap(simulator, "down")          # past the last panel -> fade out
+    simulator.step_time(TRANSITION_MS)
+    _wait_for(simulator, "PANELS:SEQ 2")
+    _advance(simulator, TRANSITION_MS)
+    _frame_barrier(simulator)
+
+    _pad_tap(simulator, "down")          # highlight "second"
+    _pad_tap(simulator, "a")             # A confirms, like Enter
+    simulator.step_time(TRANSITION_MS)
+    joined = _wait_for(simulator, "PANELS:SEQ 3")
+    assert "PANELS:CHOICE 2 -> seq 3" in joined
+    simulator.step_time(TRANSITION_MS)
+    _wait_for(simulator, "PT PAYOFF picked=b")
+
+    _pad_tap(simulator, "b")             # B leaves, like Esc
+    _wait_for(simulator, "PT EXIT quit")
+    simulator.pad("off")
+    assert simulator.wait_for_exit(timeout=10.0)["result"] == "returned"
+
+
 def _scroll(sim, frames):
     """Hold the forward key for `frames` frames of SCROLL_STEP_MS each: the
     paused clock gives exactly one frame per step a non-zero dt, so each

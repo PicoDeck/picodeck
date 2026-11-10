@@ -242,6 +242,19 @@ typedef struct {
   uint8_t key[KBD_PAD_BUTTONS][KBD_PAD_SLOTS];
 } kbd_padmap_t;
 
+// True when `key` (a keycode as the map stores it) is a button's primary or
+// alternate key. gamepad.getNavPressed folds Enter/Esc into A/B only while
+// they are not: a player who bound Enter to Start gets Start alone.
+static inline bool kbd_padmap_has_key(const kbd_padmap_t *m, uint8_t key) {
+  if (!key)
+    return false; // 0 marks an unbound slot
+  for (int b = 0; b < KBD_PAD_BUTTONS; b++)
+    for (int s = 0; s < KBD_PAD_SLOTS; s++)
+      if (m->key[b][s] == key)
+        return true;
+  return false;
+}
+
 // The default bindings (primary slots only), in PAD_* order: arrows, then
 // A=F4, B=F5, X=Delete, Y=Backspace, L=F2, R=F3, Start=F1, Select=Tab.
 #define KBD_PAD_DEFAULT_MAP                                                    \
@@ -268,6 +281,11 @@ float kbd_get_pad_axis(int axis);
 // report as BTN_*. So a pad-only player can open the menu with Home, pick
 // Exit and launch the next game.
 uint32_t kbd_get_pad_nav_pressed(void);
+
+// Foreground polls (kbd_poll) since boot. Two reads in one frame see the
+// same count, so a getter can work its result out once per poll
+// (gamepad.getButtonsRepeated, whose repeat clock must advance once).
+uint32_t kbd_poll_count(void);
 
 // Install the effective map (copied). Gamepad state is dropped without edges;
 // a key still held is picked up again quietly by its next HOLD report.

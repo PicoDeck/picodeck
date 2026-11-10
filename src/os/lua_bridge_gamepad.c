@@ -1,6 +1,7 @@
 #include "lua_bridge_internal.h"
 #include "gamepad.h"
 #include "../drivers/keyboard.h"
+#include "btn_repeat.h"
 
 // ── picocalc.gamepad.* ───────────────────────────────────────────────────────
 // The logical gamepad (PAD_* buttons aliased to keys; kbd_event_queue.h; AXIS_*
@@ -51,15 +52,76 @@ static int l_gamepad_getAxis(lua_State *L) {
   return 1;
 }
 
+// The D-pad, A and B share their bits with BTN_UP..BTN_ESC, so a mask of
+// them reads the same in either space (system/lib/panels.lua ORs them into
+// its key masks, and comics name keys as BTN_* constants).
+_Static_assert(PAD_UP == BTN_UP && PAD_DOWN == BTN_DOWN &&
+                   PAD_LEFT == BTN_LEFT && PAD_RIGHT == BTN_RIGHT &&
+                   PAD_A == BTN_ENTER && PAD_B == BTN_ESC,
+               "PAD_UP..PAD_B match BTN_UP..BTN_ESC");
+
+#define PAD_DPAD (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT)
+
+// The gamepad's repeat clock, worked out once per kbd_poll: every call in
+// one frame returns the same mask, and the clock advances once.
+static btn_repeat_t s_rep;
+static uint32_t s_rep_mask, s_rep_poll;
+static bool s_rep_valid;
+
+void lb_gamepad_repeat_reset(void) {
+  btn_repeat_reset(&s_rep);
+  s_rep_valid = false;
+}
+
+static uint32_t pad_repeated(void) {
+  uint32_t poll = kbd_poll_count();
+  if (!s_rep_valid || poll != s_rep_poll) {
+    uint32_t delay, rate;
+    lb_input_repeat_timing(&delay, &rate);
+    s_rep_mask = btn_repeat_step(&s_rep, kbd_get_pad(), kbd_get_pad_pressed(),
+                                 to_ms_since_boot(get_absolute_time()), delay,
+                                 rate);
+    s_rep_poll = poll;
+    s_rep_valid = true;
+  }
+  return s_rep_mask;
+}
+
+// getButtonsRepeated() -> this frame's presses plus a repeat edge for each
+// button held past input.setRepeat's delay, then every rate ms.
+static int l_gamepad_getButtonsRepeated(lua_State *L) {
+  lua_pushinteger(L, pad_repeated());
+  return 1;
+}
+
+// getNavPressed() -> what a menu or list acts on: the D-pad with auto-repeat,
+// the other buttons' press edges, and A for an Enter press, B for an Esc
+// press, each only while that key is no button's key.
+static int l_gamepad_getNavPressed(lua_State *L) {
+  uint32_t nav =
+      (pad_repeated() & PAD_DPAD) | (kbd_get_pad_pressed() & ~PAD_DPAD);
+  uint32_t keys = kbd_get_buttons_pressed();
+  const kbd_padmap_t *map = kbd_get_pad_map();
+  if ((keys & BTN_ENTER) && !kbd_padmap_has_key(map, KEY_ENTER))
+    nav |= PAD_A;
+  if ((keys & BTN_ESC) && !kbd_padmap_has_key(map, KEY_ESC))
+    nav |= PAD_B;
+  lua_pushinteger(L, nav);
+  return 1;
+}
+
 static const luaL_Reg l_gamepad_lib[] = {
     {"getButtons", l_gamepad_getButtons},
     {"getButtonsPressed", l_gamepad_getButtonsPressed},
     {"getButtonsReleased", l_gamepad_getButtonsReleased},
+    {"getButtonsRepeated", l_gamepad_getButtonsRepeated},
+    {"getNavPressed", l_gamepad_getNavPressed},
     {"getLabel", l_gamepad_getLabel},
     {"getAxis", l_gamepad_getAxis},
     {NULL, NULL}};
 
 void lua_bridge_gamepad_init(lua_State *L) {
+  lb_gamepad_repeat_reset();
   register_subtable(L, "gamepad", l_gamepad_lib);
   lua_getfield(L, -1, "gamepad");
   lua_pushinteger(L, PAD_UP); lua_setfield(L, -2, "PAD_UP");
