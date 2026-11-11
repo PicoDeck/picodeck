@@ -328,7 +328,7 @@ Return the number of visual (wrapped) rows the current content occupies.
 
 ## Input helpers
 
-The `wait` methods block the calling Lua coroutine while keeping the system menu, HTTP callbacks, screenshots, and the watchdog all responsive: they run the full OS service pass (menu, callbacks, dev commands, exit request). They poll the keyboard themselves. `waitForAnyKey` and `waitForKey` return once every button is up again.
+The `wait` methods block the calling Lua coroutine while keeping the system menu, HTTP callbacks, screenshots, and the watchdog all responsive: they run the full OS service pass (menu, callbacks, dev commands, exit request). They poll the keyboard themselves. `waitForAnyKey` and `waitForKey` return once every button is up again. All of these read the keyboard only: a game controller does not reach them. To let a controller drive a terminal app, read [`picocalc.gamepad.getNavPressed()`](API-Gamepad.md#picocalcgamepadgetnavpressed) in your own loop, as [`apps/terminal_example`](https://github.com/PicoDeck/picodeck/tree/master/apps/terminal_example) does.
 
 The `read` methods do not poll: they read the result of the last `picocalc.input.update()`, so without one they return `nil` for ever.
 
@@ -385,11 +385,12 @@ Lua-only methods: `setFont`/`getFont`, `setCell`/`getCell`, `setCellColors`, `se
 
 ## Complete example
 
-Writes more than fits, then scrolls back through it with Up and Down. Esc exits.
+Writes more than fits, then scrolls back through it with the D-pad's Up and Down (the arrow keys, or a controller), repeating while one is held. B or Esc exits.
 
 ```lua
 local D = picocalc.display
 local input = picocalc.input
+local gp = picocalc.gamepad
 
 local term = picocalc.terminal.new()
 term:setCursorVisible(false)
@@ -407,16 +408,16 @@ redraw()
 
 while true do
     input.update()
-    local pressed = input.getButtonsPressed()
+    local nav = gp.getNavPressed()
     local offset = term:getScrollbackOffset()
-    if pressed & input.BTN_ESC ~= 0 then
+    if nav & gp.PAD_B ~= 0 then
         return
-    elseif pressed & input.BTN_UP ~= 0 then
+    elseif nav & gp.PAD_UP ~= 0 then
         if offset < term:getScrollbackCount() then
             term:setScrollbackOffset(offset + 1)
             redraw()
         end
-    elseif pressed & input.BTN_DOWN ~= 0 then
+    elseif nav & gp.PAD_DOWN ~= 0 then
         if offset > 0 then
             term:setScrollbackOffset(offset - 1)
             redraw()

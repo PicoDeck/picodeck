@@ -4,6 +4,24 @@
 local pc = picocalc
 local disp = pc.display
 local input = pc.input
+local gp = pc.gamepad
+
+-- The key bound to a gamepad button, for the text the demos print.
+local function pad_key(btn) return gp.getLabel(btn) or "?" end
+
+-- "Press any key": a key, a character or any gamepad button. The terminal's
+-- own wait-for-key calls read the keyboard's buttons only, so a controller (or
+-- a typed letter) could not get past it.
+local function wait_any()
+    while true do
+        input.update()
+        if input.getButtonsPressed() ~= 0 or gp.getButtonsPressed() ~= 0
+           or input.getChar() then
+            return
+        end
+        pc.sys.sleep(16)
+    end
+end
 
 local function demo_basic_text(term)
     term:write("\x1b[2J")  -- Clear screen
@@ -91,7 +109,7 @@ local function demo_font(term)
     
     term:write("Current font: " .. term:getFont() .. "\n\n")
     
-    term:write("Press Left/Right to switch fonts:\n")
+    term:write("Press " .. pad_key(gp.PAD_LEFT) .. "/" .. pad_key(gp.PAD_RIGHT) .. " to switch fonts:\n")
     term:write("- scientifica (default)\n")
     term:write("- scientifica_bold\n")
     term:write("\n")
@@ -160,7 +178,7 @@ local function main()
     term:write("\nPress any key to continue...")
     term:render()
     disp.flush()
-    term:waitForAnyKey()
+    wait_any()
     
     current_demo = DEMO_COLORS
     run_demo(term, current_demo)
@@ -169,7 +187,7 @@ local function main()
     term:write("\nPress any key to continue...")
     term:render()
     disp.flush()
-    term:waitForAnyKey()
+    wait_any()
     
     current_demo = DEMO_RGB
     run_demo(term, current_demo)
@@ -178,7 +196,7 @@ local function main()
     term:write("\nPress any key to continue...")
     term:render()
     disp.flush()
-    term:waitForAnyKey()
+    wait_any()
     
     current_demo = DEMO_CURSOR
     run_demo(term, current_demo)
@@ -187,7 +205,7 @@ local function main()
     term:write("\nPress any key to continue...")
     term:render()
     disp.flush()
-    term:waitForAnyKey()
+    wait_any()
     
     current_demo = DEMO_BOX
     run_demo(term, current_demo)
@@ -196,7 +214,7 @@ local function main()
     term:write("\nPress any key to continue...")
     term:render()
     disp.flush()
-    term:waitForAnyKey()
+    wait_any()
     
     -- Interactive font demo
     local fonts = {"scientifica", "scientifica_bold"}
@@ -212,27 +230,25 @@ local function main()
             term:setFont(fonts[font_idx])
             term:write("The quick brown fox\n")
             term:write("jumps over the lazy dog.\n\n")
-            term:write("Left/Right: switch font\n")
-            term:write("Enter: continue\n")
+            term:write(pad_key(gp.PAD_LEFT) .. "/" .. pad_key(gp.PAD_RIGHT) .. ": switch font\n")
+            term:write(pad_key(gp.PAD_A) .. ": continue\n")
             term:render()
             disp.flush()
             redraw = false
         end
 
         input.update()
-        local key = term:readKey()
-        if key then
-            if key & input.BTN_ENTER ~= 0 then
-                break
-            elseif key & input.BTN_LEFT ~= 0 then
-                font_idx = font_idx - 1
-                if font_idx < 1 then font_idx = #fonts end
-                redraw = true
-            elseif key & input.BTN_RIGHT ~= 0 then
-                font_idx = font_idx + 1
-                if font_idx > #fonts then font_idx = 1 end
-                redraw = true
-            end
+        local nav = gp.getNavPressed()
+        if nav & gp.PAD_A ~= 0 then
+            break
+        elseif nav & gp.PAD_LEFT ~= 0 then
+            font_idx = font_idx - 1
+            if font_idx < 1 then font_idx = #fonts end
+            redraw = true
+        elseif nav & gp.PAD_RIGHT ~= 0 then
+            font_idx = font_idx + 1
+            if font_idx > #fonts then font_idx = 1 end
+            redraw = true
         end
         pc.sys.sleep(30)
     end
@@ -246,27 +262,25 @@ local function main()
     local frames = {"|", "/", "-", "\\"}
     local anim_frame = 1
     local anim_start_time = pc.sys.getTimeMs()
-    local last_scroll_time = 0
-    local scroll_delay = 150
-    local advance_debounce = 0
 
     while true do
         input.update()
-        local held = input.getButtons()
+        -- getNavPressed() repeats a held D-pad direction (input.setRepeat's
+        -- timing) and gives A and B once per press: no timers needed here.
+        local nav = gp.getNavPressed()
         local now = pc.sys.getTimeMs()
 
-        if held & input.BTN_ESC ~= 0 then
+        if nav & gp.PAD_B ~= 0 then
             return
         end
 
-        -- Advance from animation to scrollback demo on Enter
+        -- Advance from animation to scrollback demo on A
         if current_demo == DEMO_ANIMATION then
-            if held & input.BTN_ENTER ~= 0 and now - advance_debounce > 300 then
+            if nav & gp.PAD_A ~= 0 then
                 current_demo = DEMO_SCROLLBACK
                 run_demo(term, current_demo)
                 term:render()
                 disp.flush()
-                advance_debounce = now
             else
                 local elapsed = now - anim_start_time
                 local new_frame = (math.floor(elapsed / 150) % 4) + 1
@@ -278,26 +292,19 @@ local function main()
                 end
             end
         elseif current_demo == DEMO_SCROLLBACK then
-            if held & input.BTN_UP ~= 0 then
-                if now - last_scroll_time > scroll_delay then
-                    local total = term:getScrollbackCount()
-                    if total > 0 then
-                        scroll_offset = scroll_offset + 1
-                        if scroll_offset > total then scroll_offset = total end
-                        term:setScrollbackOffset(scroll_offset)
-                        last_scroll_time = now
-                    end
+            if nav & gp.PAD_UP ~= 0 then
+                local total = term:getScrollbackCount()
+                if total > 0 then
+                    scroll_offset = scroll_offset + 1
+                    if scroll_offset > total then scroll_offset = total end
+                    term:setScrollbackOffset(scroll_offset)
                 end
-            elseif held & input.BTN_DOWN ~= 0 then
-                if now - last_scroll_time > scroll_delay then
-                    if scroll_offset > 0 then
-                        scroll_offset = scroll_offset - 1
-                        if scroll_offset < 0 then scroll_offset = 0 end
-                        term:setScrollbackOffset(scroll_offset)
-                        last_scroll_time = now
-                    end
+            elseif nav & gp.PAD_DOWN ~= 0 then
+                if scroll_offset > 0 then
+                    scroll_offset = scroll_offset - 1
+                    term:setScrollbackOffset(scroll_offset)
                 end
-            elseif scroll_offset > 0 and (held & (input.BTN_LEFT | input.BTN_RIGHT | input.BTN_ENTER)) ~= 0 then
+            elseif scroll_offset > 0 and nav & (gp.PAD_LEFT | gp.PAD_RIGHT | gp.PAD_A) ~= 0 then
                 scroll_offset = 0
                 term:setScrollbackOffset(0)
             end
@@ -316,25 +323,22 @@ local function main()
                 end
             end
         elseif current_demo == DEMO_FONT then
-            if held & input.BTN_LEFT ~= 0 and now - advance_debounce > 200 then
+            if nav & gp.PAD_LEFT ~= 0 then
                 term:setFont("scientifica")
                 term:write("\rFont: scientifica    ")
                 term:render()
                 disp.flush()
-                advance_debounce = now
-            elseif held & input.BTN_RIGHT ~= 0 and now - advance_debounce > 200 then
+            elseif nav & gp.PAD_RIGHT ~= 0 then
                 term:setFont("scientifica_bold")
                 term:write("\rFont: scientifica_bold")
                 term:render()
                 disp.flush()
-                advance_debounce = now
-            elseif held & input.BTN_ENTER ~= 0 and now - advance_debounce > 300 then
+            elseif nav & gp.PAD_A ~= 0 then
                 current_demo = DEMO_ANIMATION
                 run_demo(term, current_demo)
-                term:write("\nPress Enter for next demo...")
+                term:write("\nPress " .. pad_key(gp.PAD_A) .. " for next demo...")
                 term:render()
                 disp.flush()
-                advance_debounce = now
             end
         end
 
