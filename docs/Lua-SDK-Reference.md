@@ -49,11 +49,13 @@ while true do
     picocalc.input.update()
     
     -- Handle input: getNavPressed() reads the keyboard, rebound keys and a
-    -- controller (Enter is A, Esc is B); a held direction repeats
+    -- controller (Enter is A); a held direction repeats
     local nav = picocalc.gamepad.getNavPressed()
     if nav & picocalc.gamepad.PAD_UP ~= 0 then y = y - 5 end
     if nav & picocalc.gamepad.PAD_DOWN ~= 0 then y = y + 5 end
-    if nav & picocalc.gamepad.PAD_B ~= 0 then return end
+    -- Quit on Esc itself: in a game B is an action, and getNavPressed would
+    -- read Esc as B
+    if picocalc.input.getButtonsPressed() & picocalc.input.BTN_ESC ~= 0 then return end
     
     -- Draw
     picocalc.display.clear(picocalc.display.BLACK)
