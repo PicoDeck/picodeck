@@ -10,6 +10,11 @@ local fs = picocalc.fs
 local ui = picocalc.ui
 local zip = picocalc.zip
 local crypto = picocalc.crypto
+local gp = picocalc.gamepad
+
+-- The key bound to a gamepad button, for hints (read at draw time).
+local function pad_key(btn) return gp.getLabel(btn) or "?" end
+local function tabs_hint() return pad_key(gp.PAD_L) .. "/" .. pad_key(gp.PAD_R) .. ":Tab" end
 
 -- ── Configuration ──────────────────────────────────────────────────────────
 
@@ -1176,8 +1181,8 @@ local function draw_no_wifi()
     draw_centered(120, "WiFi not connected", RED, BLACK)
     draw_centered(145, "Configure WiFi credentials", GRAY, BLACK)
     draw_centered(160, "in system settings first.", GRAY, BLACK)
-    draw_centered(195, "Enter: Retry", CYAN, BLACK)
-    ui.drawFooter("ESC: Exit", "Enter: Retry")
+    draw_centered(195, pad_key(gp.PAD_A) .. ": Retry", CYAN, BLACK)
+    ui.drawFooter("ESC: Exit", pad_key(gp.PAD_A) .. ": Retry")
     display.flush()
 end
 
@@ -1202,7 +1207,7 @@ local function draw_browse()
         draw_centered(list_y + 58, truncate(catalog_err or "", W - 16), GRAY, BLACK)
         local retrying = deferred and deferred.fn == fetch_catalog
         draw_centered(list_y + 84, retrying and "Trying again..." or
-                      "Enter: Try again", CYAN, BLACK)
+                      pad_key(gp.PAD_A) .. ": Try again", CYAN, BLACK)
     elseif #filtered_apps == 0 then
         draw_centered(list_y + 40, "No apps available", GRAY, BLACK)
     else
@@ -1228,7 +1233,7 @@ local function draw_browse()
         end
     end
 
-    ui.drawFooter("ESC:Exit  \x1b\x1a:Category", "\x18\x19:Select  \x0d:Open")
+    ui.drawFooter("ESC:Exit  " .. tabs_hint() .. "  \x1b\x1a:Cat", "\x18\x19:Select  " .. pad_key(gp.PAD_A) .. ":Open")
     display.flush()
 end
 
@@ -1284,7 +1289,7 @@ local function draw_updates()
         end
     end
 
-    ui.drawFooter("ESC:Exit", "\x18\x19:Select  \x0d:Update")
+    ui.drawFooter("ESC:Exit  " .. tabs_hint(), "\x18\x19:Select  " .. pad_key(gp.PAD_A) .. ":Update")
     display.flush()
 end
 
@@ -1336,7 +1341,7 @@ local function draw_installed()
         end
     end
 
-    ui.drawFooter("ESC:Exit  Del:Remove", "\x18\x19:Select  \x0d:Details")
+    ui.drawFooter("ESC:Exit  " .. tabs_hint() .. "  " .. pad_key(gp.PAD_X) .. ":Remove", pad_key(gp.PAD_A) .. ":Details")
     display.flush()
 end
 
@@ -1402,16 +1407,16 @@ local function draw_detail()
     if status == "new" then
         local fw_ok = not app.min_firmware or not version_newer(app.min_firmware, sys.getVersion())
         if fw_ok then
-            draw_centered(btn_y, "[ Enter: Install ]", GREEN, BLACK)
+            draw_centered(btn_y, "[ " .. pad_key(gp.PAD_A) .. ": Install ]", GREEN, BLACK)
         else
             draw_centered(btn_y, "Requires firmware update", RED, BLACK)
         end
     elseif status == "update" then
-        draw_centered(btn_y, "[ Enter: Update " .. inst_ver .. " -> " .. app.version .. " ]", CYAN, BLACK)
+        draw_centered(btn_y, "[ " .. pad_key(gp.PAD_A) .. ": Update " .. inst_ver .. " -> " .. app.version .. " ]", CYAN, BLACK)
     elseif status == "installed" then
         draw_centered(btn_y, "Installed v" .. inst_ver, GREEN, BLACK)
         if app.removable ~= false then
-            draw_centered(btn_y + 16, "Del: Remove", RED, BLACK)
+            draw_centered(btn_y + 16, pad_key(gp.PAD_X) .. ": Remove", RED, BLACK)
         end
     end
 
@@ -1467,9 +1472,9 @@ local function draw_fw_confirm()
     draw_centered(176, "Do not power off during", GRAY, BLACK)
     draw_centered(192, "the update process.", GRAY, BLACK)
 
-    draw_centered(230, "Enter: Install & Reboot", GREEN, BLACK)
+    draw_centered(230, pad_key(gp.PAD_A) .. ": Install & Reboot", GREEN, BLACK)
     draw_centered(250, "ESC: Cancel", RED, BLACK)
-    ui.drawFooter("ESC: Cancel", "Enter: Install")
+    ui.drawFooter("ESC: Cancel", pad_key(gp.PAD_A) .. ": Install")
     display.flush()
 end
 
@@ -1477,12 +1482,12 @@ end
 
 local function handle_input()
     input.update()
-    local pressed = input.getButtonsPressed()
-    if pressed == 0 then return end
+    local nav = gp.getNavPressed()  -- keys, rebound keys or a controller
+    if nav == 0 then return end
     invalidate()  -- the selection, scroll, filter or tab may change
 
-    -- ESC: exit or go back
-    if pressed & input.BTN_ESC ~= 0 then
+    -- B or Esc: exit or go back
+    if nav & gp.PAD_B ~= 0 then
         if current_conn then current_conn:close(); current_conn = nil end
 
         if current_screen == SCR_DETAIL then
@@ -1504,51 +1509,53 @@ local function handle_input()
         end
     end
 
-    -- Tab switching: F1/F2/F3 or ,/.
+    -- Tabs: L and R (F2/F3 by default) step to the previous and next tab,
+    -- wrapping. ui.drawTabs is given no keys (it reads the keyboard only),
+    -- so a controller switches here.
     if current_screen == SCR_BROWSE or current_screen == SCR_UPDATES
        or current_screen == SCR_INSTALLED then
         local new_tab = nil
-        if pressed & input.BTN_F1 ~= 0 then new_tab = TAB_BROWSE end
-        if pressed & input.BTN_F2 ~= 0 then new_tab = TAB_UPDATES end
-        if pressed & input.BTN_F3 ~= 0 then new_tab = TAB_INSTALLED end
+        if nav & gp.PAD_L ~= 0 then
+            new_tab = current_tab > TAB_BROWSE and current_tab - 1 or TAB_INSTALLED
+        elseif nav & gp.PAD_R ~= 0 then
+            new_tab = current_tab < TAB_INSTALLED and current_tab + 1 or TAB_BROWSE
+        end
 
-        if new_tab and new_tab ~= current_tab then
+        if new_tab then
             current_tab = new_tab
             selected_idx = 1
             scroll_pos = 0
-            if new_tab == TAB_BROWSE then current_screen = SCR_BROWSE
-            elseif new_tab == TAB_UPDATES then current_screen = SCR_UPDATES
-            else current_screen = SCR_INSTALLED end
+            current_screen = tab_screen()
             return
         end
     end
 
-    -- Navigation
-    if pressed & input.BTN_UP ~= 0 then
+    -- Navigation (a held D-pad direction repeats)
+    if nav & gp.PAD_UP ~= 0 then
         selected_idx = selected_idx - 1
         if selected_idx < 1 then selected_idx = 1 end
     end
-    if pressed & input.BTN_DOWN ~= 0 then
+    if nav & gp.PAD_DOWN ~= 0 then
         selected_idx = selected_idx + 1
     end
 
     -- Category filter (left/right in Browse tab)
     if current_screen == SCR_BROWSE then
-        if pressed & input.BTN_LEFT ~= 0 then
+        if nav & gp.PAD_LEFT ~= 0 then
             category_idx = category_idx - 1
             if category_idx < 1 then category_idx = #CATEGORIES end
             selected_idx = 1; scroll_pos = 0
             apply_filter()
         end
-        if pressed & input.BTN_RIGHT ~= 0 then
+        if nav & gp.PAD_RIGHT ~= 0 then
             category_idx = (category_idx % #CATEGORIES) + 1
             selected_idx = 1; scroll_pos = 0
             apply_filter()
         end
     end
 
-    -- Enter: select item
-    if pressed & input.BTN_ENTER ~= 0 then
+    -- A or Enter: select item
+    if nav & gp.PAD_A ~= 0 then
         if current_screen == SCR_NO_WIFI
            or (current_screen == SCR_BROWSE and not catalog) then
             deferred = nil  -- this replaces a retry that was waiting
@@ -1611,8 +1618,8 @@ local function handle_input()
         end
     end
 
-    -- Delete key for removal
-    if pressed & input.BTN_DEL ~= 0 then
+    -- X (Del by default): remove
+    if nav & gp.PAD_X ~= 0 then
         if current_screen == SCR_DETAIL and detail_app then
             if detail_app.removable ~= false then
                 local status = get_app_status(detail_app)
