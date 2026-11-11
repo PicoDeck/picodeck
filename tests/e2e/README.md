@@ -180,6 +180,7 @@ pass; a skip needs a reason (no WiFi) that is fixed before the release.
 tests/e2e/
 ├── conftest.py          fixtures and hooks (simulator, SD card, health check, skip allow-list)
 ├── helpers.py           SD staging, the Lua test-kit runner, golden compare, heap-metric check
+├── pad_apps.py          stage the in-repo apps (apps/) and drive them from the test gamepad
 ├── picodeck_simulator.py   JSON-RPC client and process wrapper
 ├── hw_target.py         --target sim|hw: SimTarget / HwTarget (serial device backend)
 ├── hw_apps/<name>/      hardware-only fixture apps, pushed to the device by the test

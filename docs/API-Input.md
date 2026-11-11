@@ -80,6 +80,8 @@ if pressed & picocalc.input.BTN_DOWN ~= 0 then
 end
 ```
 
+For a menu, prefer [`picocalc.gamepad.getNavPressed()`](API-Gamepad.md#picocalcgamepadgetnavpressed): the same repeat on the D-pad, plus A and B (Enter and Esc), and it answers rebound keys and a game controller, which `picocalc.input` never sees.
+
 ---
 
 #### `picocalc.input.setRepeat(delay_ms [, rate_ms])`
