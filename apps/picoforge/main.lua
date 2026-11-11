@@ -268,13 +268,19 @@ local function handle_browser_input()
         browser_delete_project()
     elseif nav & gp.PAD_UP ~= 0 then
         browser_selected = browser_selected - 1
-        if browser_selected < 1 then browser_selected = math.max(1, #browser_projects) end
+        if browser_selected < 1 then
+            browser_selected = math.max(1, #browser_projects)
+            browser_scroll = math.max(0, #browser_projects - BROWSER_VISIBLE)
+        end
         if browser_selected <= browser_scroll then
             browser_scroll = browser_selected - 1
         end
     elseif nav & gp.PAD_DOWN ~= 0 then
         browser_selected = browser_selected + 1
-        if browser_selected > #browser_projects then browser_selected = 1 end
+        if browser_selected > #browser_projects then
+            browser_selected = 1
+            browser_scroll = 0
+        end
         if browser_selected > browser_scroll + BROWSER_VISIBLE then
             browser_scroll = browser_selected - BROWSER_VISIBLE
         end
