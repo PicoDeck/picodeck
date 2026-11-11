@@ -16,7 +16,7 @@
 --                        old driver comment.  Behaviour unknown.
 --
 -- Whichever phase scrolls cleanly through both laps is the config panels.lua
--- should use.  Self-driving (no key input needed); ESC exits.
+-- should use.  Self-driving (no key input needed); B or Esc exits.
 
 local disp  = picocalc.display
 local input = picocalc.input
@@ -48,7 +48,8 @@ end
 
 local function wantExit()
     input.update()
-    return input.getButtonsPressed() & input.BTN_ESC ~= 0
+    -- B, or Esc (which the gamepad reads as B)
+    return picocalc.gamepad.getNavPressed() & picocalc.gamepad.PAD_B ~= 0
 end
 
 local phases = {
