@@ -7,6 +7,10 @@ local sys = picocalc.sys
 local net = picocalc.network
 local fs = picocalc.fs
 local ui = picocalc.ui
+local gp = picocalc.gamepad
+
+-- The key bound to a gamepad button, for hints (read at draw time).
+local function pad_key(btn) return gp.getLabel(btn) or "?" end
 
 -- GitHub Releases API configuration
 local GH_API_HOST  = "api.github.com"
@@ -187,6 +191,7 @@ local function check_for_update()
     local status = net.getStatus()
     if status ~= net.kStatusConnected then
         error_msg = "WiFi not connected"
+        sys.log("UPDATER: " .. error_msg)
         ui.toast(error_msg, ui.TOAST_ERROR)
         current_screen = SCR_MAIN
         return
@@ -762,7 +767,7 @@ local function draw_main()
     display.drawText(8, 50, "Current firmware:", GRAY, BLACK)
     display.drawText(8, 66, "  Version " .. ver, WHITE, BLACK)
 
-    draw_centered(110, "Press Enter to check", CYAN, BLACK)
+    draw_centered(110, "Press " .. pad_key(gp.PAD_A) .. " to check", CYAN, BLACK)
     draw_centered(126, "for updates", CYAN, BLACK)
 
     ui.drawFooter("ESC: Exit", "")
@@ -784,7 +789,7 @@ local function draw_up_to_date()
     draw_centered(130, "Firmware is up to date!", GREEN, BLACK)
     local ver = sys.getVersion()
     draw_centered(150, "Version " .. ver, GRAY, BLACK)
-    draw_centered(190, "Enter: Reflash current version", CYAN, BLACK)
+    draw_centered(190, pad_key(gp.PAD_A) .. ": Reflash current version", CYAN, BLACK)
     ui.drawFooter("ESC: Back", "")
     display.flush()
 end
@@ -821,7 +826,7 @@ local function draw_available()
         end
     end
 
-    ui.drawFooter("ESC: Cancel", "Enter: Download")
+    ui.drawFooter("ESC: Cancel", pad_key(gp.PAD_A) .. ": Download")
     display.flush()
 end
 
@@ -857,7 +862,7 @@ local function draw_done()
     draw_centered(170, "The device will reboot", YELLOW, BLACK)
     draw_centered(186, "to apply the update.", YELLOW, BLACK)
 
-    ui.drawFooter("ESC: Cancel", "Enter: Install Now")
+    ui.drawFooter("ESC: Cancel", pad_key(gp.PAD_A) .. ": Install Now")
     display.flush()
 end
 
@@ -872,9 +877,9 @@ local function draw_confirm()
     draw_centered(186, "Do not power off during", GRAY, BLACK)
     draw_centered(202, "the update process.", GRAY, BLACK)
 
-    draw_centered(240, "Enter: Yes, Install", GREEN, BLACK)
+    draw_centered(240, pad_key(gp.PAD_A) .. ": Yes, Install", GREEN, BLACK)
     draw_centered(260, "ESC: No, Cancel", RED, BLACK)
-    ui.drawFooter("ESC: No", "Enter: Install")
+    ui.drawFooter("ESC: No", pad_key(gp.PAD_A) .. ": Install")
     display.flush()
 end
 
@@ -885,10 +890,10 @@ local frame = 0
 
 while true do
     input.update()
-    local pressed = input.getButtonsPressed()
+    local nav = gp.getNavPressed()  -- keys, rebound keys or a controller
 
-    -- ESC exits or goes back
-    if pressed & input.BTN_ESC ~= 0 then
+    -- B or Esc exits or goes back
+    if nav & gp.PAD_B ~= 0 then
         if current_conn then
             current_conn:close()
             current_conn = nil
@@ -905,8 +910,8 @@ while true do
         end
     end
 
-    -- Enter actions per screen
-    if pressed & input.BTN_ENTER ~= 0 then
+    -- A or Enter: the action of each screen
+    if nav & gp.PAD_A ~= 0 then
         if current_screen == SCR_MAIN then
             check_for_update()
         elseif current_screen == SCR_AVAILABLE then
