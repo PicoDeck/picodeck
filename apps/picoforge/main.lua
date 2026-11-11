@@ -6,6 +6,10 @@ local disp = pc.display
 local input = pc.input
 local sys = pc.sys
 local fs = pc.fs
+local gp = pc.gamepad
+
+-- The key bound to a gamepad button, for the browser's hint.
+local function pad_key(btn) return gp.getLabel(btn) or "?" end
 
 -- Button constants (bitmask)
 local BTN = {
@@ -181,7 +185,8 @@ local function draw_browser()
         disp.drawText(10, y, "(no projects yet)", 0x7BEF)
     end
 
-    draw_footer("Enter:Open  N:New  D:Delete  Esc:Quit")
+    draw_footer(string.format("%s:Open  N:New  %s/D:Delete  Esc:Quit",
+                              pad_key(gp.PAD_A), pad_key(gp.PAD_X)))
     disp.flush()
 end
 
@@ -206,7 +211,7 @@ local function browser_delete_project()
         local entries = fs.listDir(base)
         if entries then
             for _, e in ipairs(entries) do
-                if not e.isDir then
+                if not e.is_dir then
                     fs.delete(base .. "/" .. e.name)
                 end
             end
@@ -252,28 +257,32 @@ end
 
 local function handle_browser_input()
     input.update()
-    local pressed = input.getButtonsPressed()
+    local nav = gp.getNavPressed()  -- keys, rebound keys or a controller
     local char = input.getChar()
 
-    if btn(pressed, BTN.UP) then
+    -- The letters first: N (a typed name) and D are the keyboard's, and a
+    -- letter the player bound to a gamepad button does only its command.
+    if char == "n" or char == "N" then
+        browser_new_project()
+    elseif char == "d" or char == "D" then
+        browser_delete_project()
+    elseif nav & gp.PAD_UP ~= 0 then
         browser_selected = browser_selected - 1
         if browser_selected < 1 then browser_selected = math.max(1, #browser_projects) end
         if browser_selected <= browser_scroll then
             browser_scroll = browser_selected - 1
         end
-    elseif btn(pressed, BTN.DOWN) then
+    elseif nav & gp.PAD_DOWN ~= 0 then
         browser_selected = browser_selected + 1
         if browser_selected > #browser_projects then browser_selected = 1 end
         if browser_selected > browser_scroll + BROWSER_VISIBLE then
             browser_scroll = browser_selected - BROWSER_VISIBLE
         end
-    elseif btn(pressed, BTN.ENTER) then
+    elseif nav & gp.PAD_A ~= 0 then
         browser_open_project()
-    elseif btn(pressed, BTN.ESC) then
+    elseif nav & gp.PAD_B ~= 0 then
         running = false
-    elseif char == "n" or char == "N" then
-        browser_new_project()
-    elseif char == "d" or char == "D" then
+    elseif nav & gp.PAD_X ~= 0 then
         browser_delete_project()
     end
 end
