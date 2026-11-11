@@ -1262,11 +1262,24 @@ while true do
     local released = input.getButtonsReleased()
     button_state = input.getButtons()
     local nav = gp.getNavPressed()  -- every tab's navigation; `pressed` stays for the Input tab
+
+    -- Get char first so it's available when we check raw key
+    last_char = input.getChar()
+
+    -- A letter shortcut (T anywhere it is read, R on the Tests tab) is
+    -- checked before the pad: a key the player bound to a button would
+    -- otherwise also step the tab or press that button.
+    local letter = last_char and last_char:upper()
+    local busy = sd_state == "writing" or sd_state == "reading" or sd_state == "cleanup"
+        or ram_state == "writing" or ram_state == "reading"
+    if not busy and active_tab ~= 2 and active_tab ~= 5
+        and (letter == "T" and (active_tab ~= 6 or ram_state == "idle")
+             or letter == "R" and active_tab == 1) then
+        nav = 0
+    end
     nav = step_tab(nav)
 
     -- Track raw key and character for Input tab
-    -- Get char first so it's available when we check raw key
-    last_char = input.getChar()
     local raw = input.getRawKey()
     if raw ~= 0 and raw ~= last_raw then
         last_raw = raw

@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from pad_apps import (count_pixels, finish, launch, mark, press, region, tap,
-                      wait_region, wait_until)
+from pad_apps import (count_pixels, finish, launch, mark, press, rebind,
+                      region, stage, tap, wait_region, wait_until)
 
 pytestmark = pytest.mark.sd(fixtures=[], reserve=1)
 
@@ -62,4 +62,23 @@ def test_systest_tab_step_does_not_move_the_list(simulator):
     press(sim, "a")                       # still the first entry
     wait_until(lambda: count_pixels(sim, HELLO_BOX, _cyan) > 200)
     press(sim, "b")
+    finish(sim)
+
+
+def test_systest_r_bound_to_r_only_reruns(simulator):
+    """R reruns the tests. Bound to the R button (a player's choice), typing
+    R must still only rerun, not also step to the Functions tab."""
+    sim = simulator
+    stage(sim, "systest")
+    rebind(sim, "systest", {"r": ["R"]})
+    seq = mark(sim)
+    launch(sim, "systest", settle=0)
+    sim.wait_for_log(r"^System test log message$", timeout=15, since_seq=seq)
+    time.sleep(0.5)
+    tests_tab = region(sim, TAB_BAR)
+    seq = mark(sim)
+    tap(sim, "r")
+    sim.wait_for_log(r"^System test log message$", timeout=5, since_seq=seq)
+    time.sleep(0.5)
+    assert region(sim, TAB_BAR) == tests_tab
     finish(sim)
