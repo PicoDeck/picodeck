@@ -43,3 +43,23 @@ def test_systest_tabs_and_lists_on_the_pad(simulator):
     press(sim, "down")
     wait_region(sim, TAB_BAR, lambda r: r == functions_tab)
     finish(sim)                           # B on the Functions list exits
+
+
+def test_systest_tab_step_does_not_move_the_list(simulator):
+    sim = simulator
+    seq = mark(sim)
+    launch(sim, "systest", settle=0)
+    sim.wait_for_log(r"^System test log message$", timeout=15, since_seq=seq)
+    time.sleep(0.5)
+    tests_tab = region(sim, TAB_BAR)
+    tap(sim, "t")                         # T works on the Tests tab: Up/Down step
+    press(sim, "down")                    # Tests -> Functions
+    functions_tab = wait_region(sim, TAB_BAR, lambda r: r != tests_tab)
+    press(sim, "down")                    # leaves Functions
+    wait_region(sim, TAB_BAR, lambda r: r != functions_tab)
+    press(sim, "l")                       # back; L never moves a list
+    wait_region(sim, TAB_BAR, lambda r: r == functions_tab)
+    press(sim, "a")                       # still the first entry
+    wait_until(lambda: count_pixels(sim, HELLO_BOX, _cyan) > 200)
+    press(sim, "b")
+    finish(sim)

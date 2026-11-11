@@ -109,7 +109,9 @@ end
 local function pad_key(btn) return gp.getLabel(btn) or "?" end
 local function pad_updown() return pad_key(gp.PAD_UP) .. "/" .. pad_key(gp.PAD_DOWN) end
 
--- This frame's tab step from the getNavPressed() mask.
+-- This frame's tab step from the getNavPressed() mask. Returns the mask with
+-- the tab keys cleared when it stepped, so that press does nothing else
+-- (Up/Down after T would otherwise also move the list being left).
 local function step_tab(nav)
     local prev = gp.PAD_L | (tabs_on_updown and gp.PAD_UP or gp.PAD_LEFT)
     local nxt = gp.PAD_R | (tabs_on_updown and gp.PAD_DOWN or gp.PAD_RIGHT)
@@ -117,7 +119,10 @@ local function step_tab(nav)
         active_tab = active_tab > 1 and active_tab - 1 or #tab_labels
     elseif nav & nxt ~= 0 then
         active_tab = active_tab < #tab_labels and active_tab + 1 or 1
+    else
+        return nav
     end
+    return nav & ~(prev | nxt)
 end
 
 -- ── Test Functions ────────────────────────────────────────────────────────────
@@ -1257,6 +1262,7 @@ while true do
     local released = input.getButtonsReleased()
     button_state = input.getButtons()
     local nav = gp.getNavPressed()  -- every tab's navigation; `pressed` stays for the Input tab
+    nav = step_tab(nav)
 
     -- Track raw key and character for Input tab
     -- Get char first so it's available when we check raw key
@@ -1414,7 +1420,6 @@ while true do
         end
     end
 
-    step_tab(nav)
     draw_tabs_demo()
 
     disp.flush()
