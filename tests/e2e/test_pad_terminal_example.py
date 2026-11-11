@@ -63,3 +63,21 @@ def test_terminal_example_keys_still_continue(simulator):
     _shows(sim, SCREENS[1])
     sim.exit_app()
     sim.wait_for_exit(timeout=10)
+
+
+def test_terminal_example_held_button_advances_one_screen(simulator):
+    """A held A moves past one "Press any key" and waits for its release.
+    (The harness cannot repeat a held keyboard key, so the character-repeat
+    case on the device is not covered here.)"""
+    sim = simulator
+    launch(sim, "terminal_example", settle=0)
+    _shows(sim, "=== PicoDeck Terminal Demo ===")
+    sim.pad("a", 1200)
+    _shows(sim, SCREENS[0])
+    time.sleep(0.8)
+    assert SCREENS[1] not in _text(sim)
+    time.sleep(0.8)
+    press(sim, "a")
+    _shows(sim, SCREENS[1])
+    sim.exit_app()
+    sim.wait_for_exit(timeout=10)

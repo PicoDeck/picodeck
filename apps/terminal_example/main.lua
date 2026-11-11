@@ -11,12 +11,22 @@ local function pad_key(btn) return gp.getLabel(btn) or "?" end
 
 -- "Press any key": a key, a character or any gamepad button. The terminal's
 -- own wait-for-key calls read the keyboard's buttons only, so a controller (or
--- a typed letter) could not get past it.
+-- a typed letter) could not get past it. After the press it waits for release
+-- and drops the queued characters: a held key repeats its character, which
+-- would otherwise skip the next "Press any key" screen.
 local function wait_any()
     while true do
         input.update()
         if input.getButtonsPressed() ~= 0 or gp.getButtonsPressed() ~= 0
            or input.getChar() then
+            break
+        end
+        pc.sys.sleep(16)
+    end
+    while true do
+        input.update()
+        while input.getChar() do end
+        if input.getButtons() == 0 and gp.getButtons() == 0 then
             return
         end
         pc.sys.sleep(16)
