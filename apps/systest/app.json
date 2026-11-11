@@ -4,5 +4,6 @@
     "description": "Tests exposed system APIs",
     "version": "1.0",
     "author": "PicoDeck",
-    "category": "system"
+    "category": "system",
+    "min_firmware": "0.7.0"
 }

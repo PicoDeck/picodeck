@@ -7,6 +7,7 @@ local input = pc.input
 local sys = pc.sys
 local fs = pc.fs
 local wifi = pc.wifi
+local gp = pc.gamepad
 
 -- Colors
 local BG     = disp.BLACK
@@ -53,7 +54,10 @@ local button_state = 0
 -- Tab demo state
 local active_tab = 1
 local tab_labels = {"Tests", "Functions", "Input", "Network", "SD Card", "RAM"}
-local nav_keys = {prev = input.BTN_LEFT, next = input.BTN_RIGHT}
+-- Tabs step on the gamepad's L/R, and on the D-pad: Left/Right, or Up/Down
+-- after T. Worked out in Lua (step_tab), not by ui.drawTabs, whose keys
+-- are read from the keyboard only.
+local tabs_on_updown = false
 
 -- Functions tab state
 local func_sel = 1
@@ -98,6 +102,22 @@ local function btn_names(mask)
         if mask & b[1] ~= 0 then t[#t + 1] = b[2] end
     end
     return #t > 0 and table.concat(t, "+") or nil
+end
+
+-- Key names for the hints, read at draw time: Settings > Controls can
+-- rebind the gamepad while the app runs.
+local function pad_key(btn) return gp.getLabel(btn) or "?" end
+local function pad_updown() return pad_key(gp.PAD_UP) .. "/" .. pad_key(gp.PAD_DOWN) end
+
+-- This frame's tab step from the getNavPressed() mask.
+local function step_tab(nav)
+    local prev = gp.PAD_L | (tabs_on_updown and gp.PAD_UP or gp.PAD_LEFT)
+    local nxt = gp.PAD_R | (tabs_on_updown and gp.PAD_DOWN or gp.PAD_RIGHT)
+    if nav & prev ~= 0 then
+        active_tab = active_tab > 1 and active_tab - 1 or #tab_labels
+    elseif nav & nxt ~= 0 then
+        active_tab = active_tab < #tab_labels and active_tab + 1 or 1
+    end
 end
 
 -- ── Test Functions ────────────────────────────────────────────────────────────
@@ -773,10 +793,8 @@ local function draw_tabs_demo()
     -- drawHeader returns the rows it covers (older firmware: nothing, 29)
     local top = pc.ui.drawHeader("System Test Suite") or 29
 
-    -- Draw tabs with customizable navigation keys
-    local new_tab, height = pc.ui.drawTabs(top, tab_labels, active_tab,
-                                           nav_keys.prev, nav_keys.next)
-    active_tab = new_tab
+    -- Draw the tabs only: the main loop steps active_tab (step_tab).
+    local _, height = pc.ui.drawTabs(top, tab_labels, active_tab)
 
     -- Content area starts below tabs
     local content_y = top + height + 10
@@ -865,7 +883,7 @@ local function draw_tabs_demo()
         end
 
         -- Footer instructions
-        pc.ui.drawFooter("UP/DN:Scroll  R:Rerun  ESC:Exit", nil)
+        pc.ui.drawFooter(pad_updown() .. ":Scroll  " .. pad_key(gp.PAD_A) .. "/R:Rerun  ESC:Exit", nil)
 
     elseif active_tab == 2 then
         -- Functions tab
@@ -903,7 +921,7 @@ local function draw_tabs_demo()
                 end
             end
 
-            pc.ui.drawFooter("UP/DN:Select  ENTER:Run  ESC:Exit", nil)
+            pc.ui.drawFooter(pad_updown() .. ":Select  " .. pad_key(gp.PAD_A) .. ":Run  ESC:Exit", nil)
         end
 
     elseif active_tab == 3 then
@@ -982,9 +1000,9 @@ local function draw_tabs_demo()
             disp.drawText(20, y, "Detects fake flash & measures speed.", DIM, BG)
             y = y + 20
 
-            disp.drawText(20, y, "UP/DOWN: size  ENTER: start", GOOD, BG)
+            disp.drawText(20, y, pad_updown() .. ": size  " .. pad_key(gp.PAD_A) .. ": start", GOOD, BG)
 
-            pc.ui.drawFooter("UP/DN:Size  ENTER:Start  ESC:Exit", nil)
+            pc.ui.drawFooter(pad_updown() .. ":Size  " .. pad_key(gp.PAD_A) .. ":Start  ESC:Exit", nil)
 
         elseif sd_state == "writing" or sd_state == "reading" then
             local phase = sd_state == "writing" and "Writing" or "Verifying"
@@ -1052,24 +1070,24 @@ local function draw_tabs_demo()
             end
 
             y = y + 8
-            disp.drawText(20, y, "ENTER: run again  ESC: exit", DIM, BG)
-            pc.ui.drawFooter("ENTER:Again  ESC:Exit", nil)
+            disp.drawText(20, y, pad_key(gp.PAD_A) .. ": run again  ESC: exit", DIM, BG)
+            pc.ui.drawFooter(pad_key(gp.PAD_A) .. ":Again  ESC:Exit", nil)
 
         elseif sd_state == "aborted" then
             disp.drawText(20, y, "Test aborted", WARN, BG)
             y = y + 16
             disp.drawText(20, y, "Test files cleaned up.", DIM, BG)
             y = y + 16
-            disp.drawText(20, y, "ENTER: run again  ESC: exit", DIM, BG)
-            pc.ui.drawFooter("ENTER:Again  ESC:Exit", nil)
+            disp.drawText(20, y, pad_key(gp.PAD_A) .. ": run again  ESC: exit", DIM, BG)
+            pc.ui.drawFooter(pad_key(gp.PAD_A) .. ":Again  ESC:Exit", nil)
 
         elseif sd_state == "error" then
             disp.drawText(20, y, "ERROR", WARN, BG)
             y = y + 16
             disp.drawText(20, y, sd_error_msg, WARN, BG)
             y = y + 16
-            disp.drawText(20, y, "ENTER: retry  ESC: exit", DIM, BG)
-            pc.ui.drawFooter("ENTER:Retry  ESC:Exit", nil)
+            disp.drawText(20, y, pad_key(gp.PAD_A) .. ": retry  ESC: exit", DIM, BG)
+            pc.ui.drawFooter(pad_key(gp.PAD_A) .. ":Retry  ESC:Exit", nil)
         end
 
     elseif active_tab == 6 then
@@ -1139,9 +1157,9 @@ local function draw_tabs_demo()
             end
             y = y + 20
 
-            disp.drawText(20, y, "T: target  UP/DN: size  ENTER: start", GOOD, BG)
+            disp.drawText(20, y, "T: target  " .. pad_updown() .. ": size  " .. pad_key(gp.PAD_A) .. ": start", GOOD, BG)
 
-            pc.ui.drawFooter("T:Target  UP/DN:Size  ENTER:Start", nil)
+            pc.ui.drawFooter("T:Target  " .. pad_updown() .. ":Size  " .. pad_key(gp.PAD_A) .. ":Start", nil)
 
         elseif ram_state == "writing" or ram_state == "reading" then
             local phase = ram_state == "writing" and "Writing" or "Verifying"
@@ -1201,28 +1219,28 @@ local function draw_tabs_demo()
             end
 
             y = y + 8
-            disp.drawText(20, y, "ENTER: run again  ESC: exit", DIM, BG)
-            pc.ui.drawFooter("ENTER:Again  ESC:Exit", nil)
+            disp.drawText(20, y, pad_key(gp.PAD_A) .. ": run again  ESC: exit", DIM, BG)
+            pc.ui.drawFooter(pad_key(gp.PAD_A) .. ":Again  ESC:Exit", nil)
 
         elseif ram_state == "aborted" then
             disp.drawText(20, y, "Test aborted", WARN, BG)
             y = y + 16
-            disp.drawText(20, y, "ENTER: run again  ESC: exit", DIM, BG)
-            pc.ui.drawFooter("ENTER:Again  ESC:Exit", nil)
+            disp.drawText(20, y, pad_key(gp.PAD_A) .. ": run again  ESC: exit", DIM, BG)
+            pc.ui.drawFooter(pad_key(gp.PAD_A) .. ":Again  ESC:Exit", nil)
 
         elseif ram_state == "error" then
             disp.drawText(20, y, "ERROR", WARN, BG)
             y = y + 16
             disp.drawText(20, y, ram_error_msg, WARN, BG)
             y = y + 16
-            disp.drawText(20, y, "ENTER: retry  ESC: exit", DIM, BG)
-            pc.ui.drawFooter("ENTER:Retry  ESC:Exit", nil)
+            disp.drawText(20, y, pad_key(gp.PAD_A) .. ": retry  ESC: exit", DIM, BG)
+            pc.ui.drawFooter(pad_key(gp.PAD_A) .. ":Retry  ESC:Exit", nil)
         end
     end
 
     -- Footer with instructions for tabs that don't draw their own
     if active_tab >= 3 and active_tab <= 4 then
-        pc.ui.drawFooter("F1:Exit  T:ToggleKeys  ESC:Back", nil)
+        pc.ui.drawFooter(pad_key(gp.PAD_L) .. "/" .. pad_key(gp.PAD_R) .. ":Tab  T:Tab keys  ESC:Exit", nil)
     end
 end
 
@@ -1238,6 +1256,7 @@ while true do
     local pressed = input.getButtonsPressed()
     local released = input.getButtonsReleased()
     button_state = input.getButtons()
+    local nav = gp.getNavPressed()  -- every tab's navigation; `pressed` stays for the Input tab
 
     -- Track raw key and character for Input tab
     -- Get char first so it's available when we check raw key
@@ -1264,30 +1283,30 @@ while true do
     -- Drive SD card test forward regardless of active tab
     if sd_state == "writing" or sd_state == "reading" or sd_state == "cleanup" then
         -- ESC aborts the test (from any tab)
-        if pressed & input.BTN_ESC ~= 0 then
+        if nav & gp.PAD_B ~= 0 then
             sd_abort()
         else
             sd_tick()
         end
     -- Drive RAM test forward regardless of active tab
     elseif ram_state == "writing" or ram_state == "reading" then
-        if pressed & input.BTN_ESC ~= 0 then
+        if nav & gp.PAD_B ~= 0 then
             ram_abort()
         else
             ram_tick()
         end
     elseif active_tab == 2 and not hello_active then
         -- Functions tab list input
-        if pressed & input.BTN_ESC ~= 0 then
+        if nav & gp.PAD_B ~= 0 then
             return
         end
-        if pressed & input.BTN_UP ~= 0 then
+        if nav & gp.PAD_UP ~= 0 then
             func_sel = func_sel > 1 and func_sel - 1 or #func_items
         end
-        if pressed & input.BTN_DOWN ~= 0 then
+        if nav & gp.PAD_DOWN ~= 0 then
             func_sel = func_sel < #func_items and func_sel + 1 or 1
         end
-        if pressed & input.BTN_ENTER ~= 0 then
+        if nav & gp.PAD_A ~= 0 then
             if func_sel == 1 then
                 -- Hello World Demo
                 hello_active = true
@@ -1315,92 +1334,87 @@ while true do
         end
     elseif active_tab == 2 and hello_active then
         -- Hello demo sub-mode: ESC exits back to list
-        if pressed & input.BTN_ESC ~= 0 then
+        if nav & gp.PAD_B ~= 0 then
             hello_active = false
         end
         hello_frame = hello_frame + 1
     elseif active_tab == 5 then
         -- SD Card tab-specific input when not actively testing
         if sd_state == "idle" then
-            if pressed & input.BTN_ESC ~= 0 then
+            if nav & gp.PAD_B ~= 0 then
                 return
             end
-            if pressed & input.BTN_UP ~= 0 then
+            if nav & gp.PAD_UP ~= 0 then
                 sd_size_idx = sd_size_idx > 1 and sd_size_idx - 1 or #sd_sizes
             end
-            if pressed & input.BTN_DOWN ~= 0 then
+            if nav & gp.PAD_DOWN ~= 0 then
                 sd_size_idx = sd_size_idx < #sd_sizes and sd_size_idx + 1 or 1
             end
-            if pressed & input.BTN_ENTER ~= 0 then
+            if nav & gp.PAD_A ~= 0 then
                 sd_start_test()
             end
         elseif sd_state == "done" or sd_state == "aborted" or sd_state == "error" then
-            if pressed & input.BTN_ESC ~= 0 then
+            if nav & gp.PAD_B ~= 0 then
                 return
             end
-            if pressed & input.BTN_ENTER ~= 0 then
+            if nav & gp.PAD_A ~= 0 then
                 sd_state = "idle"
             end
         end
     elseif active_tab == 6 then
         -- RAM tab-specific input when not actively testing
         if ram_state == "idle" then
-            if pressed & input.BTN_ESC ~= 0 then
+            if nav & gp.PAD_B ~= 0 then
                 return
             end
             if last_char and last_char:upper() == "T" then
                 ram_target = ram_target == 1 and 2 or 1
             end
-            if pressed & input.BTN_UP ~= 0 then
+            if nav & gp.PAD_UP ~= 0 then
                 ram_size_idx = ram_size_idx > 1 and ram_size_idx - 1 or #ram_sizes
             end
-            if pressed & input.BTN_DOWN ~= 0 then
+            if nav & gp.PAD_DOWN ~= 0 then
                 ram_size_idx = ram_size_idx < #ram_sizes and ram_size_idx + 1 or 1
             end
-            if pressed & input.BTN_ENTER ~= 0 then
+            if nav & gp.PAD_A ~= 0 then
                 ram_start_test()
             end
         elseif ram_state == "done" or ram_state == "aborted" or ram_state == "error" then
-            if pressed & input.BTN_ESC ~= 0 then
+            if nav & gp.PAD_B ~= 0 then
                 return
             end
-            if pressed & input.BTN_ENTER ~= 0 then
+            if nav & gp.PAD_A ~= 0 then
                 ram_state = "idle"
             end
         end
     else
         -- Normal tab input handling
-        if pressed & input.BTN_ESC ~= 0 then
+        if nav & gp.PAD_B ~= 0 then
             return
         end
 
         -- Tests tab: UP/DOWN scroll, R/ENTER rerun
         if active_tab == 1 then
-            if pressed & input.BTN_UP ~= 0 then
+            if nav & gp.PAD_UP ~= 0 then
                 tests_scroll = math.max(0, tests_scroll - 1)
             end
-            if pressed & input.BTN_DOWN ~= 0 then
+            if nav & gp.PAD_DOWN ~= 0 then
                 tests_scroll = tests_scroll + 1  -- clamped in draw
             end
-            if pressed & input.BTN_ENTER ~= 0 or (last_char and last_char:upper() == "R") then
+            if nav & gp.PAD_A ~= 0 or (last_char and last_char:upper() == "R") then
                 run_all_tests()
                 last_raw = 0
                 last_char = nil
             end
         end
 
-        -- T: Toggle navigation keys between Left/Right and Up/Down
+        -- T: the D-pad's Left/Right or Up/Down step the tabs
         if last_char and last_char:upper() == "T" then
-            if nav_keys.prev == input.BTN_LEFT then
-                nav_keys.prev = input.BTN_UP
-                nav_keys.next = input.BTN_DOWN
-            else
-                nav_keys.prev = input.BTN_LEFT
-                nav_keys.next = input.BTN_RIGHT
-            end
+            tabs_on_updown = not tabs_on_updown
         end
     end
 
+    step_tab(nav)
     draw_tabs_demo()
 
     disp.flush()
