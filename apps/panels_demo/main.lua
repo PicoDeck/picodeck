@@ -9,13 +9,15 @@ local sys = pc.sys
 
 local ok, Panels = pcall(sys.loadlib, "panels")
 if not ok or type(Panels) ~= "table" then
-    -- /system/lib is a folder on the card that nothing installs (a published
-    -- app would ship panels.lua itself and require it). Say so instead of a
-    -- blank screen.
+    -- The firmware writes /system/lib to the card at boot (v0.7.0 on), so
+    -- this is a card it could not write: full or failing. (A published app
+    -- would ship panels.lua itself and require it.) Say so instead of a
+    -- blank screen. B or Esc leaves.
     local disp = pc.display
+    local gp = pc.gamepad
     while true do
         pc.input.update()
-        if pc.input.getButtonsPressed() & pc.input.BTN_ESC ~= 0 then return end
+        if gp.getNavPressed() & gp.PAD_B ~= 0 then return end
         disp.clear(disp.rgb(20, 0, 0))
         disp.drawText(20, 140, "panels library not found", disp.rgb(255, 255, 255))
         disp.drawText(20, 156, "copy system/lib to the SD card",
