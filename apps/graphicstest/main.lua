@@ -51,9 +51,9 @@ function update()
     x = x + 1
     if x > 320 then x = -64 end
     
-    -- Keyboard handling for exit
-    local btns = picocalc.input.getButtonsPressed()
-    if (btns & picocalc.input.BTN_ESC) ~= 0 then
+    -- B or Esc exits (the gamepad: keys, rebound keys or a controller)
+    local gp = picocalc.gamepad
+    if gp.getNavPressed() & gp.PAD_B ~= 0 then
         picocalc.sys.exit()
     end
     

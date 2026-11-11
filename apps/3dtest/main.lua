@@ -6,6 +6,10 @@ local disp = picocalc.display
 local gfx = picocalc.graphics
 local input = picocalc.input
 local perf  = picocalc.perf
+local gp    = picocalc.gamepad
+
+-- The key bound to a gamepad button, for the on-screen help.
+local function pad_key(btn) return gp.getLabel(btn) or "?" end
 
 -- Screen centre
 local cx, cy = 160, 160
@@ -174,27 +178,27 @@ while true do
     perf.beginFrame()
     input.update()
 
-    -- Input handling
-    local pressed = input.getButtonsPressed()
-    if pressed & input.BTN_ESC ~= 0 then
-        return  -- Exit to launcher
+    -- Input handling: the gamepad (keys, rebound keys or a controller)
+    local nav = gp.getNavPressed()
+    if nav & gp.PAD_B ~= 0 then
+        return  -- B or Esc: exit to launcher
     end
 
-    if pressed & input.BTN_ENTER ~= 0 then
+    if nav & gp.PAD_A ~= 0 then
         mode = (mode == 1) and 2 or 1
         showHelp = true
         helpTimer = 0
     end
 
-    -- Toggle fill mode with F1
-    if pressed & input.BTN_F1 ~= 0 then
+    -- Start (F1 by default): cycle fill mode
+    if nav & gp.PAD_START ~= 0 then
         fillMode = (fillMode + 1) % 3
         showHelp = true
         helpTimer = 0
     end
 
-    -- Cycle fill color with F2
-    if pressed & input.BTN_F2 ~= 0 then
+    -- L (F2 by default): cycle fill color
+    if nav & gp.PAD_L ~= 0 then
         fillColorIndex = (fillColorIndex % #fillColors) + 1
     end
 
@@ -204,13 +208,14 @@ while true do
         angleY = angleY + rotSpeed * 0.7
         angleZ = angleZ + rotSpeed * 0.5
     else
-        local buttons = input.getButtons()
-        if buttons & input.BTN_UP    ~= 0 then angleX = angleX + 0.05 end
-        if buttons & input.BTN_DOWN  ~= 0 then angleX = angleX - 0.05 end
-        if buttons & input.BTN_LEFT  ~= 0 then angleY = angleY - 0.05 end
-        if buttons & input.BTN_RIGHT ~= 0 then angleY = angleY + 0.05 end
-        if buttons & input.BTN_F1    ~= 0 then angleZ = angleZ - 0.05 end
-        if buttons & input.BTN_F2    ~= 0 then angleZ = angleZ + 0.05 end
+        -- Held: the D-pad turns X/Y, Start and L roll Z
+        local held = gp.getButtons()
+        if held & gp.PAD_UP    ~= 0 then angleX = angleX + 0.05 end
+        if held & gp.PAD_DOWN  ~= 0 then angleX = angleX - 0.05 end
+        if held & gp.PAD_LEFT  ~= 0 then angleY = angleY - 0.05 end
+        if held & gp.PAD_RIGHT ~= 0 then angleY = angleY + 0.05 end
+        if held & gp.PAD_START ~= 0 then angleZ = angleZ - 0.05 end
+        if held & gp.PAD_L     ~= 0 then angleZ = angleZ + 0.05 end
     end
 
     -- Clear screen
@@ -235,18 +240,18 @@ while true do
         if helpTimer < 180 then
             local y = 230
             if mode == 1 then
-                disp.drawText(4, y, "ENTER: Manual  F1: Fill Mode  F2: Color", disp.GRAY, disp.BLACK)
+                disp.drawText(4, y, string.format("%s: Manual  %s: Fill Mode  %s: Color", pad_key(gp.PAD_A), pad_key(gp.PAD_START), pad_key(gp.PAD_L)), disp.GRAY, disp.BLACK)
             else
                 disp.drawText(4, y,      "D-Pad: Rotate X/Y", disp.GRAY, disp.BLACK)
-                disp.drawText(4, y + 10, "F1: Fill  F2: Color", disp.GRAY, disp.BLACK)
-                disp.drawText(4, y + 20, "ENTER: Auto mode",  disp.GRAY, disp.BLACK)
+                disp.drawText(4, y + 10, string.format("%s: Fill  %s: Color", pad_key(gp.PAD_START), pad_key(gp.PAD_L)), disp.GRAY, disp.BLACK)
+                disp.drawText(4, y + 20, pad_key(gp.PAD_A) .. ": Auto mode",  disp.GRAY, disp.BLACK)
             end
         else
             showHelp = false
         end
     end
 
-    pc.ui.drawFooter("ENTER: Toggle Mode", "ESC: Exit")
+    pc.ui.drawFooter(pad_key(gp.PAD_A) .. ": Toggle Mode", "ESC: Exit")
 
     -- FPS counter (top right)
     perf.drawFPS(250, 4)

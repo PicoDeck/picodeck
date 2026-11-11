@@ -71,6 +71,27 @@ while true do
 end
 ```
 
+`prevKey` and `nextKey` are read from the keyboard only, so a game controller cannot switch tabs through them. To switch tabs from the gamepad too (its L/R or D-pad, or keys the player rebinds), pass no keys and step `activeIndex` yourself:
+
+```lua
+local gp = picocalc.gamepad
+local tabs = {"Files", "Settings", "About"}
+local active = 1
+
+while true do
+    picocalc.input.update()
+    local nav = gp.getNavPressed()
+    if nav & gp.PAD_B ~= 0 then return end
+    if nav & (gp.PAD_L | gp.PAD_LEFT) ~= 0 then active = active > 1 and active - 1 or #tabs end
+    if nav & (gp.PAD_R | gp.PAD_RIGHT) ~= 0 then active = active < #tabs and active + 1 or 1 end
+    picocalc.display.clear(picocalc.display.BLACK)
+    local top = picocalc.ui.drawHeader("My App")
+    local _, tab_h = picocalc.ui.drawTabs(top, tabs, active)
+    -- draw content for tabs[active] starting at y=top+tab_h
+    picocalc.display.flush()
+end
+```
+
 ---
 
 ### Dialogs

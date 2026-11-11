@@ -24,14 +24,15 @@ The `id` names your app's data folder, so pick one and keep it: reverse-DNS, in 
 ```lua
 -- The 'picocalc' global is your gateway to the hardware
 local pc = picocalc
+local gp = pc.gamepad
 
 -- Main app loop
 while true do
-    -- Read the keyboard once per frame
+    -- Read the keyboard and the gamepad once per frame
     pc.input.update()
 
-    -- Check for the ESC key to exit back to the launcher
-    if pc.input.getButtonsPressed() & pc.input.BTN_ESC ~= 0 then
+    -- B (Esc on the keyboard) exits back to the launcher
+    if gp.getNavPressed() & gp.PAD_B ~= 0 then
         return
     end
 
@@ -62,7 +63,7 @@ That is the name of the [downloaded simulator](Simulator-and-Testing.md); one yo
 
 **On a device:** copy the `myapp` folder into `apps/` on the card. With the device at the launcher, the system menu's **USB Disk Mode** makes the card a USB drive, so it can stay in the slot; [Getting started on a device](Getting-started-on-a-device.md#5-copy-your-own-apps) has the steps. Then pick the app in the launcher: with no `category` it is under Demos.
 
-Either way, it draws "Hello, World!" and Esc returns to the launcher.
+Either way, it draws "Hello, World!", and Esc (or B on a game controller) returns to the launcher.
 
 Keep the `input.update()` call even in a loop that ignores the keys. It, or `picocalc.sys.sleep()`, is what reads the keyboard, so it is also what opens the system menu: on a device, a loop that calls neither can only be left by switching it off.
 
@@ -70,9 +71,41 @@ Keep the `input.update()` call even in a loop that ignores the keys. It, or `pic
 
 The loop needs no `sleep`: `flush()` waits for the previous frame's transfer to the panel (about 16.4 ms for a full frame), which already limits a simple app to roughly 40-60 frames per second. To hold a lower rate, such as 30 FPS to save battery, bracket each frame with `picocalc.perf.beginFrame()` and `picocalc.perf.endFrame()` and call `picocalc.perf.setTargetFPS(30)` once; see [API Performance](API-Performance.md). `picocalc.sys.sleep(ms)` is for waiting, not for pacing. A screen that only a key changes should not redraw at all while it waits: see [Writing Fast Apps](Writing-Fast-Apps.md).
 
+### Menus and lists
+
+Read a menu's moves, confirm and back from [`picocalc.gamepad.getNavPressed()`](API-Gamepad.md#picocalcgamepadgetnavpressed). One call drives the menu from the keyboard (arrows, Enter, Esc), from keys the player rebinds in Settings > Controls, and from a Bluetooth controller: it returns the D-pad with auto-repeat while a direction is held, the other buttons' presses, and A for Enter and B for Esc. Name keys in on-screen hints with `getLabel()`, which follows a rebind. Keep typed text on the keyboard (`getChar()`, or `picocalc.ui.textInput()`, which a controller can only accept or cancel).
+
+```lua
+local pc = picocalc
+local gp = pc.gamepad
+local items = {"New game", "Options", "Quit"}
+local sel = 1
+
+while true do
+    pc.input.update()
+    local nav = gp.getNavPressed()
+    if nav & gp.PAD_UP ~= 0 then sel = math.max(1, sel - 1) end
+    if nav & gp.PAD_DOWN ~= 0 then sel = math.min(#items, sel + 1) end
+    if nav & gp.PAD_B ~= 0 then return end                  -- B or Esc: back
+    if nav & gp.PAD_A ~= 0 and items[sel] == "Quit" then return end
+
+    pc.display.clear(pc.display.BLACK)
+    for i, item in ipairs(items) do
+        local color = (i == sel) and pc.display.YELLOW or pc.display.WHITE
+        pc.display.drawText(40, 100 + i * 16, item, color)
+    end
+    local a = gp.getLabel(gp.PAD_A) or "?"
+    pc.display.drawText(4, 300, a .. ": select  Esc: back", pc.display.GRAY)
+    pc.display.flush()
+    pc.sys.sleep(16)  -- nothing moves on its own: don't spin
+end
+```
+
+`getNavPressed()` is new in firmware 0.7.0: set `"min_firmware": "0.7.0"` in the `app.json` of an app that uses it, or check `if gp and gp.getNavPressed then` to support older firmware. [`apps/hello`](https://github.com/PicoDeck/picodeck/tree/master/apps/hello) is a complete example.
+
 ### Reading game controls
 
-Apps that only need Esc read the keyboard masks as above. For a game, read the logical gamepad, `picocalc.gamepad`, instead of raw keys. Its buttons (D-pad, A, B, X, Y, L, R, Start, Select) are aliases for keys that players can rebind in the system menu under Settings > Controls, so your game gets rebinding without any code for it. Use the D-pad for movement, A for the main action or to confirm, B for the second action or to go back, and Start to pause. Keep Esc on `picocalc.input` for quitting, and keep text entry on the keyboard.
+For a game, read the logical gamepad, `picocalc.gamepad`, instead of raw keys. Its buttons (D-pad, A, B, X, Y, L, R, Start, Select) are aliases for keys that players can rebind in the system menu under Settings > Controls, so your game gets rebinding without any code for it. Use the D-pad for movement, A for the main action or to confirm, B for the second action or to go back, and Start to pause. Keep Esc on `picocalc.input` for quitting (`getNavPressed()` reports Esc as B, and in a game B is an action), and keep text entry on the keyboard.
 
 ```lua
 local pc = picocalc

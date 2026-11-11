@@ -161,7 +161,7 @@ function Project.list_projects(fs)
     local entries = fs.listDir(BASE_DIR)
     if not entries then return projects end
     for _, entry in ipairs(entries) do
-        if entry.isDir then
+        if entry.is_dir then
             -- Check for main.lua or project.json
             local has_main = fs.exists(BASE_DIR .. "/" .. entry.name .. "/main.lua")
             local has_config = fs.exists(BASE_DIR .. "/" .. entry.name .. "/project.json")

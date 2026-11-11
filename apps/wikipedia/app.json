@@ -7,5 +7,6 @@
     "requirements": [
         "http"
     ],
-    "category": "network"
+    "category": "network",
+    "min_firmware": "0.7.0"
 }

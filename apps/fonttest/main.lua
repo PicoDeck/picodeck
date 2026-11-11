@@ -1,6 +1,7 @@
--- Font demo: Left/Right cycle fonts, Esc exits.
+-- Font demo: the D-pad's Left/Right cycle fonts, B or Esc exits.
 local pc, disp, input, gfx = picocalc, picocalc.display, picocalc.input, picocalc.graphics
 local BLACK, WHITE, GRAY = 0x0000, 0xFFFF, disp.rgb(128, 128, 128)
+local gp = picocalc.gamepad
 local CYAN, YELLOW = disp.rgb(0, 255, 255), disp.rgb(255, 255, 0)
 local PARA = "PicoDeck fonts: four built-ins live in flash and any .pfn on the SD card " ..
              "loads into PSRAM. Proportional fonts carry an advance per glyph, so " ..
@@ -44,7 +45,8 @@ local function draw(i)
     y = y + fh + 4
   end
   disp.setFont(disp.FONT_6X8)
-  disp.drawText(4, 308, "Left/Right: font   Esc: exit", GRAY, BLACK)
+  disp.drawText(4, 308, (gp.getLabel(gp.PAD_LEFT) or "?") .. "/" ..
+                (gp.getLabel(gp.PAD_RIGHT) or "?") .. ": font   Esc: exit", GRAY, BLACK)
   disp.flush()
 end
 
@@ -52,9 +54,9 @@ local i = 1
 draw(i)
 while true do
   input.update()
-  local p = input.getButtonsPressed()
-  if (p & input.BTN_ESC) ~= 0 then break end
-  if (p & input.BTN_RIGHT) ~= 0 then i = i % #fonts + 1; draw(i) end
-  if (p & input.BTN_LEFT) ~= 0 then i = (i - 2) % #fonts + 1; draw(i) end
+  local nav = gp.getNavPressed()
+  if (nav & gp.PAD_B) ~= 0 then break end
+  if (nav & gp.PAD_RIGHT) ~= 0 then i = i % #fonts + 1; draw(i) end
+  if (nav & gp.PAD_LEFT) ~= 0 then i = (i - 2) % #fonts + 1; draw(i) end
   pc.sys.sleep(10)
 end

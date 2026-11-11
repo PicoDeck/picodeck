@@ -3,5 +3,6 @@
     "name": "Font Test",
     "description": "Cycle the built-in fonts and a loaded proportional .pfn",
     "version": "1.0",
-    "author": "PicoDeck"
+    "author": "PicoDeck",
+    "min_firmware": "0.7.0"
 }

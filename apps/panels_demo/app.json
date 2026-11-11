@@ -6,5 +6,6 @@
   "author": "PicoDeck",
   "category": "demos",
   "requirements": ["audio"],
-  "system_clock_khz": 300000
+  "system_clock_khz": 300000,
+  "min_firmware": "0.7.0"
 }

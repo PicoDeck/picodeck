@@ -5,5 +5,6 @@
   "version": "0.1.0",
   "author": "PicoDeck",
   "requirements": ["root-filesystem", "audio"],
-  "category": "tools"
+  "category": "tools",
+  "min_firmware": "0.7.0"
 }

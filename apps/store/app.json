@@ -6,5 +6,6 @@
     "author": "PicoDeck",
     "requirements": ["http", "root-filesystem", "sysconfig", "system-update"],
     "category": "system",
-    "removable": false
+    "removable": false,
+    "min_firmware": "0.7.0"
 }

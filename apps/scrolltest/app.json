@@ -4,5 +4,6 @@
   "description": "Hardware vertical-scroll register probe: cycles VSCRDEF configurations and sweeps VSCRSADD. Watch the panel and note which phases wrap cleanly.",
   "version": "1.0.0",
   "author": "PicoDeck",
-  "category": "demos"
+  "category": "demos",
+  "min_firmware": "0.7.0"
 }
