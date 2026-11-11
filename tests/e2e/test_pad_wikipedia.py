@@ -77,3 +77,18 @@ def test_wikipedia_s_bound_to_a_still_opens_search(simulator):
     assert count_pixels(sim, SEARCH_LINE, _lit) > empty, "S should open the search field"
     tap(sim, "esc")
     finish(sim)
+
+
+def test_wikipedia_start_refreshes_the_empty_home(simulator):
+    """R has no pad button: Start reloads the list, so a controller can retry
+    after a load error. Offline the retry fails again: the error is back."""
+    sim = simulator
+    set_wifi(sim, "not_available")
+    launch(sim, "wikipedia", settle=1.0)
+    press(sim, "a")                     # leave the error screen
+    wait_until(lambda: count_pixels(sim, ERROR_BAND, _red) == 0)
+    press(sim, "start")                 # refresh: loads, fails, shows the error
+    wait_until(lambda: count_pixels(sim, ERROR_BAND, _red) > 20)
+    press(sim, "a")
+    wait_until(lambda: count_pixels(sim, ERROR_BAND, _red) == 0)
+    finish(sim)

@@ -283,7 +283,7 @@ local function draw_home()
         end
     end
     
-    pc.ui.drawFooter("[S] Search  [R] Refresh  [Esc] Exit", nil)
+    pc.ui.drawFooter("[S] Search  [R/" .. pad_key(gp.PAD_START) .. "] Refresh  [Esc] Exit", nil)
 end
 
 local function draw_search_results()
@@ -421,6 +421,8 @@ local function main()
                 -- Nothing to open while the list is empty (after an error)
                 local title = featured_articles[selected_idx]
                 if title then load_article(title) end
+            elseif nav & gp.PAD_START ~= 0 then
+                load_featured()  -- R has no pad button; this is a controller's refresh
             elseif nav & gp.PAD_B ~= 0 then
                 sys.exit()  -- B or Esc on the home screen quits
             end
