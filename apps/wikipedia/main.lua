@@ -6,6 +6,10 @@ local disp  = pc.display
 local input = pc.input
 local sys   = pc.sys
 local net   = pc.network
+local gp    = pc.gamepad
+
+-- The key bound to a gamepad button, for hints (read at draw time).
+local function pad_key(btn) return gp.getLabel(btn) or "?" end
 
 -- ── Constants ────────────────────────────────────────────────────────────────
 local SCREEN_W = disp.getWidth()
@@ -279,7 +283,7 @@ local function draw_home()
         end
     end
     
-    pc.ui.drawFooter("[S] Search  [R] Refresh", nil)
+    pc.ui.drawFooter("[S] Search  [R] Refresh  [Esc] Exit", nil)
 end
 
 local function draw_search_results()
@@ -333,7 +337,7 @@ local function draw_article()
     if #article_lines > visible_rows then
         scroll_pct = math.floor(100 * scroll_y / (#article_lines - visible_rows))
     end
-    pc.ui.drawFooter("[Esc] Back  [←/→] PgUp/Dn  Scroll: " .. scroll_pct .. "%", nil)
+    pc.ui.drawFooter("[Esc] Back  [" .. pad_key(gp.PAD_LEFT) .. "/" .. pad_key(gp.PAD_RIGHT) .. "] PgUp/Dn  Scroll: " .. scroll_pct .. "%", nil)
 end
 
 local function draw_loading()
@@ -383,8 +387,9 @@ local function main()
     
     while true do
         input.update()
-        local pressed = input.getButtonsPressed()
+        local pressed = input.getButtonsPressed()  -- the search field's keys
         local char = input.getChar()
+        local nav = gp.getNavPressed()              -- every other screen
         
         if current_screen == SCR_WIFI_WAIT then
             if net.getStatus() == net.kStatusConnected then
@@ -396,22 +401,28 @@ local function main()
                 current_screen = SCR_ERROR
                 error_msg = "WiFi Hardware Not Available"
             end
-            if pressed & input.BTN_ESC ~= 0 then
+            if nav & gp.PAD_B ~= 0 then
                 sys.exit()
             end
 
         elseif current_screen == SCR_HOME then
-            if pressed & input.BTN_UP ~= 0 then
-                selected_idx = math.max(1, selected_idx - 1)
-            elseif pressed & input.BTN_DOWN ~= 0 then
-                selected_idx = math.min(#featured_articles, selected_idx + 1)
-            elseif pressed & input.BTN_ENTER ~= 0 then
-                load_article(featured_articles[selected_idx])
-            elseif char == 's' or char == 'S' then
+            -- The letters first: a letter the player bound to a gamepad
+            -- button still does only its own command.
+            if char == 's' or char == 'S' then
                 search_query = ""
                 current_screen = SCR_SEARCH_INPUT
             elseif char == 'r' or char == 'R' then
                 load_featured()
+            elseif nav & gp.PAD_UP ~= 0 then
+                selected_idx = math.max(1, selected_idx - 1)
+            elseif nav & gp.PAD_DOWN ~= 0 then
+                selected_idx = math.min(#featured_articles, selected_idx + 1)
+            elseif nav & gp.PAD_A ~= 0 then
+                -- Nothing to open while the list is empty (after an error)
+                local title = featured_articles[selected_idx]
+                if title then load_article(title) end
+            elseif nav & gp.PAD_B ~= 0 then
+                sys.exit()  -- B or Esc on the home screen quits
             end
             
         elseif current_screen == SCR_SEARCH_INPUT then
@@ -429,29 +440,29 @@ local function main()
             end
             
         elseif current_screen == SCR_SEARCH then
-            if pressed & input.BTN_UP ~= 0 then
+            if nav & gp.PAD_UP ~= 0 then
                 selected_idx = math.max(1, selected_idx - 1)
-            elseif pressed & input.BTN_DOWN ~= 0 then
+            elseif nav & gp.PAD_DOWN ~= 0 then
                 selected_idx = math.min(#search_results, selected_idx + 1)
-            elseif pressed & input.BTN_ENTER ~= 0 then
+            elseif nav & gp.PAD_A ~= 0 then
                 load_article(search_results[selected_idx])
-            elseif pressed & input.BTN_ESC ~= 0 then
+            elseif nav & gp.PAD_B ~= 0 then
                 current_screen = SCR_HOME
             end
             
         elseif current_screen == SCR_ARTICLE then
             local visible_rows = math.floor((SCREEN_H - CHAR_H * 3) / LINE_SPACING)
-            if pressed & input.BTN_UP ~= 0 then
+            if nav & gp.PAD_UP ~= 0 then
                 scroll_y = math.max(0, scroll_y - 1)
-            elseif pressed & input.BTN_DOWN ~= 0 then
+            elseif nav & gp.PAD_DOWN ~= 0 then
                 scroll_y = math.min(math.max(0, #article_lines - visible_rows), scroll_y + 1)
-            elseif pressed & input.BTN_LEFT ~= 0 then
+            elseif nav & gp.PAD_LEFT ~= 0 then
                 -- Page up
                 scroll_y = math.max(0, scroll_y - visible_rows)
-            elseif pressed & input.BTN_RIGHT ~= 0 then
+            elseif nav & gp.PAD_RIGHT ~= 0 then
                 -- Page down
                 scroll_y = math.min(math.max(0, #article_lines - visible_rows), scroll_y + visible_rows)
-            elseif pressed & input.BTN_ESC ~= 0 then
+            elseif nav & gp.PAD_B ~= 0 then
                 if #search_results > 0 then
                     current_screen = SCR_SEARCH
                 else
@@ -460,7 +471,7 @@ local function main()
             end
             
         elseif current_screen == SCR_LOADING then
-            if pressed & input.BTN_ESC ~= 0 then
+            if nav & gp.PAD_B ~= 0 then
                 if current_conn then
                     current_conn:close()
                     current_conn = nil
@@ -476,7 +487,9 @@ local function main()
             end
             
         elseif current_screen == SCR_ERROR then
-            if pressed ~= 0 or char ~= "" then
+            -- Any key, character or gamepad button returns home. (getChar()
+            -- returns nil, not "", when nothing was typed.)
+            if pressed ~= 0 or char or nav ~= 0 then
                 current_screen = SCR_HOME
             end
         end
