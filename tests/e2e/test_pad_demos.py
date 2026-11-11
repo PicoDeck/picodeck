@@ -46,9 +46,9 @@ def test_3dtest_a_toggles_manual_mode(simulator):
     press(sim, "a")
     manual = wait_region(sim, TITLE, lambda r: r != auto)
     press(sim, "start")                  # fill mode: WIRE -> FILL
-    wait_region(sim, TITLE, lambda r: r not in (auto, manual))
+    manual_fill = wait_region(sim, TITLE, lambda r: r not in (auto, manual))
     press(sim, "a")
-    wait_region(sim, TITLE, lambda r: r not in (auto, manual))  # AUTO - FILL
+    wait_region(sim, TITLE, lambda r: r not in (auto, manual, manual_fill))  # AUTO - FILL
     finish(sim)
 
 
